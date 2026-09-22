@@ -16,11 +16,17 @@ layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aUV;
 
 uniform mat4 uModel;
+// The same placement *without* the room's own, so surface detail is a property
+// of the surface rather than of where the room currently sits. Which room the
+// viewer stands in decides the world frame; it must not decide where the floor
+// tiles fall.
+uniform mat4 uTexModel;
 uniform mat4 uViewProj;
 uniform mat4 uLightViewProj0;
 uniform mat4 uLightViewProj1;
 
 out vec3 vWorld;
+out vec3 vRoom;
 out vec3 vNormal;
 out vec2 vUV;
 out vec4 vLightSpace0;
@@ -30,6 +36,7 @@ out vec3 vLocal;
 void main() {
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
+    vRoom = (uTexModel * vec4(aPos, 1.0)).xyz;
     vLocal = aPos;
     vNormal = normalize(mat3(uModel) * aNormal);
     vUV = aUV;
@@ -42,6 +49,7 @@ void main() {
 inline const char* scene_fs() {
     return R"(#version 330 core
 in vec3 vWorld;
+in vec3 vRoom;
 in vec3 vNormal;
 in vec2 vUV;
 in vec4 vLightSpace0;
@@ -114,19 +122,19 @@ vec3 surface_albedo(out float rough_mod) {
 
     if (uSurface < 1.5) {
         // Floor: large tiles with grout and a little grain.
-        vec2 t = vWorld.xz * 0.5;
+        vec2 t = vRoom.xz * 0.5;
         vec2 cell = fract(t);
         float grout = smoothstep(0.0, 0.035, min(cell.x, cell.y)) *
                       smoothstep(0.0, 0.035, min(1.0 - cell.x, 1.0 - cell.y));
         float shade = mix(0.55, 1.0, hash(floor(t)) * 0.35 + 0.65);
         vec3 tile = uAlbedo * shade * mix(0.45, 1.0, grout);
         rough_mod = mix(-0.25, 0.05, grout);          // grout is rougher than tile
-        return tile * (0.94 + 0.12 * noise(vWorld.xz * 8.0));
+        return tile * (0.94 + 0.12 * noise(vRoom.xz * 8.0));
     }
     if (uSurface < 2.5) {
         // Walls: plaster, with a subtle vertical gradient.
-        float grain = 0.92 + 0.16 * noise(vWorld.xz * 6.0 + vWorld.y * 3.0);
-        float height = clamp(vWorld.y / 4.0, 0.0, 1.0);
+        float grain = 0.92 + 0.16 * noise(vRoom.xz * 6.0 + vRoom.y * 3.0);
+        float height = clamp(vRoom.y / 4.0, 0.0, 1.0);
         return uAlbedo * grain * mix(0.82, 1.06, height);
     }
     // Crates: planks plus a darker bevel near the edges of the cube.

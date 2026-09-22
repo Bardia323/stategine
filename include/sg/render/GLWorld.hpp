@@ -144,10 +144,12 @@ private:
         int width = 0, height = 0;
     };
 
-    // The pose of an element in the frame currently being drawn: its place
-    // inside its room (following any anchor), then that room's placement.
-    Pose placed_pose(const State& st, const Element& e) const {
-        return compose_pose(frame_, world_pose(st, e));
+    void set_frame(const Pose& p) {
+        frame_ = p;
+        frame_matrix_ = gl::Mat4::translate({static_cast<float>(p.position.x),
+                                             static_cast<float>(p.position.y),
+                                             static_cast<float>(p.position.z)}) *
+                        gl::Mat4::rotate_y(static_cast<float>(p.yaw));
     }
 
     bool has_surface(const Element& e) const {
@@ -272,14 +274,15 @@ private:
             depth_.set("uLightViewProj", light_vp[i]);
             for (const PlacedRoom& placed : rooms) {
                 if (!placed.room) continue;
-                frame_ = placed.pose;
+                set_frame(placed.pose);
                 for (const auto& e : placed.room->elements()) {
                     if (!e.alive) continue;
                     if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                        depth_.set("uModel", box_model(*placed.room, e));
+                        depth_.set("uModel", frame_matrix_ * box_model(*placed.room, e));
                         cube_.draw();
                     } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
-                        depth_.set("uModel", portal_frame_model(*placed.room, e));
+                        depth_.set("uModel",
+                                   frame_matrix_ * portal_frame_model(*placed.room, e));
                         cube_.draw();
                     }
                 }
@@ -326,7 +329,7 @@ private:
 
         for (const PlacedRoom& placed : rooms) {
             if (!placed.room) continue;
-            frame_ = placed.pose;
+            set_frame(placed.pose);
             Spatial3D& room = *placed.room;
 
             draw_room(room);
@@ -346,7 +349,7 @@ private:
                 draw_portal(room, e, depth, target);
             }
         }
-        frame_ = Pose{};
+        set_frame(Pose{});
     }
 
     // A doorway (a portal bound to another room) has no solid frame in the
@@ -362,7 +365,7 @@ private:
         const gl::Vec3 s{static_cast<float>(e.params.num(keys::sx, 1.0)),
                          static_cast<float>(e.params.num(keys::sy, 1.0)),
                          static_cast<float>(e.params.num(keys::sz, 1.0))};
-        const Pose w = placed_pose(st, e);
+        const Pose w = world_pose(st, e);
         const gl::Vec3 p{static_cast<float>(w.position.x),
                          static_cast<float>(w.position.y) + s.y * 0.5f,
                          static_cast<float>(w.position.z)};
@@ -371,7 +374,7 @@ private:
     }
 
     gl::Mat4 portal_frame_model(const State& st, const Element& e) const {
-        const Pose pose = placed_pose(st, e);
+        const Pose pose = world_pose(st, e);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
         return gl::Mat4::translate(to_vec3(pose.position)) *
@@ -379,9 +382,13 @@ private:
                gl::Mat4::scale({0.08f, h + 0.22f, w + 0.22f});
     }
 
-    void draw_solid(const gl::Mat4& model, const gl::Vec3& albedo, float roughness, float surface,
+    // `local` is in the room's own coordinates. The room's placement is applied
+    // here, once, and the unplaced matrix goes to the shader as well so that
+    // procedural surfaces stay put when the viewer changes rooms.
+    void draw_solid(const gl::Mat4& local, const gl::Vec3& albedo, float roughness, float surface,
                     float emissive = 0.0f, float highlight = 0.0f) {
-        scene_.set("uModel", model);
+        scene_.set("uModel", frame_matrix_ * local);
+        scene_.set("uTexModel", local);
         scene_.set("uAlbedo", albedo);
         scene_.set("uRoughness", roughness);
         scene_.set("uSurface", surface);
@@ -401,6 +408,11 @@ private:
     // A state that places its own wall elements gets only a floor and a
     // ceiling from its room_* parameters; one that does not gets the whole
     // implicit box, which is all a single-room scene needs.
+    void set_model(const gl::Mat4& local) {
+        scene_.set("uModel", frame_matrix_ * local);
+        scene_.set("uTexModel", local);
+    }
+
     void draw_room(Spatial3D& world) {
         const float w = static_cast<float>(world.params().num(Key{"room_w"}, 14.0));
         const float d = static_cast<float>(world.params().num(Key{"room_d"}, 12.0));
@@ -413,45 +425,39 @@ private:
                               static_cast<float>(world.params().num(Key{"wall_g"}, 0.50)),
                               static_cast<float>(world.params().num(Key{"wall_b"}, 0.48))};
 
-        const gl::Mat4 room_frame =
-            gl::Mat4::translate({static_cast<float>(frame_.position.x),
-                                 static_cast<float>(frame_.position.y),
-                                 static_cast<float>(frame_.position.z)}) *
-            gl::Mat4::rotate_y(static_cast<float>(frame_.yaw));
-
-        draw_solid(room_frame * gl::Mat4::translate({w / 2, -t / 2, d / 2}) *
+        draw_solid(gl::Mat4::translate({w / 2, -t / 2, d / 2}) *
                        gl::Mat4::scale({w, t, d}),
                    floor_c, 0.55f, 1.0f);
-        draw_solid(room_frame * gl::Mat4::translate({w / 2, h + t / 2, d / 2}) *
+        draw_solid(gl::Mat4::translate({w / 2, h + t / 2, d / 2}) *
                        gl::Mat4::scale({w, t, d}),
                    wall_c * 0.5f, 0.95f, 2.0f);
 
         if (has_walls(world)) return;  // the state places its own walls
 
-        draw_wall(room_frame * gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
+        draw_wall(gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
                   wall_c);
-        draw_wall(room_frame * gl::Mat4::translate({w + t / 2, h / 2, d / 2}) *
+        draw_wall(gl::Mat4::translate({w + t / 2, h / 2, d / 2}) *
                       gl::Mat4::scale({t, h, d}),
                   wall_c);
-        draw_wall(room_frame * gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}),
+        draw_wall(gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}),
                   wall_c);
-        draw_wall(room_frame * gl::Mat4::translate({w / 2, h / 2, d + t / 2}) *
+        draw_wall(gl::Mat4::translate({w / 2, h / 2, d + t / 2}) *
                       gl::Mat4::scale({w, h, t}),
                   wall_c);
 
         // Skirting board: cheap, and it sells the scale.
         const float sh = 0.16f;
         const gl::Vec3 trim{0.20f, 0.18f, 0.17f};
-        draw_solid(room_frame * gl::Mat4::translate({w / 2, sh / 2, 0.06f}) *
+        draw_solid(gl::Mat4::translate({w / 2, sh / 2, 0.06f}) *
                        gl::Mat4::scale({w, sh, 0.12f}),
                    trim, 0.7f, 0.0f);
-        draw_solid(room_frame * gl::Mat4::translate({w / 2, sh / 2, d - 0.06f}) *
+        draw_solid(gl::Mat4::translate({w / 2, sh / 2, d - 0.06f}) *
                        gl::Mat4::scale({w, sh, 0.12f}),
                    trim, 0.7f, 0.0f);
-        draw_solid(room_frame * gl::Mat4::translate({0.06f, sh / 2, d / 2}) *
+        draw_solid(gl::Mat4::translate({0.06f, sh / 2, d / 2}) *
                        gl::Mat4::scale({0.12f, sh, d}),
                    trim, 0.7f, 0.0f);
-        draw_solid(room_frame * gl::Mat4::translate({w - 0.06f, sh / 2, d / 2}) *
+        draw_solid(gl::Mat4::translate({w - 0.06f, sh / 2, d / 2}) *
                        gl::Mat4::scale({0.12f, sh, d}),
                    trim, 0.7f, 0.0f);
     }
@@ -473,7 +479,7 @@ private:
     }
 
     void draw_lamp(Spatial3D& world, const Element& e) {
-        const gl::Vec3 pos = to_vec3(placed_pose(world, e).position);
+        const gl::Vec3 pos = to_vec3(world_pose(world, e).position);
         const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
         const float room_h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
 
@@ -495,7 +501,7 @@ private:
         // geometry of its own.
         if (!has_surface(e) && !is_doorway(e)) return;
 
-        const Pose pose = placed_pose(st, e);
+        const Pose pose = world_pose(st, e);
         const gl::Vec3 pos = to_vec3(pose.position);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
@@ -537,8 +543,8 @@ private:
             WorldPortal& wp = world_it->second;
             if (depth > 0 || !wp.target.valid()) {
                 // One level deep: a window seen through a window is just glass.
-                scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) *
-                                         gl::Mat4::rotate_y(yaw) * gl::Mat4::scale({1.0f, h, w}));
+                set_model(gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
+                          gl::Mat4::scale({1.0f, h, w}));
                 scene_.set("uAlbedo", gl::Vec3{0.05f, 0.06f, 0.08f});
                 scene_.set("uRoughness", 0.25f);
                 scene_.set("uSurface", 0.0f);
@@ -551,8 +557,8 @@ private:
             }
             // The far room, sampled in screen space: a hole in the wall.
             wp.target.bind_color(0);
-            scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
-                                     gl::Mat4::scale({1.0f, h, w}));
+            set_model(gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
+                      gl::Mat4::scale({1.0f, h, w}));
             scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
             scene_.set("uRoughness", 1.0f);
             scene_.set("uSurface", 0.0f);
@@ -584,8 +590,8 @@ private:
         bound.texture.bind(0);
 
         // Clear of the frame slab (half-thickness 0.06), or the panel sinks into it.
-        scene_.set("uModel", gl::Mat4::translate(pos + n * 0.08f) * gl::Mat4::rotate_y(yaw) *
-                                 gl::Mat4::scale({1.0f, h, w}));
+        set_model(gl::Mat4::translate(pos + n * 0.08f) * gl::Mat4::rotate_y(yaw) *
+                  gl::Mat4::scale({1.0f, h, w}));
         scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
         scene_.set("uRoughness", 0.75f);
         scene_.set("uSurface", 0.0f);
@@ -652,7 +658,8 @@ private:
     gl::ShadowMap shadow_[kShadowMaps];
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
 
-    Pose frame_;  // the placement of the room currently being drawn
+    Pose frame_;              // the placement of the room currently being drawn
+    gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
     std::unordered_map<Key, BoundSurface> surfaces_;
     std::unordered_map<Key, WorldPortal> worlds_;
     Key highlight_;

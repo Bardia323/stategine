@@ -314,7 +314,7 @@ that is. Portals nest: a guest may host a portal of its own.
 4. resolve, bright pass, separable gaussian blur at half resolution
 5. ACES tonemap with bloom, vignette, grain and a light FXAA
 
-![Looking back through the opening from the second room: both rooms lit and shadowed, by different lamps](docs/images/back.png)
+![Standing in the annex, looking through the doorway into the hall: both rooms lit and shadowed, by their own lamps](docs/images/east.png)
 
 Level geometry is data: a state with `wall` elements has them drawn (and gets
 only a floor and a ceiling from its `room_*` parameters), while a state without
