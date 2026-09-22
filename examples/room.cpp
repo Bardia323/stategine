@@ -36,7 +36,7 @@ int main() {
                   static_cast<char>('a' + static_cast<int>(i)));
 
     room.light("lamp", {6, 3, 4}).params.set(sg::keys::glyph, std::string("*"));
-    room.portal("wall_map", {0, 2, 0}, 3.0, 2.0).params.set(sg::keys::glyph, std::string("M"));
+    room.portal("wall_map", {0, 2, 0}, 3.0, 2.0, 0.0).params.set(sg::keys::glyph, std::string("M"));
 
     auto& map = graph.add<sg::Spatial2D>("wallmap", kCols, kRows);
     map.set_integrating(false);

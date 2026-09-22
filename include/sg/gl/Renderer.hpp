@@ -152,15 +152,18 @@ inline std::vector<float> cube_vertices() {
     return v;
 }
 
+// A unit quad standing in the y-z plane, facing +x: scale it by {1, height,
+// width} and rotate it by the portal's yaw and it faces the way the portal
+// does, with no extra quarter turn anywhere.
 inline std::vector<float> quad_vertices() {
     const float h = 0.5f;
     return {
-        -h, -h, 0, 0, 0, 1, 0, 1,  //
-        h,  -h, 0, 0, 0, 1, 1, 1,  //
-        h,  h,  0, 0, 0, 1, 1, 0,  //
-        -h, -h, 0, 0, 0, 1, 0, 1,  //
-        h,  h,  0, 0, 0, 1, 1, 0,  //
-        -h, h,  0, 0, 0, 1, 0, 0,  //
+        0, -h, h,  1, 0, 0, 0, 1,  //
+        0, -h, -h, 1, 0, 0, 1, 1,  //
+        0, h,  -h, 1, 0, 0, 1, 0,  //
+        0, -h, h,  1, 0, 0, 0, 1,  //
+        0, h,  -h, 1, 0, 0, 1, 0,  //
+        0, h,  h,  1, 0, 0, 0, 0,  //
     };
 }
 

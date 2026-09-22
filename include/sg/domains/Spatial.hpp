@@ -237,6 +237,13 @@ inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 
     return (d.x * f.x + d.y * f.y + d.z * f.z) / len >= min_facing;
 }
 
+// A room together with where it sits, in some chosen room's coordinates. The
+// pose is not a property of the room - it is the answer to "seen from where?".
+struct PlacedRoom {
+    Spatial3D* room = nullptr;
+    Pose pose;
+};
+
 // --- walls -----------------------------------------------------------------------
 // Push `mover` out of any wall element it has ended up inside. Walls are boxes
 // with a pose, so anchored ones are handled without knowing they are anchored.
@@ -245,10 +252,13 @@ inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 
 // is walked under, not into: that is what makes a lintel over a doorway a
 // doorway rather than a blocked wall.
 inline void resolve_wall_collisions(const State& s, Element& mover, double radius,
-                                    double head = 1.9) {
+                                    double head = 1.9, const Pose& frame = Pose{}) {
     for (const auto& e : s.elements()) {
         if (e.kind != kinds::wall || !e.alive) continue;
-        const Pose w = world_pose(s, e);
+        // `frame` places the whole room: a neighbouring room's walls are solid
+        // too, and they are solid where that room actually sits relative to
+        // the one the walker is standing in.
+        const Pose w = compose_pose(frame, world_pose(s, e));
         if (w.position.y >= head) continue;
 
         const double hx = e.params.num(keys::sx, 1.0) * 0.5 + radius;
@@ -286,20 +296,31 @@ inline void resolve_wall_collisions(const State& s, Element& mover, double radiu
 // The turn that takes you from one doorway to the other. A viewer walks into
 // `here` against its facing (-n_here) and comes out of `there` along its facing
 // (+n_there); with facing n = (sin yaw, cos yaw), that works out to:
+// A doorway faces the way its yaw points, exactly like a camera does. You walk
+// into `here` against its facing and come out of `there` along it, so the turn
+// between the two frames is:
+inline double portal_delta(double here_yaw, double there_yaw) {
+    return there_yaw - here_yaw + 3.14159265358979;
+}
+
 inline double portal_delta(const Element& here, const Element& there) {
-    return here.params.num(keys::yaw) - there.params.num(keys::yaw) + 3.14159265358979;
+    return portal_delta(here.params.num(keys::yaw), there.params.num(keys::yaw));
 }
 
 // One rotation, applied to the position and the heading alike - getting those
 // two out of step is what makes a portal look subtly wrong.
+inline Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, double yaw) {
+    const double delta = portal_delta(here.yaw, there.yaw);
+    const double dx = pos.x - here.position.x, dz = pos.z - here.position.z;
+    const double c = std::cos(delta), s = std::sin(delta);
+    return Pose{{there.position.x + dx * c - dz * s, pos.y,
+                 there.position.z + dx * s + dz * c},
+                yaw + delta};
+}
+
 inline Pose through_portal(const Element& here, const Element& there, const Vec3d& pos,
                            double yaw) {
-    const double delta = portal_delta(here, there);
-    const Vec3d hp = position_of(here);
-    const Vec3d tp = position_of(there);
-    const double dx = pos.x - hp.x, dz = pos.z - hp.z;
-    const double c = std::cos(delta), s = std::sin(delta);
-    return Pose{{tp.x + dx * c - dz * s, pos.y, tp.z + dx * s + dz * c}, yaw + delta};
+    return through_portal(local_pose(here), local_pose(there), pos, yaw);
 }
 
 // The same transform as a transport, ready to hang on a functor: it carries a
@@ -327,8 +348,8 @@ inline std::function<void(const Element&, Element&)> portal_carry(const Element&
 inline bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
     const Vec3d p = position_of(portal);
     const double yaw = portal.params.num(keys::yaw);
-    const double nx = std::sin(yaw), nz = std::cos(yaw);   // facing
-    const double tx = std::cos(yaw), tz = -std::sin(yaw);  // across the opening
+    const double nx = std::cos(yaw), nz = std::sin(yaw);   // facing
+    const double tx = -std::sin(yaw), tz = std::cos(yaw);  // across the opening
     const double d0 = (from.x - p.x) * nx + (from.z - p.z) * nz;
     const double d1 = (to.x - p.x) * nx + (to.z - p.z) * nz;
     if (!(d0 > 0.0 && d1 <= 0.0)) return false;  // only front to back

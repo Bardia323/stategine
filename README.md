@@ -7,6 +7,10 @@ crosses between two states crosses through a **functor**, and a state can be
 **embedded** inside an element of another, so an interface in one domain edits
 the world in a different one.
 
+Nothing in it has a position, a parent, or a privileged frame unless some arrow
+says so. Rooms are glued to each other by doorways, and the engine checks that
+the gluing actually closes up before it will treat the pieces as one space.
+
 Header-only, C++17. The core has no dependencies; the OpenGL example fetches
 GLFW on demand.
 
@@ -47,52 +51,89 @@ not a renderer feature:
 
 ![The same room with the lamp dimmed](docs/images/dim.png)
 
-## The second room, and the map that moves it
+## The second room, and the map that moves the doorway
 
-The east wall has an opening. Beyond it is a second room - not another state,
-just more of the same space. What makes it a *room* rather than scenery is that
-all of its walls, its lamp, its plinths and its own map carry `parent`, naming
-one anchor element:
+Neither room has a position. Each is a state with its own coordinates, and the
+only thing relating them is a **doorway**: a portal element in each, understood
+to be the same doorway seen from either side. Where a room "is" is always an
+answer to *seen from where?* - the renderer roots the atlas at whichever room
+the viewer is standing in and composes the doorway to place the other.
 
-```cpp
-world.anchor("annex", {14.0, 0.0, 2.5});
-
-sg::attach_to(world.wall("a_west_a", {0, 0, 1.6}, 0.3, 3.6, 3.2), "annex");
-sg::attach_to(world.light("annex_lamp", {4, 2.9, 4.5}), "annex");
-// ... and so on: the whole annex is local to that frame
-```
-
-`world_pose` follows that chain, so the renderer and the collision code place an
-anchored element without knowing it is anchored. Move the anchor and everything
-hanging off it moves together.
-
-Which is what the second map does. It hangs in the annex, it has exactly one
-token, and that token **is** the annex:
-
-```cpp
-graph.add_lens("annex_to_map", "map_to_annex", "world", "annexmap",
-               {{"annex", "annex_tok"}},   // one object: the anchor itself
-               /* world -> map */ then(swizzle_scaled({{x, x}}, annex_x_to_cell),
-                                       swizzle_scaled({{y, z}}, annex_z_to_cell)),
-               /* map -> world */ then(swizzle_scaled({{x, x}}, cell_to_annex_x),
-                                       swizzle_scaled({{z, y}}, cell_to_annex_z)));
-
-graph.embed("annex_map", "world", "annex_map", "annexmap", "annex_to_map",
-            "map_to_annex", sg::EmbedSync::Live);
-```
-
-| The annex map, inside the annex | Looking through the aligned opening |
+| Looking through the doorway | Inside the second room |
 | --- | --- |
-| ![A wall panel with a seven by seven grid and one teal token](docs/images/annex.png) | ![The opening in the east wall, with the second room visible through it](docs/images/doorway.png) |
+| ![The opening in the hall's wall, the annex visible through it](docs/images/doorway.png) | ![The annex, with its own map on the far wall](docs/images/annex.png) |
 
-Drag that one token and the entire second room slides through the shared space -
-including the doorway you were about to walk through, and the wall the map
-itself is hanging on. Line the two openings up and you can walk between the
-rooms; slide it away and the gap closes against blank wall:
+The second map has **one** token, and that token is the doorway itself. Moving
+it walks the doorway around the hall's perimeter - and since the annex is
+related to the hall only through that doorway, the annex meets a different edge
+of the hall each time. From inside the annex nothing moves at all; it is the
+hall that swings round. Stand in the hall instead and the identical edit reads
+as the annex moving. Neither reading is privileged, and the engine stores
+neither:
 
-![The same opening, now almost entirely blocked because the annex has been moved](docs/images/shifted.png)
+| doorway on the east wall | on the south wall | on the north wall |
+| --- | --- | --- |
+| ![the hall seen through the doorway from the east](docs/images/east.png) | ![the same view with the doorway moved to the south wall](docs/images/south.png) | ![and again from the north wall](docs/images/north.png) |
 
-Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|shifted|back>`.
+Structurally the two maps are the same object. Both are a `Surface2D` embedded
+`Live` through a lens onto elements of a room:
+
+```cpp
+// crate map: tokens <-> crates, mounted in the hall, acting on the hall
+graph.add_lens("crates_to_map", "map_to_crates", "hall", "cratemap", crate_objects, ...);
+graph.embed("crate_map", "hall", "crate_map", "cratemap",
+            "crates_to_map", "map_to_crates", sg::EmbedSync::Live);
+
+// door map: token <-> the doorway, mounted in the annex, acting on the hall
+graph.add_lens("door_to_map", "map_to_door", "hall", "doormap", {{"door", "door_tok"}}, ...);
+graph.embed("door_map", "annex", "door_map", "doormap",
+            "door_to_map", "map_to_door", sg::EmbedSync::Live, /*subject=*/"hall");
+```
+
+The only difference is the `subject`: where an interface is *mounted* and what
+it *acts on* are separate questions, and the engine makes you answer both
+rather than assuming they coincide.
+
+## Gluing: why the pieces are allowed to be one space
+
+An atlas of rooms is one instance of a much older operation - local data,
+defined in pieces, glued into one global thing. `sg/core/Sheaf.hpp` holds the
+general version and knows nothing about rooms:
+
+* a **`Cover`** is a set of states with declared overlaps, each overlap
+  carrying its transition as a pair of functors;
+* **descent** is the condition that lets them glue: on every overlap, across
+  and back is the identity (*separatedness*), and around every loop the
+  composite is the identity (*the cocycle condition*). A loop that does not
+  close has holonomy - walk the ring of rooms and you arrive somewhere else -
+  and there is no global object to glue to, only a seam;
+* **`sections(root)`** is the glued result: the composite transition from the
+  root to every piece it can reach.
+
+Both conditions say *this composite is the identity*, and measuring the gap
+between a composite and the identity is what `Adjunction` already did - its
+unit and counit defects are exactly the descent failures, reported per object
+and per parameter. The sheaf module adds no new notion of correctness; it
+applies the engine's existing one to the arrows of a cover.
+
+```cpp
+for (const auto& seam : sg::descent_defects(atlas, graph))
+    std::cout << "seam: " << seam << "
+";
+```
+
+Two things follow, and they are the practical point of the whole exercise:
+
+1. **You cannot build a space that does not close up without being told.** A
+   ring of rooms whose transforms do not compose to the identity is named as a
+   seam before anything is drawn.
+2. **Inconsistent gluings are mostly unrepresentable rather than merely
+   detectable.** A doorway's transition is *derived* from the two portal
+   elements every time it is asked for, not stored alongside them, so it cannot
+   drift out of step with the geometry it describes. The same arrow that places
+   the rooms is the one you travel along when you walk through.
+
+Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
 
 ## Layout
 
@@ -104,11 +145,13 @@ include/sg/
     Functor.hpp     functors, reusable transports, composition, natural transformations
     Adjunction.hpp  adjoint / isomorphic state pairs, with defect reports
     Embedding.hpp   a state nested in an element of another state
+    Sheaf.hpp       covers, descent, gluing - the general form of an atlas
     StateGraph.hpp  states, transitions, functors, lenses, embeddings, validation, DOT
     Engine.hpp      the state stack, the frame, the open portals
   domains/     what a state is *about* - data and arrows, never pixels
     Spatial.hpp     SpatialState / Spatial2D / Spatial3D: bodies, walls, lights,
                     anchored groups, portals, camera queries
+    Atlas.hpp       rooms glued by doorways - the spatial instance of a Cover
     Console.hpp     a scrollback and an input line
     Surface.hpp     a 2D state that can hand over its own RGBA raster
   render/      how a state is *shown* - swappable, never owned by the state
@@ -139,6 +182,9 @@ parameter vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`, `w/h/yaw`, interned once in
 | Lossless pair | `Adjunction` | `F -| G`; both units trivial = isomorphism |
 | Nested interface | `graph.embed(...)` | a state living in an object of another |
 | Anchored group | `parent` on an element | a frame: poses compose along the chain |
+| Cover | `Cover` / `Atlas` | pieces plus the transitions between them |
+| Descent | `descent_defects(...)` | separatedness and the cocycle condition |
+| Gluing | `Cover::sections(root)` | the composite into one chosen chart |
 
 Ill-typed composition throws. `graph.validate()` reports dangling morphisms,
 unknown transition endpoints, unreachable states, functors whose image arrows do
@@ -241,7 +287,12 @@ graph.embed("wall_map", "room", "wall_map", "wallmap", "collapse", "stamp",
 * `EmbedSync::Commit` - `out` runs on close, so `close_embed(name, false)` is
   a cancel button.
 * `EmbedSync::View` - `in` runs every frame and nothing comes back: a read-only
-  window, which is what a doorway into another room is.
+  window onto another state.
+
+An embedding also carries a `subject`: the state the guest is a view *of*.
+It defaults to the host - a map on the wall of the room it describes - but a
+panel can hang in one room and act on another, and saying so keeps "where it is
+displayed" from being quietly conflated with "what it edits".
 
 Open and close with `engine.open_embed(name)` / `engine.close_embed(name)`, or
 by firing `embed.open` / `embed.close` with a `name` argument. While a portal
@@ -300,7 +351,7 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
-| `sg_tests` | 88 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_tests` | 103 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build

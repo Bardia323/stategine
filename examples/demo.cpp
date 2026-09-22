@@ -33,7 +33,7 @@ int main() {
     deep.mesh("player", 5, 8, 0, '@').params.set(sg::keys::vx, 2.0);
     deep.mesh("rock", 20, 4, 3, 'o');
     deep.light("lamp", {10, 3, 5});
-    deep.portal("map_table", {2, 2, 0}, 3.0, 2.0);
+    deep.portal("map_table", {2, 2, 0}, 3.0, 2.0, 1.5707963);  // faces +z
     // The portal element exists on both sides, so nothing in either state falls
     // outside the functors and the pair stays a true isomorphism.
     flat.add_element("map_table", sg::kinds::portal).params.set(sg::keys::z, 0.0);

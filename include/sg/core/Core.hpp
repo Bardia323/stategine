@@ -5,6 +5,7 @@
 // of characters. Everything still takes plain strings at the API surface.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -260,6 +261,25 @@ inline const Key sprite{"sprite"}, mesh{"mesh"}, light{"light"}, portal{"portal"
 inline const Key wall{"wall"}, anchor{"anchor"};
 inline const Key camera{"camera"}, textbuffer{"textbuffer"}, textline{"textline"};
 }  // namespace kinds
+
+// Some parameters are not plain numbers: a heading lives on a circle, so two
+// values a full turn apart are the same value. Anything comparing transported
+// data has to know that, or a round trip that returns you exactly where you
+// started reads as a drift of 2*pi.
+inline bool angular_key(Key k) {
+    return k == keys::yaw || k == keys::pitch || k == keys::roll;
+}
+
+inline bool same_number(Key k, double a, double b, double tolerance = 1e-6) {
+    double d = a - b;
+    if (angular_key(k)) {
+        const double turn = 6.283185307179586;
+        d = std::fmod(d, turn);
+        if (d > turn * 0.5) d -= turn;
+        if (d < -turn * 0.5) d += turn;
+    }
+    return std::fabs(d) < tolerance;
+}
 
 // Position helpers shared by every spatial domain.
 struct Vec3d {

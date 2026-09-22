@@ -75,12 +75,13 @@ public:
         if (e->open) return;
         State& host = graph_.state(e->host);
         State& guest = graph_.state(e->guest);
+        State& subject = graph_.state(e->subject.empty() ? e->host : e->subject);
         guest.attach(this);
         if (!e->in.empty()) {
             const Functor* f = graph_.functor(e->in);
             if (!f) throw std::runtime_error("embedding " + name.str() + ": no functor " +
                                              e->in.str());
-            f->apply(host, guest);
+            f->apply(subject, guest);
         }
         if (Element* portal = host.find(e->portal)) portal->params.set(keys::open, true);
         e->open = true;
@@ -102,7 +103,7 @@ public:
             const Functor* f = graph_.functor(e->out);
             if (!f) throw std::runtime_error("embedding " + name.str() + ": no functor " +
                                              e->out.str());
-            f->apply(guest, host);
+            f->apply(guest, graph_.state(e->subject.empty() ? e->host : e->subject));
         }
         guest.on_exit();
         e->open = false;
@@ -185,7 +186,8 @@ private:
     void sync_live_out(State& host) {
         for (Embedding* e : graph_.embeddings_of(host.id())) {
             if (!e->open || e->sync != EmbedSync::Live || e->out.empty()) continue;
-            if (const Functor* f = graph_.functor(e->out)) f->apply(graph_.state(e->guest), host);
+            State& subject = graph_.state(e->subject.empty() ? e->host : e->subject);
+            if (const Functor* f = graph_.functor(e->out)) f->apply(graph_.state(e->guest), subject);
         }
     }
 
@@ -196,11 +198,12 @@ private:
         for (Embedding* e : graph_.embeddings_of(host.id())) {
             if (!e->open) continue;
             State& guest = graph_.state(e->guest);
+            State& subject = graph_.state(e->subject.empty() ? e->host : e->subject);
             if (e->sync == EmbedSync::View && !e->in.empty())
-                if (const Functor* f = graph_.functor(e->in)) f->apply(host, guest);
+                if (const Functor* f = graph_.functor(e->in)) f->apply(subject, guest);
             guest.step(t);
             if (e->sync == EmbedSync::Live && !e->out.empty())
-                if (const Functor* f = graph_.functor(e->out)) f->apply(guest, host);
+                if (const Functor* f = graph_.functor(e->out)) f->apply(guest, subject);
         }
     }
 

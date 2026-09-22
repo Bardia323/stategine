@@ -58,12 +58,22 @@ public:
     // Draw a highlight on one element for this frame (a "you can use this" cue).
     void highlight(Key element_id) { highlight_ = element_id; }
 
-    // The whole frame. `fb_w/fb_h` are the framebuffer's pixel dimensions.
+    // One room, standing on its own.
     void render(Spatial3D& world, int fb_w, int fb_h) {
-        if (fb_w <= 0 || fb_h <= 0) return;
+        const PlacedRoom one{&world, Pose{}};
+        render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
+    }
+
+    // A neighbourhood of rooms, each with the pose it has when seen from the
+    // first one - which is the room the viewer is standing in. Nothing here
+    // treats that room as special beyond being the one asked from: hand it a
+    // different root and the same geometry is drawn from the other side.
+    void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
+        if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
         ensure_resources();
         ensure_targets(fb_w, fb_h);
 
+        Spatial3D& world = *rooms.front().room;
         const Camera eye_cam = camera_of(world);
         const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
 
@@ -92,12 +102,13 @@ public:
                                             gl::normalize(guest_cam.forward));
                 znear = std::max(0.05f, along + 0.02f);
             }
-            draw_world(*wp.world, guest_cam, aspect, wp.target, /*depth=*/1, znear,
-                       back ? back->id : Key{});
+            const PlacedRoom guest{wp.world, Pose{}};
+            draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, wp.target,
+                       /*depth=*/1, znear, back ? back->id : Key{});
         }
 
         // --- the room the viewer is actually standing in ------------------------
-        draw_world(world, eye_cam, aspect, scene_target_, /*depth=*/0, 0.05f);
+        draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, 0.05f);
 
         scene_target_.blit_to(resolve_);
         run_bloom();
@@ -132,6 +143,17 @@ private:
         gl::RenderTarget target;
         int width = 0, height = 0;
     };
+
+    // The pose of an element in the frame currently being drawn: its place
+    // inside its room (following any anchor), then that room's placement.
+    Pose placed_pose(const State& st, const Element& e) const {
+        return compose_pose(frame_, world_pose(st, e));
+    }
+
+    bool has_surface(const Element& e) const {
+        auto it = surfaces_.find(e.id);
+        return it != surfaces_.end() && it->second.surface != nullptr;
+    }
 
     static Camera camera_of(Spatial3D& world) {
         const Element& cam = world.camera();
@@ -179,12 +201,14 @@ private:
 
     // Every lamp in the state, nearest to the viewer first: that one gets the
     // shadow map, the rest light without casting.
-    std::vector<Light> read_lights(Spatial3D& world, const Camera& cam) {
+    std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, const Camera& cam) {
         std::vector<Light> out;
-        for (const auto& e : world.elements()) {
+        for (const PlacedRoom& placed : rooms) {
+            if (!placed.room) continue;
+            for (const auto& e : placed.room->elements()) {
             if (e.kind != kinds::light || !e.alive) continue;
             Light l;
-            l.pos = to_vec3(world_position(world, e));
+            l.pos = to_vec3(compose_pose(placed.pose, world_pose(*placed.room, e)).position);
             l.color = color_of(e, l.color);
             l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
             l.dir = gl::normalize({static_cast<float>(e.params.num(Key{"dx"}, 0.0)),
@@ -193,6 +217,7 @@ private:
             l.inner = static_cast<float>(e.params.num(Key{"inner"}, 0.55));
             l.outer = static_cast<float>(e.params.num(Key{"outer"}, 1.15));
             out.push_back(l);
+            }
         }
         std::sort(out.begin(), out.end(), [&cam](const Light& a, const Light& b) {
             const gl::Vec3 da = a.pos - cam.eye, db = b.pos - cam.eye;
@@ -220,9 +245,9 @@ private:
     // portal recursion level: a room seen through a window does not itself open
     // further windows.
 
-    void draw_world(Spatial3D& world, const Camera& cam, float aspect, gl::RenderTarget& target,
-                    int depth, float znear, Key skip_portal = Key{}) {
-        const std::vector<Light> lights = read_lights(world, cam);
+    void draw_world(const std::vector<PlacedRoom>& rooms, const Camera& cam, float aspect,
+                    gl::RenderTarget& target, int depth, float znear, Key skip_portal = Key{}) {
+        const std::vector<Light> lights = read_lights(rooms, cam);
         // The two nearest lamps get a shadow map each: standing in one room
         // must not flatten the other one.
         const std::size_t shadowed = std::min<std::size_t>(lights.size(), kShadowMaps);
@@ -245,14 +270,18 @@ private:
             shadow_[i].bind();
             gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
             depth_.set("uLightViewProj", light_vp[i]);
-            for (const auto& e : world.elements()) {
-                if (!e.alive) continue;
-                if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                    depth_.set("uModel", box_model(world, e));
-                    cube_.draw();
-                } else if (e.kind == kinds::portal && !is_doorway(e)) {
-                    depth_.set("uModel", portal_frame_model(world, e));
-                    cube_.draw();
+            for (const PlacedRoom& placed : rooms) {
+                if (!placed.room) continue;
+                frame_ = placed.pose;
+                for (const auto& e : placed.room->elements()) {
+                    if (!e.alive) continue;
+                    if (e.kind == kinds::mesh || e.kind == kinds::wall) {
+                        depth_.set("uModel", box_model(*placed.room, e));
+                        cube_.draw();
+                    } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
+                        depth_.set("uModel", portal_frame_model(*placed.room, e));
+                        cube_.draw();
+                    }
                 }
             }
         }
@@ -295,22 +324,29 @@ private:
         shadow_[0].bind_depth(1);
         shadow_[1].bind_depth(2);
 
-        draw_room(world);
-        for (const auto& e : world.elements()) {
-            if (!e.alive) continue;
-            if (e.kind == kinds::mesh) {
-                draw_crate(world, e);
-            } else if (e.kind == kinds::wall) {
-                draw_wall_element(world, e);
-            } else if (e.kind == kinds::light) {
-                draw_lamp(world, e);
+        for (const PlacedRoom& placed : rooms) {
+            if (!placed.room) continue;
+            frame_ = placed.pose;
+            Spatial3D& room = *placed.room;
+
+            draw_room(room);
+            for (const auto& e : room.elements()) {
+                if (!e.alive) continue;
+                if (e.kind == kinds::mesh) {
+                    draw_crate(room, e);
+                } else if (e.kind == kinds::wall) {
+                    draw_wall_element(room, e);
+                } else if (e.kind == kinds::light) {
+                    draw_lamp(room, e);
+                }
+            }
+            for (const auto& e : room.elements()) {
+                if (e.kind != kinds::portal || !e.alive) continue;
+                if (!skip_portal.empty() && e.id == skip_portal) continue;  // looked through
+                draw_portal(room, e, depth, target);
             }
         }
-        for (const auto& e : world.elements()) {
-            if (e.kind != kinds::portal || !e.alive) continue;
-            if (!skip_portal.empty() && e.id == skip_portal) continue;  // looked through
-            draw_portal(world, e, depth, target);
-        }
+        frame_ = Pose{};
     }
 
     // A doorway (a portal bound to another room) has no solid frame in the
@@ -326,7 +362,7 @@ private:
         const gl::Vec3 s{static_cast<float>(e.params.num(keys::sx, 1.0)),
                          static_cast<float>(e.params.num(keys::sy, 1.0)),
                          static_cast<float>(e.params.num(keys::sz, 1.0))};
-        const Pose w = world_pose(st, e);
+        const Pose w = placed_pose(st, e);
         const gl::Vec3 p{static_cast<float>(w.position.x),
                          static_cast<float>(w.position.y) + s.y * 0.5f,
                          static_cast<float>(w.position.z)};
@@ -335,12 +371,12 @@ private:
     }
 
     gl::Mat4 portal_frame_model(const State& st, const Element& e) const {
-        const Pose pose = world_pose(st, e);
+        const Pose pose = placed_pose(st, e);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
         return gl::Mat4::translate(to_vec3(pose.position)) *
                gl::Mat4::rotate_y(static_cast<float>(pose.yaw)) *
-               gl::Mat4::scale({w + 0.22f, h + 0.22f, 0.08f});
+               gl::Mat4::scale({0.08f, h + 0.22f, w + 0.22f});
     }
 
     void draw_solid(const gl::Mat4& model, const gl::Vec3& albedo, float roughness, float surface,
@@ -377,31 +413,45 @@ private:
                               static_cast<float>(world.params().num(Key{"wall_g"}, 0.50)),
                               static_cast<float>(world.params().num(Key{"wall_b"}, 0.48))};
 
-        draw_solid(gl::Mat4::translate({w / 2, -t / 2, d / 2}) * gl::Mat4::scale({w, t, d}),
+        const gl::Mat4 room_frame =
+            gl::Mat4::translate({static_cast<float>(frame_.position.x),
+                                 static_cast<float>(frame_.position.y),
+                                 static_cast<float>(frame_.position.z)}) *
+            gl::Mat4::rotate_y(static_cast<float>(frame_.yaw));
+
+        draw_solid(room_frame * gl::Mat4::translate({w / 2, -t / 2, d / 2}) *
+                       gl::Mat4::scale({w, t, d}),
                    floor_c, 0.55f, 1.0f);
-        draw_solid(gl::Mat4::translate({w / 2, h + t / 2, d / 2}) * gl::Mat4::scale({w, t, d}),
+        draw_solid(room_frame * gl::Mat4::translate({w / 2, h + t / 2, d / 2}) *
+                       gl::Mat4::scale({w, t, d}),
                    wall_c * 0.5f, 0.95f, 2.0f);
 
         if (has_walls(world)) return;  // the state places its own walls
 
-        draw_wall(gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}), wall_c);
-        draw_wall(gl::Mat4::translate({w + t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
+        draw_wall(room_frame * gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
                   wall_c);
-        draw_wall(gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}), wall_c);
-        draw_wall(gl::Mat4::translate({w / 2, h / 2, d + t / 2}) * gl::Mat4::scale({w, h, t}),
+        draw_wall(room_frame * gl::Mat4::translate({w + t / 2, h / 2, d / 2}) *
+                      gl::Mat4::scale({t, h, d}),
+                  wall_c);
+        draw_wall(room_frame * gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}),
+                  wall_c);
+        draw_wall(room_frame * gl::Mat4::translate({w / 2, h / 2, d + t / 2}) *
+                      gl::Mat4::scale({w, h, t}),
                   wall_c);
 
         // Skirting board: cheap, and it sells the scale.
         const float sh = 0.16f;
         const gl::Vec3 trim{0.20f, 0.18f, 0.17f};
-        draw_solid(gl::Mat4::translate({w / 2, sh / 2, 0.06f}) * gl::Mat4::scale({w, sh, 0.12f}),
-                   trim, 0.7f, 0.0f);
-        draw_solid(gl::Mat4::translate({w / 2, sh / 2, d - 0.06f}) *
+        draw_solid(room_frame * gl::Mat4::translate({w / 2, sh / 2, 0.06f}) *
                        gl::Mat4::scale({w, sh, 0.12f}),
                    trim, 0.7f, 0.0f);
-        draw_solid(gl::Mat4::translate({0.06f, sh / 2, d / 2}) * gl::Mat4::scale({0.12f, sh, d}),
+        draw_solid(room_frame * gl::Mat4::translate({w / 2, sh / 2, d - 0.06f}) *
+                       gl::Mat4::scale({w, sh, 0.12f}),
                    trim, 0.7f, 0.0f);
-        draw_solid(gl::Mat4::translate({w - 0.06f, sh / 2, d / 2}) *
+        draw_solid(room_frame * gl::Mat4::translate({0.06f, sh / 2, d / 2}) *
+                       gl::Mat4::scale({0.12f, sh, d}),
+                   trim, 0.7f, 0.0f);
+        draw_solid(room_frame * gl::Mat4::translate({w - 0.06f, sh / 2, d / 2}) *
                        gl::Mat4::scale({0.12f, sh, d}),
                    trim, 0.7f, 0.0f);
     }
@@ -423,7 +473,7 @@ private:
     }
 
     void draw_lamp(Spatial3D& world, const Element& e) {
-        const gl::Vec3 pos = to_vec3(world_position(world, e));
+        const gl::Vec3 pos = to_vec3(placed_pose(world, e).position);
         const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
         const float room_h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
 
@@ -440,13 +490,18 @@ private:
 
     void draw_portal(const State& st, const Element& e, int depth,
                      const gl::RenderTarget& target) {
-        const Pose pose = world_pose(st, e);
+        // A portal with nothing bound to it is a marker for a plain opening -
+        // the gap between wall segments is the doorway, and it needs no
+        // geometry of its own.
+        if (!has_surface(e) && !is_doorway(e)) return;
+
+        const Pose pose = placed_pose(st, e);
         const gl::Vec3 pos = to_vec3(pose.position);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
         const float yaw = static_cast<float>(pose.yaw);
         const bool open = e.params.get_or<bool>(keys::open, false);
-        const gl::Vec3 n{std::sin(yaw), 0.0f, std::cos(yaw)};
+        const gl::Vec3 n{std::cos(yaw), 0.0f, std::sin(yaw)};  // the way it faces
 
         auto world_it = worlds_.find(e.id);
         const bool is_window = world_it != worlds_.end() && world_it->second.world != nullptr;
@@ -457,24 +512,24 @@ private:
             // stay clear or there is nothing to see through.
             const gl::Vec3 casing{0.24f, 0.22f, 0.20f};
             const float t = 0.22f, d = 0.34f;
-            const gl::Vec3 tangent{std::cos(yaw), 0.0f, -std::sin(yaw)};
+            const gl::Vec3 tangent{-std::sin(yaw), 0.0f, std::cos(yaw)};
             const gl::Mat4 rot = gl::Mat4::rotate_y(yaw);
             draw_solid(gl::Mat4::translate(pos + tangent * (w * 0.5f + t * 0.5f)) * rot *
-                           gl::Mat4::scale({t, h + 2 * t, d}),
+                           gl::Mat4::scale({d, h + 2 * t, t}),
                        casing, 0.6f, 0.0f, 0.0f, hi);
             draw_solid(gl::Mat4::translate(pos - tangent * (w * 0.5f + t * 0.5f)) * rot *
-                           gl::Mat4::scale({t, h + 2 * t, d}),
+                           gl::Mat4::scale({d, h + 2 * t, t}),
                        casing, 0.6f, 0.0f, 0.0f, hi);
             draw_solid(gl::Mat4::translate(pos + gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
-                           gl::Mat4::scale({w + 2 * t, t, d}),
+                           gl::Mat4::scale({d, t, w + 2 * t}),
                        casing, 0.6f, 0.0f, 0.0f, hi);
             draw_solid(gl::Mat4::translate(pos - gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
-                           gl::Mat4::scale({w + 2 * t, t, d}),
+                           gl::Mat4::scale({d, t, w + 2 * t}),
                        casing, 0.6f, 0.0f, 0.0f, hi);
         } else {
             // A panel hangs on the wall, so it keeps its backing frame.
             draw_solid(gl::Mat4::translate(pos) * gl::Mat4::rotate_y(yaw) *
-                           gl::Mat4::scale({w + 0.3f, h + 0.3f, 0.12f}),
+                           gl::Mat4::scale({0.12f, h + 0.3f, w + 0.3f}),
                        {0.14f, 0.11f, 0.08f}, 0.6f, 0.0f, 0.0f, hi);
         }
 
@@ -483,7 +538,7 @@ private:
             if (depth > 0 || !wp.target.valid()) {
                 // One level deep: a window seen through a window is just glass.
                 scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) *
-                                         gl::Mat4::rotate_y(yaw) * gl::Mat4::scale({w, h, 1.0f}));
+                                         gl::Mat4::rotate_y(yaw) * gl::Mat4::scale({1.0f, h, w}));
                 scene_.set("uAlbedo", gl::Vec3{0.05f, 0.06f, 0.08f});
                 scene_.set("uRoughness", 0.25f);
                 scene_.set("uSurface", 0.0f);
@@ -497,7 +552,7 @@ private:
             // The far room, sampled in screen space: a hole in the wall.
             wp.target.bind_color(0);
             scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
-                                     gl::Mat4::scale({w, h, 1.0f}));
+                                     gl::Mat4::scale({1.0f, h, w}));
             scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
             scene_.set("uRoughness", 1.0f);
             scene_.set("uSurface", 0.0f);
@@ -516,7 +571,7 @@ private:
         }
 
         auto it = surfaces_.find(e.id);
-        if (it == surfaces_.end() || !it->second.surface) return;
+        if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening
         BoundSurface& bound = it->second;
         Surface2D& surf = *bound.surface;
 
@@ -530,7 +585,7 @@ private:
 
         // Clear of the frame slab (half-thickness 0.06), or the panel sinks into it.
         scene_.set("uModel", gl::Mat4::translate(pos + n * 0.08f) * gl::Mat4::rotate_y(yaw) *
-                                 gl::Mat4::scale({w, h, 1.0f}));
+                                 gl::Mat4::scale({1.0f, h, w}));
         scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
         scene_.set("uRoughness", 0.75f);
         scene_.set("uSurface", 0.0f);
@@ -597,6 +652,7 @@ private:
     gl::ShadowMap shadow_[kShadowMaps];
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
 
+    Pose frame_;  // the placement of the room currently being drawn
     std::unordered_map<Key, BoundSurface> surfaces_;
     std::unordered_map<Key, WorldPortal> worlds_;
     Key highlight_;

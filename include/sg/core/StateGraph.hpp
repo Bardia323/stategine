@@ -140,6 +140,19 @@ public:
 
     Functor& add_functor(Key name, Key from, Key to) { return add_functor(Functor{name, from, to}); }
 
+    // Replace a functor, or add it if new. Transitions that are *derived* from
+    // something else - a doorway derived from the two portal elements it joins -
+    // are rebuilt rather than declared, so that they cannot drift out of step
+    // with what they describe.
+    Functor& set_functor(Functor f) {
+        const Key name = f.name();
+        if (name.empty()) throw std::runtime_error("functor needs a name");
+        auto it = functors_.find(name);
+        if (it == functors_.end()) return functors_.emplace(name, std::move(f)).first->second;
+        it->second = std::move(f);
+        return it->second;
+    }
+
     const Functor* functor(Key name) const {
         auto it = functors_.find(name);
         return it == functors_.end() ? nullptr : &it->second;
@@ -194,12 +207,13 @@ public:
     }
 
     Embedding& embed(Key name, Key host, Key portal, Key guest, Key in, Key out,
-                     EmbedSync sync = EmbedSync::Commit) {
+                     EmbedSync sync = EmbedSync::Commit, Key subject = Key{}) {
         Embedding e;
         e.name = name;
         e.host = host;
         e.portal = portal;
         e.guest = guest;
+        e.subject = subject;
         e.in = in;
         e.out = out;
         e.sync = sync;
@@ -275,7 +289,11 @@ public:
             }
             if (!contains(e.guest))
                 errors.push_back("embedding " + e.name.str() + ": unknown guest " + e.guest.str());
-            if (e.host == e.guest)
+            const Key subject = e.subject.empty() ? e.host : e.subject;
+            if (!e.subject.empty() && !contains(e.subject))
+                errors.push_back("embedding " + e.name.str() + ": unknown subject " +
+                                 e.subject.str());
+            if (subject == e.guest)
                 errors.push_back("embedding " + e.name.str() + ": a state cannot embed itself");
             if (e.sync == EmbedSync::View && e.in.empty())
                 errors.push_back("embedding " + e.name.str() +
@@ -283,8 +301,8 @@ public:
             if (e.sync == EmbedSync::View && !e.out.empty())
                 errors.push_back("embedding " + e.name.str() +
                                  ": a View portal is read-only, so `out` never runs");
-            check_portal_functor(errors, e, e.in, e.host, e.guest);
-            check_portal_functor(errors, e, e.out, e.guest, e.host);
+            check_portal_functor(errors, e, e.in, subject, e.guest);
+            check_portal_functor(errors, e, e.out, e.guest, subject);
         }
 
         for (const auto& kv : functors_) {

@@ -4,6 +4,8 @@
 #include <sstream>
 #include <string>
 
+#include "sg/core/Sheaf.hpp"
+#include "sg/domains/Atlas.hpp"
 #include "sg/render/Ascii.hpp"
 #include "sg/sg.hpp"
 
@@ -449,26 +451,36 @@ void test_wall_collisions() {
 }
 
 // --- portals between 3D states --------------------------------------------------
+// Yaw is a heading: a doorway faces the way its yaw points, exactly as a
+// camera does. One convention, used by the domain and the renderer alike.
+sg::Vec3d facing(double yaw) { return {std::cos(yaw), 0.0, std::sin(yaw)}; }
+
 void test_portal_transform() {
     sg::Spatial3D a("a"), b("b");
     // Two doorways facing different ways, in rooms with unrelated coordinates.
-    a.portal("door_a", {14.0, 1.5, 6.0}, 2.4, 3.0, -1.5707963);  // faces -x
-    b.portal("door_b", {4.5, 1.5, 0.0}, 2.4, 3.0, 0.0);          // faces +z
+    a.portal("door_a", {14.0, 1.5, 6.0}, 2.4, 3.0, 3.14159265);  // faces -x
+    b.portal("door_b", {4.5, 1.5, 0.0}, 2.4, 3.0, 1.5707963);    // faces +z
 
-    // Standing 4m in front of door A, looking straight at it.
-    const sg::Pose there =
-        sg::through_portal(a.element("door_a"), b.element("door_b"), {10.0, 1.7, 6.0}, 0.0);
-    check(roughly(there.position.x, 4.5) && roughly(there.position.z, -4.0),
-          "the pose lands 4m behind the far doorway");
-    sg::Element probe("tmp", "camera");
-    probe.params.set(sg::keys::yaw, there.yaw);
-    const sg::Vec3d f = sg::forward_of(probe);
-    check(roughly(f.x, 0.0) && f.z > 0.99, "and faces through it, into the far room");
+    // Standing 4m in front of door A - on the side it faces - looking at it.
+    const sg::Vec3d here{10.0, 1.7, 6.0};
+    const sg::Pose there = sg::through_portal(a.element("door_a"), b.element("door_b"), here, 0.0);
+
+    // The claim is relational, not a pair of magic coordinates: you come out
+    // behind the far doorway, measured against the way it faces, square in its
+    // opening, pointed the way it points.
+    const sg::Vec3d bp = sg::position_of(b.element("door_b"));
+    const sg::Vec3d bn = facing(b.element("door_b").params.num(sg::keys::yaw));
+    const double along = (there.position.x - bp.x) * bn.x + (there.position.z - bp.z) * bn.z;
+    const double across = (there.position.x - bp.x) * -bn.z + (there.position.z - bp.z) * bn.x;
+    check(roughly(along, -4.0), "you come out 4m behind the far doorway");
+    check(roughly(across, 0.0), "square in the opening, not off to one side");
+    const sg::Vec3d out = facing(there.yaw);
+    check(roughly(out.x, bn.x) && roughly(out.z, bn.z), "facing the way that doorway faces");
 
     // The two directions are inverse: there and back is the identity.
     const sg::Pose back =
         sg::through_portal(b.element("door_b"), a.element("door_a"), there.position, there.yaw);
-    check(roughly(back.position.x, 10.0) && roughly(back.position.z, 6.0),
+    check(roughly(back.position.x, here.x) && roughly(back.position.z, here.z),
           "carrying back through returns the original position");
 
     // Crossing is front-to-back through the opening only.
@@ -484,8 +496,8 @@ void test_view_portal() {
     sg::StateGraph g;
     auto& room = g.add<sg::Spatial3D>("room");
     auto& lab = g.add<sg::Spatial3D>("lab");
-    room.portal("door_out", {14.0, 1.5, 6.0}, 2.4, 3.0, -1.5707963);
-    lab.portal("door_in", {4.5, 1.5, 0.0}, 2.4, 3.0, 0.0);
+    room.portal("door_out", {14.0, 1.5, 6.0}, 2.4, 3.0, 3.14159265);  // faces -x
+    lab.portal("door_in", {4.5, 1.5, 0.0}, 2.4, 3.0, 1.5707963);      // faces +z
     room.camera().params.set(sg::keys::x, 10.0).set(sg::keys::y, 1.7).set(sg::keys::z, 6.0);
 
     g.add_functor("peek", "room", "lab")
@@ -533,6 +545,100 @@ void test_view_portal_validation() {
     for (const auto& e : errors)
         if (e.find("needs an `in` functor") != std::string::npos) found = true;
     check(found, "a View portal without `in` is rejected");
+}
+
+// --- covers, descent, gluing -------------------------------------------------------
+// A shift transport: the only data each state holds is one number, and the
+// transitions add to it. Composites are then easy to reason about, which makes
+// this the clearest way to test descent without any geometry in the way.
+sg::Transport shift_by(double d) {
+    return [d](const sg::Element& src, sg::Element& dst) {
+        dst.params.set("v", src.params.num("v") + d);
+    };
+}
+
+void link_shift(sg::StateGraph& g, sg::Cover& cover, sg::Key a, sg::Key b, double d) {
+    const sg::Key fwd{a.str() + "->" + b.str()};
+    const sg::Key back{b.str() + "->" + a.str()};
+    g.set_functor(sg::Functor{fwd, a, b}).on_object("x", "x", shift_by(d));
+    g.set_functor(sg::Functor{back, b, a}).on_object("x", "x", shift_by(-d));
+    cover.add(sg::Key{a.str() + "^" + b.str()}, a, b, fwd, back);
+}
+
+void test_descent() {
+    sg::StateGraph g;
+    for (const char* id : {"u", "v", "w"}) {
+        auto& s = g.add<sg::State>(sg::Key{id});
+        s.add_element("x", "thing").params.set("v", 0.0);
+    }
+    g.set_initial("u");
+
+    // A chain that agrees on its overlaps: across and back is the identity.
+    sg::Cover chain;
+    link_shift(g, chain, "u", "v", 3.0);
+    link_shift(g, chain, "v", "w", 5.0);
+    check(chain.descent_defects(g).empty(), "a cover whose overlaps agree has no descent defects");
+
+    // Gluing: the composite transition from u expresses w's data in u's terms.
+    const auto sections = chain.sections(g, "u");
+    check(sections.size() == 3, "every piece is reached from the root");
+    const sg::Functor* to_w = nullptr;
+    for (const auto& sec : sections)
+        if (sec.first == sg::Key{"w"}) to_w = &sec.second;
+    sg::State probe("probe");
+    if (to_w) to_w->apply(g.state("u"), probe);
+    check(to_w && near(probe.element("x").params.num("v"), 8.0),
+          "and the glued section is the composite of the steps");
+
+    // Close the ring the wrong way: u -> v -> w -> u must be the identity, and
+    // 3 + 5 - 7 is not zero. That is holonomy, and there is nothing to glue.
+    sg::Cover bad_ring;
+    link_shift(g, bad_ring, "u", "v", 3.0);
+    link_shift(g, bad_ring, "v", "w", 5.0);
+    link_shift(g, bad_ring, "w", "u", 7.0);
+    const auto seams = bad_ring.descent_defects(g);
+    bool named_cycle = false;
+    for (const auto& d : seams)
+        if (d.find("cycle") != std::string::npos) named_cycle = true;
+    check(!seams.empty() && named_cycle, "a ring that does not close is reported as a seam");
+
+    // Close it correctly and the seam goes away.
+    sg::Cover good_ring;
+    link_shift(g, good_ring, "u", "v", 3.0);
+    link_shift(g, good_ring, "v", "w", 5.0);
+    link_shift(g, good_ring, "w", "u", -8.0);
+    check(good_ring.descent_defects(g).empty(), "a ring that closes up glues cleanly");
+}
+
+void test_atlas_is_a_cover() {
+    sg::StateGraph g;
+    auto& hall = g.add<sg::Spatial3D>("hall");
+    auto& annex = g.add<sg::Spatial3D>("annex");
+    hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265);  // faces -x
+    annex.portal("door", {4.5, 1.5, 0.0}, 2.8, 3.0, 1.5707963);   // faces +z
+    g.set_initial("hall");
+
+    sg::Atlas atlas;
+    atlas.glue("doorway", "hall", "door", "annex", "door");
+    check(sg::descent_defects(atlas, g).empty(), "a doorway glues two rooms without a seam");
+
+    // The doorway's transition is derived from the portals, so moving one and
+    // re-asking gives a consistent answer rather than a stale one.
+    sg::Pose before, after;
+    atlas.placement(g, "hall", "annex", before);
+    hall.element("door").params.set(sg::keys::z, 3.0);
+    atlas.placement(g, "hall", "annex", after);
+    check(roughly(after.position.z - before.position.z, -4.0),
+          "moving a doorway moves the room it joins");
+    check(sg::descent_defects(atlas, g).empty(), "and the gluing is still seamless afterwards");
+
+    // Seen from the annex, it is the hall that has moved: the same fact, told
+    // from the other side.
+    sg::Pose from_annex;
+    check(atlas.placement(g, "annex", "hall", from_annex), "the relation reads both ways");
+    const sg::Pose round_trip = sg::compose_pose(after, from_annex);
+    check(roughly(round_trip.position.x, 0.0) && roughly(round_trip.position.z, 0.0),
+          "and the two readings are inverse");
 }
 
 void test_graph_analysis() {
@@ -588,6 +694,8 @@ int main() {
     test_portal_transform();
     test_view_portal();
     test_view_portal_validation();
+    test_descent();
+    test_atlas_is_a_cover();
     test_graph_analysis();
     test_surface_and_views();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");

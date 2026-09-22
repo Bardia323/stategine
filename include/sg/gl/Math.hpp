@@ -27,7 +27,7 @@ inline Vec3 cross(const Vec3& a, const Vec3& b) {
 // step from one doorway into another is a yaw difference and a translation.
 inline Vec3 rotate_y(const Vec3& v, float a) {
     const float c = std::cos(a), s = std::sin(a);
-    return {v.x * c + v.z * s, v.y, -v.x * s + v.z * c};
+    return {v.x * c - v.z * s, v.y, v.x * s + v.z * c};
 }
 
 inline Vec3 normalize(const Vec3& v) {
@@ -57,12 +57,16 @@ struct Mat4 {
         return r;
     }
 
+    // Yaw is a heading measured from +x, so this is the rotation that takes
+    // (1,0,0) to (cos a, 0, sin a) - the same one sg::compose_pose applies to
+    // positions. Keeping those two in step is what lets a pose become a model
+    // matrix without a hidden mirror.
     static Mat4 rotate_y(float a) {
         Mat4 r;
         const float c = std::cos(a), s = std::sin(a);
         r.m[0] = c;
-        r.m[2] = -s;
-        r.m[8] = s;
+        r.m[2] = s;
+        r.m[8] = -s;
         r.m[10] = c;
         return r;
     }

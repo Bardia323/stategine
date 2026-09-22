@@ -4,9 +4,9 @@
 // keeps running while a guest state lives inside one of its elements - the
 // portal. Two functors bound the portal:
 //
-//   in  : host  -> guest   what the guest sees (a collapsed view: a 2D map of
+//   in  : subject -> guest   what the guest sees (a collapsed view: a 2D map of
 //                          the 3D world, an inventory grid, a terminal screen)
-//   out : guest -> host    what edits inside the guest do to the host
+//   out : guest -> subject  what edits inside the guest do to that state
 //
 // `out . in` is the round trip; when it is the identity the portal is a
 // lossless view. Sync decides which direction runs when:
@@ -35,6 +35,11 @@ struct Embedding {
     Key host;    // state that owns the portal
     Key portal;  // element in the host that displays the guest
     Key guest;   // state running inside it
+    // The state the guest is a view *of*. Usually the host - a map on the wall
+    // of the room it describes - but not always: a panel can hang in one room
+    // and act on another, and saying so is what keeps "where it is displayed"
+    // and "what it edits" from being quietly conflated. Empty means the host.
+    Key subject;
     Key in;      // functor host -> guest (may be empty)
     Key out;     // functor guest -> host (may be empty)
     EmbedSync sync = EmbedSync::Commit;
