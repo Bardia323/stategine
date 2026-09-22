@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cmath>
+#include <functional>
 #include <string>
 
 #include "sg/core/State.hpp"
@@ -149,6 +150,77 @@ inline double distance_to(const SpatialState& s, Key element_id) {
     const Element* e = s.find(element_id);
     if (!e) return 1e9;
     return distance(position_of(s.element(SpatialState::camera_id())), position_of(*e));
+}
+
+// --- portals between spaces ---------------------------------------------------
+// Two doorways, one in each room, joined back to back. Because each room is its
+// own state with its own coordinates, everything about "the same place in the
+// other room" is this one transform: rotate by the difference between the two
+// doorway yaws (plus half a turn, since they face each other), then translate
+// into the far doorway's frame.
+struct Pose {
+    Vec3d position;
+    double yaw = 0.0;
+};
+
+// The turn that takes you from one doorway to the other. A viewer walks into
+// `here` against its facing (-n_here) and comes out of `there` along its facing
+// (+n_there); with facing n = (sin yaw, cos yaw), that works out to:
+inline double portal_delta(const Element& here, const Element& there) {
+    return here.params.num(keys::yaw) - there.params.num(keys::yaw) + 3.14159265358979;
+}
+
+// One rotation, applied to the position and the heading alike - getting those
+// two out of step is what makes a portal look subtly wrong.
+inline Pose through_portal(const Element& here, const Element& there, const Vec3d& pos,
+                           double yaw) {
+    const double delta = portal_delta(here, there);
+    const Vec3d hp = position_of(here);
+    const Vec3d tp = position_of(there);
+    const double dx = pos.x - hp.x, dz = pos.z - hp.z;
+    const double c = std::cos(delta), s = std::sin(delta);
+    return Pose{{tp.x + dx * c - dz * s, pos.y, tp.z + dx * s + dz * c}, yaw + delta};
+}
+
+// The same transform as a transport, ready to hang on a functor: it carries a
+// camera (or anything with a pose) from one room's frame into the other's.
+// Used twice in a portal - once by the View embedding that aims the window's
+// virtual camera, once by the transition taken when you walk through.
+inline std::function<void(const Element&, Element&)> portal_carry(const Element& here,
+                                                                  const Element& there) {
+    const Vec3d hp = position_of(here);
+    const Vec3d tp = position_of(there);
+    const double delta = portal_delta(here, there);
+    return [hp, tp, delta](const Element& src, Element& dst) {
+        const Vec3d p = position_of(src);
+        const double dx = p.x - hp.x, dz = p.z - hp.z;
+        const double c = std::cos(delta), s = std::sin(delta);
+        set_position(dst, {tp.x + dx * c - dz * s, p.y, tp.z + dx * s + dz * c});
+        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
+        dst.params.set(keys::pitch, src.params.num(keys::pitch));
+        dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
+    };
+}
+
+// Did the step from `from` to `to` pass through the doorway's opening, front to
+// back? Used to fire the transition that actually changes state.
+inline bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
+    const Vec3d p = position_of(portal);
+    const double yaw = portal.params.num(keys::yaw);
+    const double nx = std::sin(yaw), nz = std::cos(yaw);   // facing
+    const double tx = std::cos(yaw), tz = -std::sin(yaw);  // across the opening
+    const double d0 = (from.x - p.x) * nx + (from.z - p.z) * nz;
+    const double d1 = (to.x - p.x) * nx + (to.z - p.z) * nz;
+    if (!(d0 > 0.0 && d1 <= 0.0)) return false;  // only front to back
+    const double span = d0 - d1;
+    const double t = span > 1e-9 ? d0 / span : 0.0;
+    const double hx = from.x + (to.x - from.x) * t;
+    const double hz = from.z + (to.z - from.z) * t;
+    const double lateral = (hx - p.x) * tx + (hz - p.z) * tz;
+    const double half_w = portal.params.num(keys::w, 2.0) * 0.5;
+    if (std::fabs(lateral) > half_w) return false;
+    const double half_h = portal.params.num(keys::h, 2.0) * 0.5;
+    return std::fabs(to.y - p.y) <= half_h + 0.9;
 }
 
 // True when the camera is near the element and pointed at it.

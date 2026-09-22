@@ -5,8 +5,14 @@
 // 3D state gets this renderer for free as long as it uses the shared parameter
 // vocabulary (x/y/z, sx/sy/sz, r/g/b, w/h/yaw).
 //
-// Frame: shadow depth from the lamp -> scene into a multisampled HDR target ->
-// resolve -> bright pass -> separable blur -> ACES composite with bloom.
+// A portal element shows whatever is bound to it:
+//   bind_surface(portal, Surface2D*)                 a 2D state, as a panel
+//   bind_world(portal, Spatial3D*)                   another 3D state, as a
+//                                                    window you can walk through
+//
+// Frame: for each world portal, render the other room into its own target from
+// that room's own camera (a View embedding aims it); then the shadow pass, the
+// scene into a multisampled HDR target, resolve, bright pass, blur, composite.
 #pragma once
 
 #include <algorithm>
@@ -37,8 +43,14 @@ public:
 
     // Attach a 2D state to a portal element: its raster becomes the texture.
     void bind_surface(Key portal_element, Surface2D* surface) {
-        surfaces_[portal_element] = Bound{surface, gl::Texture{}, 0};
+        surfaces_[portal_element].surface = surface;
     }
+
+    // Attach another 3D state: the portal becomes a window into it, rendered
+    // from that state's own camera. A `View` embedding is what keeps that
+    // camera aimed - see sg::portal_carry - so the renderer does no portal
+    // maths of its own.
+    void bind_world(Key portal_element, Spatial3D* world) { worlds_[portal_element].world = world; }
 
     // Draw a highlight on one element for this frame (a "you can use this" cue).
     void highlight(Key element_id) { highlight_ = element_id; }
@@ -49,82 +61,41 @@ public:
         ensure_resources();
         ensure_targets(fb_w, fb_h);
 
-        const Element& cam = world.camera();
-        const gl::Vec3 eye = to_vec3(position_of(cam));
-        const gl::Vec3 fwd = to_vec3(forward_of(cam));
-        const float fov = static_cast<float>(cam.params.num(keys::fov, 70.0)) * 3.14159265f /
-                          180.0f;
+        const Camera eye_cam = camera_of(world);
         const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
-        const gl::Mat4 view_proj =
-            gl::Mat4::perspective(fov, aspect, 0.05f, 120.0f) * gl::Mat4::look_at(eye, eye + fwd,
-                                                                                 {0, 1, 0});
 
-        // --- the lamp, as a spot light ---------------------------------------
-        Light light = read_light(world);
-        const gl::Mat4 light_vp =
-            gl::Mat4::perspective(light.outer * 2.05f, 1.0f, 0.35f, 60.0f) *
-            gl::Mat4::look_at(light.pos, light.pos + light.dir, {0, 0, 1});
-
-        // --- pass 1: shadow depth ---------------------------------------------
-        shadow_.bind();
-        gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
-        gl::glEnable(gl::GL_DEPTH_TEST);
-        gl::glEnable(gl::GL_CULL_FACE);
-        gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
-        depth_.use();
-        depth_.set("uLightViewProj", light_vp);
+        // --- portal views, one pass per window --------------------------------
+        // Rendered first, at framebuffer resolution, because the portal quad
+        // samples them in screen space. The guest's camera was already carried
+        // through the doorway by the embedding's functor.
         for (const auto& e : world.elements()) {
-            if (!e.alive) continue;
-            if (e.kind == kinds::mesh) {
-                depth_.set("uModel", box_model(e));
-                cube_.draw();
-            } else if (e.kind == kinds::portal) {
-                depth_.set("uModel", portal_frame_model(e));
-                cube_.draw();
+            if (e.kind != kinds::portal || !e.alive) continue;
+            auto it = worlds_.find(e.id);
+            if (it == worlds_.end() || !it->second.world) continue;
+            WorldPortal& wp = it->second;
+            if (!wp.target.valid() || wp.width != fb_w || wp.height != fb_h) {
+                wp.target.create(fb_w, fb_h, gl::GL_RGBA16F, 0, true);
+                wp.width = fb_w;
+                wp.height = fb_h;
             }
-        }
-        gl::glCullFace(gl::GL_BACK);
-
-        // --- pass 2: the scene, into HDR --------------------------------------
-        scene_target_.bind();
-        gl::glClearColor(0.012f, 0.014f, 0.022f, 1.0f);
-        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-        gl::glEnable(gl::GL_DEPTH_TEST);
-        gl::glDepthFunc(gl::GL_LESS);
-        gl::glEnable(gl::GL_MULTISAMPLE);
-        gl::glDisable(gl::GL_CULL_FACE);
-
-        scene_.use();
-        scene_.set("uViewProj", view_proj);
-        scene_.set("uLightViewProj", light_vp);
-        scene_.set("uLightPos", light.pos);
-        scene_.set("uLightDir", light.dir);
-        scene_.set("uLightColor", light.color);
-        scene_.set("uLightPower", light.power);
-        scene_.set("uCosInner", std::cos(light.inner));
-        scene_.set("uCosOuter", std::cos(light.outer));
-        scene_.set("uViewPos", eye);
-        scene_.set("uFogColor", gl::Vec3{0.05f, 0.06f, 0.09f});
-        scene_.set("uFogDensity", 0.018f);
-        scene_.set("uShadowTexel", 1.0f / static_cast<float>(shadow_.size()),
-                   1.0f / static_cast<float>(shadow_.size()));
-        scene_.set("uShadowMap", 1);
-        scene_.set("uTex", 0);
-        shadow_.bind_depth(1);
-
-        draw_room(world);
-        for (const auto& e : world.elements()) {
-            if (!e.alive) continue;
-            if (e.kind == kinds::mesh) {
-                draw_crate(e);
-            } else if (e.kind == kinds::light) {
-                draw_lamp(world, e);
+            // The virtual camera stands behind the far room's wall - that is
+            // what a portal is - so the near plane is pushed out to the far
+            // doorway. Everything between, the wall included, is clipped away.
+            const Camera guest_cam = camera_of(*wp.world);
+            const Element* back = back_portal(*wp.world, world);
+            float znear = 0.05f;
+            if (back) {
+                const float along = gl::dot(to_vec3(position_of(*back)) - guest_cam.eye,
+                                            gl::normalize(guest_cam.forward));
+                znear = std::max(0.05f, along + 0.02f);
             }
+            draw_world(*wp.world, guest_cam, aspect, wp.target, /*depth=*/1, znear,
+                       back ? back->id : Key{});
         }
-        for (const auto& e : world.elements())
-            if (e.kind == kinds::portal && e.alive) draw_portal(e);
 
-        // --- post -------------------------------------------------------------
+        // --- the room the viewer is actually standing in ------------------------
+        draw_world(world, eye_cam, aspect, scene_target_, /*depth=*/0, 0.05f);
+
         scene_target_.blit_to(resolve_);
         run_bloom();
         composite(fb_w, fb_h);
@@ -132,6 +103,12 @@ public:
     }
 
 private:
+    struct Camera {
+        gl::Vec3 eye;
+        gl::Vec3 forward{0, 0, -1};
+        float fov = 1.2f;
+    };
+
     struct Light {
         gl::Vec3 pos{0, 3, 0};
         gl::Vec3 dir{0, -1, 0};
@@ -141,11 +118,26 @@ private:
         float outer = 1.15f;
     };
 
-    struct Bound {
+    struct BoundSurface {
         Surface2D* surface = nullptr;
         gl::Texture texture;
         uint64_t revision = 0;
     };
+
+    struct WorldPortal {
+        Spatial3D* world = nullptr;
+        gl::RenderTarget target;
+        int width = 0, height = 0;
+    };
+
+    static Camera camera_of(Spatial3D& world) {
+        const Element& cam = world.camera();
+        Camera c;
+        c.eye = to_vec3(position_of(cam));
+        c.forward = to_vec3(forward_of(cam));
+        c.fov = static_cast<float>(cam.params.num(keys::fov, 70.0)) * 3.14159265f / 180.0f;
+        return c;
+    }
 
     static gl::Vec3 to_vec3(const Vec3d& v) {
         return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
@@ -199,6 +191,105 @@ private:
         return l;
     }
 
+    // The doorway in `guest` that leads back to `host` - the one being looked
+    // through. Its plane is where the portal view has to start, or the wall it
+    // is set into hides everything; and it must not be drawn in that view, or
+    // seen from the virtual camera it fills the whole frame.
+    const Element* back_portal(Spatial3D& guest, Spatial3D& host) const {
+        for (const auto& e : guest.elements()) {
+            if (e.kind != kinds::portal || !e.alive) continue;
+            auto it = worlds_.find(e.id);
+            if (it != worlds_.end() && it->second.world == &host) return &e;
+        }
+        return nullptr;
+    }
+
+    // Shadow pass plus scene pass for one room, into one target. `depth` is the
+    // portal recursion level: a room seen through a window does not itself open
+    // further windows.
+
+    void draw_world(Spatial3D& world, const Camera& cam, float aspect, gl::RenderTarget& target,
+                    int depth, float znear, Key skip_portal = Key{}) {
+        const Light light = read_light(world);
+        const gl::Mat4 light_vp = gl::Mat4::perspective(light.outer * 2.05f, 1.0f, 0.35f, 60.0f) *
+                                  gl::Mat4::look_at(light.pos, light.pos + light.dir, {0, 0, 1});
+        const gl::Mat4 view_proj =
+            gl::Mat4::perspective(cam.fov, aspect, znear, 120.0f) *
+            gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, {0, 1, 0});
+
+        // --- shadow depth --------------------------------------------------
+        shadow_.bind();
+        gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
+        gl::glEnable(gl::GL_DEPTH_TEST);
+        gl::glEnable(gl::GL_CULL_FACE);
+        gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
+        depth_.use();
+        depth_.set("uLightViewProj", light_vp);
+        for (const auto& e : world.elements()) {
+            if (!e.alive) continue;
+            if (e.kind == kinds::mesh) {
+                depth_.set("uModel", box_model(e));
+                cube_.draw();
+            } else if (e.kind == kinds::portal && !is_doorway(e)) {
+                depth_.set("uModel", portal_frame_model(e));
+                cube_.draw();
+            }
+        }
+        gl::glCullFace(gl::GL_BACK);
+
+        // --- the scene -------------------------------------------------------
+        target.bind();
+        gl::glClearColor(0.012f, 0.014f, 0.022f, 1.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+        gl::glEnable(gl::GL_DEPTH_TEST);
+        gl::glDepthFunc(gl::GL_LESS);
+        gl::glEnable(gl::GL_MULTISAMPLE);
+        gl::glDisable(gl::GL_CULL_FACE);
+
+        scene_.use();
+        scene_.set("uViewProj", view_proj);
+        scene_.set("uLightViewProj", light_vp);
+        scene_.set("uLightPos", light.pos);
+        scene_.set("uLightDir", light.dir);
+        scene_.set("uLightColor", light.color);
+        scene_.set("uLightPower", light.power);
+        scene_.set("uCosInner", std::cos(light.inner));
+        scene_.set("uCosOuter", std::cos(light.outer));
+        scene_.set("uViewPos", cam.eye);
+        scene_.set("uFogColor", gl::Vec3{0.05f, 0.06f, 0.09f});
+        scene_.set("uFogDensity", 0.018f);
+        scene_.set("uShadowTexel", 1.0f / static_cast<float>(shadow_.size()),
+                   1.0f / static_cast<float>(shadow_.size()));
+        scene_.set("uShadowMap", 1);
+        scene_.set("uTex", 0);
+        scene_.set("uScreenUV", 0.0f);
+        scene_.set("uViewport", static_cast<float>(target.width()),
+                   static_cast<float>(target.height()));
+        shadow_.bind_depth(1);
+
+        draw_room(world);
+        for (const auto& e : world.elements()) {
+            if (!e.alive) continue;
+            if (e.kind == kinds::mesh) {
+                draw_crate(e);
+            } else if (e.kind == kinds::light) {
+                draw_lamp(world, e);
+            }
+        }
+        for (const auto& e : world.elements()) {
+            if (e.kind != kinds::portal || !e.alive) continue;
+            if (!skip_portal.empty() && e.id == skip_portal) continue;  // looked through
+            draw_portal(e, depth, target);
+        }
+    }
+
+    // A doorway (a portal bound to another room) has no solid frame in the
+    // shadow pass: light should pass between the rooms.
+    bool is_doorway(const Element& e) const {
+        auto it = worlds_.find(e.id);
+        return it != worlds_.end() && it->second.world != nullptr;
+    }
+
     gl::Mat4 box_model(const Element& e) const {
         const gl::Vec3 s{static_cast<float>(e.params.num(keys::sx, 1.0)),
                          static_cast<float>(e.params.num(keys::sy, 1.0)),
@@ -238,21 +329,25 @@ private:
         const float d = static_cast<float>(world.params().num(Key{"room_d"}, 12.0));
         const float h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
         const float t = 0.25f;
+        const gl::Vec3 floor_c{static_cast<float>(world.params().num(Key{"floor_r"}, 0.42)),
+                               static_cast<float>(world.params().num(Key{"floor_g"}, 0.39)),
+                               static_cast<float>(world.params().num(Key{"floor_b"}, 0.36))};
+        const gl::Vec3 wall_c{static_cast<float>(world.params().num(Key{"wall_r"}, 0.52)),
+                              static_cast<float>(world.params().num(Key{"wall_g"}, 0.50)),
+                              static_cast<float>(world.params().num(Key{"wall_b"}, 0.48))};
 
         draw_solid(gl::Mat4::translate({w / 2, -t / 2, d / 2}) * gl::Mat4::scale({w, t, d}),
-                   {0.42f, 0.39f, 0.36f}, 0.55f, 1.0f);
+                   floor_c, 0.55f, 1.0f);
         draw_solid(gl::Mat4::translate({w / 2, h + t / 2, d / 2}) * gl::Mat4::scale({w, t, d}),
-                   {0.26f, 0.26f, 0.29f}, 0.95f, 2.0f);
-        draw_solid(gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
-                   {0.52f, 0.50f, 0.48f}, 0.9f, 2.0f);
-        draw_solid(gl::Mat4::translate({w + t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
-                   {0.52f, 0.50f, 0.48f}, 0.9f, 2.0f);
-        draw_solid(gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}),
-                   {0.50f, 0.48f, 0.47f}, 0.9f, 2.0f);
-        draw_solid(gl::Mat4::translate({w / 2, h / 2, d + t / 2}) * gl::Mat4::scale({w, h, t}),
-                   {0.50f, 0.48f, 0.47f}, 0.9f, 2.0f);
+                   wall_c * 0.5f, 0.95f, 2.0f);
+        draw_wall(gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}), wall_c);
+        draw_wall(gl::Mat4::translate({w + t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d}),
+                  wall_c);
+        draw_wall(gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t}), wall_c);
+        draw_wall(gl::Mat4::translate({w / 2, h / 2, d + t / 2}) * gl::Mat4::scale({w, h, t}),
+                  wall_c);
 
-        // A skirting board around the floor: cheap, and it sells the scale.
+        // Skirting board: cheap, and it sells the scale.
         const float sh = 0.16f;
         const gl::Vec3 trim{0.20f, 0.18f, 0.17f};
         draw_solid(gl::Mat4::translate({w / 2, sh / 2, 0.06f}) * gl::Mat4::scale({w, sh, 0.12f}),
@@ -267,6 +362,10 @@ private:
                    trim, 0.7f, 0.0f);
     }
 
+    void draw_wall(const gl::Mat4& model, const gl::Vec3& color) {
+        draw_solid(model, color, 0.9f, 2.0f);
+    }
+
     void draw_crate(const Element& e) {
         draw_solid(box_model(e), color_of(e, {0.8f, 0.5f, 0.25f}),
                    static_cast<float>(e.params.num(Key{"roughness"}, 0.6)), 3.0f, 0.0f,
@@ -278,7 +377,6 @@ private:
         const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
         const float room_h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
 
-        // Shade, bulb, and the flex up to the ceiling.
         draw_solid(gl::Mat4::translate({pos.x, pos.y + 0.12f, pos.z}) *
                        gl::Mat4::scale({0.62f, 0.22f, 0.62f}),
                    {0.12f, 0.11f, 0.10f}, 0.4f, 0.0f);
@@ -290,23 +388,86 @@ private:
                    {0.09f, 0.09f, 0.10f}, 0.8f, 0.0f);
     }
 
-    void draw_portal(const Element& e) {
-        auto it = surfaces_.find(e.id);
-        if (it == surfaces_.end() || !it->second.surface) return;
-        Bound& bound = it->second;
-        Surface2D& surf = *bound.surface;
-
+    void draw_portal(const Element& e, int depth, const gl::RenderTarget& target) {
         const gl::Vec3 pos = to_vec3(position_of(e));
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
         const float yaw = static_cast<float>(e.params.num(keys::yaw));
         const bool open = e.params.get_or<bool>(keys::open, false);
+        const gl::Vec3 n{std::sin(yaw), 0.0f, std::cos(yaw)};
 
-        // Frame first, so the map reads as an object hanging on the wall.
-        draw_solid(portal_frame_model(e), {0.14f, 0.11f, 0.08f}, 0.65f, 0.0f, 0.0f,
-                   (open || e.id == highlight_) ? 1.0f : 0.0f);
+        auto world_it = worlds_.find(e.id);
+        const bool is_window = world_it != worlds_.end() && world_it->second.world != nullptr;
 
-        // The surface only re-uploads when its raster actually changed.
+        const float hi = (open || e.id == highlight_) ? 1.0f : 0.0f;
+        if (is_window) {
+            // A doorway is cased on four sides, never backed: the opening has to
+            // stay clear or there is nothing to see through.
+            const gl::Vec3 casing{0.24f, 0.22f, 0.20f};
+            const float t = 0.22f, d = 0.34f;
+            const gl::Vec3 tangent{std::cos(yaw), 0.0f, -std::sin(yaw)};
+            const gl::Mat4 rot = gl::Mat4::rotate_y(yaw);
+            draw_solid(gl::Mat4::translate(pos + tangent * (w * 0.5f + t * 0.5f)) * rot *
+                           gl::Mat4::scale({t, h + 2 * t, d}),
+                       casing, 0.6f, 0.0f, 0.0f, hi);
+            draw_solid(gl::Mat4::translate(pos - tangent * (w * 0.5f + t * 0.5f)) * rot *
+                           gl::Mat4::scale({t, h + 2 * t, d}),
+                       casing, 0.6f, 0.0f, 0.0f, hi);
+            draw_solid(gl::Mat4::translate(pos + gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
+                           gl::Mat4::scale({w + 2 * t, t, d}),
+                       casing, 0.6f, 0.0f, 0.0f, hi);
+            draw_solid(gl::Mat4::translate(pos - gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
+                           gl::Mat4::scale({w + 2 * t, t, d}),
+                       casing, 0.6f, 0.0f, 0.0f, hi);
+        } else {
+            // A panel hangs on the wall, so it keeps its backing frame.
+            draw_solid(gl::Mat4::translate(pos) * gl::Mat4::rotate_y(yaw) *
+                           gl::Mat4::scale({w + 0.3f, h + 0.3f, 0.12f}),
+                       {0.14f, 0.11f, 0.08f}, 0.6f, 0.0f, 0.0f, hi);
+        }
+
+        if (is_window) {
+            WorldPortal& wp = world_it->second;
+            if (depth > 0 || !wp.target.valid()) {
+                // One level deep: a window seen through a window is just glass.
+                scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) *
+                                         gl::Mat4::rotate_y(yaw) * gl::Mat4::scale({w, h, 1.0f}));
+                scene_.set("uAlbedo", gl::Vec3{0.05f, 0.06f, 0.08f});
+                scene_.set("uRoughness", 0.25f);
+                scene_.set("uSurface", 0.0f);
+                scene_.set("uEmissive", 0.0f);
+                scene_.set("uHighlight", 0.0f);
+                scene_.set("uTexMix", 0.0f);
+                scene_.set("uGlow", 0.0f);
+                quad_.draw();
+                return;
+            }
+            // The far room, sampled in screen space: a hole in the wall.
+            wp.target.bind_color(0);
+            scene_.set("uModel", gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
+                                     gl::Mat4::scale({w, h, 1.0f}));
+            scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
+            scene_.set("uRoughness", 1.0f);
+            scene_.set("uSurface", 0.0f);
+            scene_.set("uEmissive", 1.0f);  // the far room arrives already lit
+            scene_.set("uHighlight", 0.0f);
+            scene_.set("uTexMix", 1.0f);
+            scene_.set("uGlow", 0.0f);
+            scene_.set("uScreenUV", 1.0f);
+            scene_.set("uViewport", static_cast<float>(target.width()),
+                       static_cast<float>(target.height()));
+            quad_.draw();
+            scene_.set("uScreenUV", 0.0f);
+            scene_.set("uTexMix", 0.0f);
+            scene_.set("uEmissive", 0.0f);
+            return;
+        }
+
+        auto it = surfaces_.find(e.id);
+        if (it == surfaces_.end() || !it->second.surface) return;
+        BoundSurface& bound = it->second;
+        Surface2D& surf = *bound.surface;
+
         const auto& pixels = surf.raster();
         if (!bound.texture.valid()) bound.texture.create(surf.px_w(), surf.px_h());
         if (bound.revision != surf.revision()) {
@@ -315,7 +476,6 @@ private:
         }
         bound.texture.bind(0);
 
-        const gl::Vec3 n{std::sin(yaw), 0.0f, std::cos(yaw)};
         scene_.set("uModel", gl::Mat4::translate(pos + n * 0.055f) * gl::Mat4::rotate_y(yaw) *
                                  gl::Mat4::scale({w, h, 1.0f}));
         scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
@@ -384,7 +544,8 @@ private:
     gl::ShadowMap shadow_;
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
 
-    std::unordered_map<Key, Bound> surfaces_;
+    std::unordered_map<Key, BoundSurface> surfaces_;
+    std::unordered_map<Key, WorldPortal> worlds_;
     Key highlight_;
 };
 

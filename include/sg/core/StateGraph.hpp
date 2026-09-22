@@ -277,6 +277,12 @@ public:
                 errors.push_back("embedding " + e.name.str() + ": unknown guest " + e.guest.str());
             if (e.host == e.guest)
                 errors.push_back("embedding " + e.name.str() + ": a state cannot embed itself");
+            if (e.sync == EmbedSync::View && e.in.empty())
+                errors.push_back("embedding " + e.name.str() +
+                                 ": a View portal needs an `in` functor to refresh the guest");
+            if (e.sync == EmbedSync::View && !e.out.empty())
+                errors.push_back("embedding " + e.name.str() +
+                                 ": a View portal is read-only, so `out` never runs");
             check_portal_functor(errors, e, e.in, e.host, e.guest);
             check_portal_functor(errors, e, e.out, e.guest, e.host);
         }

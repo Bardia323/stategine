@@ -47,7 +47,44 @@ not a renderer feature:
 
 ![The same room with the lamp dimmed](docs/images/dim.png)
 
-Every image above is reproducible: `./build/sg_room3d 45 out.ppm <room|approach|open|before|after|dim>`.
+## The second room, and the doorway between them
+
+The other wall has a doorway. Behind it is a **different state** - its own
+coordinates, its own shape, its own light, nothing shared with the first room
+but the portal that joins them:
+
+| Looking through | Standing in it |
+| --- | --- |
+| ![The doorway, with the second room visible through it](docs/images/doorway.png) | ![Inside the second room: a pillared hall lit cold, with a monolith at the end](docs/images/lab.png) |
+
+It is the same construction as the map, with the third sync mode:
+
+```cpp
+// one transform: rotate by the difference between the doorway yaws, translate
+// into the far doorway's frame. It carries a pose from one room's space to the
+// other's, and it is its own inverse in the other direction.
+graph.add_functor("peek_lab", "room", "lab")
+     .on_object(camera_id(), camera_id(),
+                sg::portal_carry(room.element("door_to_lab"), lab.element("door_to_room")));
+
+// View: `in` runs every frame, nothing ever comes back. The far room's camera
+// IS the window's camera, so the renderer does no portal maths at all.
+graph.embed("window_to_lab", "room", "door_to_lab", "lab", "peek_lab", {},
+            sg::EmbedSync::View);
+
+// walking through is the same functor, taken as a transition
+graph.connect("room", "step_through", "lab").functor = "peek_lab";
+```
+
+That is the whole doorway. The window and the walk-through cannot disagree,
+because they are the same arrow used twice: once per frame to aim a camera, once
+to move the player between states. The renderer's only job is
+`view.bind_world("door_to_lab", &lab)` - draw that state into this portal.
+
+Walk into it and you are in the other room, with the first one visible through
+the doorway behind you.
+
+Every image above is reproducible: `./build/sg_room3d 45 out.ppm <room|approach|open|before|after|dim|doorway|lab>`.
 
 ## Layout
 
@@ -189,10 +226,12 @@ graph.embed("wall_map", "room", "wall_map", "wallmap", "collapse", "stamp",
             sg::EmbedSync::Live);
 ```
 
-* `EmbedSync::Live` - `stamp` runs every frame: move a token on the map and the
+* `EmbedSync::Live` - `out` runs every frame: move a token on the map and the
   crate in the room moves with it, in the same frame.
-* `EmbedSync::Commit` - `stamp` runs on close, so `close_embed(name, false)` is
+* `EmbedSync::Commit` - `out` runs on close, so `close_embed(name, false)` is
   a cancel button.
+* `EmbedSync::View` - `in` runs every frame and nothing comes back: a read-only
+  window, which is what a doorway into another room is.
 
 Open and close with `engine.open_embed(name)` / `engine.close_embed(name)`, or
 by firing `embed.open` / `embed.close` with a `name` argument. While a portal
@@ -203,12 +242,18 @@ that is. Portals nest: a guest may host a portal of its own.
 
 `sg::render::GLWorldView` draws any `Spatial3D`. Per frame:
 
-1. depth-only shadow pass from the lamp (spot light, 2048² map)
-2. scene into a multisampled RGBA16F target: spot lighting with 4x4 PCF
+1. one pass per open doorway: the far room, rendered from its own camera, with
+   the near plane pushed out to its doorway (the virtual camera stands behind
+   that room's wall) and that doorway skipped, or it would fill the frame
+2. depth-only shadow pass from the lamp (spot light, 2048² map)
+3. scene into a multisampled RGBA16F target: spot lighting with 4x4 PCF
    shadows, hemispheric ambient, a GGX-ish specular lobe, procedural floor
    tiles / wall plaster / crate planks, distance fog
-3. resolve, bright pass, separable gaussian blur at half resolution
-4. ACES tonemap with bloom, vignette, grain and a light FXAA
+4. resolve, bright pass, separable gaussian blur at half resolution
+5. ACES tonemap with bloom, vignette, grain and a light FXAA
+
+A portal quad samples its room's texture in **screen space**, so it reads as a
+hole in the wall rather than a picture of one.
 
 Quality knobs live in `sg::render::GLQuality` (shadow size, MSAA, bloom
 strength/threshold/passes, exposure). Elements decide their own look through
@@ -239,8 +284,8 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | --- | --- |
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
-| `sg_room3d` | **the real one**: a lit OpenGL room with a map on the wall you walk up to and use |
-| `sg_tests` | 63 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_room3d` | **the real one**: two lit OpenGL rooms, a map on the wall, and a doorway you can see through and walk through |
+| `sg_tests` | 76 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build
@@ -264,6 +309,7 @@ E         use the map     while standing in front of it
 Tab       select token    while the map is open
 C         cancel          close the map, discarding the edits
 Q / R     slide the lamp  F  dim / brighten
+doorway   walk into it
 ```
 
 Walk to the wall, press `E`, push a token one cell with `D`: the crate it stands

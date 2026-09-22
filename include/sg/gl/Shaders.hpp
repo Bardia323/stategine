@@ -68,6 +68,12 @@ uniform sampler2DShadow uShadowMap;
 uniform sampler2D uTex;
 uniform vec2 uShadowTexel;
 
+// A portal into another room is sampled in screen space: the other side was
+// rendered with the matching virtual camera, so the quad becomes a window
+// rather than a picture hanging on the wall.
+uniform float uScreenUV;
+uniform vec2  uViewport;
+
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
 float noise(vec2 p) {
@@ -125,7 +131,10 @@ vec3 surface_albedo(out float rough_mod) {
 void main() {
     float rough_mod;
     vec3 albedo = surface_albedo(rough_mod);
-    if (uTexMix > 0.0) albedo = mix(albedo, texture(uTex, vUV).rgb, uTexMix);
+    if (uTexMix > 0.0) {
+        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : vUV;
+        albedo = mix(albedo, texture(uTex, uv).rgb, uTexMix);
+    }
     float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
 
     vec3 n = normalize(vNormal);

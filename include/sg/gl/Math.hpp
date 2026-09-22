@@ -23,6 +23,13 @@ inline Vec3 cross(const Vec3& a, const Vec3& b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
 
+// Rotate a vector about the vertical axis. Portals are hinged that way: the
+// step from one doorway into another is a yaw difference and a translation.
+inline Vec3 rotate_y(const Vec3& v, float a) {
+    const float c = std::cos(a), s = std::sin(a);
+    return {v.x * c + v.z * s, v.y, -v.x * s + v.z * c};
+}
+
 inline Vec3 normalize(const Vec3& v) {
     const float len = std::sqrt(dot(v, v));
     return len > 1e-8f ? v * (1.0f / len) : Vec3{};

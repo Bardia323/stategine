@@ -190,11 +190,14 @@ private:
     }
 
     // Guests of the active host tick after it. Live embeddings write back every
-    // frame; Commit ones wait for close_embed.
+    // frame, Commit ones wait for close_embed, and View ones are refreshed from
+    // the host instead - nothing they do reaches back.
     void step_embeddings(State& host, const Tick& t) {
         for (Embedding* e : graph_.embeddings_of(host.id())) {
             if (!e->open) continue;
             State& guest = graph_.state(e->guest);
+            if (e->sync == EmbedSync::View && !e->in.empty())
+                if (const Functor* f = graph_.functor(e->in)) f->apply(host, guest);
             guest.step(t);
             if (e->sync == EmbedSync::Live && !e->out.empty())
                 if (const Functor* f = graph_.functor(e->out)) f->apply(guest, host);

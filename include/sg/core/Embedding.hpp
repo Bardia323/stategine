@@ -9,9 +9,13 @@
 //   out : guest -> host    what edits inside the guest do to the host
 //
 // `out . in` is the round trip; when it is the identity the portal is a
-// lossless view. Sync decides when `out` runs: every frame (Live) or once on
-// close (Commit), which makes a portal transactional - cancel by closing
-// without committing.
+// lossless view. Sync decides which direction runs when:
+//
+//   Live    out every frame - an editable mirror (a map that moves the crates)
+//   Commit  out on close     - a transactional editor (cancel by not committing)
+//   View    in every frame   - a read-only window (a doorway into another room,
+//                              where `in` carries the viewer's pose through the
+//                              portal and becomes the guest's camera)
 #pragma once
 
 #include <string>
@@ -22,7 +26,8 @@ namespace sg {
 
 enum class EmbedSync {
     Live,   // out runs every frame: host and guest stay in lockstep
-    Commit  // out runs on close: edits land only when the portal is confirmed
+    Commit, // out runs on close: edits land only when the portal is confirmed
+    View    // in runs every frame, out never: a read-only window into the guest
 };
 
 struct Embedding {

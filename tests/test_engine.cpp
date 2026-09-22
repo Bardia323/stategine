@@ -18,6 +18,9 @@ void check(bool ok, const std::string& what) {
 
 bool near(double a, double b) { return std::fabs(a - b) < 1e-9; }
 
+// Geometry goes through trig, so it is compared with a tolerance.
+bool roughly(double a, double b) { return std::fabs(a - b) < 1e-5; }
+
 // --- core -------------------------------------------------------------------
 void test_keys_and_params() {
     const sg::Key a{"velocity"};
@@ -338,6 +341,93 @@ void test_embedding() {
     check(seen == 1, "input is routed to the focused guest");
 }
 
+// --- portals between 3D states --------------------------------------------------
+void test_portal_transform() {
+    sg::Spatial3D a("a"), b("b");
+    // Two doorways facing different ways, in rooms with unrelated coordinates.
+    a.portal("door_a", {14.0, 1.5, 6.0}, 2.4, 3.0, -1.5707963);  // faces -x
+    b.portal("door_b", {4.5, 1.5, 0.0}, 2.4, 3.0, 0.0);          // faces +z
+
+    // Standing 4m in front of door A, looking straight at it.
+    const sg::Pose there =
+        sg::through_portal(a.element("door_a"), b.element("door_b"), {10.0, 1.7, 6.0}, 0.0);
+    check(roughly(there.position.x, 4.5) && roughly(there.position.z, -4.0),
+          "the pose lands 4m behind the far doorway");
+    sg::Element probe("tmp", "camera");
+    probe.params.set(sg::keys::yaw, there.yaw);
+    const sg::Vec3d f = sg::forward_of(probe);
+    check(roughly(f.x, 0.0) && f.z > 0.99, "and faces through it, into the far room");
+
+    // The two directions are inverse: there and back is the identity.
+    const sg::Pose back =
+        sg::through_portal(b.element("door_b"), a.element("door_a"), there.position, there.yaw);
+    check(roughly(back.position.x, 10.0) && roughly(back.position.z, 6.0),
+          "carrying back through returns the original position");
+
+    // Crossing is front-to-back through the opening only.
+    const sg::Element& door = a.element("door_a");
+    check(sg::crossed_portal(door, {13.0, 1.7, 6.0}, {14.5, 1.7, 6.0}), "walking in crosses");
+    check(!sg::crossed_portal(door, {14.5, 1.7, 6.0}, {13.0, 1.7, 6.0}),
+          "walking the other way does not");
+    check(!sg::crossed_portal(door, {13.0, 1.7, 9.5}, {14.5, 1.7, 9.5}),
+          "missing the opening does not");
+}
+
+void test_view_portal() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    auto& lab = g.add<sg::Spatial3D>("lab");
+    room.portal("door_out", {14.0, 1.5, 6.0}, 2.4, 3.0, -1.5707963);
+    lab.portal("door_in", {4.5, 1.5, 0.0}, 2.4, 3.0, 0.0);
+    room.camera().params.set(sg::keys::x, 10.0).set(sg::keys::y, 1.7).set(sg::keys::z, 6.0);
+
+    g.add_functor("peek", "room", "lab")
+        .on_object(sg::SpatialState::camera_id(), sg::SpatialState::camera_id(),
+                   sg::portal_carry(room.element("door_out"), lab.element("door_in")));
+    g.embed("window", "room", "door_out", "lab", "peek", sg::Key{}, sg::EmbedSync::View);
+    g.connect("room", "step_through", "lab").functor = "peek";
+    g.set_initial("room");
+    check(g.validate().empty(), "a View portal validates");
+
+    sg::Engine e(g);
+    e.start();
+    e.open_embed("window");
+    e.tick(0.016);
+    check(roughly(lab.camera().params.num(sg::keys::x), 4.5) &&
+              roughly(lab.camera().params.num(sg::keys::z), -4.0),
+          "View refreshes the guest camera every frame");
+
+    // Move in the host: the guest's camera follows, with no edit coming back.
+    room.camera().params.set(sg::keys::x, 12.0);
+    lab.add_element("scribble", "mesh");
+    e.tick(0.016);
+    check(roughly(lab.camera().params.num(sg::keys::x), 4.5) &&
+              roughly(lab.camera().params.num(sg::keys::z), -2.0),
+          "the window tracks the viewer");
+    check(room.find("scribble") == nullptr, "a View portal never writes back");
+
+    // The same functor, taken as a transition, is walking through the doorway.
+    e.fire("step_through");
+    e.tick(0.016);
+    check(e.current()->id() == sg::Key{"lab"}, "stepping through changes state");
+    check(roughly(lab.camera().params.num(sg::keys::z), -2.0),
+          "and carries the camera with it");
+}
+
+void test_view_portal_validation() {
+    sg::StateGraph g;
+    g.add<sg::Spatial3D>("a");
+    g.add<sg::Spatial3D>("b");
+    g.state("a").add_element("door", sg::kinds::portal);
+    g.set_initial("a");
+    g.embed("no_in", "a", "door", "b", sg::Key{}, sg::Key{}, sg::EmbedSync::View);
+    const auto errors = g.validate();
+    bool found = false;
+    for (const auto& e : errors)
+        if (e.find("needs an `in` functor") != std::string::npos) found = true;
+    check(found, "a View portal without `in` is rejected");
+}
+
 void test_graph_analysis() {
     sg::StateGraph g;
     g.add<sg::Spatial2D>("start");
@@ -385,6 +475,9 @@ int main() {
     test_functor_composition();
     test_lens();
     test_embedding();
+    test_portal_transform();
+    test_view_portal();
+    test_view_portal_validation();
     test_graph_analysis();
     test_surface_and_views();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
