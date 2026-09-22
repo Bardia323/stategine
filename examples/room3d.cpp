@@ -86,6 +86,47 @@ sg::Pose station_pose(double station) {
     }
 }
 
+// The door map is a picture of the hall's outline: a 5x5 board whose twelve
+// non-corner border cells are the twelve stations, three to a side. That is
+// not decoration - the stations form a ring, and the border of a grid is a
+// ring, so cells that are neighbours on the map are neighbours on the wall.
+// A rectangle of slots would have had interior cells that are nowhere, and
+// edges that run off one row onto the next.
+constexpr int kMapSide = 5;
+
+struct Cell {
+    int x, y;
+};
+
+Cell station_cell(double station) {
+    const int st = ((static_cast<int>(std::lround(station)) % kStations) + kStations) % kStations;
+    const int side = st / 3, i = st % 3;
+    switch (side) {
+        case 0: return {i + 1, 0};                  // north, left to right
+        case 1: return {kMapSide - 1, i + 1};       // east, top to bottom
+        case 2: return {kMapSide - 2 - i, kMapSide - 1};  // south, right to left
+        default: return {0, kMapSide - 2 - i};      // west, bottom to top
+    }
+}
+
+// Only the twelve border cells are stations; corners are where walls meet and
+// the middle is the room itself. Anything else is not a place a door can be.
+bool cell_station(int cx, int cy, double& station) {
+    const int last = kMapSide - 1;
+    if (cy == 0 && cx >= 1 && cx <= last - 1) {
+        station = cx - 1;
+    } else if (cx == last && cy >= 1 && cy <= last - 1) {
+        station = 3 + (cy - 1);
+    } else if (cy == last && cx >= 1 && cx <= last - 1) {
+        station = 6 + (last - 1 - cx);
+    } else if (cx == 0 && cy >= 1 && cy <= last - 1) {
+        station = 9 + (last - 1 - cy);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 // The hall's perimeter walls are rebuilt around wherever the doorway is: on
 // the side that holds it, two segments and a lintel; on the others, one solid
 // run. Called from a morphism, so the wall segments really are downstream of
@@ -218,7 +259,7 @@ int main(int argc, char** argv) {
         p.params.set(sg::keys::r, 0.30).set(sg::keys::g, 0.55).set(sg::keys::b, 0.62);
         p.params.set("roughness", 0.4);
     }
-    sg::Element& monolith = annex.mesh("monolith", kAnnexW * 0.5, 0.0, kAnnexD - 2.2);
+    sg::Element& monolith = annex.mesh("monolith", 2.0, 0.0, kAnnexD - 2.4);
     monolith.params.set(sg::keys::sx, 1.4).set(sg::keys::sy, 2.4).set(sg::keys::sz, 0.5);
     monolith.params.set(sg::keys::r, 0.25).set(sg::keys::g, 0.85).set(sg::keys::b, 0.75);
     monolith.params.set("roughness", 0.2);
@@ -272,24 +313,47 @@ int main(int argc, char** argv) {
     // related to the hall through it, so moving this token rearranges which
     // edge of the hall the annex meets - without the annex's own coordinates
     // changing by a millimetre.
-    auto& door_map = graph.add<sg::Surface2D>("doormap", 4, 3, 56);
-    door_map.set_background(26, 20, 16);
-    sg::Element& door_tok = door_map.sprite("door_tok", 0, 1);
+    auto& door_map = graph.add<sg::Surface2D>("doormap", kMapSide, kMapSide, 40);
+    door_map.set_background(18, 15, 13);
+
+    // The board: the hall's floor in the middle, wall joints at the corners,
+    // and a slot for every place the doorway can sit.
+    for (int cy = 0; cy < kMapSide; ++cy) {
+        for (int cx = 0; cx < kMapSide; ++cx) {
+            double st = 0;
+            const bool slot = cell_station(cx, cy, st);
+            const bool border = (cx == 0 || cy == 0 || cx == kMapSide - 1 || cy == kMapSide - 1);
+            sg::Element& t = door_map.add_element(
+                sg::Key{"tile_" + std::to_string(cx) + "_" + std::to_string(cy)}, sg::kinds::tile);
+            t.params.set(sg::keys::x, static_cast<double>(cx));
+            t.params.set(sg::keys::y, static_cast<double>(cy));
+            if (slot) {
+                t.params.set(sg::keys::r, 0.36).set(sg::keys::g, 0.30).set(sg::keys::b, 0.22);
+            } else if (border) {
+                t.params.set(sg::keys::r, 0.13).set(sg::keys::g, 0.12).set(sg::keys::b, 0.11);
+            } else {
+                t.params.set(sg::keys::r, 0.19).set(sg::keys::g, 0.20).set(sg::keys::b, 0.23);
+            }
+        }
+    }
+
+    const Cell start_cell = station_cell(4);
+    sg::Element& door_tok = door_map.sprite("door_tok", start_cell.x, start_cell.y);
     door_tok.params.set(sg::keys::r, 0.95).set(sg::keys::g, 0.72).set(sg::keys::b, 0.3);
     door_map.set_selection("door_tok");
 
-    // A 4x3 grid read as a ring of 12 stations: cell -> station -> pose.
-    auto cell_to_station = [](double cx, double cy) { return cy * 4.0 + cx; };
     graph.add_lens(
         "door_to_map", "map_to_door", "hall", "doormap", {{"door", "door_tok"}},
         [](const sg::Element& d, sg::Element& tok) {
-            const double st = d.params.num("station");
-            tok.params.set(sg::keys::x, std::fmod(st, 4.0));
-            tok.params.set(sg::keys::y, std::floor(st / 4.0));
+            const Cell c = station_cell(d.params.num("station"));
+            tok.params.set(sg::keys::x, static_cast<double>(c.x));
+            tok.params.set(sg::keys::y, static_cast<double>(c.y));
         },
-        [cell_to_station](const sg::Element& tok, sg::Element& d) {
-            const double st =
-                cell_to_station(tok.params.num(sg::keys::x), tok.params.num(sg::keys::y));
+        [](const sg::Element& tok, sg::Element& d) {
+            double st = 0;
+            if (!cell_station(static_cast<int>(std::lround(tok.params.num(sg::keys::x))),
+                              static_cast<int>(std::lround(tok.params.num(sg::keys::y))), st))
+                return;  // not a place a doorway can be
             if (std::fabs(st - d.params.num("station")) < 1e-9) return;
             d.params.set("station", st);
             const sg::Pose p = station_pose(st);
@@ -370,7 +434,7 @@ int main(int argc, char** argv) {
             pose_in(hall, kHallW - 5.5, kHallD * 0.5, 0.0, -0.02);
         } else if (shot == "annex") {
             go_to_annex();
-            pose_in(annex, kAnnexW * 0.5, kAnnexD - 3.6, 1.5707963, -0.02);
+            pose_in(annex, kAnnexW * 0.5, kAnnexD - 2.8, 1.5707963, -0.02);
         } else if (shot == "east" || shot == "south" || shot == "north") {
             // The same view from inside the annex, looking back through its
             // doorway, with the hall met along a different edge each time.
@@ -431,25 +495,38 @@ int main(int argc, char** argv) {
             if (const sg::Element* d = here->find("door")) {
                 if (sg::crossed_portal(*d, from, to)) engine.fire("step_through");
             }
-        } else {
-            sg::Surface2D& surf = crate_open ? crate_map : door_map;
-            const sg::Key tok_id =
-                crate_open ? sg::Key{crates[sel].id.str() + "_tok"} : sg::Key{"door_tok"};
-            const int cols = crate_open ? kCols : 4;
-            const int rows = crate_open ? kRows : 3;
-            sg::Element& tok = surf.element(tok_id);
+        } else if (crate_open) {
+            // The crate map is a floor plan, so its token moves on a grid.
+            sg::Element& tok = crate_map.element(sg::Key{crates[sel].id.str() + "_tok"});
             double dx = 0, dy = 0;
             if (window.pressed(GLFW_KEY_D)) dx += 1;
             if (window.pressed(GLFW_KEY_A)) dx -= 1;
             if (window.pressed(GLFW_KEY_S)) dy += 1;
             if (window.pressed(GLFW_KEY_W)) dy -= 1;
             if (dx != 0 || dy != 0) {
-                tok.params.set(sg::keys::x, clampd(tok.params.num(sg::keys::x) + dx, 0, cols - 1));
-                tok.params.set(sg::keys::y, clampd(tok.params.num(sg::keys::y) + dy, 0, rows - 1));
+                tok.params.set(sg::keys::x, clampd(tok.params.num(sg::keys::x) + dx, 0, kCols - 1));
+                tok.params.set(sg::keys::y, clampd(tok.params.num(sg::keys::y) + dy, 0, kRows - 1));
             }
-            if (crate_open && window.pressed(GLFW_KEY_TAB)) {
+            if (window.pressed(GLFW_KEY_TAB)) {
                 sel = (sel + 1) % crates.size();
                 crate_map.set_selection(sg::Key{crates[sel].id.str() + "_tok"});
+            }
+        } else {
+            // The door map is a ring, so its token steps around it. There is
+            // nowhere else for a doorway to be, and an interface should not
+            // offer moves its subject cannot make.
+            sg::Element& tok = door_map.element("door_tok");
+            double step = 0;
+            if (window.pressed(GLFW_KEY_D) || window.pressed(GLFW_KEY_S)) step += 1;
+            if (window.pressed(GLFW_KEY_A) || window.pressed(GLFW_KEY_W)) step -= 1;
+            if (step != 0) {
+                double st = 0;
+                if (cell_station(static_cast<int>(std::lround(tok.params.num(sg::keys::x))),
+                                 static_cast<int>(std::lround(tok.params.num(sg::keys::y))), st)) {
+                    const Cell c = station_cell(st + step);
+                    tok.params.set(sg::keys::x, static_cast<double>(c.x));
+                    tok.params.set(sg::keys::y, static_cast<double>(c.y));
+                }
             }
         }
 

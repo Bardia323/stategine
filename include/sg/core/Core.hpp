@@ -258,7 +258,7 @@ inline const Key parent{"parent"};
 
 namespace kinds {
 inline const Key sprite{"sprite"}, mesh{"mesh"}, light{"light"}, portal{"portal"};
-inline const Key wall{"wall"}, anchor{"anchor"};
+inline const Key wall{"wall"}, anchor{"anchor"}, tile{"tile"};
 inline const Key camera{"camera"}, textbuffer{"textbuffer"}, textline{"textline"};
 }  // namespace kinds
 

@@ -63,7 +63,7 @@ private:
     bool layout_changed() {
         signature_scratch_.clear();
         for (const auto& e : elements()) {
-            if (e.kind != kinds::sprite || !e.alive) continue;
+            if ((e.kind != kinds::sprite && e.kind != kinds::tile) || !e.alive) continue;
             signature_scratch_.push_back(e.params.num(keys::x));
             signature_scratch_.push_back(e.params.num(keys::y));
             signature_scratch_.push_back(e.params.num(keys::r, 0.9));
@@ -79,6 +79,23 @@ private:
 
     void redraw() {
         fill(bg_.r, bg_.g, bg_.b);
+
+        // Tiles first: they are the board, not pieces on it. A surface whose
+        // tiles are laid out like the thing it edits reads as a picture of it
+        // rather than as an arbitrary grid - and, more usefully, its
+        // neighbouring cells are the neighbouring positions.
+        for (const auto& e : elements()) {
+            if (e.kind != kinds::tile || !e.alive) continue;
+            const int cx = clampi(static_cast<int>(std::lround(e.params.num(keys::x))), 0,
+                                  cols() - 1);
+            const int cy = clampi(static_cast<int>(std::lround(e.params.num(keys::y))), 0,
+                                  rows() - 1);
+            box(cx * cell_, cy * cell_, cell_, cell_,
+                static_cast<int>(e.params.num(keys::r, 0.2) * 255),
+                static_cast<int>(e.params.num(keys::g, 0.2) * 255),
+                static_cast<int>(e.params.num(keys::b, 0.2) * 255));
+        }
+
         for (int c = 0; c <= cols(); ++c) vline(c * cell_, 60, 70, 90);
         for (int r = 0; r <= rows(); ++r) hline(r * cell_, 60, 70, 90);
 

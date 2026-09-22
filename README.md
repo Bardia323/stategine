@@ -75,6 +75,15 @@ neither:
 | --- | --- | --- |
 | ![the hall seen through the doorway from the east](docs/images/east.png) | ![the same view with the doorway moved to the south wall](docs/images/south.png) | ![and again from the north wall](docs/images/north.png) |
 
+The door map is drawn as a plan of the hall, and that is not decoration. The
+places a doorway can sit form a **ring** - twelve stations, three to a side -
+and the border of a 5x5 board is a ring of exactly twelve cells. So cells that
+are neighbours on the map are neighbours on the wall, the corners are where
+walls meet rather than door positions, and the middle is the hall's floor
+rather than a slot. An interface whose shape disagrees with the shape of what
+it edits will quietly offer moves its subject cannot make; this one steps
+around the ring because the ring is all there is.
+
 Structurally the two maps are the same object. Both are a `Surface2D` embedded
 `Live` through a lens onto elements of a room:
 
