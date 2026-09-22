@@ -373,6 +373,29 @@ void test_anchors() {
     check(roughly(sg::world_pose(w, loose).position.x, 3.0), "a missing anchor is ignored");
 }
 
+void test_camera_queries_follow_anchors() {
+    sg::Spatial3D w("w");
+    w.anchor("annex", {14.0, 0.0, 2.5});
+    // A panel hung inside the group: its stored pose is local to the anchor.
+    sg::attach_to(w.portal("panel", {7.75, 1.8, 4.5}, 2.6, 2.0, -1.5707963), "annex");
+
+    sg::Element& cam = w.camera();
+    sg::set_position(cam, {19.6, 1.7, 7.0});  // in front of where it really is
+    cam.params.set(sg::keys::yaw, 0.0);
+    check(sg::distance_to(w, "panel") < 3.0, "distance_to uses the anchored world pose");
+    check(sg::looking_at(w, "panel", 3.2, 0.5), "and so an anchored panel can be used");
+
+    // Standing where its *local* coordinates would put it reaches nothing.
+    sg::set_position(cam, {5.6, 1.7, 4.5});
+    check(!sg::looking_at(w, "panel", 3.2, 0.5), "its local pose is not a place in the world");
+
+    // Move the group: the panel comes with it, and so does its reachability.
+    w.element("annex").params.set(sg::keys::x, 4.0);
+    sg::set_position(cam, {9.6, 1.7, 7.0});
+    cam.params.set(sg::keys::yaw, 0.0);
+    check(sg::looking_at(w, "panel", 3.2, 0.5), "moving the group moves what you can reach");
+}
+
 void test_wall_collisions() {
     sg::Spatial3D w("w");
     // A wall across x = 10, with a gap at z 4..6 and a lintel over it.
@@ -560,6 +583,7 @@ int main() {
     test_lens();
     test_embedding();
     test_anchors();
+    test_camera_queries_follow_anchors();
     test_wall_collisions();
     test_portal_transform();
     test_view_portal();

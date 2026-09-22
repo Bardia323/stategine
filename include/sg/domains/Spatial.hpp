@@ -164,12 +164,6 @@ inline double distance(const Vec3d& a, const Vec3d& b) {
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-inline double distance_to(const SpatialState& s, Key element_id) {
-    const Element* e = s.find(element_id);
-    if (!e) return 1e9;
-    return distance(position_of(s.element(SpatialState::camera_id())), position_of(*e));
-}
-
 // A position plus a heading: what an anchor, a doorway or a camera carries.
 struct Pose {
     Vec3d position;
@@ -216,6 +210,31 @@ inline Vec3d world_position(const State& s, const Element& e) { return world_pos
 inline Element& attach_to(Element& e, Key anchor) {
     e.params.set(keys::parent, anchor.str());
     return e;
+}
+
+// --- camera queries, continued ---------------------------------------------------
+// These go through world_pose: "am I close enough to use that panel" has to be
+// asked about where the panel actually is, not where it sits inside its group.
+inline double distance_to(const SpatialState& s, Key element_id) {
+    const Element* e = s.find(element_id);
+    if (!e) return 1e9;
+    return distance(world_position(s, s.element(SpatialState::camera_id())),
+                    world_position(s, *e));
+}
+
+// True when the camera is near the element and pointed at it.
+inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 3.0,
+                       double min_facing = 0.8) {
+    const Element* e = s.find(element_id);
+    if (!e) return false;
+    const Element& cam = s.element(SpatialState::camera_id());
+    const Vec3d eye = world_position(s, cam);
+    const Vec3d target = world_position(s, *e);
+    const Vec3d d{target.x - eye.x, target.y - eye.y, target.z - eye.z};
+    const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (len > max_dist || len < 1e-6) return len <= max_dist;
+    const Vec3d f = forward_of(cam);
+    return (d.x * f.x + d.y * f.y + d.z * f.z) / len >= min_facing;
 }
 
 // --- walls -----------------------------------------------------------------------
@@ -322,21 +341,6 @@ inline bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d
     if (std::fabs(lateral) > half_w) return false;
     const double half_h = portal.params.num(keys::h, 2.0) * 0.5;
     return std::fabs(to.y - p.y) <= half_h + 0.9;
-}
-
-// True when the camera is near the element and pointed at it.
-inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 3.0,
-                       double min_facing = 0.8) {
-    const Element* e = s.find(element_id);
-    if (!e) return false;
-    const Element& cam = s.element(SpatialState::camera_id());
-    const Vec3d eye = position_of(cam);
-    const Vec3d target = position_of(*e);
-    const Vec3d d{target.x - eye.x, target.y - eye.y, target.z - eye.z};
-    const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-    if (len > max_dist || len < 1e-6) return len <= max_dist;
-    const Vec3d f = forward_of(cam);
-    return (d.x * f.x + d.y * f.y + d.z * f.z) / len >= min_facing;
 }
 
 }  // namespace sg
