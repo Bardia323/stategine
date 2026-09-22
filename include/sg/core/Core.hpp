@@ -250,10 +250,14 @@ inline const Key yaw{"yaw"}, pitch{"pitch"}, roll{"roll"};
 inline const Key w{"w"}, h{"h"}, fov{"fov"};
 inline const Key glyph{"glyph"}, text{"text"}, open{"open"}, intensity{"intensity"};
 inline const Key dt{"dt"}, name{"name"}, commit{"commit"};
+// An element may be placed relative to another: `parent` names that element,
+// and the pose stored here is then local to it.
+inline const Key parent{"parent"};
 }  // namespace keys
 
 namespace kinds {
 inline const Key sprite{"sprite"}, mesh{"mesh"}, light{"light"}, portal{"portal"};
+inline const Key wall{"wall"}, anchor{"anchor"};
 inline const Key camera{"camera"}, textbuffer{"textbuffer"}, textline{"textline"};
 }  // namespace kinds
 

@@ -47,44 +47,52 @@ not a renderer feature:
 
 ![The same room with the lamp dimmed](docs/images/dim.png)
 
-## The second room, and the doorway between them
+## The second room, and the map that moves it
 
-The other wall has a doorway. Behind it is a **different state** - its own
-coordinates, its own shape, its own light, nothing shared with the first room
-but the portal that joins them:
-
-| Looking through | Standing in it |
-| --- | --- |
-| ![The doorway, with the second room visible through it](docs/images/doorway.png) | ![Inside the second room: a pillared hall lit cold, with a monolith at the end](docs/images/lab.png) |
-
-It is the same construction as the map, with the third sync mode:
+The east wall has an opening. Beyond it is a second room - not another state,
+just more of the same space. What makes it a *room* rather than scenery is that
+all of its walls, its lamp, its plinths and its own map carry `parent`, naming
+one anchor element:
 
 ```cpp
-// one transform: rotate by the difference between the doorway yaws, translate
-// into the far doorway's frame. It carries a pose from one room's space to the
-// other's, and it is its own inverse in the other direction.
-graph.add_functor("peek_lab", "room", "lab")
-     .on_object(camera_id(), camera_id(),
-                sg::portal_carry(room.element("door_to_lab"), lab.element("door_to_room")));
+world.anchor("annex", {14.0, 0.0, 2.5});
 
-// View: `in` runs every frame, nothing ever comes back. The far room's camera
-// IS the window's camera, so the renderer does no portal maths at all.
-graph.embed("window_to_lab", "room", "door_to_lab", "lab", "peek_lab", {},
-            sg::EmbedSync::View);
-
-// walking through is the same functor, taken as a transition
-graph.connect("room", "step_through", "lab").functor = "peek_lab";
+sg::attach_to(world.wall("a_west_a", {0, 0, 1.6}, 0.3, 3.6, 3.2), "annex");
+sg::attach_to(world.light("annex_lamp", {4, 2.9, 4.5}), "annex");
+// ... and so on: the whole annex is local to that frame
 ```
 
-That is the whole doorway. The window and the walk-through cannot disagree,
-because they are the same arrow used twice: once per frame to aim a camera, once
-to move the player between states. The renderer's only job is
-`view.bind_world("door_to_lab", &lab)` - draw that state into this portal.
+`world_pose` follows that chain, so the renderer and the collision code place an
+anchored element without knowing it is anchored. Move the anchor and everything
+hanging off it moves together.
 
-Walk into it and you are in the other room, with the first one visible through
-the doorway behind you.
+Which is what the second map does. It hangs in the annex, it has exactly one
+token, and that token **is** the annex:
 
-Every image above is reproducible: `./build/sg_room3d 45 out.ppm <room|approach|open|before|after|dim|doorway|lab>`.
+```cpp
+graph.add_lens("annex_to_map", "map_to_annex", "world", "annexmap",
+               {{"annex", "annex_tok"}},   // one object: the anchor itself
+               /* world -> map */ then(swizzle_scaled({{x, x}}, annex_x_to_cell),
+                                       swizzle_scaled({{y, z}}, annex_z_to_cell)),
+               /* map -> world */ then(swizzle_scaled({{x, x}}, cell_to_annex_x),
+                                       swizzle_scaled({{z, y}}, cell_to_annex_z)));
+
+graph.embed("annex_map", "world", "annex_map", "annexmap", "annex_to_map",
+            "map_to_annex", sg::EmbedSync::Live);
+```
+
+| The annex map, inside the annex | Looking through the aligned opening |
+| --- | --- |
+| ![A wall panel with a seven by seven grid and one teal token](docs/images/annex.png) | ![The opening in the east wall, with the second room visible through it](docs/images/doorway.png) |
+
+Drag that one token and the entire second room slides through the shared space -
+including the doorway you were about to walk through, and the wall the map
+itself is hanging on. Line the two openings up and you can walk between the
+rooms; slide it away and the gap closes against blank wall:
+
+![The same opening, now almost entirely blocked because the annex has been moved](docs/images/shifted.png)
+
+Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|shifted>`.
 
 ## Layout
 
@@ -99,7 +107,8 @@ include/sg/
     StateGraph.hpp  states, transitions, functors, lenses, embeddings, validation, DOT
     Engine.hpp      the state stack, the frame, the open portals
   domains/     what a state is *about* - data and arrows, never pixels
-    Spatial.hpp     SpatialState / Spatial2D / Spatial3D: bodies, integrators, cameras
+    Spatial.hpp     SpatialState / Spatial2D / Spatial3D: bodies, walls, lights,
+                    anchored groups, portals, camera queries
     Console.hpp     a scrollback and an input line
     Surface.hpp     a 2D state that can hand over its own RGBA raster
   render/      how a state is *shown* - swappable, never owned by the state
@@ -129,6 +138,7 @@ parameter vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`, `w/h/yaw`, interned once in
 | View + edit pair | `graph.add_lens(...)` | a functor pair, `out . in` |
 | Lossless pair | `Adjunction` | `F -| G`; both units trivial = isomorphism |
 | Nested interface | `graph.embed(...)` | a state living in an object of another |
+| Anchored group | `parent` on an element | a frame: poses compose along the chain |
 
 Ill-typed composition throws. `graph.validate()` reports dangling morphisms,
 unknown transition endpoints, unreachable states, functors whose image arrows do
@@ -242,18 +252,19 @@ that is. Portals nest: a guest may host a portal of its own.
 
 `sg::render::GLWorldView` draws any `Spatial3D`. Per frame:
 
-1. one pass per open doorway: the far room, rendered from its own camera, with
-   the near plane pushed out to its doorway (the virtual camera stands behind
-   that room's wall) and that doorway skipped, or it would fill the frame
-2. depth-only shadow pass from the lamp (spot light, 2048² map)
-3. scene into a multisampled RGBA16F target: spot lighting with 4x4 PCF
-   shadows, hemispheric ambient, a GGX-ish specular lobe, procedural floor
-   tiles / wall plaster / crate planks, distance fog
+1. one pass per portal bound to another 3D state (`bind_world`), rendered from
+   that state's own camera - a doorway between two *states*, should you want one
+2. depth-only shadow pass from the nearest lamp (spot light, 2048² map)
+3. scene into a multisampled RGBA16F target: up to four spot lights, 4x4 PCF
+   shadows from the nearest, hemispheric ambient, a GGX-ish specular lobe,
+   procedural floor tiles / wall plaster / crate planks, distance fog
 4. resolve, bright pass, separable gaussian blur at half resolution
 5. ACES tonemap with bloom, vignette, grain and a light FXAA
 
-A portal quad samples its room's texture in **screen space**, so it reads as a
-hole in the wall rather than a picture of one.
+Level geometry is data: a state with `wall` elements has them drawn (and gets
+only a floor and a ceiling from its `room_*` parameters), while a state without
+any gets the implicit four-wall box. Anchored elements are placed through
+`world_pose`, so a moving group needs nothing from the renderer.
 
 Quality knobs live in `sg::render::GLQuality` (shadow size, MSAA, bloom
 strength/threshold/passes, exposure). Elements decide their own look through
@@ -284,8 +295,8 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | --- | --- |
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
-| `sg_room3d` | **the real one**: two lit OpenGL rooms, a map on the wall, and a doorway you can see through and walk through |
-| `sg_tests` | 76 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
+| `sg_tests` | 82 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build
@@ -309,13 +320,14 @@ E         use the map     while standing in front of it
 Tab       select token    while the map is open
 C         cancel          close the map, discarding the edits
 Q / R     slide the lamp  F  dim / brighten
-doorway   walk into it
+doorway   walk through the opening
 ```
 
 Walk to the wall, press `E`, push a token one cell with `D`: the crate it stands
 for slides across the floor behind you while you are still looking at the map.
 Nothing special-cases that - it is `stamp` running once a frame because the
-portal was declared `Live`.
+portal was declared `Live`. The map in the second room works identically; its
+one token happens to be the anchor the whole room hangs from.
 
 `./build/sg_room3d 120 frame.ppm` runs 120 frames, writes the last one to a PPM
 and exits, which is how the renderer is smoke-tested without a display.

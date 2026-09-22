@@ -121,6 +121,24 @@ public:
         return e;
     }
 
+    // Level geometry: a solid box that blocks movement and takes plaster.
+    // Walls are elements like everything else, so they can be anchored, moved
+    // by a morphism, or edited from an interface.
+    Element& wall(Key id, Vec3d centre, double sx, double sy, double sz, double yaw = 0.0) {
+        Element& e = add_element(id, kinds::wall);
+        set_position(e, centre);
+        e.params.set(keys::sx, sx).set(keys::sy, sy).set(keys::sz, sz).set(keys::yaw, yaw);
+        return e;
+    }
+
+    // A frame other elements hang off. Move it and the whole group moves.
+    Element& anchor(Key id, Vec3d pos, double yaw = 0.0) {
+        Element& e = add_element(id, kinds::anchor);
+        set_position(e, pos);
+        e.params.set(keys::yaw, yaw);
+        return e;
+    }
+
     // A portal: the element an embedded state is displayed on.
     Element& portal(Key id, Vec3d pos, double width, double height, double yaw = 0.0) {
         Element& e = add_element(id, kinds::portal);
@@ -152,17 +170,60 @@ inline double distance_to(const SpatialState& s, Key element_id) {
     return distance(position_of(s.element(SpatialState::camera_id())), position_of(*e));
 }
 
+// A position plus a heading: what an anchor, a doorway or a camera carries.
+struct Pose {
+    Vec3d position;
+    double yaw = 0.0;
+};
+
+// --- anchors: a group of elements with a frame of its own -----------------------
+// An element may carry `parent`, naming another element it is placed relative
+// to. Its stored pose is then local to that anchor, and moving the anchor moves
+// the whole group - a wing of a building, a vehicle and its contents, a room
+// that can slide around inside a larger space. Renderers and collision both go
+// through world_pose, so nothing has to know which elements are anchored.
+inline Pose local_pose(const Element& e) {
+    return Pose{position_of(e), e.params.num(keys::yaw)};
+}
+
+inline Pose compose_pose(const Pose& parent, const Pose& local) {
+    const double c = std::cos(parent.yaw), s = std::sin(parent.yaw);
+    return Pose{{parent.position.x + local.position.x * c - local.position.z * s,
+                 parent.position.y + local.position.y,
+                 parent.position.z + local.position.x * s + local.position.z * c},
+                parent.yaw + local.yaw};
+}
+
+// The pose of an element in the state's own coordinates, following the parent
+// chain. Depth is bounded, so a cycle cannot hang the frame.
+inline Pose world_pose(const State& s, const Element& e, int max_depth = 8) {
+    Pose p = local_pose(e);
+    const Element* cur = &e;
+    for (int i = 0; i < max_depth; ++i) {
+        const std::string parent_id = cur->params.get_or<std::string>(keys::parent, "");
+        if (parent_id.empty()) break;
+        const Element* parent = s.find(Key{parent_id});
+        if (!parent) break;
+        p = compose_pose(local_pose(*parent), p);
+        cur = parent;
+    }
+    return p;
+}
+
+inline Vec3d world_position(const State& s, const Element& e) { return world_pose(s, e).position; }
+
+// Attach an element to an anchor. Its current pose is read as local from then on.
+inline Element& attach_to(Element& e, Key anchor) {
+    e.params.set(keys::parent, anchor.str());
+    return e;
+}
+
 // --- portals between spaces ---------------------------------------------------
 // Two doorways, one in each room, joined back to back. Because each room is its
 // own state with its own coordinates, everything about "the same place in the
 // other room" is this one transform: rotate by the difference between the two
 // doorway yaws (plus half a turn, since they face each other), then translate
 // into the far doorway's frame.
-struct Pose {
-    Vec3d position;
-    double yaw = 0.0;
-};
-
 // The turn that takes you from one doorway to the other. A viewer walks into
 // `here` against its facing (-n_here) and comes out of `there` along its facing
 // (+n_there); with facing n = (sin yaw, cos yaw), that works out to:

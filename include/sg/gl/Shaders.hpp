@@ -54,12 +54,16 @@ uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate
 uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uGlow;          // extra emission for an active interface
 
-uniform vec3  uLightPos;
-uniform vec3  uLightDir;      // pointing away from the lamp
-uniform vec3  uLightColor;
-uniform float uLightPower;
-uniform float uCosInner;
-uniform float uCosOuter;
+// Up to four spot lights. Only the first casts shadows: one map, aimed at
+// whichever lamp matters most to the viewer.
+const int MAX_LIGHTS = 4;
+uniform int   uLightCount;
+uniform vec3  uLightPos[MAX_LIGHTS];
+uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
+uniform vec3  uLightColor[MAX_LIGHTS];
+uniform float uLightPower[MAX_LIGHTS];
+uniform float uCosInner[MAX_LIGHTS];
+uniform float uCosOuter[MAX_LIGHTS];
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -138,29 +142,36 @@ void main() {
     float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
 
     vec3 n = normalize(vNormal);
-    vec3 toLight = uLightPos - vWorld;
-    float dist = length(toLight);
-    vec3 l = toLight / max(dist, 1e-4);
     vec3 v = normalize(uViewPos - vWorld);
-    vec3 h = normalize(l + v);
-
-    // Spot cone, smooth at the rim.
-    float theta = dot(normalize(-l), normalize(uLightDir));
-    float cone = clamp((theta - uCosOuter) / max(uCosInner - uCosOuter, 1e-4), 0.0, 1.0);
-    cone *= cone;
-
-    float atten = uLightPower / (1.0 + 0.22 * dist + 0.14 * dist * dist);
-    float ndl = max(dot(n, l), 0.0);
-    float shadow = ndl > 0.0 ? shadow_factor(n, l) : 1.0;
-
-    // GGX-ish specular, kept cheap.
     float a2 = roughness * roughness * roughness * roughness;
-    float ndh = max(dot(n, h), 0.0);
-    float denom = ndh * ndh * (a2 - 1.0) + 1.0;
-    float spec = a2 / (3.14159 * denom * denom + 1e-4);
-    spec *= mix(0.04, 0.35, 1.0 - roughness);
 
-    vec3 direct = (albedo * ndl + vec3(spec) * ndl) * uLightColor * atten * cone * shadow;
+    vec3 direct = vec3(0.0);
+    for (int i = 0; i < MAX_LIGHTS; ++i) {
+        if (i >= uLightCount) break;
+        vec3 toLight = uLightPos[i] - vWorld;
+        float dist = length(toLight);
+        vec3 l = toLight / max(dist, 1e-4);
+        vec3 h = normalize(l + v);
+
+        // Spot cone, smooth at the rim.
+        float theta = dot(normalize(-l), normalize(uLightDir[i]));
+        float cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4),
+                           0.0, 1.0);
+        cone *= cone;
+
+        float atten = uLightPower[i] / (1.0 + 0.22 * dist + 0.14 * dist * dist);
+        float ndl = max(dot(n, l), 0.0);
+        // Only the first light has a shadow map.
+        float shadow = (i == 0 && ndl > 0.0) ? shadow_factor(n, l) : 1.0;
+
+        // GGX-ish specular, kept cheap.
+        float ndh = max(dot(n, h), 0.0);
+        float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+        float spec = a2 / (3.14159 * denom * denom + 1e-4);
+        spec *= mix(0.04, 0.35, 1.0 - roughness);
+
+        direct += (albedo * ndl + vec3(spec) * ndl) * uLightColor[i] * atten * cone * shadow;
+    }
 
     // Hemispheric ambient: cool from above, warm bounce from the floor.
     vec3 sky = vec3(0.10, 0.13, 0.20);

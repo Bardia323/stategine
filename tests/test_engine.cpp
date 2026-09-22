@@ -341,6 +341,38 @@ void test_embedding() {
     check(seen == 1, "input is routed to the focused guest");
 }
 
+// --- anchored groups ---------------------------------------------------------------
+void test_anchors() {
+    sg::Spatial3D w("w");
+    w.anchor("annex", {10.0, 0.0, 4.0});
+    sg::Element& wall = w.wall("a_west", {0.0, 0.0, 2.0}, 0.3, 3.0, 4.0);
+    sg::attach_to(wall, "annex");
+
+    sg::Pose p = sg::world_pose(w, wall);
+    check(roughly(p.position.x, 10.0) && roughly(p.position.z, 6.0),
+          "an anchored element is placed in its anchor's frame");
+
+    // Move the anchor: the whole group moves, with no edit to its parts.
+    w.element("annex").params.set(sg::keys::z, 9.0);
+    p = sg::world_pose(w, wall);
+    check(roughly(p.position.z, 11.0), "moving the anchor moves the group");
+
+    // Rotate the anchor: local +x swings round to world +z.
+    w.element("annex").params.set(sg::keys::z, 4.0).set(sg::keys::yaw, 1.5707963);
+    sg::Element& probe = w.wall("probe", {2.0, 0.0, 0.0}, 1, 1, 1);
+    sg::attach_to(probe, "annex");
+    p = sg::world_pose(w, probe);
+    check(roughly(p.position.x, 10.0) && roughly(p.position.z, 6.0),
+          "an anchor's yaw rotates the group around it");
+    check(roughly(p.yaw, 1.5707963), "and carries the heading");
+
+    // Unparented elements are untouched, and a missing parent is not fatal.
+    sg::Element& loose = w.mesh("loose", 3.0, 0.0, 3.0);
+    check(roughly(sg::world_pose(w, loose).position.x, 3.0), "unanchored elements stay put");
+    sg::attach_to(loose, "nowhere");
+    check(roughly(sg::world_pose(w, loose).position.x, 3.0), "a missing anchor is ignored");
+}
+
 // --- portals between 3D states --------------------------------------------------
 void test_portal_transform() {
     sg::Spatial3D a("a"), b("b");
@@ -475,6 +507,7 @@ int main() {
     test_functor_composition();
     test_lens();
     test_embedding();
+    test_anchors();
     test_portal_transform();
     test_view_portal();
     test_view_portal_validation();
