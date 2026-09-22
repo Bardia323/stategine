@@ -1,0 +1,5 @@
+build/
+*.exe
+*.ppm
+*.obj
+.vs/
