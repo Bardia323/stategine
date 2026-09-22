@@ -1,5 +1,5 @@
 # stategine
-
+#### as above; so below
 A game engine whose only structural idea is the **state**. A state is a small
 category: its elements are the objects, its morphisms are the events that act on
 them. The engine runs a **state graph** over those states; everything that
