@@ -135,10 +135,6 @@ public:
         }
     }
 
-    void merge_from(const Params& other) {
-        for (const auto& e : other.entries_) set(e.first, e.second);
-    }
-
     std::size_t size() const { return entries_.size(); }
     bool empty() const { return entries_.empty(); }
     void clear() { entries_.clear(); }

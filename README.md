@@ -144,27 +144,50 @@ Two things follow, and they are the practical point of the whole exercise:
 
 Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
 
-## What the engine refuses to let you get wrong
+## The laws, and what they are laws about
 
-Every entry here is a mistake this engine actually shipped, turned into
-something that fails before it can ship again. They are listed in order of how
-early they are caught.
+The engine checks structure, not content. Every law below is stated over
+states, elements, functors and composites - none of them knows whether it is
+being applied to a room, a ledger or a text buffer, and `sg_core_only` is a
+build target whose whole job is to fail if that ever stops being true.
 
-| Mistake | Caught by | When |
+| Law | What it says | Checked by |
 | --- | --- | --- |
-| A rotation written out by hand a second time, with a sign flipped | one `rotate_xz` / `heading` / `across` in `core/Core.hpp`; nothing else rotates anything | compile time, by there being nowhere else to write it |
-| The renderer's matrix disagreeing with the domain's rotation | a law test pinning `gl::Mat4::rotate_y` to `heading` and `across` | `sg_tests`, and it fails loudly - reintroducing the old sign gives nine failures |
-| A room's placement leaking into texture space, so surfaces slide when you change rooms | `RoomMatrix`: a model matrix that has not been placed yet is a distinct type, and the placement is applied in exactly one function | compile time |
-| A doorway's transition writing the far side's portal, moving the room you walk into | `travel_defects` - and `as_cover` derives transitions from the portals, so the derived path cannot express it | before running, and by construction |
-| A doorway hung on an element that is not a portal, or onto a room that does not exist | `descent_defects` | before running |
-| Two rooms disagreeing about where their shared doorway is | `descent_defects`, the spatial half | before running |
-| A ring of rooms that does not close up | the cocycle check | before running |
-| An interface whose lens runs between the wrong pair of states | `StateGraph::validate` | before running |
-| An interface offering moves its subject cannot make | give the surface the shape of its subject - a ring is drawn as a ring | by construction |
+| Typed composition | `g . f` exists only when `cod(f) == dom(g)` | `Functor::compose`, throws |
+| Functoriality | every mapped arrow `f : x -> y` has `F(f) : F(x) -> F(y)` | `Functor::check_laws` |
+| Lossless vs lossy | whether a round trip is an isomorphism or a projection - a fact, not a fault | `is_lossless` |
+| Unit / counit | what a round trip between two states loses, per object and per parameter | `Adjunction` |
+| Separatedness | on an overlap, across and back is the identity | `Cover::descent_defects` |
+| Cocycle | around any loop of overlaps, the composite is the identity | `Cover::cocycle_defects` |
+| **Idempotence** | a view's round trip settles: `round . round == round` | `interface_defects` |
+| Well-formedness | dangling arrows, unreachable states, lenses between the wrong pair | `StateGraph::validate` |
 
-The pattern in all of them is the same: when something is *derived* it cannot
-drift, when it is *declared twice* it eventually will, and when two layers
-cannot share code a law test is the only thing holding them together.
+The idempotence law is the one every interface owes. A view is almost never
+lossless - a map shows metres as cells, a summary rounds to dozens, a form
+trims whitespace - so demanding that the round trip be the identity would be
+wrong. What it must do is *settle*. An interface that fails this moves your
+data simply by being opened and closed:
+
+```
+interface panel: thing.v keeps moving - 4.000000 then 5.000000
+```
+
+That check has no idea what `v` is. `sg_tests` runs it over a library's stock
+in dozens and over a room's crates in metres, with the same code.
+
+### The spatial instance
+
+A renderer cannot share code with the domain across the C++/GLSL boundary, so
+where sharing is impossible a law test stands in: `gl::Mat4::rotate_y` is
+pinned to `heading` and `across`, and reintroducing the sign error this engine
+once shipped turns nine assertions red. In the same spirit `RoomMatrix` makes
+"has not been placed yet" a type, so a room's placement cannot leak into
+texture space and slide every surface in the building when you walk through a
+door.
+
+These are instances of the general point rather than the point itself: derived
+things cannot drift, things declared twice eventually will, and where two
+layers cannot share code, a law test is the only thing holding them together.
 
 ## Layout
 
@@ -176,7 +199,7 @@ include/sg/
     Functor.hpp     functors, reusable transports, composition, natural transformations
     Adjunction.hpp  adjoint / isomorphic state pairs, with defect reports
     Embedding.hpp   a state nested in an element of another state
-    Sheaf.hpp       covers, descent, gluing - the general form of an atlas
+    Sheaf.hpp       covers, descent, gluing, and the law every interface owes
     StateGraph.hpp  states, transitions, functors, lenses, embeddings, validation, DOT
     Engine.hpp      the state stack, the frame, the open portals
   domains/     what a state is *about* - data and arrows, never pixels
@@ -382,7 +405,8 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
-| `sg_tests` | 146 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_tests` | 155 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_core_only` | the core built with no domain and no renderer: the layering, as a build failure |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build

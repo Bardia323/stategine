@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "sg/core/Sheaf.hpp"
 #include "sg/domains/Atlas.hpp"
 #include "sg/gl/Window.hpp"
 #include "sg/render/GLWorld.hpp"

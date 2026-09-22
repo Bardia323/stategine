@@ -52,6 +52,13 @@ add_executable(sg_tests tests/test_engine.cpp)
 target_link_libraries(sg_tests PRIVATE stategine)
 add_test(NAME sg_tests COMMAND sg_tests)
 
+# The core, built with no domain and no renderer in sight. This target exists
+# to fail: if anything in core/ grows a dependency on rooms or on pixels, the
+# build breaks here rather than the claim quietly becoming untrue.
+add_executable(sg_core_only tests/core_only.cpp)
+target_link_libraries(sg_core_only PRIVATE stategine)
+add_test(NAME sg_core_only COMMAND sg_core_only)
+
 add_executable(sg_bench tests/bench.cpp)
 target_link_libraries(sg_bench PRIVATE stategine)
 target_compile_options(sg_bench PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2>)

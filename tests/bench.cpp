@@ -45,7 +45,7 @@ int main() {
         for (int rep = 0; rep < 200; ++rep)
             for (sg::Key id : ids) sink += world.element(id).params.num(sg::keys::x);
     });
-    if (sink < 0) std::printf("");  // keep the loop from being optimised away
+    if (sink < 0) std::printf(" ");  // keep the loop from being optimised away
 
     sg::Engine engine(graph);
     engine.start();

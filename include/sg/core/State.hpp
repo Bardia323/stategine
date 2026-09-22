@@ -99,13 +99,6 @@ public:
     std::deque<Element>& elements() { return elements_; }
     const std::deque<Element>& elements() const { return elements_; }
 
-    // Elements of one kind, without walking the rest.
-    template <typename Fn>
-    void each_of_kind(Key kind, Fn&& fn) {
-        for (auto& e : elements_)
-            if (e.kind == kind && e.alive) fn(e);
-    }
-
     // --- morphisms (arrows between elements) --------------------------------
     Morphism& add_morphism(Morphism m) {
         if (m.name.empty()) throw std::runtime_error("morphism needs a name");

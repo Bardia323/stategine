@@ -63,21 +63,6 @@ public:
 
     const std::deque<Doorway>& doorways() const { return doorways_; }
 
-    Doorway* doorway(Key name) {
-        for (auto& d : doorways_)
-            if (d.name == name) return &d;
-        return nullptr;
-    }
-
-    // The doorway joining these two rooms, if there is one.
-    const Doorway* between(Key a, Key b) const {
-        for (const auto& d : doorways_) {
-            if (d.room_a == a && d.room_b == b) return &d;
-            if (d.room_b == a && d.room_a == b) return &d;
-        }
-        return nullptr;
-    }
-
     // One step: where `there` sits in `here`'s coordinates, across `d`.
     // Both directions come from the same pair of portals, so they cannot
     // disagree - one is the other read backwards.

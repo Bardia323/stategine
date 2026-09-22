@@ -89,14 +89,6 @@ public:
         return *this;
     }
 
-    // Map a whole family at once: ids in the source, ids in the target derived
-    // by a naming rule. Typical for "one token per box".
-    Functor& on_objects(const std::vector<Key>& src_elements,
-                        const std::function<Key(Key)>& rename_fn, Transport t = nullptr) {
-        for (Key s : src_elements) obj_[s] = ObjMap{rename_fn(s), t};
-        return *this;
-    }
-
     // --- arrow map ----------------------------------------------------------
     Functor& on_morphism(Key src_morphism, Key dst_morphism) {
         mor_[src_morphism] = dst_morphism;
@@ -109,24 +101,15 @@ public:
         return *this;
     }
 
-    bool maps_object(Key id) const { return obj_.count(id) != 0; }
-
     Key image_object(Key id) const {
         auto it = obj_.find(id);
         return it == obj_.end() ? Key{} : it->second.dst;
-    }
-
-    Key image_morphism(Key name) const {
-        auto it = mor_.find(name);
-        return it == mor_.end() ? Key{} : it->second;
     }
 
     Key image_event(Key name) const {
         auto it = evt_.find(name);
         return it == evt_.end() ? name : it->second;
     }
-
-    std::size_t object_count() const { return obj_.size(); }
 
     // Walk the object map. Whoever applies a functor to live state wants to
     // know what it will write before it writes it.
@@ -268,40 +251,6 @@ private:
     std::unordered_map<Key, ObjMap> obj_;
     std::unordered_map<Key, Key> mor_;
     std::unordered_map<Key, Key> evt_;
-};
-
-// A natural transformation eta : F => G, given componentwise on objects.
-class NaturalTransformation {
-public:
-    using Component = std::function<void(const Element& fx, Element& gx)>;
-
-    NaturalTransformation(Key name, const Functor* f, const Functor* g)
-        : name_(name), f_(f), g_(g) {}
-
-    NaturalTransformation& at(Key object, Component c) {
-        comps_[object] = std::move(c);
-        return *this;
-    }
-
-    void apply(State& cod) const {
-        for (const auto& kv : comps_) {
-            const Element* fx = cod.find(f_->image_object(kv.first));
-            if (!fx) continue;
-            const Key gx_id = g_->image_object(kv.first);
-            if (gx_id.empty()) continue;
-            Element* gx = cod.find(gx_id);
-            if (!gx) gx = &cod.add_element(gx_id, fx->kind);
-            kv.second(*fx, *gx);
-        }
-    }
-
-    Key name() const { return name_; }
-
-private:
-    Key name_;
-    const Functor* f_;
-    const Functor* g_;
-    std::unordered_map<Key, Component> comps_;
 };
 
 }  // namespace sg

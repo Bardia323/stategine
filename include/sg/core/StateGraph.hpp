@@ -121,13 +121,6 @@ public:
         return wildcard;
     }
 
-    std::vector<const Transition*> outgoing(Key state_id) const {
-        std::vector<const Transition*> out;
-        for (const auto& t : transitions_)
-            if (t.from == state_id || t.from == any()) out.push_back(&t);
-        return out;
-    }
-
     static Key any() { return Key{"*"}; }
 
     // --- functors -------------------------------------------------------------

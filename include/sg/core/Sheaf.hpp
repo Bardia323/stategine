@@ -89,6 +89,81 @@ inline std::vector<std::string> identity_defects(const StateGraph& g, const Func
     return out;
 }
 
+// --- the law every interface owes, in every domain -----------------------------
+// A view and its write-back form a round trip on the thing being viewed. That
+// round trip is almost never the identity - a map that shows metres as cells
+// quantises, a summary rounds, a form trims whitespace - and demanding that it
+// be the identity would be wrong. What it must be is *idempotent*:
+//
+//     round . round  ==  round
+//
+// which says that looking at something and writing it back settles, rather
+// than nudging it a little further every time. An interface that fails this
+// moves your data simply by being opened and closed, and it does so whatever
+// the data is: positions, prices, text. This is the check, and it knows
+// nothing about any domain.
+inline std::vector<std::string> idempotence_defects(const StateGraph& g, const Functor& round,
+                                                    const std::string& tag) {
+    std::vector<std::string> out;
+    const State* s = g.find(round.from());
+    if (!s || round.from() != round.to()) {
+        out.push_back(tag + ": a round trip must return to its own state");
+        return out;
+    }
+
+    State once(Key{tag + ".once"});
+    round.apply(*s, once);
+    State twice(Key{tag + ".twice"});
+    round.apply(once, twice);
+
+    for (const auto& e : s->elements()) {
+        const Key image = round.image_object(e.id);
+        if (image.empty()) continue;
+        const Element* a = once.find(image);
+        const Element* b = twice.find(image);
+        if (!a || !b) continue;
+        for (const auto& kv : a->params) {
+            if (!b->params.has(kv.first)) continue;
+            if (to_string(kv.second) == to_string(b->params.get(kv.first))) continue;
+            if (same_number(kv.first, a->params.num(kv.first, 0.0),
+                            b->params.num(kv.first, 0.0)))
+                continue;
+            out.push_back(tag + ": " + image.str() + "." + kv.first.str() +
+                          " keeps moving - " + to_string(kv.second) + " then " +
+                          to_string(b->params.get(kv.first)));
+        }
+    }
+    return out;
+}
+
+// Does the round trip lose anything at all? Not a defect either way: a lossless
+// view is an isomorphism onto its image, a lossy one is a projection. Worth
+// being able to ask, and worth not confusing with correctness.
+inline bool is_lossless(const StateGraph& g, const Functor& round) {
+    return identity_defects(g, round, "round").empty();
+}
+
+// Every interface registered in a graph, held to that law. An embedding with
+// both directions declared is a view of its subject, whatever either of them
+// happens to be about.
+inline std::vector<std::string> interface_defects(const StateGraph& g) {
+    std::vector<std::string> out;
+    for (const Embedding& e : g.embeddings()) {
+        if (e.in.empty() || e.out.empty()) continue;  // a one-way window owes nothing
+        const Functor* in = g.functor(e.in);
+        const Functor* back = g.functor(e.out);
+        if (!in || !back) continue;
+        const Key subject = e.subject.empty() ? e.host : e.subject;
+        if (in->from() != subject || back->to() != subject) continue;  // validate() says so
+
+        // subject -> guest -> subject, which is what opening and closing does.
+        for (const auto& d : idempotence_defects(g, Functor::compose(*in, *back),
+                                                 "interface " + e.name.str()))
+            out.push_back(d);
+    }
+    return out;
+}
+
 class Cover {
 public:
     Overlap& add(Key name, Key u, Key v, Key u_to_v, Key v_to_u) {

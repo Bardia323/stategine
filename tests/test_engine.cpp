@@ -752,6 +752,103 @@ void test_guards_against_past_mistakes() {
     check(room_named, "a doorway onto a room that does not exist is refused");
 }
 
+// --- the engine without a domain ------------------------------------------------
+// Nothing above this point in the engine knows what a room is. This is the
+// check that says so: the same states, functors, lenses, covers and laws,
+// applied to a library's stock. If any of the machinery had quietly grown a
+// dependency on geometry, none of this would compile, let alone pass.
+void test_any_domain() {
+    sg::StateGraph g;
+
+    auto& library = g.add<sg::State>("library");
+    library.add_element("dune", "book")
+        .params.set("title", std::string("Dune"))
+        .set("copies", int64_t{30});
+    library.add_element("ubik", "book")
+        .params.set("title", std::string("Ubik"))
+        .set("copies", int64_t{7});
+    library.add_element("desk", sg::kinds::portal);
+
+    // A desk view that counts in dozens: lossy on purpose, like every summary.
+    auto& desk = g.add<sg::State>("desk");
+    desk.add_element("dune_row", "row");
+    desk.add_element("ubik_row", "row");
+
+    g.add_lens("to_desk", "to_shelf", "library", "desk",
+               {{"dune", "dune_row"}, {"ubik", "ubik_row"}},
+               sg::transport::then(sg::transport::only({"title"}),
+                                   sg::transport::swizzle_scaled({{"dozens", "copies"}},
+                                                                 [](double c) {
+                                                                     return std::floor(c / 12.0);
+                                                                 })),
+               sg::transport::swizzle_scaled({{"copies", "dozens"}},
+                                             [](double d) { return d * 12.0; }));
+    g.embed("desk", "library", "desk", "desk", "to_desk", "to_shelf", sg::EmbedSync::Commit);
+    g.set_initial("library");
+
+    check(g.validate().empty(), "a graph about books validates like any other");
+    check(sg::interface_defects(g).empty(),
+          "a summary that rounds to dozens settles, so it is a lawful view");
+    // Lawful is not the same as lossless, and the engine keeps the two apart.
+    check(!sg::is_lossless(g, sg::Functor::compose(*g.functor("to_desk"), *g.functor("to_shelf"))),
+          "and it is honest about being a projection, not an isomorphism");
+
+    sg::Engine e(g);
+    e.start();
+    e.open_embed("desk");
+    check(desk.element("dune_row").params.get_or<std::string>("title", "") == "Dune",
+          "the view carries what it was asked to carry");
+    check(near(desk.element("dune_row").params.num("dozens"), 2.0), "and counts in dozens");
+
+    // Edit the summary, commit, and the shelf follows - in units again.
+    desk.element("dune_row").params.set("dozens", 4.0);
+    e.close_embed("desk");
+    check(near(library.element("dune").params.num("copies"), 48.0),
+          "an edit written back arrives in the subject's own terms");
+
+    // The same lens, made to drift: every open-and-close would add stock.
+    sg::StateGraph bad;
+    auto& shelf = bad.add<sg::State>("shelf");
+    shelf.add_element("dune", "book").params.set("copies", int64_t{30});
+    shelf.add_element("desk", sg::kinds::portal);
+    auto& sheet = bad.add<sg::State>("sheet");
+    sheet.add_element("row", "row");
+    bad.add_lens("show", "put", "shelf", "sheet", {{"dune", "row"}},
+                 sg::transport::swizzle_scaled({{"n", "copies"}},
+                                               [](double c) { return c / 12.0; }),
+                 sg::transport::swizzle_scaled({{"copies", "n"}},
+                                               [](double n) { return n * 12.0 + 1.0; }));
+    bad.embed("sheet", "shelf", "desk", "sheet", "show", "put", sg::EmbedSync::Commit);
+    bad.set_initial("shelf");
+    bool drift_named = false;
+    for (const auto& d : sg::interface_defects(bad))
+        if (d.find("keeps moving") != std::string::npos) drift_named = true;
+    check(drift_named, "a view that never settles is named, in any domain");
+
+    // And gluing: two catalogues that agree about the books they share.
+    sg::StateGraph cat;
+    for (const char* id : {"west", "east"}) {
+        auto& wing = cat.add<sg::State>(sg::Key{id});
+        wing.add_element("shared", "book").params.set("copies", int64_t{12});
+    }
+    cat.set_initial("west");
+    cat.set_functor(sg::Functor{"w2e", "west", "east"})
+        .on_object("shared", "shared", sg::transport::copy_all);
+    cat.set_functor(sg::Functor{"e2w", "east", "west"})
+        .on_object("shared", "shared", sg::transport::copy_all);
+    sg::Cover shelves;
+    shelves.add("shared_stock", "west", "east", "w2e", "e2w");
+    check(shelves.descent_defects(cat).empty(),
+          "two catalogues that agree on their overlap glue");
+
+    // Make one side disagree and the same check names the seam.
+    cat.set_functor(sg::Functor{"e2w", "east", "west"})
+        .on_object("shared", "shared",
+                   sg::transport::swizzle_scaled({{"copies", "copies"}},
+                                                 [](double c) { return c + 1.0; }));
+    check(!shelves.descent_defects(cat).empty(), "and disagreement is a seam, not a silent merge");
+}
+
 void test_graph_analysis() {
     sg::StateGraph g;
     g.add<sg::Spatial2D>("start");
@@ -808,6 +905,7 @@ int main() {
     test_view_portal_validation();
     test_descent();
     test_atlas_is_a_cover();
+    test_any_domain();
     test_guards_against_past_mistakes();
     test_graph_analysis();
     test_surface_and_views();
