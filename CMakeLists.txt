@@ -59,6 +59,35 @@ add_executable(sg_core_only tests/core_only.cpp)
 target_link_libraries(sg_core_only PRIVATE stategine)
 add_test(NAME sg_core_only COMMAND sg_core_only)
 
+# The laws on live data, each one shown both holding and breaking.
+add_executable(sg_laws tests/test_laws.cpp)
+target_link_libraries(sg_laws PRIVATE stategine)
+add_test(NAME sg_laws COMMAND sg_laws)
+
+# --- typed composition: mistakes that must not compile -------------------------
+# Each case builds as a control, so the file itself is known good. With
+# SG_EXPECT_FAIL it gains one ill-typed line, and the test passes only when the
+# compiler refuses it *with Stategine's own message* - failing for any other
+# reason (a typo, a missing header) does not count.
+function(sg_compile_fail name expect)
+  add_library(sg_cf_${name}_control OBJECT tests/compile_fail/${name}.cpp)
+  target_link_libraries(sg_cf_${name}_control PRIVATE stategine)
+  add_library(sg_cf_${name} OBJECT EXCLUDE_FROM_ALL tests/compile_fail/${name}.cpp)
+  target_link_libraries(sg_cf_${name} PRIVATE stategine)
+  target_compile_definitions(sg_cf_${name} PRIVATE SG_EXPECT_FAIL)
+  add_test(NAME compile_fail_${name}
+           COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target sg_cf_${name}
+                   --config $<CONFIG>)
+  set_tests_properties(compile_fail_${name} PROPERTIES PASS_REGULAR_EXPRESSION "${expect}")
+endfunction()
+
+sg_compile_fail(arrow_mismatch "g \\* f needs cod\\(f\\) == dom\\(g\\)")
+sg_compile_fail(functor_mismatch "compose\\(G, F\\) needs cod\\(F\\) == dom\\(G\\)")
+sg_compile_fail(arrow_leaves_state "an arrow inside a state cannot leave it")
+sg_compile_fail(functor_object_map "needs X to be an object of F's source")
+sg_compile_fail(lens_halves "needs out to run back along in")
+sg_compile_fail(not_parallel "only parallel arrows can commute")
+
 add_executable(sg_bench tests/bench.cpp)
 target_link_libraries(sg_bench PRIVATE stategine)
 target_compile_options(sg_bench PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2>)

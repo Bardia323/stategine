@@ -55,7 +55,9 @@ int main() {
     graph.embed("map", "room", "wall_map", "wallmap", "collapse", "stamp", sg::EmbedSync::Live);
     graph.set_initial("room");
 
-    for (const auto& problem : graph.validate()) std::cout << "! " << problem << "\n";
+    // Structure, then every law on the data as it stands - checked and undone.
+    const sg::LawReport laws = sg::verify(graph);
+    if (!laws.ok()) std::cout << laws.str();
 
     sg::Engine engine(graph);
     engine.start();

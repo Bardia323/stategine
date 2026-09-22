@@ -199,7 +199,16 @@ struct Morphism {
     Key to;
     Key trigger;
     Handler handler;
+    // For a composite, the arrows it was built from, first applied first. The
+    // laws check that the composite still does what its parts do in order.
+    std::vector<Key> parts;
 };
+
+// The type of an arrow. An endomorphism leaves `to` empty, but its codomain is
+// still its domain - forgetting that is how a composite ending in a loop once
+// got registered as a loop on the wrong element.
+inline Key dom(const Morphism& m) { return m.from; }
+inline Key cod(const Morphism& m) { return m.to.empty() ? m.from : m.to; }
 
 // ---------------------------------------------------------------------------
 // EventBus: a double-buffered queue plus direct subscriptions. The buffers are
@@ -210,6 +219,11 @@ public:
     using Listener = std::function<void(const Event&)>;
 
     void emit(Event e) { queue_.push_back(std::move(e)); }
+
+    // What is waiting to be dispatched. The law checks run arrows on trial and
+    // compare what they emitted, then put the queue back as they found it.
+    const std::vector<Event>& queued() const { return queue_; }
+    void requeue(std::vector<Event> q) { queue_ = std::move(q); }
 
     void subscribe(Key name, Listener fn) { listeners_[name].push_back(std::move(fn)); }
 

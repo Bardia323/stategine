@@ -146,34 +146,118 @@ Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|
 
 ## The laws, and what they are laws about
 
-The engine checks structure, not content. Every law below is stated over
-states, elements, functors and composites - none of them knows whether it is
-being applied to a room, a ledger or a text buffer, and `sg_core_only` is a
-build target whose whole job is to fail if that ever stops being true.
+The engine has two primitives - states, and the transitions between them - and
+it holds everything built from them to the laws that make them what they are.
+Nothing here knows whether it is applied to a room, a ledger or a text buffer,
+and `sg_core_only` is a build target whose whole job is to fail if that ever
+stops being true.
 
-| Law | What it says | Checked by |
+An invalid structure is refused at the earliest point that can see it:
+
+1. **Compile time** - whether two things compose at all. `sg/core/Typed.hpp`
+   lifts state and element names into C++ tags, so `g * f` with
+   `cod(f) != dom(g)`, a lens whose halves do not mirror, a functor object map
+   pointing the wrong way, or a claim that two non-parallel arrows are equal
+   does not build:
+
+   ```
+   error: static assertion failed: sg: g * f needs cod(f) == dom(g); these arrows do not meet
+   ```
+
+2. **Structure** - what can be checked without data. `graph.validate()`
+   reports dangling arrows, unknown endpoints, unreachable states, functors
+   whose image arrows do not line up, portals wired to the wrong state.
+
+3. **Live data** - what only the data can answer. `sg::verify(graph)` runs
+   every law below on the states' current contents, observes the result, and
+   puts everything back. A broken law comes back as a counterexample:
+
+   ```
+   functoriality @ functor post on restock: ledger.book.stock was <unset>;
+       shop.shelf [restock ; post] leaves 42, shop.shelf [post ; order_wrong] leaves 40
+   ```
+
+Every data law has one shape - *these two paths, run on the same data, leave
+the same result* - so there is one checker (`sg/core/Laws.hpp`) and the laws
+are equations handed to it:
+
+| Law | The two paths | Checked by |
 | --- | --- | --- |
-| Typed composition | `g . f` exists only when `cod(f) == dom(g)` | `Functor::compose`, throws |
-| Functoriality | every mapped arrow `f : x -> y` has `F(f) : F(x) -> F(y)` | `Functor::check_laws` |
-| Lossless vs lossy | whether a round trip is an isomorphism or a projection - a fact, not a fault | `is_lossless` |
-| Unit / counit | what a round trip between two states loses, per object and per parameter | `Adjunction` |
+| Identity | `id ; f` and `f ; id` against `f`, for arrows and functors | `laws::identity` |
+| Associativity | `(f ; g) ; h` against `f ; (g ; h)` against the three in turn | `laws::associativity` |
+| Composition | a registered composite against the chain it was built from | `laws::composition` |
+| Functoriality | `f` then `F` against `F` then `F(f)` - the functor carries the arrow's *action*, not just its ends | `laws::functoriality` |
+| Put-get | write a view back and read it again: you see what you wrote | `laws::lenses` |
+| Put-put | writing the same view twice is writing it once | `laws::lenses` |
+| **Settles** | `(get ; put) ; (get ; put)` against `get ; put` | `laws::lenses`, `interface_defects` |
+| Commutes | any two paths you declare equal, built from live data | `sg::Diagram` |
 | Separatedness | on an overlap, across and back is the identity | `Cover::descent_defects` |
 | Cocycle | around any loop of overlaps, the composite is the identity | `Cover::cocycle_defects` |
-| **Idempotence** | a view's round trip settles: `round . round == round` | `interface_defects` |
-| Well-formedness | dangling arrows, unreachable states, lenses between the wrong pair | `StateGraph::validate` |
+| Lossless vs lossy | whether a round trip is an isomorphism or a projection - a fact, not a fault | `is_lossless`, `Adjunction` |
 
-The idempotence law is the one every interface owes. A view is almost never
+`sg::enforce(graph)` throws a `LawError` carrying the report, for callers who
+would rather not start at all than start on a lie. Arrows that read event
+arguments are probed with `LawOptions` - an integrator that does nothing at
+`dt = 0` keeps every law vacuously, so give it a `dt`.
+
+Paths walk elements across states: an arrow step must start where the path is,
+and a functor or transition step moves the path to the image of the element it
+is on. So a diagram can say "sell then post to the ledger equals post then
+record the sale", and is refused - not run - if the steps do not meet.
+
+```cpp
+sg::Diagram d("shelf work");
+d.commutes(sg::Path("shop", "shelf").arrow("restock").arrow("halve"),
+           sg::Path("shop", "shelf").arrow("halve").arrow("restock"));
+sg::verify(graph, {d});
+// commutes @ shelf work: shop.shelf.stock was 30;
+//     [restock ; halve] leaves 21, [halve ; restock] leaves 27
+```
+
+The same diagram, typed, cannot even be written with arrows that do not share
+both ends:
+
+```cpp
+struct Shop  { static constexpr const char* name = "shop"; };
+struct Shelf { using state = Shop; static constexpr const char* name = "shelf"; };
+struct Till  { using state = Shop; static constexpr const char* name = "till"; };
+
+auto sell   = sg::typed::arrow<Shelf, Till>(shop, "sell", "sell", on_sell);
+auto refund = sg::typed::arrow<Till, Shelf>(shop, "refund", "refund", on_refund);
+sg::typed::commutes(d, refund * sell, sg::typed::id<Shelf>());   // Shelf -> Shelf, both
+sg::typed::commutes(d, sell, refund);                            // does not compile
+```
+
+The settles law is the one every interface owes. A view is almost never
 lossless - a map shows metres as cells, a summary rounds to dozens, a form
 trims whitespace - so demanding that the round trip be the identity would be
 wrong. What it must do is *settle*. An interface that fails this moves your
 data simply by being opened and closed:
 
 ```
-interface panel: thing.v keeps moving - 4.000000 then 5.000000
+settles @ embedding desk: library.dune.copies was 30;
+    library [show ; put ; show ; put] leaves 32, library [show ; put] leaves 31
 ```
 
-That check has no idea what `v` is. `sg_tests` runs it over a library's stock
-in dozens and over a room's crates in metres, with the same code.
+### What the laws found in this engine
+
+Turning them on found three bugs in the core and one in the demo, all of them
+things every earlier check had passed:
+
+* **The identity functor was a table.** `Functor::identity` copied the state's
+  object list once, so `F ; id` silently dropped anything `F` created. The
+  identity is now a law - it fixes every object, present or future.
+* **A composite ending in a loop had the wrong type.** `f : x -> y` then a loop
+  on `y` was registered as a loop on `x`, and two loops could not compose at
+  all. Endomorphisms now have `cod == dom` (`sg::cod`), stored or not.
+* **Composites were claims nobody checked.** A composite remembers its parts,
+  so rebuilding a part - as derived transitions are - and leaving the
+  composite behind is now a named `composition` violation, not a silent drift.
+* **The demo's isomorphism was only true on scratch data.** `flatten` copied
+  every parameter, so actually toggling 2D -> 3D -> 2D dragged a lamp's colour
+  and a portal's size into the 2D state. `Adjunction::data_defects` ran on
+  empty scratch states and said "clean"; the composition law ran the real
+  transitions through the real 3D state and did not.
 
 ### The spatial instance
 
@@ -200,6 +284,8 @@ include/sg/
     Adjunction.hpp  adjoint / isomorphic state pairs, with defect reports
     Embedding.hpp   a state nested in an element of another state
     Sheaf.hpp       covers, descent, gluing, and the law every interface owes
+    Laws.hpp        paths, diagrams, and every law checked on live data
+    Typed.hpp       tags and typed handles: ill-typed composition does not compile
     StateGraph.hpp  states, transitions, functors, lenses, embeddings, validation, DOT
     Engine.hpp      the state stack, the frame, the open portals
   domains/     what a state is *about* - data and arrows, never pixels
@@ -240,9 +326,11 @@ parameter vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`, `w/h/yaw`, interned once in
 | Descent | `descent_defects(...)` | separatedness and the cocycle condition |
 | Gluing | `Cover::sections(root)` | the composite into one chosen chart |
 
-Ill-typed composition throws. `graph.validate()` reports dangling morphisms,
-unknown transition endpoints, unreachable states, functors whose image arrows do
-not line up, and portals wired to the wrong state.
+Ill-typed composition through typed handles does not compile; through plain
+names it throws. `graph.validate()` reports dangling morphisms, unknown
+transition endpoints, unreachable states, functors whose image arrows do not
+line up, and portals wired to the wrong state; `sg::verify(graph)` adds every
+law on live data.
 
 ## A state
 
@@ -406,6 +494,8 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
 | `sg_tests` | 155 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_laws` | every data law shown holding, then broken on purpose and read back as a counterexample |
+| `compile_fail_*` | ctest cases that pass only if an ill-typed composition is refused with Stategine's own message |
 | `sg_core_only` | the core built with no domain and no renderer: the layering, as a build failure |
 | `sg_bench` | throughput of the hot paths |
 
@@ -414,7 +504,7 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 ```sh
 cmake -S . -B build -G "MinGW Makefiles"   # or your generator of choice
 cmake --build build -j
-./build/sg_tests
+ctest --test-dir build        # unit tests, laws, and the must-not-compile cases
 ./build/sg_room3d
 ```
 

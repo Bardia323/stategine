@@ -108,11 +108,11 @@ public:
     }
 
     Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn) {
-        return add_morphism(Morphism{name, from, to, trigger, std::move(fn)});
+        return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}});
     }
 
     Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn) {
-        return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn)});
+        return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}});
     }
 
     const std::deque<Morphism>& morphisms() const { return morphisms_; }
@@ -128,22 +128,77 @@ public:
         const Morphism* f = morphism(f_name);
         const Morphism* g = morphism(g_name);
         if (!f || !g) throw std::runtime_error("compose: unknown morphism");
-        if (f->to.empty() || f->to != g->from)
-            throw std::runtime_error("compose: cod(" + f_name.str() + ") != dom(" + g_name.str() +
-                                     ")");
-        auto fh = f->handler;
-        auto gh = g->handler;
-        const Key mid_id = f->to;
-        const Key end_id = g->to;
-        return add_morphism(Morphism{
-            name, f->from, end_id, trigger,
-            [fh, gh, mid_id, end_id](State& s, Element& from, Element*, const Event& ev) {
-                Element* mid = s.find(mid_id);
-                if (fh) fh(s, from, mid, ev);
-                if (!mid) return;
-                Element* end = end_id.empty() ? nullptr : s.find(end_id);
-                if (gh) gh(s, *mid, end, ev);
-            }});
+        return add_morphism(composite(name, *f, *g, trigger));
+    }
+
+    // The composite arrow itself, unregistered. Each part runs exactly as
+    // dispatch would run it on its own - a loop still sees no codomain - so a
+    // composite and its parts in order are the same action, which the laws
+    // then check rather than assume.
+    static Morphism composite(Key name, const Morphism& f, const Morphism& g, Key trigger) {
+        if (cod(f) != dom(g))
+            throw std::runtime_error("compose: cod(" + f.name.str() + ")=" + cod(f).str() +
+                                     " != dom(" + g.name.str() + ")=" + dom(g).str());
+        auto fh = f.handler;
+        auto gh = g.handler;
+        const Key f_to = f.to;
+        const Key mid_id = cod(f);
+        const Key g_to = g.to;
+        const Key end_id = cod(g);
+        return Morphism{name,
+                        f.from,
+                        end_id == f.from ? Key{} : end_id,
+                        trigger,
+                        [fh, gh, f_to, mid_id, g_to](State& s, Element& from, Element*,
+                                                     const Event& ev) {
+                            if (fh) fh(s, from, f_to.empty() ? nullptr : s.find(f_to), ev);
+                            Element* mid = s.find(mid_id);
+                            if (!mid) return;
+                            if (gh) gh(s, *mid, g_to.empty() ? nullptr : s.find(g_to), ev);
+                        },
+                        {f.name, g.name}};
+    }
+
+    // --- trial runs -----------------------------------------------------------
+    // A state's data is its elements, its own parameters and what it has queued.
+    // Taking and restoring that lets an arrow be run to see what it does, and
+    // then un-run. Anything a subclass keeps outside its elements is not data
+    // in this sense and is not restored.
+    struct Snapshot {
+        std::deque<Element> elements;
+        Params params;
+        std::vector<Event> queue;
+        std::size_t morphisms = 0;
+    };
+
+    Snapshot snapshot() const {
+        return Snapshot{elements_, params_, bus_.queued(), morphisms_.size()};
+    }
+
+    // Restores in place wherever it can: callers hold `Element&` across frames,
+    // and checking a law must not leave those pointing at freed memory. Only
+    // if a trial removed an element is the list rebuilt.
+    void restore(Snapshot s) {
+        bool in_place = s.elements.size() <= elements_.size();
+        for (std::size_t i = 0; in_place && i < s.elements.size(); ++i)
+            in_place = elements_[i].id == s.elements[i].id;
+        if (in_place) {
+            for (std::size_t i = 0; i < s.elements.size(); ++i)
+                elements_[i] = std::move(s.elements[i]);
+            while (elements_.size() > s.elements.size()) elements_.pop_back();
+        } else {
+            elements_ = std::move(s.elements);
+        }
+        params_ = std::move(s.params);
+        bus_.requeue(std::move(s.queue));
+        reindex();
+        if (morphisms_.size() > s.morphisms) {
+            morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(s.morphisms),
+                             morphisms_.end());
+            by_trigger_.clear();
+            for (std::size_t i = 0; i < morphisms_.size(); ++i)
+                by_trigger_[morphisms_[i].trigger].push_back(i);
+        }
     }
 
     // --- events -------------------------------------------------------------

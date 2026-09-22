@@ -34,10 +34,15 @@ int main() {
     deep.mesh("rock", 20, 4, 3, 'o');
     deep.light("lamp", {10, 3, 5});
     deep.portal("map_table", {2, 2, 0}, 3.0, 2.0, 1.5707963);  // faces +z
-    // The portal element exists on both sides, so nothing in either state falls
-    // outside the functors and the pair stays a true isomorphism.
-    flat.add_element("map_table", sg::kinds::portal).params.set(sg::keys::z, 0.0);
-    flat.add_element("lamp", sg::kinds::light).params.set(sg::keys::z, 5.0);
+    // The portal and the lamp exist on both sides, at the same place, so nothing
+    // in either state falls outside the functors and the pair stays a true
+    // isomorphism. (Declaring them here with only a z once passed every check
+    // that used a scratch world, and failed the one that used the real one.)
+    flat.add_element("map_table", sg::kinds::portal)
+        .params.set(sg::keys::x, 2.0).set(sg::keys::y, 2.0).set(sg::keys::z, 0.0)
+        .set(sg::keys::yaw, 1.5707963);
+    flat.add_element("lamp", sg::kinds::light)
+        .params.set(sg::keys::x, 10.0).set(sg::keys::y, 3.0).set(sg::keys::z, 5.0);
 
     // --- functors -------------------------------------------------------------
     // The 2D state parks a z it never draws; that spare slot is what turns the
@@ -45,9 +50,15 @@ int main() {
     const std::vector<sg::Key> shared{"player", "rock", "camera", "lamp", "map_table"};
     sg::Functor& lift = graph.add_functor("lift", "world2d", "world3d");
     sg::Functor& flatten = graph.add_functor("flatten", "world3d", "world2d");
+    // Flattening carries only what a 2D state has room for. Copying everything
+    // would drag a lamp's colour and a portal's size into the map on every
+    // round trip - which `roundtrip`, composed on scratch data, would never see.
+    const sg::Transport to_2d = sg::transport::only(
+        {sg::keys::x, sg::keys::y, sg::keys::z, sg::keys::vx, sg::keys::vy, sg::keys::vz,
+         sg::keys::glyph, sg::keys::yaw, sg::keys::pitch, sg::keys::fov});
     for (sg::Key id : shared) {
         lift.on_object(id, id, sg::transport::copy_all);
-        flatten.on_object(id, id, sg::transport::copy_all);
+        flatten.on_object(id, id, to_2d);
     }
     lift.on_morphism("move.player", "move.player")
         .on_morphism("move.rock", "move.rock")
@@ -92,7 +103,17 @@ int main() {
     sg::Spatial3D scratch3d("scratch3d");
     sg::Spatial2D scratch2d("scratch2d");
     report("round trip data", adj.data_defects(flat, scratch3d, scratch2d));
-    std::cout << "isomorphic: " << (adj.is_isomorphism(flat, deep) ? "yes" : "no") << "\n\n";
+    std::cout << "isomorphic: " << (adj.is_isomorphism(flat, deep) ? "yes" : "no") << "\n";
+
+    // Every law, run on the data as it stands and then undone. The integrators
+    // do nothing at dt = 0, so they are probed with a real step.
+    sg::LawOptions probe;
+    probe.args.set(sg::keys::dt, 0.5);
+    const sg::LawReport laws = sg::verify(graph, {}, probe);
+    std::vector<std::string> broken = laws.structure;
+    for (const auto& v : laws.violations) broken.push_back(v.str());
+    report("laws on live data", broken);
+    std::cout << "\n";
 
     // --- run ---------------------------------------------------------------------
     sg::Engine engine(graph);

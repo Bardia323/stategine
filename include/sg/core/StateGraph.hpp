@@ -106,6 +106,12 @@ public:
 
     const std::deque<Transition>& transitions() const { return transitions_; }
 
+    const Transition* transition(Key name) const {
+        for (const auto& t : transitions_)
+            if (t.name == name) return &t;
+        return nullptr;
+    }
+
     // First transition out of `from` for this event whose guard passes.
     // Concrete sources win over "*".
     const Transition* resolve(const State& from, const Event& ev) const {
@@ -140,6 +146,7 @@ public:
     Functor& set_functor(Functor f) {
         const Key name = f.name();
         if (name.empty()) throw std::runtime_error("functor needs a name");
+        composites_.erase(name);  // whatever it was composed from, it is not now
         auto it = functors_.find(name);
         if (it == functors_.end()) return functors_.emplace(name, std::move(f)).first->second;
         it->second = std::move(f);
@@ -147,6 +154,11 @@ public:
     }
 
     const Functor* functor(Key name) const {
+        auto it = functors_.find(name);
+        return it == functors_.end() ? nullptr : &it->second;
+    }
+
+    Functor* functor(Key name) {
         auto it = functors_.find(name);
         return it == functors_.end() ? nullptr : &it->second;
     }
@@ -165,7 +177,17 @@ public:
             acc = Functor::compose(acc, *next);
         }
         acc.rename(name);
-        return add_functor(std::move(acc));
+        Functor& out = add_functor(std::move(acc));
+        composites_[name] = chain;
+        return out;
+    }
+
+    // What a registered composite was built from, first applied first. A
+    // composite is a claim - "this one arrow does what that chain does" - and
+    // keeping the chain is what lets the claim be checked.
+    const std::vector<Key>* composite_chain(Key name) const {
+        auto it = composites_.find(name);
+        return it == composites_.end() ? nullptr : &it->second;
     }
 
     // Declare F and G together, with the round trip checked on the spot: the
@@ -418,6 +440,7 @@ private:
     std::deque<Transition> transitions_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
     std::map<Key, Functor> functors_;
+    std::map<Key, std::vector<Key>> composites_;
     std::deque<Embedding> embeddings_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     Key initial_;

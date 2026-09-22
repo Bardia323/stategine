@@ -367,7 +367,9 @@ int main(int argc, char** argv) {
                 sg::EmbedSync::Live, /*subject=*/"hall");
     graph.set_initial("hall");
 
-    for (const auto& problem : graph.validate()) std::cout << "! " << problem << "\n";
+    // Structure, then every law on the data as it stands - checked and undone.
+    const sg::LawReport laws = sg::verify(graph);
+    if (!laws.ok()) std::cout << laws.str();
 
     // Fit the hall's walls to wherever the door starts out.
     hall.emit("door.moved");

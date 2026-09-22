@@ -8,8 +8,9 @@
 //   F_mor : Hom(A) -> Hom(B)    which arrow of B corresponds to one of A
 //
 // `check_laws` verifies that every mapped arrow f : x -> y has an image
-// F(f) : F(x) -> F(y) in the target; composites built with `compose` / `*`
-// preserve composition and identities by construction.
+// F(f) : F(x) -> F(y) in the target. Whether F(f) also *does* what f does,
+// and whether composites and identities behave on real data, is for the laws
+// in Laws.hpp: construction is where a law is kept, not where it is proven.
 #pragma once
 
 #include <functional>
@@ -85,12 +86,14 @@ public:
 
     // --- object map ---------------------------------------------------------
     Functor& on_object(Key src_element, Key dst_element, Transport t = nullptr) {
+        refuse_if_identity("on_object");
         obj_[src_element] = ObjMap{dst_element, std::move(t)};
         return *this;
     }
 
     // --- arrow map ----------------------------------------------------------
     Functor& on_morphism(Key src_morphism, Key dst_morphism) {
+        refuse_if_identity("on_morphism");
         mor_[src_morphism] = dst_morphism;
         return *this;
     }
@@ -102,8 +105,26 @@ public:
     }
 
     Key image_object(Key id) const {
+        if (identity_) return id;
         auto it = obj_.find(id);
         return it == obj_.end() ? Key{} : it->second.dst;
+    }
+
+    Key image_morphism(Key id) const {
+        if (identity_) return id;
+        auto it = mor_.find(id);
+        return it == mor_.end() ? Key{} : it->second;
+    }
+
+    // The identity is a law, not a table: it fixes every object the state has
+    // or will have. A copy of the object list taken when it was built would
+    // stop being the identity the moment the state grew.
+    bool is_identity() const { return identity_; }
+
+    // Walk the arrow map.
+    template <typename Fn>
+    void for_each_morphism(Fn&& fn) const {
+        for (const auto& kv : mor_) fn(kv.first, kv.second);
     }
 
     Key image_event(Key name) const {
@@ -121,6 +142,15 @@ public:
     // --- application --------------------------------------------------------
     // Push every mapped object of `src` into `dst`, creating targets as needed.
     void apply(const State& src, State& dst) const {
+        if (identity_) {
+            if (&src == &dst) return;
+            for (const auto& s : src.elements()) {
+                Element* d = dst.find(s.id);
+                if (!d) d = &dst.add_element(s.id, s.kind);
+                transport::copy_all(s, *d);
+            }
+            return;
+        }
         for (const auto& kv : obj_) {
             const Element* s = src.find(kv.first);
             if (!s) continue;
@@ -153,6 +183,12 @@ public:
                                      f.to_.str() + " != dom(" + g.name_.str() + ")=" +
                                      g.from_.str());
         if (name.empty()) name = Key{g.name_.str() + "." + f.name_.str()};
+        // Identities are units for composition by construction, not by luck.
+        if (f.identity_ || g.identity_) {
+            Functor h = f.identity_ ? g : f;
+            h.name_ = name;
+            return h;
+        }
         Functor h(name, f.from_, g.to_);
         for (const auto& kv : f.obj_) {
             auto mid = g.obj_.find(kv.second.dst);
@@ -185,19 +221,26 @@ public:
     // g * f reads "g after f".
     friend Functor operator*(const Functor& g, const Functor& f) { return compose(f, g); }
 
-    // Identity functor on a state.
-    static Functor identity(const State& s, Key name = Key{}) {
-        if (name.empty()) name = Key{"id_" + s.id().str()};
-        Functor id(name, s.id(), s.id());
-        for (const auto& e : s.elements()) id.obj_[e.id] = ObjMap{e.id, nullptr};
-        for (const auto& m : s.morphisms()) id.mor_[m.name] = m.name;
+    // Identity functor on a state: every object and arrow to itself, including
+    // the ones the state does not have yet.
+    static Functor identity(Key state, Key name = Key{}) {
+        if (name.empty()) name = Key{"id_" + state.str()};
+        Functor id(name, state, state);
+        id.identity_ = true;
         return id;
     }
+
+    static Functor identity(const State& s, Key name = Key{}) { return identity(s.id(), name); }
 
     // --- law check ----------------------------------------------------------
     std::vector<std::string> check_laws(const State& src, const State& dst) const {
         std::vector<std::string> errors;
         const std::string tag = "functor " + name_.str() + ": ";
+        if (identity_) {
+            if (src.id() != from_ || dst.id() != to_ || from_ != to_)
+                errors.push_back(tag + "an identity must be on one state");
+            return errors;
+        }
         for (const auto& kv : obj_)
             if (!src.find(kv.first))
                 errors.push_back(tag + "object " + kv.first.str() + " missing in " +
@@ -216,23 +259,22 @@ public:
                                  dst.id().str());
                 continue;
             }
-            const Key want_dom = image_object(f->from);
-            const Key want_cod = f->to.empty() ? Key{} : image_object(f->to);
+            // Endomorphisms are arrows x -> x like any other: `to` is left empty
+            // only as a storage convenience, so compare codomains, not fields.
+            const Key want_dom = image_object(dom(*f));
+            const Key want_cod = image_object(cod(*f));
             if (want_dom.empty()) {
-                errors.push_back(tag + "domain " + f->from.str() + " of " + kv.first.str() +
+                errors.push_back(tag + "domain " + dom(*f).str() + " of " + kv.first.str() +
                                  " unmapped");
-            } else if (img->from != want_dom) {
-                errors.push_back(tag + "F(" + kv.first.str() + ") has domain " + img->from.str() +
+            } else if (dom(*img) != want_dom) {
+                errors.push_back(tag + "F(" + kv.first.str() + ") has domain " + dom(*img).str() +
                                  ", expected " + want_dom.str());
             }
-            if (f->to.empty()) {
-                if (!img->to.empty())
-                    errors.push_back(tag + "F(" + kv.first.str() + ") must stay an endomorphism");
-            } else if (want_cod.empty()) {
-                errors.push_back(tag + "codomain " + f->to.str() + " of " + kv.first.str() +
+            if (want_cod.empty()) {
+                errors.push_back(tag + "codomain " + cod(*f).str() + " of " + kv.first.str() +
                                  " unmapped");
-            } else if (img->to != want_cod) {
-                errors.push_back(tag + "F(" + kv.first.str() + ") has codomain " + img->to.str() +
+            } else if (cod(*img) != want_cod) {
+                errors.push_back(tag + "F(" + kv.first.str() + ") has codomain " + cod(*img).str() +
                                  ", expected " + want_cod.str());
             }
         }
@@ -245,9 +287,16 @@ private:
         Transport transport;
     };
 
+    void refuse_if_identity(const char* what) const {
+        if (identity_)
+            throw std::runtime_error("functor " + name_.str() + ": " + what +
+                                     " on an identity would make it something else");
+    }
+
     Key name_;
     Key from_;
     Key to_;
+    bool identity_ = false;
     std::unordered_map<Key, ObjMap> obj_;
     std::unordered_map<Key, Key> mor_;
     std::unordered_map<Key, Key> evt_;
