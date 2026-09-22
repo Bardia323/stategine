@@ -1,282 +1,151 @@
 # stategine
 #### as above; so below
 A game engine whose only structural idea is the **state**. A state is a small
-category: its elements are the objects, its morphisms are the events that act on
-them. The engine runs a **state graph** over those states; everything that
-crosses between two states crosses through a **functor**, and a state can be
-**embedded** inside an element of another, so an interface in one domain edits
-the world in a different one.
+category: elements are its objects, events acting on them are its arrows. States
+form a **graph**; data crosses between them through **functors**, and a state
+can be **embedded** in an element of another, so an interface in one domain
+edits the world in another. The engine holds all of it to its laws - at compile
+time where it can, on live data where it must.
 
-Nothing in it has a position, a parent, or a privileged frame unless some arrow
-says so. Rooms are glued to each other by doorways, and the engine checks that
-the gluing actually closes up before it will treat the pieces as one space.
-
-Header-only, C++17. The core has no dependencies; the OpenGL example fetches
-GLFW on demand.
+Header-only C++17, no dependencies. The OpenGL example fetches GLFW on demand.
 
 ![The room, lit by one lamp, with the map on the far wall](docs/images/room.png)
 
 ## The idea, in four frames
 
-A map hangs on the wall of a 3D room. The map is not a texture of the room - it
-is a **2D state embedded in the room's category**, joined to it by a pair of
-functors. Walk up to it and press `E`:
+A map hangs on the wall of a 3D room. It is not a texture: it is a **2D state
+embedded in the room**, joined to it by a pair of functors. Open it and push the
+yellow token three cells right - the crate it stands for slides across the real
+floor, in the same frame:
 
-| Walk up to it | Open it |
-| --- | --- |
-| ![Approaching the map, its frame highlighted](docs/images/approach.png) | ![The map in use, filling the view](docs/images/open.png) |
+| Walk up to it | Open it | Before | After |
+| --- | --- | --- | --- |
+| ![Approaching the map](docs/images/approach.png) | ![The map in use](docs/images/open.png) | ![The crate near the camera](docs/images/before.png) | ![The crate moved with its token](docs/images/after.png) |
 
-Now push the yellow token three cells to the right. The crate it stands for
-slides across the floor of the real room, in the same frame, while you are still
-looking at the map:
-
-| Before | After |
-| --- | --- |
-| ![The yellow crate near the camera, its token on the left of the map](docs/images/before.png) | ![The crate now against the right wall, the token moved with it](docs/images/after.png) |
-
-Nothing in the renderer knows about this. It is `stamp`, one of the two
-functors, running once a frame because the portal was declared `Live`:
+The renderer knows nothing about this. It is one functor, `stamp`, running every
+frame because the portal is `Live`:
 
 ```cpp
 graph.add_lens("collapse", "stamp", "room", "wallmap", objects,
                /* room -> map */ swizzle_scaled({{x, x}, {y, z}}, world_to_cell),
                /* map -> room */ swizzle_scaled({{x, x}, {z, y}}, cell_to_world));
-
 graph.embed("wall_map", "room", "wall_map", "wallmap", "collapse", "stamp",
             sg::EmbedSync::Live);
 ```
 
-The lamp is an ordinary element too, so dimming it (`F`) is a parameter change,
-not a renderer feature:
+## Two rooms, and a map that moves the doorway
 
-![The same room with the lamp dimmed](docs/images/dim.png)
+Neither room has a position. The only thing relating them is a **doorway**: a
+portal element in each, the same doorway seen from either side. The renderer
+roots the world at whichever room you stand in and composes the doorway to place
+the other.
 
-## The second room, and the map that moves the doorway
+The second room's map has one token: the doorway itself. Moving it walks the
+doorway around the hall - from inside the annex the hall swings round, from the
+hall the annex moves. The engine stores neither reading.
 
-Neither room has a position. Each is a state with its own coordinates, and the
-only thing relating them is a **doorway**: a portal element in each, understood
-to be the same doorway seen from either side. Where a room "is" is always an
-answer to *seen from where?* - the renderer roots the atlas at whichever room
-the viewer is standing in and composes the doorway to place the other.
+| Through the doorway | Inside the annex | Door on the east wall | south | north |
+| --- | --- | --- | --- | --- |
+| ![The annex seen through the doorway](docs/images/doorway.png) | ![The annex](docs/images/annex.png) | ![East](docs/images/east.png) | ![South](docs/images/south.png) | ![North](docs/images/north.png) |
 
-| Looking through the doorway | Inside the second room |
-| --- | --- |
-| ![The opening in the hall's wall, the annex visible through it](docs/images/doorway.png) | ![The annex, with its own map on the far wall](docs/images/annex.png) |
+The door map is a plan of the hall on purpose: a doorway has twelve stations,
+three to a side, and the border of a 5x5 board is a ring of exactly twelve cells.
+An interface shaped unlike what it edits offers moves its subject cannot make.
 
-The second map has **one** token, and that token is the doorway itself. Moving
-it walks the doorway around the hall's perimeter - and since the annex is
-related to the hall only through that doorway, the annex meets a different edge
-of the hall each time. From inside the annex nothing moves at all; it is the
-hall that swings round. Stand in the hall instead and the identical edit reads
-as the annex moving. Neither reading is privileged, and the engine stores
-neither:
-
-| doorway on the east wall | on the south wall | on the north wall |
-| --- | --- | --- |
-| ![the hall seen through the doorway from the east](docs/images/east.png) | ![the same view with the doorway moved to the south wall](docs/images/south.png) | ![and again from the north wall](docs/images/north.png) |
-
-The door map is drawn as a plan of the hall, and that is not decoration. The
-places a doorway can sit form a **ring** - twelve stations, three to a side -
-and the border of a 5x5 board is a ring of exactly twelve cells. So cells that
-are neighbours on the map are neighbours on the wall, the corners are where
-walls meet rather than door positions, and the middle is the hall's floor
-rather than a slot. An interface whose shape disagrees with the shape of what
-it edits will quietly offer moves its subject cannot make; this one steps
-around the ring because the ring is all there is.
-
-Structurally the two maps are the same object. Both are a `Surface2D` embedded
-`Live` through a lens onto elements of a room:
+Both maps are the same construction. The difference is the `subject` - where an
+interface is *mounted* and what it *acts on* are separate questions:
 
 ```cpp
-// crate map: tokens <-> crates, mounted in the hall, acting on the hall
-graph.add_lens("crates_to_map", "map_to_crates", "hall", "cratemap", crate_objects, ...);
-graph.embed("crate_map", "hall", "crate_map", "cratemap",
+graph.embed("crate_map", "hall", "crate_map", "cratemap",   // mounted in the hall, edits the hall
             "crates_to_map", "map_to_crates", sg::EmbedSync::Live);
-
-// door map: token <-> the doorway, mounted in the annex, acting on the hall
-graph.add_lens("door_to_map", "map_to_door", "hall", "doormap", {{"door", "door_tok"}}, ...);
-graph.embed("door_map", "annex", "door_map", "doormap",
+graph.embed("door_map", "annex", "door_map", "doormap",     // mounted in the annex, edits the hall
             "door_to_map", "map_to_door", sg::EmbedSync::Live, /*subject=*/"hall");
 ```
 
-The only difference is the `subject`: where an interface is *mounted* and what
-it *acts on* are separate questions, and the engine makes you answer both
-rather than assuming they coincide.
+## Gluing
 
-## Gluing: why the pieces are allowed to be one space
+Rooms glued by doorways are one case of local pieces glued into a whole.
+`sg/core/Sheaf.hpp` holds the general version and knows nothing about rooms:
 
-An atlas of rooms is one instance of a much older operation - local data,
-defined in pieces, glued into one global thing. `sg/core/Sheaf.hpp` holds the
-general version and knows nothing about rooms:
-
-* a **`Cover`** is a set of states with declared overlaps, each overlap
-  carrying its transition as a pair of functors;
-* **descent** is the condition that lets them glue: on every overlap, across
-  and back is the identity (*separatedness*), and around every loop the
-  composite is the identity (*the cocycle condition*). A loop that does not
-  close has holonomy - walk the ring of rooms and you arrive somewhere else -
-  and there is no global object to glue to, only a seam;
-* **`sections(root)`** is the glued result: the composite transition from the
-  root to every piece it can reach.
-
-Both conditions say *this composite is the identity*, and measuring the gap
-between a composite and the identity is what `Adjunction` already did - its
-unit and counit defects are exactly the descent failures, reported per object
-and per parameter. The sheaf module adds no new notion of correctness; it
-applies the engine's existing one to the arrows of a cover.
+* a **`Cover`** is a set of states with declared overlaps, each carrying its
+  transition as a pair of functors;
+* **descent** lets them glue: across an overlap and back is the identity
+  (*separatedness*), and around every loop the composite is the identity
+  (*cocycle*). A loop that does not close is a seam;
+* **`sections(root)`** is the glued result, every piece in one chosen chart.
 
 ```cpp
-for (const auto& seam : sg::descent_defects(atlas, graph))
-    std::cout << "seam: " << seam << "
-";
+for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: " << seam << "\n";
 ```
 
-Two things follow, and they are the practical point of the whole exercise:
+A doorway's transition is *derived* from its two portal elements each time it is
+asked for, so it cannot drift from the geometry it describes.
 
-1. **You cannot build a space that does not close up without being told.** A
-   ring of rooms whose transforms do not compose to the identity is named as a
-   seam before anything is drawn.
-2. **Inconsistent gluings are mostly unrepresentable rather than merely
-   detectable.** A doorway's transition is *derived* from the two portal
-   elements every time it is asked for, not stored alongside them, so it cannot
-   drift out of step with the geometry it describes. The same arrow that places
-   the rooms is the one you travel along when you walk through.
+Every image here is reproducible:
+`./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
 
-Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
-
-## The laws, and what they are laws about
-
-The engine has two primitives - states, and the transitions between them - and
-it holds everything built from them to the laws that make them what they are.
-Nothing here knows whether it is applied to a room, a ledger or a text buffer,
-and `sg_core_only` is a build target whose whole job is to fail if that ever
-stops being true.
+## The laws
 
 An invalid structure is refused at the earliest point that can see it:
 
-1. **Compile time** - whether two things compose at all. `sg/core/Typed.hpp`
-   lifts state and element names into C++ tags, so `g * f` with
-   `cod(f) != dom(g)`, a lens whose halves do not mirror, a functor object map
-   pointing the wrong way, or a claim that two non-parallel arrows are equal
-   does not build:
-
+1. **Compile time** (`sg/core/Typed.hpp`). State and element names become C++
+   tags, so composing arrows or functors whose ends do not meet, a lens whose
+   halves do not mirror, or claiming non-parallel arrows equal does not build:
    ```
    error: static assertion failed: sg: g * f needs cod(f) == dom(g); these arrows do not meet
    ```
-
-2. **Structure** - what can be checked without data. `graph.validate()`
-   reports dangling arrows, unknown endpoints, unreachable states, functors
-   whose image arrows do not line up, portals wired to the wrong state.
-
-3. **Live data** - what only the data can answer. `sg::verify(graph)` runs
-   every law below on the states' current contents, observes the result, and
-   puts everything back. A broken law comes back as a counterexample:
-
+2. **Structure** (`graph.validate()`). Dangling arrows, unknown endpoints,
+   unreachable states, functors whose image arrows do not line up, portals wired
+   to the wrong state.
+3. **Live data** (`sg/core/Laws.hpp`). `sg::verify(graph)` runs every law on the
+   states' current contents, then puts everything back. A broken law is a
+   counterexample:
    ```
    functoriality @ functor post on restock: ledger.book.stock was <unset>;
        shop.shelf [restock ; post] leaves 42, shop.shelf [post ; order_wrong] leaves 40
    ```
 
-Every data law has one shape - *these two paths, run on the same data, leave
-the same result* - so there is one checker (`sg/core/Laws.hpp`) and the laws
-are equations handed to it:
+Every data law says *these two paths, run on the same data, leave the same
+result*:
 
-| Law | The two paths | Checked by |
-| --- | --- | --- |
-| Identity | `id ; f` and `f ; id` against `f`, for arrows and functors | `laws::identity` |
-| Associativity | `(f ; g) ; h` against `f ; (g ; h)` against the three in turn | `laws::associativity` |
-| Composition | a registered composite against the chain it was built from | `laws::composition` |
-| Functoriality | `f` then `F` against `F` then `F(f)` - the functor carries the arrow's *action*, not just its ends | `laws::functoriality` |
-| Put-get | write a view back and read it again: you see what you wrote | `laws::lenses` |
-| Put-put | writing the same view twice is writing it once | `laws::lenses` |
-| **Settles** | `(get ; put) ; (get ; put)` against `get ; put` | `laws::lenses`, `interface_defects` |
-| Commutes | any two paths you declare equal, built from live data | `sg::Diagram` |
-| Separatedness | on an overlap, across and back is the identity | `Cover::descent_defects` |
-| Cocycle | around any loop of overlaps, the composite is the identity | `Cover::cocycle_defects` |
-| Lossless vs lossy | whether a round trip is an isomorphism or a projection - a fact, not a fault | `is_lossless`, `Adjunction` |
-
-`sg::enforce(graph)` throws a `LawError` carrying the report, for callers who
-would rather not start at all than start on a lie. Arrows that read event
-arguments are probed with `LawOptions` - an integrator that does nothing at
-`dt = 0` keeps every law vacuously, so give it a `dt`.
-
-Paths walk elements across states: an arrow step must start where the path is,
-and a functor or transition step moves the path to the image of the element it
-is on. So a diagram can say "sell then post to the ledger equals post then
-record the sale", and is refused - not run - if the steps do not meet.
+| Law | The two paths |
+| --- | --- |
+| Identity | `id ; f` and `f ; id` against `f`, for arrows and functors |
+| Associativity | `(f ; g) ; h` against `f ; (g ; h)` |
+| Composition | a registered composite against the chain it was built from |
+| Functoriality | `f` then `F` against `F` then `F(f)` - the functor carries the arrow's *action* |
+| Put-get | write a view back, read it again: you see what you wrote |
+| Put-put | writing the same view twice is writing it once |
+| Settles | `(get ; put)` twice against once - a lossy view must still settle |
+| Commutes | any two paths you declare equal |
+| Descent | separatedness and cocycle on a `Cover` (`descent_defects`) |
 
 ```cpp
 sg::Diagram d("shelf work");
 d.commutes(sg::Path("shop", "shelf").arrow("restock").arrow("halve"),
            sg::Path("shop", "shelf").arrow("halve").arrow("restock"));
-sg::verify(graph, {d});
-// commutes @ shelf work: shop.shelf.stock was 30;
-//     [restock ; halve] leaves 21, [halve ; restock] leaves 27
-```
+sg::verify(graph, {d});   // shop.shelf.stock was 30; [restock ; halve] leaves 21, [halve ; restock] leaves 27
 
-The same diagram, typed, cannot even be written with arrows that do not share
-both ends:
-
-```cpp
-struct Shop  { static constexpr const char* name = "shop"; };
-struct Shelf { using state = Shop; static constexpr const char* name = "shelf"; };
-struct Till  { using state = Shop; static constexpr const char* name = "till"; };
-
-auto sell   = sg::typed::arrow<Shelf, Till>(shop, "sell", "sell", on_sell);
-auto refund = sg::typed::arrow<Till, Shelf>(shop, "refund", "refund", on_refund);
-sg::typed::commutes(d, refund * sell, sg::typed::id<Shelf>());   // Shelf -> Shelf, both
+// typed, the same claim cannot be written with arrows that do not share both ends
+sg::typed::commutes(d, refund * sell, sg::typed::id<Shelf>());   // Shelf -> Shelf, both sides
 sg::typed::commutes(d, sell, refund);                            // does not compile
 ```
 
-The settles law is the one every interface owes. A view is almost never
-lossless - a map shows metres as cells, a summary rounds to dozens, a form
-trims whitespace - so demanding that the round trip be the identity would be
-wrong. What it must do is *settle*. An interface that fails this moves your
-data simply by being opened and closed:
+`sg::enforce(graph)` throws a `LawError` instead of reporting. Arrows that read
+event arguments are probed through `LawOptions` - an integrator that does nothing
+at `dt = 0` passes every law vacuously, so give it a `dt`. Only elements, state
+parameters and queued events are undone after a check; side effects a handler
+has elsewhere are not.
 
-```
-settles @ embedding desk: library.dune.copies was 30;
-    library [show ; put ; show ; put] leaves 32, library [show ; put] leaves 31
-```
+Turning the laws on found three core bugs every earlier check had passed: the
+identity functor dropped objects created after it was built, a composite ending
+in a loop was registered with the wrong type, and a rebuilt part could leave its
+composite behind unnoticed. It also found the demo's 2D/3D "isomorphism" held
+only on scratch data.
 
-### What the laws found in this engine
+## Using stategine in a project
 
-Turning them on found three bugs in the core and one in the demo, all of them
-things every earlier check had passed:
-
-* **The identity functor was a table.** `Functor::identity` copied the state's
-  object list once, so `F ; id` silently dropped anything `F` created. The
-  identity is now a law - it fixes every object, present or future.
-* **A composite ending in a loop had the wrong type.** `f : x -> y` then a loop
-  on `y` was registered as a loop on `x`, and two loops could not compose at
-  all. Endomorphisms now have `cod == dom` (`sg::cod`), stored or not.
-* **Composites were claims nobody checked.** A composite remembers its parts,
-  so rebuilding a part - as derived transitions are - and leaving the
-  composite behind is now a named `composition` violation, not a silent drift.
-* **The demo's isomorphism was only true on scratch data.** `flatten` copied
-  every parameter, so actually toggling 2D -> 3D -> 2D dragged a lamp's colour
-  and a portal's size into the 2D state. `Adjunction::data_defects` ran on
-  empty scratch states and said "clean"; the composition law ran the real
-  transitions through the real 3D state and did not.
-
-### The spatial instance
-
-A renderer cannot share code with the domain across the C++/GLSL boundary, so
-where sharing is impossible a law test stands in: `gl::Mat4::rotate_y` is
-pinned to `heading` and `across`, and reintroducing the sign error this engine
-once shipped turns nine assertions red. In the same spirit `RoomMatrix` makes
-"has not been placed yet" a type, so a room's placement cannot leak into
-texture space and slide every surface in the building when you walk through a
-door.
-
-These are instances of the general point rather than the point itself: derived
-things cannot drift, things declared twice eventually will, and where two
-layers cannot share code, a law test is the only thing holding them together.
-
-## Using stategine in your own project
-
-Pin a release and let CMake fetch it; nothing of the engine's examples, tests
-or GLFW download comes along:
+Pin a release; none of the engine's examples, tests or downloads come along.
 
 ```cmake
 include(FetchContent)
@@ -287,81 +156,31 @@ FetchContent_MakeAvailable(stategine)
 
 target_link_libraries(my_game PRIVATE stategine::stategine
                       stategine::warnings          # optional: -Wall -Wextra / /W4
-                      stategine::static_runtime)   # optional: MinGW self-contained exes
+                      stategine::static_runtime)   # optional: self-contained MinGW exes
 ```
 
-To change the engine and a project together, build the project against a
-local checkout instead of the tag - uncommitted edits included:
-
-```sh
-cmake -B build -DFETCHCONTENT_SOURCE_DIR_STATEGINE=../stategine
-```
-
+To change the engine and a project together, build against a local checkout,
+uncommitted edits included: `-DFETCHCONTENT_SOURCE_DIR_STATEGINE=../stategine`.
 [stategine-template](https://github.com/Bardia323/stategine-template) (private)
-sets this up with `pinned` and `dev` presets and a ctest that runs every law on
-the game's world. Releases and what they break are in `CHANGELOG.md`.
+sets this up, with a ctest that runs every law on the game's world. What each
+release breaks is in `CHANGELOG.md`.
 
-## Layout
-
-```
-include/sg/
-  core/        the engine, domain-agnostic
-    Core.hpp        Key (interned names), Value, Params, Element, Event, Morphism, EventBus
-    State.hpp       a state: elements + morphisms + lifecycle + indexed dispatch
-    Functor.hpp     functors, reusable transports, composition, natural transformations
-    Adjunction.hpp  adjoint / isomorphic state pairs, with defect reports
-    Embedding.hpp   a state nested in an element of another state
-    Sheaf.hpp       covers, descent, gluing, and the law every interface owes
-    Laws.hpp        paths, diagrams, and every law checked on live data
-    Typed.hpp       tags and typed handles: ill-typed composition does not compile
-    StateGraph.hpp  states, transitions, functors, lenses, embeddings, validation, DOT
-    Engine.hpp      the state stack, the frame, the open portals
-  domains/     what a state is *about* - data and arrows, never pixels
-    Spatial.hpp     SpatialState / Spatial2D / Spatial3D: bodies, walls, lights,
-                    anchored groups, portals, camera queries
-    Atlas.hpp       rooms glued by doorways - the spatial instance of a Cover
-    Console.hpp     a scrollback and an input line
-    Surface.hpp     a 2D state that can hand over its own RGBA raster
-  render/      how a state is *shown* - swappable, never owned by the state
-    Ascii.hpp       terminal views for 2D, 3D (top-down) and console states
-    GLWorld.hpp     the OpenGL view: shadows, HDR, bloom
-  gl/          the GL backend: loader, math, resources, shaders, window
-  sg.hpp       umbrella for core + domains (renderers are opt-in)
-  Version.hpp  SG_VERSION_*, the one place the version is written
-```
-
-The three layers are the reuse story. A domain state knows nothing about
-rendering, so the same `Spatial3D` can be a lit room on screen, a top-down
-sketch in a terminal and a texture on a wall at the same time. A renderer knows
-nothing about a specific game, so it draws any state that speaks the shared
-parameter vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`, `w/h/yaw`, interned once in
-`sg::keys`). And the core knows nothing about either.
-
-## The model
+## Writing a game
 
 | Concept | In the engine | Category theory |
 | --- | --- | --- |
-| Element | `Element` in a state | object of that state's category |
-| Event morphism | `state.arrow(name, from, to, trigger, fn)` | arrow between objects |
-| Composite | `state.compose("gf", "f", "g", trigger)` | `g . f`, typed: `cod(f) == dom(g)` |
+| Element | `Element` in a state | object |
+| Event morphism | `state.arrow(name, from, to, trigger, fn)` | arrow |
+| Composite | `state.compose("gf", "f", "g", trigger)` | `g . f`, needs `cod(f) == dom(g)` |
 | State | a `State` subclass | a small category |
 | Transition | `graph.connect(from, trigger, to)` | arrow in the state graph |
-| Data transport | `Functor` on a transition or a portal | functor `A -> B` |
-| View + edit pair | `graph.add_lens(...)` | a functor pair, `out . in` |
-| Lossless pair | `Adjunction` | `F -| G`; both units trivial = isomorphism |
-| Nested interface | `graph.embed(...)` | a state living in an object of another |
-| Anchored group | `parent` on an element | a frame: poses compose along the chain |
-| Cover | `Cover` / `Atlas` | pieces plus the transitions between them |
-| Descent | `descent_defects(...)` | separatedness and the cocycle condition |
-| Gluing | `Cover::sections(root)` | the composite into one chosen chart |
+| Data transport | `Functor` on a transition or portal | functor `A -> B` |
+| View + edit pair | `graph.add_lens(...)` | a functor pair |
+| Lossless pair | `Adjunction` | `F -| G`, isomorphism when both units are trivial |
+| Nested interface | `graph.embed(...)` | a state inside an object of another |
+| Cover, gluing | `Cover`, `Atlas`, `sections(root)` | descent |
 
-Ill-typed composition through typed handles does not compile; through plain
-names it throws. `graph.validate()` reports dangling morphisms, unknown
-transition endpoints, unreachable states, functors whose image arrows do not
-line up, and portals wired to the wrong state; `sg::verify(graph)` adds every
-law on live data.
-
-## A state
+### A state
 
 ```cpp
 class Battle : public sg::State {
@@ -371,20 +190,21 @@ public:
         add_element("slime", "unit").params.set("hp", int64_t{8});
 
         arrow("strike", "hero", "slime", "attack",          // hero --attack--> slime
-              [](sg::State& s, sg::Element& a, sg::Element* b, const sg::Event& ev) {
-                  b->params.set("hp", b->params.get_or<int64_t>("hp", 0) -
-                                          ev.args.get_or<int64_t>("dmg", 1));
-                  if (b->params.get_or<int64_t>("hp", 0) <= 0) s.emit("victory");
+              [](sg::State& s, sg::Element&, sg::Element* slime, const sg::Event& ev) {
+                  const int64_t hp = slime->params.get_or<int64_t>("hp", 0) -
+                                     ev.args.get_or<int64_t>("dmg", 1);
+                  slime->params.set("hp", hp);
+                  if (hp <= 0) s.emit("victory");   // an event of the battle, not yet of the game
               });
     }
 };
 ```
 
-## A graph
+### A graph
 
 ```cpp
 sg::StateGraph graph;
-graph.add<Battle>();
+auto& battle = graph.add<Battle>();
 graph.add<sg::ConsoleState>("menu");
 graph.connect("battle", "victory", "menu");   // switch
 graph.push("battle", "pause", "menu");        // stack on top
@@ -392,171 +212,115 @@ graph.pop("menu", "back");                    // and back off
 graph.set_initial("battle");
 
 sg::Engine engine(graph);
+// A state's events stay in the state. Forward the ones that should move the
+// game - here, rather than from inside the arrow, so the law checks can run
+// the arrow without setting the engine in motion.
+battle.bus().subscribe("victory", [&engine](const sg::Event& e) { engine.fire(e); });
 engine.start();
-engine.fire("attack");
+engine.fire(sg::Event{"attack", sg::Params{}.set("dmg", int64_t{8})});
 engine.run(60.0);
 ```
 
-Transitions take an optional `guard`, an `action` (which fills the `Params`
-handed to `on_enter`), and a `functor`. `"*"` as the source matches any state.
+Transitions take an optional `guard`, an `action` (fills the `Params` handed to
+`on_enter`) and a `functor`. `"*"` as the source matches any state.
 
-## Functors between domains
+### Functors
 
-Transports are the reusable part: they talk about parameter names, not about 2D
-or 3D, so "the map's y axis is the world's z axis" is one call.
+Transports talk about parameter names, not 2D or 3D, so "the map's y is the
+world's z" is one call. Built in: `copy_all`, `only({...})`,
+`swizzle({{dst, src}, ...})`, `swizzle_scaled(pairs, fn)`, `then(a, b)`.
 
 ```cpp
 sg::Functor& lift = graph.add_functor("lift", "world2d", "world3d");
 lift.on_object("player", "player", sg::transport::copy_all)
     .on_morphism("move.player", "move.player")
     .on_event(flat.step_event(), deep.step_event());
-
 graph.connect("world2d", "toggle", "world3d").functor = "lift";
+graph.compose_functors("roundtrip", {"lift", "flatten"});   // g * f, checked at the seam
 ```
 
-Built-in transports: `copy_all`, `only({...})`, `swizzle({{dst, src}, ...})`,
-`swizzle_scaled(pairs, fn)` for unit changes, and `then(a, b)`.
+`Adjunction` reports what a round trip loses (`unit_defects`, `counit_defects`,
+`data_defects`, `is_isomorphism`).
 
-Composition is `g * f` ("g after f"), checked at the seam;
-`graph.compose_functors("roundtrip", {"lift", "flatten"})` registers the
-composite. `Functor::check_laws(src, dst)` verifies that every mapped arrow
-`f : x -> y` has `F(f) : F(x) -> F(y)`.
+### Embeddings
 
-`Adjunction` reports what a round trip loses:
+A transition replaces the active state; an embedding nests one inside an element
+(the portal) of a running host.
 
-```cpp
-sg::Adjunction adj("lift -| flatten", &lift, &flatten);
-adj.unit_defects(flat);    // objects where G(F(x)) != x
-adj.counit_defects(deep);  // objects where F(G(y)) != y
-adj.data_defects(flat, scratch3d, scratch2d);   // parameters changed by a round trip
-adj.is_isomorphism(flat, deep);
-```
+* `EmbedSync::Live` - `out` runs every frame: the map moves the crate at once.
+* `EmbedSync::Commit` - `out` runs on close; `close_embed(name, false)` cancels.
+* `EmbedSync::View` - `in` runs every frame, nothing comes back.
 
-In the demo the 2D state parks a `z` it never draws, which is what turns the
-free/forgetful pair into an isomorphism - the report prints `isomorphic: yes`.
-Drop that slot and the same report names the parameter that died.
+Open and close with `engine.open_embed(name)` / `close_embed(name)`, or fire
+`embed.open` / `embed.close` with a `name`. A focused portal receives the
+engine's events; portals nest.
 
-## Embedding: a state inside a state
+## Rendering
 
-A transition replaces the active state. An embedding nests one: the host keeps
-running while a guest lives inside one of its elements (the portal).
+Domain states never know about pixels, and renderers never know about a game:
+anything speaking the shared vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`,
+`w/h/yaw`, in `sg::keys`) can be drawn. So one `Spatial3D` can be a lit room, a
+terminal sketch and a texture on a wall at once.
 
-```cpp
-// declare the view and the edit direction together
-graph.add_lens("collapse", "stamp", "room", "wallmap", objects,
-               sg::transport::swizzle_scaled({{sg::keys::x, sg::keys::x},
-                                              {sg::keys::y, sg::keys::z}}, world_to_cell),
-               sg::transport::swizzle_scaled({{sg::keys::x, sg::keys::x},
-                                              {sg::keys::z, sg::keys::y}}, cell_to_world));
+`sg::render::GLWorldView` draws any `Spatial3D`: portal passes into other
+states, shadow maps for the two nearest lamps, up to four spot lights with PCF
+shadows, procedural materials and fog, then bloom, ACES tonemapping and FXAA.
+Walls are data - a state with `wall` elements gets them drawn, one without gets a
+box. Knobs are in `sg::render::GLQuality`; elements set their own look through
+parameters (`r/g/b`, `roughness`, `intensity`, ...).
 
-graph.embed("wall_map", "room", "wall_map", "wallmap", "collapse", "stamp",
-            sg::EmbedSync::Live);
-```
-
-* `EmbedSync::Live` - `out` runs every frame: move a token on the map and the
-  crate in the room moves with it, in the same frame.
-* `EmbedSync::Commit` - `out` runs on close, so `close_embed(name, false)` is
-  a cancel button.
-* `EmbedSync::View` - `in` runs every frame and nothing comes back: a read-only
-  window onto another state.
-
-An embedding also carries a `subject`: the state the guest is a view *of*.
-It defaults to the host - a map on the wall of the room it describes - but a
-panel can hang in one room and act on another, and saying so keeps "where it is
-displayed" from being quietly conflated with "what it edits".
-
-Open and close with `engine.open_embed(name)` / `engine.close_embed(name)`, or
-by firing `embed.open` / `embed.close` with a `name` argument. While a portal
-holds focus, engine events go to the guest; `engine.focused()` says which state
-that is. Portals nest: a guest may host a portal of its own.
-
-## The OpenGL view
-
-`sg::render::GLWorldView` draws any `Spatial3D`. Per frame:
-
-1. one pass per portal bound to another 3D state (`bind_world`), rendered from
-   that state's own camera - a doorway between two *states*, should you want one
-2. a depth-only shadow pass per shadow-casting lamp: the two nearest the
-   viewer get a 2048² map each, so a second room stays shadowed while you are
-   standing in it
-3. scene into a multisampled RGBA16F target: up to four spot lights, 4x4 PCF
-   shadows from the nearest two, hemispheric ambient, a GGX-ish specular lobe,
-   procedural floor tiles / wall plaster / crate planks, distance fog
-4. resolve, bright pass, separable gaussian blur at half resolution
-5. ACES tonemap with bloom, vignette, grain and a light FXAA
-
-![Standing in the annex, looking through the doorway into the hall: both rooms lit and shadowed, by their own lamps](docs/images/east.png)
-
-Level geometry is data: a state with `wall` elements has them drawn (and gets
-only a floor and a ceiling from its `room_*` parameters), while a state without
-any gets the implicit four-wall box. Anchored elements are placed through
-`world_pose`, so a moving group needs nothing from the renderer.
-
-Quality knobs live in `sg::render::GLQuality` (shadow size, MSAA, bloom
-strength/threshold/passes, exposure). Elements decide their own look through
-parameters: `r/g/b`, `roughness`, `sx/sy/sz`, `yaw`, and for the lamp
-`intensity`, `inner`, `outer`, `dx/dy/dz`.
+![Standing in the annex, looking into the hall: both rooms lit and shadowed by their own lamps](docs/images/east.png)
 
 ## Performance
 
-Names are interned to `Key`s at setup, so the hot paths compare pointers.
-Element lookup is a hash on that pointer, morphisms are bucketed by trigger (an
-event only visits the arrows that listen for it), `Params` is a flat vector
-scanned linearly, and the event queues reuse their buffers frame to frame. A
-`Surface2D` only re-rasterises when something on it actually moved, and the GL
-view only re-uploads a portal texture when the raster's revision changed.
-
-`./build/sg_bench` on this machine (512 bodies, 513 arrows, -O2):
+Names are interned once, so hot paths compare pointers; morphisms are bucketed
+by trigger; `Params` is a flat vector; queues reuse their buffers; surfaces and
+portal textures redraw only when something moved. `./build/sg_bench` here
+(512 bodies, -O2):
 
 ```
 element lookup                     103,000 k/s
 frames (512 integrator arrows)          47 k/s      ~24M arrow applications/s
 functor apply (512 objects)         21,000 k/s
-frames with a live portal               11 k/s      (transport runs twice a frame)
+frames with a live portal               11 k/s
 ```
 
-## Examples
+## Layout
 
-| Target | What it shows |
-| --- | --- |
-| `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
-| `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
-| `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
-| `sg_tests` | 155 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
-| `sg_laws` | every data law shown holding, then broken on purpose and read back as a counterexample |
-| `compile_fail_*` | ctest cases that pass only if an ill-typed composition is refused with Stategine's own message |
-| `sg_core_only` | the core built with no domain and no renderer: the layering, as a build failure |
-| `sg_bench` | throughput of the hot paths |
+```
+include/sg/
+  core/      the engine, domain-agnostic
+    Core.hpp State.hpp Functor.hpp Adjunction.hpp Embedding.hpp
+    StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
+    Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
+  domains/   what a state is about: Spatial, Atlas, Console, Surface
+  render/    how a state is shown: Ascii, GLWorld
+  gl/        the GL backend
+  sg.hpp     umbrella for core + domains (renderers are opt-in)
+  Version.hpp
+```
 
-### Build
+## Build and run
 
 ```sh
-cmake -S . -B build -G "MinGW Makefiles"   # or your generator of choice
+cmake -S . -B build -G "MinGW Makefiles"   # or any generator; -DSG_BUILD_GL=OFF skips GLFW
 cmake --build build -j
-ctest --test-dir build        # unit tests, laws, and the must-not-compile cases
+ctest --test-dir build                     # unit tests, laws, must-not-compile cases
 ./build/sg_room3d
 ```
 
-GLFW is fetched by CMake for `sg_room3d` only; `-DSG_BUILD_GL=OFF` skips it and
-the download.
+| Target | What it is |
+| --- | --- |
+| `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, two maps |
+| `sg_room` | the same room and lens, in the terminal |
+| `sg_demo` | console/2D/3D states, an isomorphic pair, transitions, a portal, the laws - headless |
+| `sg_tests` | 155 assertions over the core, functors, portals and rooms |
+| `sg_laws` | every data law holding, then broken on purpose and read back |
+| `compile_fail_*` | pass only if an ill-typed composition is refused with stategine's own message |
+| `sg_core_only` | the core with no domain or renderer - the layering, as a build failure |
+| `sg_bench` | hot-path throughput |
 
-### sg_room3d controls
-
-```
-W A S D   walk            (in map mode: move the selected token)
-mouse     look            Esc releases the mouse, Esc again quits
-E         use the map     while standing in front of it
-Tab       select token    while the map is open
-C         cancel          close the map, discarding the edits
-Q / R     slide the lamp  F  dim / brighten
-doorway   walk through the opening
-```
-
-Walk to the wall, press `E`, push a token one cell with `D`: the crate it stands
-for slides across the floor behind you while you are still looking at the map.
-Nothing special-cases that - it is `stamp` running once a frame because the
-portal was declared `Live`. The map in the second room works identically; its
-one token happens to be the anchor the whole room hangs from.
-
-`./build/sg_room3d 120 frame.ppm` runs 120 frames, writes the last one to a PPM
-and exits, which is how the renderer is smoke-tested without a display.
+`sg_room3d` controls: `WASD` walk (moves the token in map mode), mouse look,
+`E` use a map, `Tab` next token, `C` cancel, `Q`/`R` slide the lamp, `F` dim,
+`Esc` release mouse / quit. `./build/sg_room3d 120 frame.ppm` renders 120 frames
+to a PPM and exits.
