@@ -17,6 +17,8 @@
 #include <variant>
 #include <vector>
 
+#include "sg/Version.hpp"
+
 namespace sg {
 
 // ---------------------------------------------------------------------------

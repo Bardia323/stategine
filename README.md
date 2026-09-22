@@ -273,6 +273,34 @@ These are instances of the general point rather than the point itself: derived
 things cannot drift, things declared twice eventually will, and where two
 layers cannot share code, a law test is the only thing holding them together.
 
+## Using stategine in your own project
+
+Pin a release and let CMake fetch it; nothing of the engine's examples, tests
+or GLFW download comes along:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(stategine
+  GIT_REPOSITORY https://github.com/Bardia323/stategine.git
+  GIT_TAG        v0.1.0)
+FetchContent_MakeAvailable(stategine)
+
+target_link_libraries(my_game PRIVATE stategine::stategine
+                      stategine::warnings          # optional: -Wall -Wextra / /W4
+                      stategine::static_runtime)   # optional: MinGW self-contained exes
+```
+
+To change the engine and a project together, build the project against a
+local checkout instead of the tag - uncommitted edits included:
+
+```sh
+cmake -B build -DFETCHCONTENT_SOURCE_DIR_STATEGINE=../stategine
+```
+
+[stategine-template](https://github.com/Bardia323/stategine-template) (private)
+sets this up with `pinned` and `dev` presets and a ctest that runs every law on
+the game's world. Releases and what they break are in `CHANGELOG.md`.
+
 ## Layout
 
 ```
@@ -299,6 +327,7 @@ include/sg/
     GLWorld.hpp     the OpenGL view: shadows, HDR, bloom
   gl/          the GL backend: loader, math, resources, shaders, window
   sg.hpp       umbrella for core + domains (renderers are opt-in)
+  Version.hpp  SG_VERSION_*, the one place the version is written
 ```
 
 The three layers are the reuse story. A domain state knows nothing about
