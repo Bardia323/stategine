@@ -144,6 +144,28 @@ Two things follow, and they are the practical point of the whole exercise:
 
 Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
 
+## What the engine refuses to let you get wrong
+
+Every entry here is a mistake this engine actually shipped, turned into
+something that fails before it can ship again. They are listed in order of how
+early they are caught.
+
+| Mistake | Caught by | When |
+| --- | --- | --- |
+| A rotation written out by hand a second time, with a sign flipped | one `rotate_xz` / `heading` / `across` in `core/Core.hpp`; nothing else rotates anything | compile time, by there being nowhere else to write it |
+| The renderer's matrix disagreeing with the domain's rotation | a law test pinning `gl::Mat4::rotate_y` to `heading` and `across` | `sg_tests`, and it fails loudly - reintroducing the old sign gives nine failures |
+| A room's placement leaking into texture space, so surfaces slide when you change rooms | `RoomMatrix`: a model matrix that has not been placed yet is a distinct type, and the placement is applied in exactly one function | compile time |
+| A doorway's transition writing the far side's portal, moving the room you walk into | `travel_defects` - and `as_cover` derives transitions from the portals, so the derived path cannot express it | before running, and by construction |
+| A doorway hung on an element that is not a portal, or onto a room that does not exist | `descent_defects` | before running |
+| Two rooms disagreeing about where their shared doorway is | `descent_defects`, the spatial half | before running |
+| A ring of rooms that does not close up | the cocycle check | before running |
+| An interface whose lens runs between the wrong pair of states | `StateGraph::validate` | before running |
+| An interface offering moves its subject cannot make | give the surface the shape of its subject - a ring is drawn as a ring | by construction |
+
+The pattern in all of them is the same: when something is *derived* it cannot
+drift, when it is *declared twice* it eventually will, and when two layers
+cannot share code a law test is the only thing holding them together.
+
 ## Layout
 
 ```
@@ -360,7 +382,7 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
-| `sg_tests` | 103 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_tests` | 146 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build

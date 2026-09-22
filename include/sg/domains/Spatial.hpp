@@ -153,10 +153,10 @@ public:
 // Gameplay asks these ("am I close enough to use the map?"), so they live with
 // the domain rather than in a renderer.
 inline Vec3d forward_of(const Element& camera) {
-    const double yaw = camera.params.num(keys::yaw);
     const double pitch = camera.params.num(keys::pitch);
+    const Vec3d flat = heading(camera.params.num(keys::yaw));
     const double cp = std::cos(pitch);
-    return {cp * std::cos(yaw), std::sin(pitch), cp * std::sin(yaw)};
+    return {flat.x * cp, std::sin(pitch), flat.z * cp};
 }
 
 inline double distance(const Vec3d& a, const Vec3d& b) {
@@ -181,10 +181,9 @@ inline Pose local_pose(const Element& e) {
 }
 
 inline Pose compose_pose(const Pose& parent, const Pose& local) {
-    const double c = std::cos(parent.yaw), s = std::sin(parent.yaw);
-    return Pose{{parent.position.x + local.position.x * c - local.position.z * s,
-                 parent.position.y + local.position.y,
-                 parent.position.z + local.position.x * s + local.position.z * c},
+    const Vec3d turned = rotate_xz(local.position, parent.yaw);
+    return Pose{{parent.position.x + turned.x, parent.position.y + turned.y,
+                 parent.position.z + turned.z},
                 parent.yaw + local.yaw};
 }
 
@@ -266,10 +265,8 @@ inline void resolve_wall_collisions(const State& s, Element& mover, double radiu
 
         // Into the wall's own frame.
         const Vec3d p = position_of(mover);
-        const double c = std::cos(-w.yaw), sn = std::sin(-w.yaw);
-        const double dx = p.x - w.position.x, dz = p.z - w.position.z;
-        const double lx = dx * c - dz * sn;
-        const double lz = dx * sn + dz * c;
+        const Vec3d local = rotate_xz({p.x - w.position.x, 0.0, p.z - w.position.z}, -w.yaw);
+        const double lx = local.x, lz = local.z;
         if (std::fabs(lx) >= hx || std::fabs(lz) >= hz) continue;
 
         // Out through whichever face is closest.
@@ -281,9 +278,9 @@ inline void resolve_wall_collisions(const State& s, Element& mover, double radiu
         } else {
             oz = lz >= 0 ? push_z : -push_z;
         }
-        const double bc = std::cos(w.yaw), bs = std::sin(w.yaw);
-        mover.params.set(keys::x, p.x + ox * bc - oz * bs);
-        mover.params.set(keys::z, p.z + ox * bs + oz * bc);
+        const Vec3d push = rotate_xz({ox, 0.0, oz}, w.yaw);
+        mover.params.set(keys::x, p.x + push.x);
+        mover.params.set(keys::z, p.z + push.z);
     }
 }
 
@@ -311,11 +308,9 @@ inline double portal_delta(const Element& here, const Element& there) {
 // two out of step is what makes a portal look subtly wrong.
 inline Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, double yaw) {
     const double delta = portal_delta(here.yaw, there.yaw);
-    const double dx = pos.x - here.position.x, dz = pos.z - here.position.z;
-    const double c = std::cos(delta), s = std::sin(delta);
-    return Pose{{there.position.x + dx * c - dz * s, pos.y,
-                 there.position.z + dx * s + dz * c},
-                yaw + delta};
+    const Vec3d turned =
+        rotate_xz({pos.x - here.position.x, 0.0, pos.z - here.position.z}, delta);
+    return Pose{{there.position.x + turned.x, pos.y, there.position.z + turned.z}, yaw + delta};
 }
 
 inline Pose through_portal(const Element& here, const Element& there, const Vec3d& pos,
@@ -334,9 +329,8 @@ inline std::function<void(const Element&, Element&)> portal_carry(const Element&
     const double delta = portal_delta(here, there);
     return [hp, tp, delta](const Element& src, Element& dst) {
         const Vec3d p = position_of(src);
-        const double dx = p.x - hp.x, dz = p.z - hp.z;
-        const double c = std::cos(delta), s = std::sin(delta);
-        set_position(dst, {tp.x + dx * c - dz * s, p.y, tp.z + dx * s + dz * c});
+        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
+        set_position(dst, {tp.x + turned.x, p.y, tp.z + turned.z});
         dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
         dst.params.set(keys::pitch, src.params.num(keys::pitch));
         dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
@@ -348,8 +342,9 @@ inline std::function<void(const Element&, Element&)> portal_carry(const Element&
 inline bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
     const Vec3d p = position_of(portal);
     const double yaw = portal.params.num(keys::yaw);
-    const double nx = std::cos(yaw), nz = std::sin(yaw);   // facing
-    const double tx = -std::sin(yaw), tz = std::cos(yaw);  // across the opening
+    const Vec3d face = heading(yaw);  // the way it faces
+    const Vec3d side = across(yaw);   // along the opening
+    const double nx = face.x, nz = face.z, tx = side.x, tz = side.z;
     const double d0 = (from.x - p.x) * nx + (from.z - p.z) * nz;
     const double d1 = (to.x - p.x) * nx + (to.z - p.z) * nz;
     if (!(d0 > 0.0 && d1 <= 0.0)) return false;  // only front to back

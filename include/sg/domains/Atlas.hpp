@@ -194,6 +194,31 @@ inline Cover as_cover(const Atlas& atlas, StateGraph& g) {
     return cover;
 }
 
+// A doorway's transition carries the traveller, not the doorway. A functor
+// that writes the far side's portal moves the room you are walking into, every
+// time anybody walks into it - which is a thing this engine has actually done.
+// `as_cover` derives its transitions and so cannot make this mistake; this
+// catches a cover whose transitions were registered by hand.
+inline std::vector<std::string> travel_defects(const Cover& cover, const StateGraph& g) {
+    std::vector<std::string> out;
+    for (const Overlap& o : cover.overlaps()) {
+        for (const Key fname : {o.u_to_v, o.v_to_u}) {
+            const Functor* f = g.functor(fname);
+            if (!f) continue;
+            const State* target = g.find(f->to());
+            if (!target) continue;
+            f->for_each_object([&](Key, Key image) {
+                const Element* e = target->find(image);
+                if (e && e->kind == kinds::portal)
+                    out.push_back("overlap " + o.name.str() + ": its transition " + fname.str() +
+                                  " writes " + f->to().str() + "." + image.str() +
+                                  ", which is a doorway, not a traveller");
+            });
+        }
+    }
+    return out;
+}
+
 // Everything that stops this atlas being one space: a doorway whose two sides
 // disagree, or a ring of rooms that does not close up.
 //
@@ -204,11 +229,15 @@ inline Cover as_cover(const Atlas& atlas, StateGraph& g) {
 // fails this is one the two rooms disagree about.
 inline std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g,
                                                 int max_cycle = 4) {
-    std::vector<std::string> out = as_cover(atlas, g).descent_defects(g, max_cycle);
+    const Cover cover = as_cover(atlas, g);
+    std::vector<std::string> out = cover.descent_defects(g, max_cycle);
+    for (const auto& d : travel_defects(cover, g)) out.push_back(d);
 
     for (const Doorway& d : atlas.doorways()) {
         const State* a = g.find(d.room_a);
         const State* b = g.find(d.room_b);
+        if (!a) out.push_back("doorway " + d.name.str() + ": unknown room " + d.room_a.str());
+        if (!b) out.push_back("doorway " + d.name.str() + ": unknown room " + d.room_b.str());
         if (!a || !b) continue;
         const Element* pa = a->find(d.portal_a);
         const Element* pb = b->find(d.portal_b);
@@ -216,6 +245,9 @@ inline std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& 
             out.push_back("doorway " + d.name.str() + ": a side is missing its portal element");
             continue;
         }
+        if (pa->kind != kinds::portal || pb->kind != kinds::portal)
+            out.push_back("doorway " + d.name.str() + ": a side is not a portal element");
+
         Pose placement;
         if (!atlas.placement(g, d.room_b, d.room_a, placement)) continue;
         const Pose landed = compose_pose(placement, world_pose(*a, *pa));

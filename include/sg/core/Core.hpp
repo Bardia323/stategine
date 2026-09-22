@@ -286,6 +286,27 @@ struct Vec3d {
     double x = 0, y = 0, z = 0;
 };
 
+// --- one rotation, one heading ----------------------------------------------
+// Every sign error this engine has shipped came from writing a rotation out by
+// hand a second time, or from two places disagreeing about what an angle is
+// measured from. There is one answer here and everything else calls it.
+//
+//   yaw is a heading measured from +x, turning towards +z.
+//   heading(yaw) is the way something with that yaw faces.
+//   across(yaw)  is ninety degrees to its left.
+//
+// A renderer that builds a rotation matrix must agree with this; `sg_tests`
+// checks that it does, since the two live on opposite sides of a layer
+// boundary and cannot share the code itself.
+inline Vec3d rotate_xz(const Vec3d& v, double yaw) {
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    return {v.x * c - v.z * s, v.y, v.x * s + v.z * c};
+}
+
+inline Vec3d heading(double yaw) { return {std::cos(yaw), 0.0, std::sin(yaw)}; }
+
+inline Vec3d across(double yaw) { return {-std::sin(yaw), 0.0, std::cos(yaw)}; }
+
 inline Vec3d position_of(const Element& e) {
     return {e.params.num(keys::x), e.params.num(keys::y), e.params.num(keys::z)};
 }

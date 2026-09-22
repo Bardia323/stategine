@@ -5,6 +5,7 @@
 #include <string>
 
 #include "sg/core/Sheaf.hpp"
+#include "sg/gl/Math.hpp"
 #include "sg/domains/Atlas.hpp"
 #include "sg/render/Ascii.hpp"
 #include "sg/sg.hpp"
@@ -451,9 +452,57 @@ void test_wall_collisions() {
 }
 
 // --- portals between 3D states --------------------------------------------------
+// --- the one convention -------------------------------------------------------
+// The domain and the renderer sit on opposite sides of a layer boundary and
+// cannot share a rotation, so this pins them together. Every sign error this
+// engine has shipped would have failed here.
+void test_one_rotation() {
+    const double angles[] = {0.0, 0.7, 1.5707963, 3.14159265, -2.2, 5.9};
+    for (double a : angles) {
+        // A heading is what something with that yaw faces, and turning a unit
+        // x by that yaw must produce it.
+        const sg::Vec3d h = sg::heading(a);
+        const sg::Vec3d turned = sg::rotate_xz({1, 0, 0}, a);
+        check(roughly(h.x, turned.x) && roughly(h.z, turned.z),
+              "rotating +x by a yaw gives that yaw's heading");
+
+        // `across` is a quarter turn to the left of the heading, and the two
+        // are a right-handed pair.
+        const sg::Vec3d s = sg::across(a);
+        check(roughly(h.x * s.x + h.z * s.z, 0.0), "across is square to the heading");
+        check(roughly(s.x, sg::rotate_xz(h, 1.5707963265).x), "and is heading turned a quarter");
+
+        // The renderer's matrix has to be that same rotation. It is written in
+        // floats, on the other side of the engine, and nothing but this test
+        // stops it drifting.
+        const sg::gl::Mat4 m = sg::gl::Mat4::rotate_y(static_cast<float>(a));
+        const sg::gl::Vec3 mx = m.transform_point({1, 0, 0});
+        const sg::gl::Vec3 mz = m.transform_point({0, 0, 1});
+        check(std::fabs(mx.x - h.x) < 1e-5 && std::fabs(mx.z - h.z) < 1e-5,
+              "the render matrix turns +x to the same heading");
+        check(std::fabs(mz.x - s.x) < 1e-5 && std::fabs(mz.z - s.z) < 1e-5,
+              "and turns +z to the same side vector");
+
+        // And the vector form the renderer uses for portal offsets agrees too.
+        const sg::gl::Vec3 rotated = sg::gl::rotate_y({1, 0, 0}, static_cast<float>(a));
+        check(std::fabs(rotated.x - h.x) < 1e-5 && std::fabs(rotated.z - h.z) < 1e-5,
+              "as does rotating a vector directly");
+    }
+
+    // Composing poses is that rotation too, not a second copy of it.
+    const sg::Pose parent{{3.0, 0.0, 1.0}, 1.1};
+    const sg::Pose local{{2.0, 0.0, -0.5}, 0.3};
+    const sg::Pose composed = sg::compose_pose(parent, local);
+    const sg::Vec3d by_hand = sg::rotate_xz(local.position, parent.yaw);
+    check(roughly(composed.position.x, parent.position.x + by_hand.x) &&
+              roughly(composed.position.z, parent.position.z + by_hand.z),
+          "composing poses turns the child by the parent's yaw");
+    check(roughly(composed.yaw, parent.yaw + local.yaw), "and adds the headings");
+}
+
 // Yaw is a heading: a doorway faces the way its yaw points, exactly as a
 // camera does. One convention, used by the domain and the renderer alike.
-sg::Vec3d facing(double yaw) { return {std::cos(yaw), 0.0, std::sin(yaw)}; }
+sg::Vec3d facing(double yaw) { return sg::heading(yaw); }
 
 void test_portal_transform() {
     sg::Spatial3D a("a"), b("b");
@@ -641,6 +690,68 @@ void test_atlas_is_a_cover() {
           "and the two readings are inverse");
 }
 
+// --- the guards themselves ----------------------------------------------------------
+// Each of these is a mistake this engine actually shipped, turned into
+// something that fails before it can be shipped again.
+void test_guards_against_past_mistakes() {
+    // A doorway whose transition writes the far side's portal moves the room
+    // you are walking into. It used to; now it is named.
+    sg::StateGraph g;
+    auto& hall = g.add<sg::Spatial3D>("hall");
+    auto& annex = g.add<sg::Spatial3D>("annex");
+    hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265);
+    annex.portal("door", {4.5, 1.5, 0.0}, 2.8, 3.0, 1.5707963);
+    g.set_initial("hall");
+
+    sg::Atlas atlas;
+    atlas.glue("doorway", "hall", "door", "annex", "door");
+    check(sg::descent_defects(atlas, g).empty(), "a plain doorway is clean");
+
+    // Registering the doorway's transitions by hand, with the portal in the
+    // object map, as we once did. Deriving them makes this unrepresentable;
+    // a hand-written cover still has to be told.
+    sg::Cover by_hand;
+    g.set_functor(sg::Functor{"hand.ab", "hall", "annex"})
+        .on_object(sg::SpatialState::camera_id(), sg::SpatialState::camera_id(),
+                   sg::portal_carry(hall.element("door"), annex.element("door")))
+        .on_object("door", "door", sg::portal_carry(hall.element("door"), annex.element("door")));
+    g.set_functor(sg::Functor{"hand.ba", "annex", "hall"})
+        .on_object(sg::SpatialState::camera_id(), sg::SpatialState::camera_id(),
+                   sg::portal_carry(annex.element("door"), hall.element("door")));
+    by_hand.add("hand", "hall", "annex", "hand.ab", "hand.ba");
+    bool named = false;
+    for (const auto& d : sg::travel_defects(by_hand, g))
+        if (d.find("not a traveller") != std::string::npos) named = true;
+    check(named, "a transition that writes the far doorway is refused");
+    check(sg::travel_defects(sg::as_cover(atlas, g), g).empty(),
+          "and a derived one cannot contain the mistake at all");
+
+    // A portal element that is not a portal at all.
+    sg::StateGraph g2;
+    auto& a2 = g2.add<sg::Spatial3D>("a");
+    auto& b2 = g2.add<sg::Spatial3D>("b");
+    a2.add_element("door", sg::kinds::mesh);
+    b2.portal("door", {0, 1.5, 0}, 2.0, 3.0, 0.0);
+    g2.set_initial("a");
+    sg::Atlas atlas2;
+    atlas2.glue("doorway", "a", "door", "b", "door");
+    bool kind_named = false;
+    for (const auto& d : sg::descent_defects(atlas2, g2))
+        if (d.find("not a portal element") != std::string::npos) kind_named = true;
+    check(kind_named, "a doorway hung on something that is not a portal is refused");
+
+    // A doorway naming a room that does not exist.
+    sg::StateGraph g3;
+    g3.add<sg::Spatial3D>("only");
+    g3.set_initial("only");
+    sg::Atlas atlas3;
+    atlas3.glue("doorway", "only", "door", "nowhere", "door");
+    bool room_named = false;
+    for (const auto& d : sg::descent_defects(atlas3, g3))
+        if (d.find("unknown room") != std::string::npos) room_named = true;
+    check(room_named, "a doorway onto a room that does not exist is refused");
+}
+
 void test_graph_analysis() {
     sg::StateGraph g;
     g.add<sg::Spatial2D>("start");
@@ -677,6 +788,7 @@ void test_surface_and_views() {
 }  // namespace
 
 int main() {
+    test_one_rotation();
     test_keys_and_params();
     test_elements_and_morphisms();
     test_composition();
@@ -696,6 +808,7 @@ int main() {
     test_view_portal_validation();
     test_descent();
     test_atlas_is_a_cover();
+    test_guards_against_past_mistakes();
     test_graph_analysis();
     test_surface_and_views();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");

@@ -128,6 +128,13 @@ public:
 
     std::size_t object_count() const { return obj_.size(); }
 
+    // Walk the object map. Whoever applies a functor to live state wants to
+    // know what it will write before it writes it.
+    template <typename Fn>
+    void for_each_object(Fn&& fn) const {
+        for (const auto& kv : obj_) fn(kv.first, kv.second.dst);
+    }
+
     // --- application --------------------------------------------------------
     // Push every mapped object of `src` into `dst`, creating targets as needed.
     void apply(const State& src, State& dst) const {
