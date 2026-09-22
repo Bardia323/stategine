@@ -39,7 +39,8 @@ struct GLQuality {
 
 class GLWorldView {
 public:
-    static constexpr std::size_t kMaxLights = 4;  // matches the scene shader
+    static constexpr std::size_t kMaxLights = 4;    // matches the scene shader
+    static constexpr std::size_t kShadowMaps = 2;  // the nearest two cast
 
     explicit GLWorldView(GLQuality q = {}) : q_(q) {}
 
@@ -161,7 +162,7 @@ private:
         cube_.create(gl::cube_vertices());
         quad_.create(gl::quad_vertices());
         screen_.create();
-        shadow_.create(q_.shadow_size);
+        for (auto& sm : shadow_) sm.create(q_.shadow_size);
         ready_ = true;
     }
 
@@ -222,30 +223,37 @@ private:
     void draw_world(Spatial3D& world, const Camera& cam, float aspect, gl::RenderTarget& target,
                     int depth, float znear, Key skip_portal = Key{}) {
         const std::vector<Light> lights = read_lights(world, cam);
-        const Light& key_light = lights.front();
-        const gl::Mat4 light_vp =
-            gl::Mat4::perspective(key_light.outer * 2.05f, 1.0f, 0.35f, 60.0f) *
-            gl::Mat4::look_at(key_light.pos, key_light.pos + key_light.dir, {0, 0, 1});
+        // The two nearest lamps get a shadow map each: standing in one room
+        // must not flatten the other one.
+        const std::size_t shadowed = std::min<std::size_t>(lights.size(), kShadowMaps);
+        gl::Mat4 light_vp[kShadowMaps];
+        for (std::size_t i = 0; i < kShadowMaps; ++i) {
+            const Light& l = lights[std::min(i, lights.size() - 1)];
+            light_vp[i] = gl::Mat4::perspective(l.outer * 2.05f, 1.0f, 0.35f, 60.0f) *
+                          gl::Mat4::look_at(l.pos, l.pos + l.dir, {0, 0, 1});
+        }
         const gl::Mat4 view_proj =
             gl::Mat4::perspective(cam.fov, aspect, znear, 120.0f) *
             gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, {0, 1, 0});
 
-        // --- shadow depth --------------------------------------------------
-        shadow_.bind();
-        gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
+        // --- shadow depth, one pass per shadowed lamp ------------------------
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
         gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
         depth_.use();
-        depth_.set("uLightViewProj", light_vp);
-        for (const auto& e : world.elements()) {
-            if (!e.alive) continue;
-            if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                depth_.set("uModel", box_model(world, e));
-                cube_.draw();
-            } else if (e.kind == kinds::portal && !is_doorway(e)) {
-                depth_.set("uModel", portal_frame_model(world, e));
-                cube_.draw();
+        for (std::size_t i = 0; i < shadowed; ++i) {
+            shadow_[i].bind();
+            gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
+            depth_.set("uLightViewProj", light_vp[i]);
+            for (const auto& e : world.elements()) {
+                if (!e.alive) continue;
+                if (e.kind == kinds::mesh || e.kind == kinds::wall) {
+                    depth_.set("uModel", box_model(world, e));
+                    cube_.draw();
+                } else if (e.kind == kinds::portal && !is_doorway(e)) {
+                    depth_.set("uModel", portal_frame_model(world, e));
+                    cube_.draw();
+                }
             }
         }
         gl::glCullFace(gl::GL_BACK);
@@ -261,7 +269,8 @@ private:
 
         scene_.use();
         scene_.set("uViewProj", view_proj);
-        scene_.set("uLightViewProj", light_vp);
+        scene_.set("uLightViewProj0", light_vp[0]);
+        scene_.set("uLightViewProj1", light_vp[1]);
         scene_.set("uLightCount", static_cast<int>(lights.size()));
         for (std::size_t i = 0; i < lights.size(); ++i) {
             const std::string ix = "[" + std::to_string(i) + "]";
@@ -275,14 +284,16 @@ private:
         scene_.set("uViewPos", cam.eye);
         scene_.set("uFogColor", gl::Vec3{0.05f, 0.06f, 0.09f});
         scene_.set("uFogDensity", 0.018f);
-        scene_.set("uShadowTexel", 1.0f / static_cast<float>(shadow_.size()),
-                   1.0f / static_cast<float>(shadow_.size()));
-        scene_.set("uShadowMap", 1);
+        scene_.set("uShadowTexel", 1.0f / static_cast<float>(shadow_[0].size()),
+                   1.0f / static_cast<float>(shadow_[0].size()));
+        scene_.set("uShadowMap0", 1);
+        scene_.set("uShadowMap1", 2);
         scene_.set("uTex", 0);
         scene_.set("uScreenUV", 0.0f);
         scene_.set("uViewport", static_cast<float>(target.width()),
                    static_cast<float>(target.height()));
-        shadow_.bind_depth(1);
+        shadow_[0].bind_depth(1);
+        shadow_[1].bind_depth(2);
 
         draw_room(world);
         for (const auto& e : world.elements()) {
@@ -583,7 +594,7 @@ private:
     gl::Program scene_, depth_, bright_, blur_, composite_;
     gl::Mesh cube_, quad_;
     gl::FullscreenTriangle screen_;
-    gl::ShadowMap shadow_;
+    gl::ShadowMap shadow_[kShadowMaps];
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
 
     std::unordered_map<Key, BoundSurface> surfaces_;

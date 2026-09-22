@@ -17,12 +17,14 @@ layout(location=2) in vec2 aUV;
 
 uniform mat4 uModel;
 uniform mat4 uViewProj;
-uniform mat4 uLightViewProj;
+uniform mat4 uLightViewProj0;
+uniform mat4 uLightViewProj1;
 
 out vec3 vWorld;
 out vec3 vNormal;
 out vec2 vUV;
-out vec4 vLightSpace;
+out vec4 vLightSpace0;
+out vec4 vLightSpace1;
 out vec3 vLocal;
 
 void main() {
@@ -31,7 +33,8 @@ void main() {
     vLocal = aPos;
     vNormal = normalize(mat3(uModel) * aNormal);
     vUV = aUV;
-    vLightSpace = uLightViewProj * world;
+    vLightSpace0 = uLightViewProj0 * world;
+    vLightSpace1 = uLightViewProj1 * world;
     gl_Position = uViewProj * world;
 })";
 }
@@ -41,7 +44,8 @@ inline const char* scene_fs() {
 in vec3 vWorld;
 in vec3 vNormal;
 in vec2 vUV;
-in vec4 vLightSpace;
+in vec4 vLightSpace0;
+in vec4 vLightSpace1;
 in vec3 vLocal;
 
 out vec4 FragColor;
@@ -54,8 +58,8 @@ uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate
 uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uGlow;          // extra emission for an active interface
 
-// Up to four spot lights. Only the first casts shadows: one map, aimed at
-// whichever lamp matters most to the viewer.
+// Up to four spot lights; the two nearest the viewer carry shadow maps, so a
+// second room stays shadowed while you are standing in it.
 const int MAX_LIGHTS = 4;
 uniform int   uLightCount;
 uniform vec3  uLightPos[MAX_LIGHTS];
@@ -68,7 +72,8 @@ uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 
-uniform sampler2DShadow uShadowMap;
+uniform sampler2DShadow uShadowMap0;
+uniform sampler2DShadow uShadowMap1;
 uniform sampler2D uTex;
 uniform vec2 uShadowTexel;
 
@@ -88,8 +93,8 @@ float noise(vec2 p) {
 }
 
 // Percentage-closer filtering, 4x4 taps, with a slope-scaled bias.
-float shadow_factor(vec3 n, vec3 l) {
-    vec3 proj = vLightSpace.xyz / max(vLightSpace.w, 1e-5);
+float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l) {
+    vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
     float bias = max(0.0016 * (1.0 - dot(n, l)), 0.0006);
@@ -97,7 +102,7 @@ float shadow_factor(vec3 n, vec3 l) {
     for (int y = -2; y <= 1; ++y) {
         for (int x = -2; x <= 1; ++x) {
             vec2 off = (vec2(x, y) + 0.5) * uShadowTexel;
-            sum += texture(uShadowMap, vec3(proj.xy + off, proj.z - bias));
+            sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
         }
     }
     return sum / 16.0;
@@ -161,8 +166,11 @@ void main() {
 
         float atten = uLightPower[i] / (1.0 + 0.22 * dist + 0.14 * dist * dist);
         float ndl = max(dot(n, l), 0.0);
-        // Only the first light has a shadow map.
-        float shadow = (i == 0 && ndl > 0.0) ? shadow_factor(n, l) : 1.0;
+        float shadow = 1.0;
+        if (ndl > 0.0) {
+            if (i == 0) shadow = shadow_factor(vLightSpace0, uShadowMap0, n, l);
+            else if (i == 1) shadow = shadow_factor(vLightSpace1, uShadowMap1, n, l);
+        }
 
         // GGX-ish specular, kept cheap.
         float ndh = max(dot(n, h), 0.0);

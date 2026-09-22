@@ -68,39 +68,6 @@ struct Crate {
     double height;
 };
 
-// Push the camera out of any wall it has ended up inside. Walls are boxes with
-// a pose, so this works for the anchored ones without knowing they are
-// anchored - which is what world_pose is for.
-void resolve_walls(sg::Spatial3D& world, sg::Element& cam, double radius) {
-    for (const auto& e : world.elements()) {
-        if (e.kind != sg::kinds::wall || !e.alive) continue;
-        const sg::Pose w = sg::world_pose(world, e);
-        const double hx = e.params.num(sg::keys::sx, 1.0) * 0.5 + radius;
-        const double hz = e.params.num(sg::keys::sz, 1.0) * 0.5 + radius;
-
-        // Into the wall's own frame.
-        const sg::Vec3d p = sg::position_of(cam);
-        const double c = std::cos(-w.yaw), s = std::sin(-w.yaw);
-        const double dx = p.x - w.position.x, dz = p.z - w.position.z;
-        const double lx = dx * c - dz * s;
-        const double lz = dx * s + dz * c;
-        if (std::fabs(lx) >= hx || std::fabs(lz) >= hz) continue;
-
-        // Out through whichever face is closest.
-        const double push_x = hx - std::fabs(lx);
-        const double push_z = hz - std::fabs(lz);
-        double ox = 0, oz = 0;
-        if (push_x < push_z) {
-            ox = lx >= 0 ? push_x : -push_x;
-        } else {
-            oz = lz >= 0 ? push_z : -push_z;
-        }
-        const double bc = std::cos(w.yaw), bs = std::sin(w.yaw);
-        cam.params.set(sg::keys::x, p.x + ox * bc - oz * bs);
-        cam.params.set(sg::keys::z, p.z + ox * bs + oz * bc);
-    }
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -276,6 +243,10 @@ int main(int argc, char** argv) {
             pose(kRoomW - 5.5, kGapZ, 0.0, -0.02);
         } else if (shot == "annex") {
             pose(kRoomW + 4.5, kGapZ, 0.0, -0.02);  // inside the annex, facing its map
+        } else if (shot == "back") {
+            // From inside the annex, looking back through the opening: both
+            // rooms are lit and both are shadowed, from two different lamps.
+            pose(kRoomW + 2.6, kGapZ, 3.14159, -0.02);
         } else if (shot == "shifted") {
             // The same view as `doorway`, with the annex dragged out of line.
             // The token has to be set after the portal opens: opening runs the
@@ -352,7 +323,7 @@ int main(int argc, char** argv) {
 
         engine.tick(dt);  // states, portals, and the annex's anchor
         // The annex may have moved under the viewer; the walls push back either way.
-        if (!map_open) resolve_walls(world, cam, 0.35);
+        if (!map_open) sg::resolve_wall_collisions(world, cam, 0.35);
 
         // --- using a map ------------------------------------------------------------------
         const bool at_crate_map = sg::looking_at(world, "crate_map", 3.2, 0.5);

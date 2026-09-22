@@ -218,6 +218,46 @@ inline Element& attach_to(Element& e, Key anchor) {
     return e;
 }
 
+// --- walls -----------------------------------------------------------------------
+// Push `mover` out of any wall element it has ended up inside. Walls are boxes
+// with a pose, so anchored ones are handled without knowing they are anchored.
+//
+// A wall stands on its base, so anything whose base is at or above head height
+// is walked under, not into: that is what makes a lintel over a doorway a
+// doorway rather than a blocked wall.
+inline void resolve_wall_collisions(const State& s, Element& mover, double radius,
+                                    double head = 1.9) {
+    for (const auto& e : s.elements()) {
+        if (e.kind != kinds::wall || !e.alive) continue;
+        const Pose w = world_pose(s, e);
+        if (w.position.y >= head) continue;
+
+        const double hx = e.params.num(keys::sx, 1.0) * 0.5 + radius;
+        const double hz = e.params.num(keys::sz, 1.0) * 0.5 + radius;
+
+        // Into the wall's own frame.
+        const Vec3d p = position_of(mover);
+        const double c = std::cos(-w.yaw), sn = std::sin(-w.yaw);
+        const double dx = p.x - w.position.x, dz = p.z - w.position.z;
+        const double lx = dx * c - dz * sn;
+        const double lz = dx * sn + dz * c;
+        if (std::fabs(lx) >= hx || std::fabs(lz) >= hz) continue;
+
+        // Out through whichever face is closest.
+        const double push_x = hx - std::fabs(lx);
+        const double push_z = hz - std::fabs(lz);
+        double ox = 0, oz = 0;
+        if (push_x < push_z) {
+            ox = lx >= 0 ? push_x : -push_x;
+        } else {
+            oz = lz >= 0 ? push_z : -push_z;
+        }
+        const double bc = std::cos(w.yaw), bs = std::sin(w.yaw);
+        mover.params.set(keys::x, p.x + ox * bc - oz * bs);
+        mover.params.set(keys::z, p.z + ox * bs + oz * bc);
+    }
+}
+
 // --- portals between spaces ---------------------------------------------------
 // Two doorways, one in each room, joined back to back. Because each room is its
 // own state with its own coordinates, everything about "the same place in the

@@ -92,7 +92,7 @@ rooms; slide it away and the gap closes against blank wall:
 
 ![The same opening, now almost entirely blocked because the annex has been moved](docs/images/shifted.png)
 
-Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|shifted>`.
+Every image above is reproducible: `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|shifted|back>`.
 
 ## Layout
 
@@ -254,12 +254,16 @@ that is. Portals nest: a guest may host a portal of its own.
 
 1. one pass per portal bound to another 3D state (`bind_world`), rendered from
    that state's own camera - a doorway between two *states*, should you want one
-2. depth-only shadow pass from the nearest lamp (spot light, 2048² map)
+2. a depth-only shadow pass per shadow-casting lamp: the two nearest the
+   viewer get a 2048² map each, so a second room stays shadowed while you are
+   standing in it
 3. scene into a multisampled RGBA16F target: up to four spot lights, 4x4 PCF
-   shadows from the nearest, hemispheric ambient, a GGX-ish specular lobe,
+   shadows from the nearest two, hemispheric ambient, a GGX-ish specular lobe,
    procedural floor tiles / wall plaster / crate planks, distance fog
 4. resolve, bright pass, separable gaussian blur at half resolution
 5. ACES tonemap with bloom, vignette, grain and a light FXAA
+
+![Looking back through the opening from the second room: both rooms lit and shadowed, by different lamps](docs/images/back.png)
 
 Level geometry is data: a state with `wall` elements has them drawn (and gets
 only a floor and a ceiling from its `room_*` parameters), while a state without
@@ -296,7 +300,7 @@ frames with a live portal               11 k/s      (transport runs twice a fram
 | `sg_demo` | console/2D/3D states, an isomorphic 2D-3D pair, transitions, a portal, DOT output - headless |
 | `sg_room` | the same room and lens as the 3D example, drawn in the terminal |
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, and two maps - one that moves the crates, one that moves the second room |
-| `sg_tests` | 82 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
+| `sg_tests` | 88 assertions over keys, morphisms, composition, guards, functors, adjunctions, portals |
 | `sg_bench` | throughput of the hot paths |
 
 ### Build

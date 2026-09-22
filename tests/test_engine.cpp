@@ -373,6 +373,58 @@ void test_anchors() {
     check(roughly(sg::world_pose(w, loose).position.x, 3.0), "a missing anchor is ignored");
 }
 
+void test_wall_collisions() {
+    sg::Spatial3D w("w");
+    // A wall across x = 10, with a gap at z 4..6 and a lintel over it.
+    w.wall("left", {10.0, 0.0, 2.0}, 0.4, 3.0, 4.0);
+    w.wall("right", {10.0, 0.0, 8.0}, 0.4, 3.0, 4.0);
+    w.wall("lintel", {10.0, 2.2, 5.0}, 0.4, 0.8, 2.0);  // base above head height
+
+    sg::Element& cam = w.camera();
+    cam.params.set(sg::keys::y, 1.7);
+
+    // Into a solid part from the near side: pushed back out of it.
+    sg::set_position(cam, {9.9, 1.7, 2.0});
+    sg::resolve_wall_collisions(w, cam, 0.3);
+    check(cam.params.num(sg::keys::x) <= 9.5 + 1e-9, "a solid wall pushes the walker back out");
+
+    // From either side, the walker ends up clear of the wall's slab.
+    sg::set_position(cam, {10.12, 1.7, 2.0});
+    sg::resolve_wall_collisions(w, cam, 0.3);
+    check(std::fabs(cam.params.num(sg::keys::x) - 10.0) >= 0.5 - 1e-9,
+          "and is never left standing inside one");
+
+    // Through the gap: nothing touches them, lintel included.
+    sg::set_position(cam, {10.0, 1.7, 5.0});
+    sg::resolve_wall_collisions(w, cam, 0.3);
+    check(roughly(cam.params.num(sg::keys::x), 10.0) && roughly(cam.params.num(sg::keys::z), 5.0),
+          "a doorway with a lintel over it can be walked through");
+
+    // Walk the whole way through, a step at a time.
+    sg::set_position(cam, {8.5, 1.7, 5.0});
+    for (int i = 0; i < 20; ++i) {
+        cam.params.set(sg::keys::x, cam.params.num(sg::keys::x) + 0.2);
+        sg::resolve_wall_collisions(w, cam, 0.3);
+    }
+    check(cam.params.num(sg::keys::x) > 11.0, "and crossed to the far side");
+
+    // Anchored walls move with their group, and still collide.
+    sg::Spatial3D a("a");
+    a.anchor("grp", {5.0, 0.0, 0.0});
+    sg::attach_to(a.wall("slab", {0.0, 0.0, 0.0}, 1.0, 3.0, 6.0), "grp");
+    sg::Element& probe = a.camera();
+    probe.params.set(sg::keys::y, 1.7);
+    sg::set_position(probe, {5.0, 1.7, 0.0});
+    sg::resolve_wall_collisions(a, probe, 0.3);
+    check(std::fabs(probe.params.num(sg::keys::x) - 5.0) > 0.7, "an anchored wall collides");
+
+    a.element("grp").params.set(sg::keys::x, 20.0);
+    sg::set_position(probe, {5.0, 1.7, 0.0});
+    sg::resolve_wall_collisions(a, probe, 0.3);
+    check(roughly(probe.params.num(sg::keys::x), 5.0),
+          "and stops colliding once its group has moved away");
+}
+
 // --- portals between 3D states --------------------------------------------------
 void test_portal_transform() {
     sg::Spatial3D a("a"), b("b");
@@ -508,6 +560,7 @@ int main() {
     test_lens();
     test_embedding();
     test_anchors();
+    test_wall_collisions();
     test_portal_transform();
     test_view_portal();
     test_view_portal_validation();
