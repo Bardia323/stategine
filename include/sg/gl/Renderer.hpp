@@ -1,6 +1,7 @@
 // Stategine - GL resources: programs, meshes, textures, render targets.
 #pragma once
 
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -81,21 +82,31 @@ private:
 // inside the 3D world. Uploads only when the content actually changed.
 class Texture {
 public:
-    void create(int w, int h) {
+    // With mipmaps, a detailed texture seen small or at a grazing angle - print
+    // on a sheet across the room - averages out instead of shimmering.
+    void create(int w, int h, bool mipmaps = false, bool srgb = false) {
         w_ = w;
         h_ = h;
+        mipmaps_ = mipmaps;
         glGenTextures(1, &id_);
         glBindTexture(GL_TEXTURE_2D, id_);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        if (mipmaps) {
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0f);
+            glGetError();  // anisotropy is core only from 4.6; without it, plain trilinear
+        }
     }
 
     void upload(const std::vector<unsigned char>& rgba) {
         glBindTexture(GL_TEXTURE_2D, id_);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        if (mipmaps_) glGenerateMipmap(GL_TEXTURE_2D);
     }
 
     void bind(int unit = 0) const {
@@ -112,6 +123,7 @@ private:
     GLuint id_ = 0;
     int w_ = 0;
     int h_ = 0;
+    bool mipmaps_ = false;
 };
 
 // Interleaved position(3), normal(3), uv(2).
@@ -135,6 +147,18 @@ public:
                               reinterpret_cast<void*>(6 * sizeof(float)));
         glEnableVertexAttribArray(2);
         glBindVertexArray(0);
+    }
+
+    // New vertices for a mesh that changes - ground rebuilt around a walker.
+    void update(const std::vector<float>& verts) {
+        if (!valid()) {
+            create(verts);
+            return;
+        }
+        count_ = static_cast<GLsizei>(verts.size() / 8);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
+                     verts.data(), GL_DYNAMIC_DRAW);
     }
 
     void draw() const {
@@ -167,6 +191,49 @@ inline std::vector<float> cube_vertices() {
     face({-h, -h, -h}, {-h, -h, h}, {-h, h, h}, {-h, h, -h}, n[3]);
     face({-h, h, h}, {h, h, h}, {h, h, -h}, {-h, h, -h}, n[4]);
     face({-h, -h, -h}, {h, -h, -h}, {h, -h, h}, {-h, -h, h}, n[5]);
+    return v;
+}
+
+// A cylinder standing on y, radius 0.5 and height 1, centred like the cube, so
+// the same model matrix sizes it: sx and sz are its diameters, sy its height.
+inline std::vector<float> cylinder_vertices(int segments = 28) {
+    std::vector<float> v;
+    const float h = 0.5f, pi2 = 6.2831853f;
+    for (int i = 0; i < segments; ++i) {
+        const float a0 = pi2 * i / segments, a1 = pi2 * (i + 1) / segments;
+        const float x0 = std::cos(a0) * h, z0 = std::sin(a0) * h, x1 = std::cos(a1) * h, z1 = std::sin(a1) * h;
+        const float u0 = static_cast<float>(i) / segments, u1 = static_cast<float>(i + 1) / segments;
+        const float n0x = std::cos(a0), n0z = std::sin(a0), n1x = std::cos(a1), n1z = std::sin(a1);
+        v.insert(v.end(), {x0, -h, z0, n0x, 0, n0z, u0, 1, x1, -h, z1, n1x, 0, n1z, u1, 1,
+                           x1, h,  z1, n1x, 0, n1z, u1, 0, x0, -h, z0, n0x, 0, n0z, u0, 1,
+                           x1, h,  z1, n1x, 0, n1z, u1, 0, x0, h,  z0, n0x, 0, n0z, u0, 0});
+        v.insert(v.end(), {0, h, 0, 0, 1, 0, 0.5f, 0.5f, x1, h, z1, 0, 1, 0, 0.5f + x1, 0.5f + z1,
+                           x0, h, z0, 0, 1, 0, 0.5f + x0, 0.5f + z0});
+        v.insert(v.end(), {0, -h, 0, 0, -1, 0, 0.5f, 0.5f, x0, -h, z0, 0, -1, 0, 0.5f + x0, 0.5f + z0,
+                           x1, -h, z1, 0, -1, 0, 0.5f + x1, 0.5f + z1});
+    }
+    return v;
+}
+
+// A sphere of radius 0.5, centred like the cube.
+inline std::vector<float> sphere_vertices(int stacks = 14, int slices = 24) {
+    std::vector<float> v;
+    const float pi = 3.14159265f;
+    auto point = [&](int i, int j) {
+        const float t = pi * i / stacks, p = 2 * pi * j / slices;
+        const float nx = std::sin(t) * std::cos(p), ny = std::cos(t), nz = std::sin(t) * std::sin(p);
+        v.insert(v.end(), {nx * 0.5f, ny * 0.5f, nz * 0.5f, nx, ny, nz, static_cast<float>(j) / slices,
+                           static_cast<float>(i) / stacks});
+    };
+    for (int i = 0; i < stacks; ++i)
+        for (int j = 0; j < slices; ++j) {
+            point(i, j);
+            point(i + 1, j);
+            point(i + 1, j + 1);
+            point(i, j);
+            point(i + 1, j + 1);
+            point(i, j + 1);
+        }
     return v;
 }
 

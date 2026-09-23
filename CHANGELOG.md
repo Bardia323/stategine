@@ -6,6 +6,107 @@ project says so.
 
 While the major version is 0, a minor bump may break the API.
 
+## v0.3.0 (unreleased)
+
+- **Seams: the law every interface between like states owes.** An interface
+  is a boundary in each domain and a gluing between the boundaries. A `Seam`
+  (`StateGraph::add_seam`) names both boundaries (`boundary_a`, `boundary_b` -
+  a doorway, a door hanging in it), glue functors both ways between them, and
+  travel functors both ways for what crosses. `laws::seams`, part of `verify`,
+  checks that between two states of the same kind nothing crosses one way
+  (every transition or one-sided window functor must travel along a seam);
+  that each glue is a bijection of the boundaries - defined on all of its
+  boundary and nothing else, onto all of the other, the two glues inverse;
+  that travel round trips are the identity and travel never touches a
+  boundary; and that both sides *agree* - the boundary carried across is the
+  boundary already there, a door swung on one side is swung on the other. That
+  last is the gluing condition of a sheaf, and it catches doorways that exist
+  in one room only.
+  **Breaking:** a graph with a one-way window or transition between two states
+  of the same (non-plain) kind no longer verifies; glue them.
+- A guest open Live in several hosts is one state: when the engine steps it
+  through one embedding, it writes back through every open Live embedding of
+  it, so a door both rooms embed is swung in both at once.
+- `glue_doorway(g, name, a, pa, b, pb, also)` builds a doorway's seam from its
+  two portals: `name.ab/.ba` carry the camera, `name.glue.ab/.ba` carry the
+  doorway (`seam_carry`: the same doorway, facing back) and anything in
+  `also` (`pose_carry`). `as_cover` now glues every doorway this way.
+
+- **Surfaces paint themselves.** `Surface2D::paint()` is virtual; the default
+  still draws the board of tiles and sprites (`paint_board`). A subclass that is
+  a sheet of text, a photograph or a screen overrides it, uses the protected
+  pixel helpers (`put`, `fill`, `box`, `pixels()`), and calls `invalidate()`
+  when what it shows changes. `pixel(x, y)` reads the last raster.
+- **Panels tilt.** A portal bound to a surface reads `pitch` (its face tipped
+  up; `pi/2` lies face up) and `roll` (turned in its own plane). Doorways stay
+  upright. `frame = 0` draws a bare sheet `thick` metres thick in its own
+  `r/g/b` instead of a mounted board; `glow` and `roughness` override the
+  panel's defaults.
+- **sRGB surfaces.** `Surface2D::set_srgb(true)` marks painted pixels as
+  sRGB; the renderer decodes them before lighting, so painted colours are not
+  washed out. Off by default: existing boards look as before.
+- **Surface textures are mipmapped** (with anisotropic filtering where the
+  driver has it), so detailed print does not shimmer at a distance.
+- **Screens.** A surface panel with `crt` > 0 is drawn as a tube, per pixel in
+  the scene shader: curved glass, scanlines, an aperture grille, vignette, a
+  rounded bezel. The CPU only paints what the screen shows.
+- **Mesh shapes and materials.** `shape` = `cylinder` or `sphere` (same unit
+  size as the box); meshes honour `pitch` and `roll` like panels; `surface`
+  picks a material - 3 crate (the default), 4 wood, 5 brushed metal,
+  6 moulded plastic, 7 fabric, 0 plain - and `emissive` makes one glow.
+- A light with `fixture` = 0 draws no housing, for lamps modelled elsewhere.
+- **Faster law checks.** Values of the same kind are compared as themselves
+  rather than formatted as text, and snapshots are indexed rather than
+  searched: checking a world of a few hundred elements is about 8x faster.
+  Same laws, same counterexamples.
+- `gl::Mat4::rotate_x` / `rotate_z`; `sg_tests` holds the panel turn to
+  `forward_of`.
+- **Open worlds.** A state with `sky` = 1 is drawn under a sky (gradient and
+  sun, from the look's `uSkyTop` / `uSkyHorizon`) instead of a ceiling and
+  walls, and `far` sets how far anything is drawn (120 m by default). A
+  `terrain` element is ground from a height function bound with
+  `bind_terrain`, sampled round the viewer - fine near, coarse far - on every
+  core, and resampled as they move; `surface` 8 is sand turning to banded rock
+  where it is steep.
+- **Suns.** A light with `sun` = 1 is parallel light with no falloff; its
+  shadow is an orthographic box `extent` metres round the viewer, moved in
+  whole texels. Suns take the first shadow map.
+- **Eight lights**, up from four. A light at intensity 0 is skipped, so a
+  switched-off lamp costs nothing; a ceiling fixture's glow follows its
+  intensity. Wide lamps get a shadow bias to match their width (no more acne
+  stripes on walls).
+- **Doorways to other worlds.** A world portal's far side is cut by the
+  portal's own plane carried through (from the two cameras), not by pushing
+  the near plane out, so a window beside a door shows the right slice and
+  nothing behind the far doorway gets in the way. Portal views are
+  multisampled, and skipped when the portal is out of view. New portal
+  parameters: `inset` (where the view is drawn; 0 puts it on the plane, for
+  walking through), `casing` / `depth` / `r,g,b` (the frame), `tunnel` (a
+  backing quad so the last step through never shows the near plane's cut) and
+  `oneway` (seen from behind, only the frame).
+- **Breaking:** `portal_carry` and `through_portal` carry height as height above
+  the doorway (`y - here.y + there.y`) rather than keeping `y`, so doors at
+  different heights line up. Doorways at the same height behave as before.
+- **The CRT's glass** is antialiased (edges spread over a pixel with
+  `fwidth`), and the picture sits wholly inside the rounded glass with a dark
+  margin, the way a tube's does - no corner is lost. `gl::crt_picture` maps a
+  point of the glass to the picture with the shader's own numbers (`CrtGlass`),
+  for pointers.
+- **Softer, steadier shadows.** Four shadow maps, not two, given to the
+  brightest lights rather than the nearest, so shadows do not pop as the viewer
+  walks. 5x5 filtering, `uShadowSoft` (texels) wide, and `uShadowFloor` light
+  left in full shadow - both look uniforms (1 and 0 by default, as before). A
+  mesh with `cast` = 0 casts none: a lamp's own shade does not shadow it.
+- The scene shader knows `uTime`; `uWind` drifts veils of sand over surface 8;
+  `uStars` puts stars in the sky; fog brightens towards the sun.
+- A framed panel's `border` sets how much board shows round it (0.15 as
+  before); a world portal with `casing` = 0 has no frame at all.
+- Every world portal's targets are made up front, so the first frame through a
+  doorway does not stop to allocate.
+- MSAA is clamped to what the driver offers (`GL_MAX_SAMPLES`); `Mesh::update`
+  for meshes that change; `gl::Mat4::ortho`; `glGetIntegerv`, `glDepthMask`,
+  `glScissor` in the loader.
+
 ## v0.2.0
 
 - **Looks** (`sg/domains/Look.hpp`): how a state is shown, as a state. A

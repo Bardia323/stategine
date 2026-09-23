@@ -330,12 +330,16 @@ inline double portal_delta(const Element& here, const Element& there) {
 }
 
 // One rotation, applied to the position and the heading alike - getting those
-// two out of step is what makes a portal look subtly wrong.
+// two out of step is what makes a portal look subtly wrong. Height is carried
+// as height above the doorway, so a door in a floor at one level can open onto
+// ground at another.
 inline Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, double yaw) {
     const double delta = portal_delta(here.yaw, there.yaw);
     const Vec3d turned =
         rotate_xz({pos.x - here.position.x, 0.0, pos.z - here.position.z}, delta);
-    return Pose{{there.position.x + turned.x, pos.y, there.position.z + turned.z}, yaw + delta};
+    return Pose{{there.position.x + turned.x, pos.y - here.position.y + there.position.y,
+                 there.position.z + turned.z},
+                yaw + delta};
 }
 
 inline Pose through_portal(const Element& here, const Element& there, const Vec3d& pos,
@@ -355,10 +359,41 @@ inline std::function<void(const Element&, Element&)> portal_carry(const Element&
     return [hp, tp, delta](const Element& src, Element& dst) {
         const Vec3d p = position_of(src);
         const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
-        set_position(dst, {tp.x + turned.x, p.y, tp.z + turned.z});
+        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
         dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
         dst.params.set(keys::pitch, src.params.num(keys::pitch));
         dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
+    };
+}
+
+// The doorway itself, carried to the other side: where the near doorway is,
+// the far one is - facing back, since a doorway faces into its own room and
+// the same doorway seen from the other room faces the other way. Its size goes
+// with it. This is the glue of a seam, not travel: carrying the near doorway
+// lands exactly on the far one, and the seam law checks that it does.
+inline std::function<void(const Element&, Element&)> seam_carry(const Element& here, const Element& there) {
+    const Vec3d hp = position_of(here), tp = position_of(there);
+    const double delta = portal_delta(here, there);
+    return [hp, tp, delta](const Element& src, Element& dst) {
+        const Vec3d p = position_of(src);
+        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
+        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
+        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta + 3.14159265358979);
+        for (Key k : {keys::w, keys::h})
+            if (src.params.has(k)) dst.params.set(k, src.params.num(k));
+    };
+}
+
+// Anything else that hangs in a seam - a door on its hinge - carried across
+// as it is: its place and its heading, in the other side's frame.
+inline std::function<void(const Element&, Element&)> pose_carry(const Element& here, const Element& there) {
+    const Vec3d hp = position_of(here), tp = position_of(there);
+    const double delta = portal_delta(here, there);
+    return [hp, tp, delta](const Element& src, Element& dst) {
+        const Vec3d p = position_of(src);
+        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
+        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
+        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
     };
 }
 

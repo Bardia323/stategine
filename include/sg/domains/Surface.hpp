@@ -36,6 +36,14 @@ public:
     }
     Key selection() const { return selected_; }
 
+    // Whether the pixels are sRGB-encoded - colours picked by eye, photographs,
+    // anything painted to look right on a screen - rather than linear values.
+    // A renderer decodes sRGB before lighting it; without that, a painted
+    // colour is lit as if it were brighter than it is, and comes out washed
+    // out. Off by default, which is how the board has always been drawn.
+    void set_srgb(bool on) { srgb_ = on; }
+    bool srgb() const { return srgb_; }
+
     void set_background(int r, int g, int b) {
         bg_ = {r, g, b};
         dirty_ = true;
@@ -49,13 +57,31 @@ public:
         return pixels_;
     }
 
+    // One pixel of the last raster: r, g, b, a.
+    const unsigned char* pixel(int x, int y) const {
+        return &pixels_[(static_cast<std::size_t>(y) * static_cast<std::size_t>(px_w()) +
+                         static_cast<std::size_t>(x)) *
+                        4];
+    }
+
     void invalidate() { dirty_ = true; }
 
     // Bumped on every redraw, so a texture upload can be skipped when nothing
     // about the surface changed this frame.
     uint64_t revision() const { return revision_; }
 
-private:
+protected:
+    // What the surface looks like. The default is a board: tiles, a grid, and
+    // sprites as tokens on it. A surface that is a sheet of text, a photograph
+    // or a screen paints itself instead, with the helpers below, and calls
+    // invalidate() whenever what it shows changes. Sprites and tiles moving
+    // still trigger a repaint on their own.
+    virtual void paint() { paint_board(); }
+
+    // The whole buffer, RGBA rows top to bottom, for painters that write it
+    // directly (blending, blitting an image).
+    std::vector<unsigned char>& pixels() { return pixels_; }
+
     struct Rgb {
         int r, g, b;
     };
@@ -78,6 +104,12 @@ private:
     }
 
     void redraw() {
+        paint();
+        dirty_ = false;
+        ++revision_;
+    }
+
+    void paint_board() {
         fill(bg_.r, bg_.g, bg_.b);
 
         // Tiles first: they are the board, not pieces on it. A surface whose
@@ -116,8 +148,6 @@ private:
                 r / 4, g / 4, b / 4);
             if (sel) outline(cx * cell_ + 1, cy * cell_ + 1, cell_ - 2, cell_ - 2, 255, 230, 120);
         }
-        dirty_ = false;
-        ++revision_;
     }
 
     static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -162,10 +192,12 @@ private:
         }
     }
 
+private:
     int cell_;
     Rgb bg_{18, 22, 32};
     Key selected_;
     bool dirty_ = true;
+    bool srgb_ = false;
     uint64_t revision_ = 0;
     std::vector<unsigned char> pixels_;
     std::vector<double> signature_;

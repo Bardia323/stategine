@@ -51,18 +51,21 @@ constexpr GLenum GL_RGBA = 0x1908;
 constexpr GLenum GL_TEXTURE_BORDER_COLOR = 0x1004;
 constexpr GLenum GL_NEAREST = 0x2600;
 constexpr GLenum GL_LINEAR = 0x2601;
+constexpr GLenum GL_LINEAR_MIPMAP_LINEAR = 0x2703;
 constexpr GLenum GL_TEXTURE_MAG_FILTER = 0x2800;
 constexpr GLenum GL_TEXTURE_MIN_FILTER = 0x2801;
 constexpr GLenum GL_TEXTURE_WRAP_S = 0x2802;
 constexpr GLenum GL_TEXTURE_WRAP_T = 0x2803;
 constexpr GLenum GL_POLYGON_OFFSET_FILL = 0x8037;
 constexpr GLenum GL_RGBA8 = 0x8058;
+constexpr GLenum GL_SRGB8_ALPHA8 = 0x8C43;
 constexpr GLenum GL_CLAMP_TO_EDGE = 0x812F;
 constexpr GLenum GL_CLAMP_TO_BORDER = 0x812D;
 constexpr GLenum GL_DEPTH_COMPONENT24 = 0x81A6;
 constexpr GLenum GL_MULTISAMPLE = 0x809D;
 constexpr GLenum GL_RGBA16F = 0x881A;
 constexpr GLenum GL_RGB16F = 0x881B;
+constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;
 constexpr GLenum GL_TEXTURE_COMPARE_MODE = 0x884C;
 constexpr GLenum GL_TEXTURE_COMPARE_FUNC = 0x884D;
 constexpr GLenum GL_COMPARE_REF_TO_TEXTURE = 0x884E;
@@ -77,6 +80,8 @@ constexpr GLenum GL_DEPTH_ATTACHMENT = 0x8D00;
 constexpr GLenum GL_FRAMEBUFFER = 0x8D40;
 constexpr GLenum GL_RENDERBUFFER = 0x8D41;
 constexpr GLenum GL_READ_FRAMEBUFFER = 0x8CA8;
+constexpr GLenum GL_MAX_SAMPLES = 0x8D57;
+constexpr GLenum GL_SCISSOR_TEST = 0x0C11;
 constexpr GLenum GL_DRAW_FRAMEBUFFER = 0x8CA9;
 constexpr GLenum GL_FRAGMENT_SHADER = 0x8B30;
 constexpr GLenum GL_VERTEX_SHADER = 0x8B31;
@@ -133,6 +138,8 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, ActiveTexture, (GLenum))                                                          \
     X(void, TexParameteri, (GLenum, GLenum, GLint))                                           \
     X(void, TexParameterfv, (GLenum, GLenum, const GLfloat*))                                 \
+    X(void, TexParameterf, (GLenum, GLenum, GLfloat))                                         \
+    X(void, GenerateMipmap, (GLenum))                                                         \
     X(void, TexImage2D,                                                                       \
       (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))           \
     X(void, TexSubImage2D,                                                                    \
@@ -152,7 +159,10 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
       (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum))           \
     X(void, ReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*))              \
     X(void, DrawBuffer, (GLenum))                                                             \
-    X(void, ReadBuffer, (GLenum))
+    X(void, ReadBuffer, (GLenum))                                                             \
+    X(void, GetIntegerv, (GLenum, GLint*))                                                    \
+    X(void, DepthMask, (GLboolean))                                                           \
+    X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))
 
 #define SG_GL_DECLARE(ret, name, args) inline ret(*gl##name) args = nullptr;
 SG_GL_FUNCS(SG_GL_DECLARE)

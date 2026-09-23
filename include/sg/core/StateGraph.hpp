@@ -38,6 +38,33 @@ struct Transition {
     Key functor;    // optional: carries the source's data into the target
 };
 
+// A seam: two states that meet as one place - two rooms and the doorway
+// between them. An interface, in the plainest terms: a boundary in each
+// domain, and a gluing between the boundaries.
+//
+//   boundary_a         the objects of `a` that are the interface - a doorway,
+//   boundary_b         a door hanging in it - and the same in `b`
+//   glue_ab, glue_ba   functors between the boundaries: each defined on the
+//                      whole of its boundary and nothing else, onto the whole
+//                      of the other, and each the other's inverse - a
+//                      bijection. And they *agree*: the boundary carried
+//                      across is the boundary already there.
+//   a_to_b, b_to_a     travel: what crosses (a viewer, a thrown ball), carried
+//                      into the other side's frame. Mutually inverse, and
+//                      never touching the boundary - that would move the
+//                      doorway every time somebody walked through it.
+//
+// Between two states of the same kind every functor that crosses must be one
+// direction of a seam's travel, so an interface between like states cannot
+// be one way. `laws::seams` holds all of this to the data.
+struct Seam {
+    Key name;
+    Key a, b;
+    Key a_to_b, b_to_a;
+    Key glue_ab, glue_ba;
+    std::vector<Key> boundary_a, boundary_b;
+};
+
 class StateGraph {
 public:
     // --- states -------------------------------------------------------------
@@ -259,6 +286,22 @@ public:
         return out;
     }
 
+    // --- seams ------------------------------------------------------------------
+    // Registered by name; registering the same name again replaces it (a seam
+    // is rebuilt whenever its doorways move).
+    Seam& add_seam(Seam s) {
+        for (Seam& have : seams_)
+            if (have.name == s.name) return have = std::move(s);
+        seams_.push_back(std::move(s));
+        return seams_.back();
+    }
+    const std::deque<Seam>& seams() const { return seams_; }
+    const Seam* seam(Key name) const {
+        for (const Seam& s : seams_)
+            if (s.name == name) return &s;
+        return nullptr;
+    }
+
     void set_initial(Key id) { initial_ = id; }
     Key initial() const { return initial_; }
 
@@ -318,6 +361,22 @@ public:
                                  ": a View portal is read-only, so `out` never runs");
             check_portal_functor(errors, e, e.in, subject, e.guest);
             check_portal_functor(errors, e, e.out, e.guest, subject);
+        }
+
+        for (const Seam& sm : seams_) {
+            const State* a = find(sm.a);
+            const State* b = find(sm.b);
+            if (!a || !b) {
+                errors.push_back("seam " + sm.name.str() + ": unknown side " + (a ? sm.b : sm.a).str());
+                continue;
+            }
+            if (sm.a == sm.b) errors.push_back("seam " + sm.name.str() + ": a state cannot be glued to itself");
+            for (Key x : sm.boundary_a)
+                if (!a->find(x)) errors.push_back("seam " + sm.name.str() + ": " + sm.a.str() + " has no " + x.str());
+            for (Key y : sm.boundary_b)
+                if (!b->find(y)) errors.push_back("seam " + sm.name.str() + ": " + sm.b.str() + " has no " + y.str());
+            if (sm.boundary_a.size() != sm.boundary_b.size())
+                errors.push_back("seam " + sm.name.str() + ": its boundaries differ in size, so no gluing matches them");
         }
 
         for (const auto& kv : functors_) {
@@ -442,6 +501,7 @@ private:
     std::map<Key, Functor> functors_;
     std::map<Key, std::vector<Key>> composites_;
     std::deque<Embedding> embeddings_;
+    std::deque<Seam> seams_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     Key initial_;
 };

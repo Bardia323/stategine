@@ -19,6 +19,9 @@
 //   put-put         writing the same view twice is writing it once
 //   settles         (get ; put) ; (get ; put)  ==  get ; put
 //   commutes        any two paths a caller declares equal
+//   seam            where two like states meet, the meeting is two-way, its
+//                   round trips are the identity, and both sides agree on
+//                   what the seam itself is (a doorway, a door in it)
 //
 // A path is run on the states' current data, observed, and then undone, so
 // checking the laws never changes the world. Whatever breaks an equation
@@ -322,7 +325,15 @@ inline Outcome run(StateGraph& g, const Path& p, const Params& args) {
 // Two values agree if they are the same value, where numbers - ints and
 // doubles alike - are compared with a tolerance, and headings on the circle.
 inline bool same_value(Key k, const Value& a, const Value& b) {
-    if (to_string(a) == to_string(b)) return true;
+    // Same kind of value: compare it as itself. Formatting both as text, as
+    // this once did, made checking a world of a few hundred elements slow.
+    if (a.index() == b.index()) {
+        if (const double* x = std::get_if<double>(&a)) {
+            const double y = std::get<double>(b);
+            return *x == y || same_number(k, *x, y);
+        }
+        return a == b;
+    }
     const auto numeric = [](const Value& v, double& out) {
         if (const double* d = std::get_if<double>(&v)) return out = *d, true;
         if (const int64_t* i = std::get_if<int64_t>(&v))
@@ -368,10 +379,19 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         return out;
     }
 
-    const auto find = [](const State::Snapshot& s, Key id) -> const Element* {
-        for (const auto& e : s.elements)
-            if (e.id == id) return &e;
-        return nullptr;
+    // Elements by id, looked up rather than searched for: every element of
+    // every snapshot is visited, so a scan per lookup would be quadratic.
+    const auto index = [](const State::Snapshot& s) {
+        std::unordered_map<Key, const Element*> m;
+        m.reserve(s.elements.size());
+        for (const auto& e : s.elements) m.emplace(e.id, &e);
+        return m;
+    };
+    const auto in_l = index(l.data), in_r = index(r.data), in_before = index(before);
+    const auto find = [&](const State::Snapshot& s, Key id) -> const Element* {
+        const auto& m = &s == &l.data ? in_l : (&s == &r.data ? in_r : in_before);
+        const auto it = m.find(id);
+        return it == m.end() ? nullptr : it->second;
     };
     const auto value = [](const Element* e, Key k) {
         return e && e->params.has(k) ? to_string(e->params.get(k)) : std::string("<unset>");
@@ -693,6 +713,200 @@ inline std::vector<Violation> diagram(StateGraph& g, const Diagram& d) {
     return out;
 }
 
+
+// --- seams ---------------------------------------------------------------------
+// Where two states meet as one place (see `Seam` in StateGraph.hpp): a
+// boundary in each, glued. A seam is sound when:
+//
+//   two-way     between two states of the same kind, every functor that
+//               crosses - a transition's, a window's - is one direction of a
+//               seam's travel, so there is always a way back;
+//   travel      across and back is the identity, both ways round, and travel
+//               never touches either boundary;
+//   glue        each glue is defined on exactly its boundary and lands on
+//               exactly the other one, one to one, and the two glues are
+//               inverse - a bijection of boundaries;
+//   agreement   the boundary carried across *is* the boundary on the other
+//               side: every value the glue gives the far copy is the value it
+//               already has.
+//
+// The last is the gluing condition of a sheaf - sections agree on the overlap -
+// and it is what catches a doorway that is only in one room, a door that
+// swings on one side and not the other, a portal moved without its twin.
+namespace seam_detail {
+
+inline void report(std::vector<Violation>& out, const std::string& where, const std::string& lhs,
+                   const std::string& rhs, const std::string& detail) {
+    Violation v;
+    v.law = "seam";
+    v.where = where;
+    v.lhs = lhs;
+    v.rhs = rhs;
+    v.detail = detail;
+    out.push_back(std::move(v));
+}
+
+// Every value `image` holds, held the same by `have`.
+inline void agree(std::vector<Violation>& out, const std::string& where, const std::string& lhs,
+                  const std::string& rhs, const Element& image, const Element* have, const std::string& what) {
+    if (!have) {
+        report(out, where, lhs, rhs, what + " is missing on the far side");
+        return;
+    }
+    for (const auto& kv : image.params) {
+        if (!have->params.has(kv.first)) {
+            report(out, where, lhs, rhs, what + "." + kv.first.str() + " is " + to_string(kv.second) +
+                                             " carried across, and not there at all");
+            continue;
+        }
+        if (same_value(kv.first, kv.second, have->params.get(kv.first))) continue;
+        report(out, where, lhs, rhs,
+               what + "." + kv.first.str() + " is " + to_string(kv.second) + " carried across, but " +
+                   to_string(have->params.get(kv.first)) + " there");
+    }
+}
+
+// Across by `there`, back by `back`: everything mapped comes home unchanged.
+inline void round_trip(std::vector<Violation>& out, const std::string& where, const Functor& there,
+                       const Functor& back, const State& side) {
+    const Functor loop = Functor::compose(there, back);
+    State scratch(Key{"seam.scratch"});
+    loop.apply(side, scratch);
+    const std::string lhs = there.name().str() + " ; " + back.name().str(), rhs = "id";
+    for (const auto& e : side.elements()) {
+        const Key image = loop.image_object(e.id);
+        if (image.empty()) continue;
+        if (image != e.id) {
+            report(out, where, lhs, rhs, e.id.str() + " goes across and comes back as " + image.str());
+            continue;
+        }
+        if (const Element* r = scratch.find(image)) agree(out, where, lhs, rhs, *r, &e, side.id().str() + "." + e.id.str());
+    }
+}
+
+inline bool travels(const StateGraph& g, Key f) {
+    for (const Seam& s : g.seams())
+        if (s.a_to_b == f || s.b_to_a == f) return true;
+    return false;
+}
+
+}  // namespace seam_detail
+
+inline std::vector<Violation> seams(const StateGraph& g) {
+    using namespace seam_detail;
+    std::vector<Violation> out;
+
+    // Two-way: nothing crosses between like states except along a seam. A
+    // state of no particular kind (plain `State`) is not like anything; an
+    // embedding with both directions is a lens, and owes the lens laws
+    // instead - it already has its way back.
+    const Key untyped{"state"};
+    const auto crossing = [&](Key fname, const std::string& through) {
+        const Functor* f = g.functor(fname);
+        if (!f) return;
+        const State* a = g.find(f->from());
+        const State* b = g.find(f->to());
+        if (!a || !b || a == b || a->kind() != b->kind() || a->kind() == untyped || travels(g, fname)) return;
+        report(out, through, f->from().str() + " -> " + f->to().str(), "a way back",
+               "one way: " + fname.str() + " carries " + f->from().str() + " into " + f->to().str() +
+                   ", both " + a->kind().str() + ", and no seam says how to come back - glue them with a seam");
+    };
+    for (const Embedding& e : g.embeddings()) {
+        if (!e.in.empty() && !e.out.empty()) continue;
+        if (!e.in.empty()) crossing(e.in, "embedding " + e.name.str());
+        if (!e.out.empty()) crossing(e.out, "embedding " + e.name.str());
+    }
+    for (const Transition& t : g.transitions())
+        if (!t.functor.empty()) crossing(t.functor, "transition " + t.name.str());
+
+    for (const Seam& sm : g.seams()) {
+        const std::string where = "seam " + sm.name.str();
+        const State* a = g.find(sm.a);
+        const State* b = g.find(sm.b);
+        if (!a || !b) continue;  // validate() says so
+        const auto get = [&](Key name, Key from, Key to, const char* role) -> const Functor* {
+            const Functor* f = g.functor(name);
+            if (!f) {
+                report(out, where, role, from.str() + " -> " + to.str(), std::string(role) + " " + name.str() + " is missing");
+                return nullptr;
+            }
+            if (f->from() != from || f->to() != to) {
+                report(out, where, role, from.str() + " -> " + to.str(),
+                       std::string(role) + " " + name.str() + " runs " + f->from().str() + " -> " + f->to().str());
+                return nullptr;
+            }
+            return f;
+        };
+        const Functor* ab = get(sm.a_to_b, sm.a, sm.b, "travel");
+        const Functor* ba = get(sm.b_to_a, sm.b, sm.a, "travel");
+        const Functor* gab = get(sm.glue_ab, sm.a, sm.b, "glue");
+        const Functor* gba = get(sm.glue_ba, sm.b, sm.a, "glue");
+
+        const auto in = [](const std::vector<Key>& set, Key k) {
+            return std::find(set.begin(), set.end(), k) != set.end();
+        };
+        if (ab && ba) {
+            round_trip(out, where, *ab, *ba, *a);
+            round_trip(out, where, *ba, *ab, *b);
+            for (Key x : sm.boundary_a)
+                if (!ab->image_object(x).empty())
+                    report(out, where, ab->name().str(), "travel", "travel writes " + x.str() + ", part of the boundary");
+            for (Key y : sm.boundary_b)
+                if (!ba->image_object(y).empty())
+                    report(out, where, ba->name().str(), "travel", "travel writes " + y.str() + ", part of the boundary");
+        }
+        // A glue is a map of boundaries: all of one onto all of the other,
+        // one to one, and nothing else.
+        const auto bijection = [&](const Functor& f, const std::vector<Key>& from, Key from_state,
+                                   const std::vector<Key>& to, Key to_state) {
+            std::vector<Key> hit;
+            for (Key x : from) {
+                const Key y = f.image_object(x);
+                if (y.empty()) {
+                    report(out, where, f.name().str(), "the boundary",
+                           "the glue leaves " + from_state.str() + "." + x.str() + " unglued");
+                } else if (!in(to, y)) {
+                    report(out, where, f.name().str(), "the boundary",
+                           "the glue takes " + from_state.str() + "." + x.str() + " off the far boundary, to " + y.str());
+                } else if (in(hit, y)) {
+                    report(out, where, f.name().str(), "the boundary",
+                           "the glue takes two things to " + to_state.str() + "." + y.str());
+                } else {
+                    hit.push_back(y);
+                }
+            }
+            for (Key y : to)
+                if (!in(hit, y)) report(out, where, f.name().str(), "the boundary", "nothing is glued to " + to_state.str() + "." + y.str());
+            f.for_each_object([&](Key x, Key) {
+                if (!in(from, x))
+                    report(out, where, f.name().str(), "the boundary",
+                           "the glue reaches past the boundary, to " + from_state.str() + "." + x.str());
+            });
+        };
+        if (gab && gba) {
+            bijection(*gab, sm.boundary_a, sm.a, sm.boundary_b, sm.b);
+            bijection(*gba, sm.boundary_b, sm.b, sm.boundary_a, sm.a);
+            round_trip(out, where, *gab, *gba, *a);
+            round_trip(out, where, *gba, *gab, *b);
+            // Agreement, from each side.
+            State from_a(Key{"seam.from_a"}), from_b(Key{"seam.from_b"});
+            gab->apply(*a, from_a);
+            gba->apply(*b, from_b);
+            for (Key x : sm.boundary_a) {
+                const Key y = gab->image_object(x);
+                if (const Element* r = y.empty() ? nullptr : from_a.find(y))
+                    agree(out, where, gab->name().str(), sm.b.str(), *r, b->find(y), sm.b.str() + "." + y.str());
+            }
+            for (Key y : sm.boundary_b) {
+                const Key x = gba->image_object(y);
+                if (const Element* r = x.empty() ? nullptr : from_b.find(x))
+                    agree(out, where, gba->name().str(), sm.a.str(), *r, a->find(x), sm.a.str() + "." + x.str());
+            }
+        }
+    }
+    return out;
+}
+
 }  // namespace laws
 
 // ---------------------------------------------------------------------------
@@ -721,6 +935,7 @@ inline LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams = {}
     laws::append(r.violations, laws::composition(g, o));
     laws::append(r.violations, laws::functoriality(g, o));
     laws::append(r.violations, laws::lenses(g, o));
+    laws::append(r.violations, laws::seams(g));
     for (const Diagram& d : diagrams) laws::append(r.violations, laws::diagram(g, d));
     return r;
 }

@@ -71,6 +71,29 @@ struct Mat4 {
         return r;
     }
 
+    // Pitch: tips +x up towards +y, the way sg::forward_of raises a heading.
+    // Applied before the yaw, it tilts something about its own sideways axis.
+    static Mat4 rotate_z(float a) {
+        Mat4 r;
+        const float c = std::cos(a), s = std::sin(a);
+        r.m[0] = c;
+        r.m[1] = s;
+        r.m[4] = -s;
+        r.m[5] = c;
+        return r;
+    }
+
+    // Roll: turns +y towards +z, spinning something about the way it faces.
+    static Mat4 rotate_x(float a) {
+        Mat4 r;
+        const float c = std::cos(a), s = std::sin(a);
+        r.m[5] = c;
+        r.m[6] = s;
+        r.m[9] = -s;
+        r.m[10] = c;
+        return r;
+    }
+
     static Mat4 perspective(float fov_y_rad, float aspect, float znear, float zfar) {
         Mat4 r;
         const float f = 1.0f / std::tan(fov_y_rad * 0.5f);
@@ -81,6 +104,18 @@ struct Mat4 {
         r.m[11] = -1.0f;
         r.m[14] = (2.0f * zfar * znear) / (znear - zfar);
         return r;
+    }
+
+    // A box of view: parallel projection, for a light as far off as the sun.
+    static Mat4 ortho(float l, float r, float b, float t, float znear, float zfar) {
+        Mat4 m;
+        m.m[0] = 2.0f / (r - l);
+        m.m[5] = 2.0f / (t - b);
+        m.m[10] = -2.0f / (zfar - znear);
+        m.m[12] = -(r + l) / (r - l);
+        m.m[13] = -(t + b) / (t - b);
+        m.m[14] = -(zfar + znear) / (zfar - znear);
+        return m;
     }
 
     static Mat4 look_at(const Vec3& eye, const Vec3& target, const Vec3& up) {

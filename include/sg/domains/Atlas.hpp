@@ -140,6 +140,41 @@ private:
     std::unordered_map<Key, std::vector<std::size_t>> by_room_;
 };
 
+// --- a doorway, as a seam -----------------------------------------------------------
+// Glue room `a` to room `b` at the doorway `pa` / `pb`. The boundary on each
+// side is the doorway and anything else hanging in it (`also` - a door in its
+// frame, say, which each room keeps its own copy of); glue carries the
+// doorway (seam_carry) and the rest (pose_carry) between them. Travel carries
+// the camera (portal_carry, both ways). All four functors
+// are rebuilt from the two portals, so call this again whenever a doorway
+// moves; the seam law then checks that both sides still agree.
+inline Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
+                          const std::vector<std::pair<Key, Key>>& also = {}) {
+    const Element& here = g.state(a).element(pa);
+    const Element& there = g.state(b).element(pb);
+    const Key ab{name.str() + ".ab"}, ba{name.str() + ".ba"};
+    const Key gab{name.str() + ".glue.ab"}, gba{name.str() + ".glue.ba"};
+    Functor to_b(ab, a, b), to_a(ba, b, a);
+    to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(), portal_carry(here, there));
+    to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(), portal_carry(there, here));
+    Functor glue_b(gab, a, b), glue_a(gba, b, a);
+    glue_b.on_object(pa, pb, seam_carry(here, there));
+    glue_a.on_object(pb, pa, seam_carry(there, here));
+    // The boundary on each side: the doorway, and whatever hangs in it.
+    Seam seam{name, a, b, ab, ba, gab, gba, {pa}, {pb}};
+    for (const auto& [x, y] : also) {
+        glue_b.on_object(x, y, pose_carry(here, there));
+        glue_a.on_object(y, x, pose_carry(there, here));
+        seam.boundary_a.push_back(x);
+        seam.boundary_b.push_back(y);
+    }
+    g.set_functor(std::move(to_b));
+    g.set_functor(std::move(to_a));
+    g.set_functor(std::move(glue_b));
+    g.set_functor(std::move(glue_a));
+    return g.add_seam(std::move(seam));
+}
+
 // --- the atlas as a cover --------------------------------------------------------
 // Rooms glued along doorways are one instance of local data over a cover, so
 // the atlas hands itself to the general machinery rather than re-deriving what
@@ -165,15 +200,9 @@ inline Cover as_cover(const Atlas& atlas, StateGraph& g) {
         // Only the viewer's pose crosses. A doorway is a *relation between*
         // the two portals, not a map that overwrites one with the other:
         // carrying the near doorway onto the far one would move the far room's
-        // own door every time somebody walked through it.
-        Functor to_b(fwd, d.room_a, d.room_b);
-        to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(),
-                       portal_carry(*pa, *pb));
-        Functor to_a(back, d.room_b, d.room_a);
-        to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(),
-                       portal_carry(*pb, *pa));
-        g.set_functor(std::move(to_b));
-        g.set_functor(std::move(to_a));
+        // own door every time somebody walked through it. The doorway itself
+        // is the seam's glue, which is checked, never applied in passing.
+        glue_doorway(g, d.name, d.room_a, d.portal_a, d.room_b, d.portal_b);
 
         cover.add(d.name, d.room_a, d.room_b, fwd, back);
     }

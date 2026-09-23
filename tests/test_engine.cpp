@@ -6,6 +6,7 @@
 
 #include "sg/core/Sheaf.hpp"
 #include "sg/gl/Math.hpp"
+#include "sg/gl/Shaders.hpp"
 #include "sg/domains/Atlas.hpp"
 #include "sg/render/Ascii.hpp"
 #include "sg/sg.hpp"
@@ -487,6 +488,22 @@ void test_one_rotation() {
         const sg::gl::Vec3 rotated = sg::gl::rotate_y({1, 0, 0}, static_cast<float>(a));
         check(std::fabs(rotated.x - h.x) < 1e-5 && std::fabs(rotated.z - h.z) < 1e-5,
               "as does rotating a vector directly");
+
+        // A panel's pitch raises its face the way a camera's pitch raises its
+        // gaze, and its roll turns it about that face: the renderer's panel
+        // turn and the domain's forward_of have to agree on both.
+        for (double p : {0.0, 0.4, 1.5707963, -0.9}) {
+            sg::Element cam;
+            cam.params.set(sg::keys::yaw, a).set(sg::keys::pitch, p);
+            const sg::Vec3d f = sg::forward_of(cam);
+            const sg::gl::Mat4 turn = sg::gl::Mat4::rotate_y(static_cast<float>(a)) *
+                                      sg::gl::Mat4::rotate_z(static_cast<float>(p)) *
+                                      sg::gl::Mat4::rotate_x(0.8f);
+            const sg::gl::Vec3 face = turn.transform_point({1, 0, 0});
+            check(std::fabs(face.x - f.x) < 1e-5 && std::fabs(face.y - f.y) < 1e-5 &&
+                      std::fabs(face.z - f.z) < 1e-5,
+                  "a pitched, rolled panel faces where a camera with that yaw and pitch looks");
+        }
     }
 
     // Composing poses is that rotation too, not a second copy of it.
@@ -539,6 +556,135 @@ void test_portal_transform() {
           "walking the other way does not");
     check(!sg::crossed_portal(door, {13.0, 1.7, 9.5}, {14.5, 1.7, 9.5}),
           "missing the opening does not");
+}
+
+// A doorway between two worlds at different heights carries height as height
+// above the doorway, and the screen's glass keeps every corner of its picture.
+void test_open_world() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    auto& dunes = g.add<sg::Spatial3D>("dunes");
+    room.portal("door", {5.0, 1.0, 6.0}, 0.9, 2.0, -1.5707963);
+    dunes.portal("home", {100.0, 13.0, -40.0}, 0.9, 2.0, 0.6);
+    sg::Element& cam = room.camera();
+    cam.params.set(sg::keys::x, 5.2).set(sg::keys::y, 1.65).set(sg::keys::z, 5.0).set(sg::keys::yaw, 1.2);
+    sg::Element out = dunes.camera();
+    sg::portal_carry(room.element("door"), dunes.element("home"))(cam, out);
+    check(roughly(out.params.num(sg::keys::y), 13.65), "a doorway carries height above it, not height");
+    sg::Element back = room.camera();
+    sg::portal_carry(dunes.element("home"), room.element("door"))(out, back);
+    check(roughly(back.params.num(sg::keys::x), 5.2) && roughly(back.params.num(sg::keys::y), 1.65) &&
+              roughly(back.params.num(sg::keys::z), 5.0),
+          "and there and back again is where you started");
+
+    // Walk the picture's edge: every point of it is seen through the glass,
+    // inside its rounded corners.
+    using G = sg::gl::CrtGlass;
+    bool inside = true;
+    for (int i = 0; i <= 200 && inside; ++i) {
+        const double a = i / 200.0;
+        // The panel point that shows picture point (a, 0), (a, 1), (0, a) or
+        // (1, a), found by bisection along the ray from the middle.
+        const double targets[4][2] = {{a, 0.0}, {a, 1.0}, {0.0, a}, {1.0, a}};
+        for (const auto& t : targets) {
+            double lo = 0, hi = 2;
+            for (int k = 0; k < 60; ++k) {
+                const double m = (lo + hi) * 0.5;
+                double pu, pv;
+                sg::gl::crt_picture(0.5 + (t[0] - 0.5) * m, 0.5 + (t[1] - 0.5) * m, pu, pv);
+                const bool past = std::fabs(pu - 0.5) > std::fabs(t[0] - 0.5) + 1e-12 ||
+                                  std::fabs(pv - 0.5) > std::fabs(t[1] - 0.5) + 1e-12;
+                (past ? hi : lo) = m;
+            }
+            const double u = 0.5 + (t[0] - 0.5) * lo, v = 0.5 + (t[1] - 0.5) * lo;
+            const double gx = std::fabs((u * 2 - 1) / G::half_w), gy = std::fabs((v * 2 - 1) / G::half_h);
+            const double dx = std::max(gx - (1 - G::corner), 0.0), dy = std::max(gy - (1 - G::corner), 0.0);
+            const double sd = std::sqrt(dx * dx + dy * dy) + std::min(std::max(gx, gy) - (1 - G::corner), 0.0) - G::corner;
+            inside = inside && sd < 0 && u > 0 && u < 1 && v > 0 && v < 1;
+        }
+    }
+    check(inside, "the whole picture on a screen shows inside its glass, corners and all");
+    double pu, pv;
+    check(sg::gl::crt_picture(0.5, 0.5, pu, pv) && roughly(pu, 0.5) && roughly(pv, 0.5),
+          "and its middle is the picture's middle");
+}
+
+// Two rooms of the same kind joined by a doorway: the joint is a seam, and a
+// seam is two-way, its round trips are the identity, and both rooms agree on
+// the doorway and on anything hanging in it.
+bool has_seam_violation(sg::StateGraph& g, const std::string& text) {
+    for (const sg::Violation& v : sg::laws::seams(g))
+        if (v.detail.find(text) != std::string::npos) return true;
+    return false;
+}
+
+void test_seams() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    auto& yard = g.add<sg::Spatial3D>("yard");
+    room.portal("door", {5.0, 1.0, 6.0}, 0.9, 2.0, -1.5707963);
+    yard.portal("gate", {40.0, 7.0, -3.0}, 0.9, 2.0, 0.4);
+    room.camera().params.set(sg::keys::x, 5.0).set(sg::keys::y, 1.6).set(sg::keys::z, 4.0);
+
+    // A window one way only: the kind of interface that cannot stand.
+    g.add_functor("peek", "room", "yard")
+        .on_object(sg::SpatialState::camera_id(), sg::SpatialState::camera_id(),
+                   sg::portal_carry(room.element("door"), yard.element("gate")));
+    g.embed("window", "room", "door", "yard", "peek", sg::Key{}, sg::EmbedSync::View);
+    check(has_seam_violation(g, "one way"), "a one-way window between two rooms is a violation");
+
+    // Glued as a seam, with a door hanging in the doorway on both sides.
+    auto hang = [](sg::Spatial3D& s, sg::Vec3d at, double yaw) {
+        s.anchor("leaf", at, yaw);
+    };
+    hang(room, {4.55, 0.0, 6.0}, -0.3);
+    const sg::Element& door = room.element("door");
+    const sg::Element& gate = yard.element("gate");
+    sg::Element leaf_there = room.element("leaf");
+    sg::pose_carry(door, gate)(room.element("leaf"), leaf_there);
+    hang(yard, sg::position_of(leaf_there), leaf_there.params.num(sg::keys::yaw));
+    sg::glue_doorway(g, "doorway", "room", "door", "yard", "gate", {{"leaf", "leaf"}});
+    g.embeddings().front().in = "doorway.ab";
+    check(sg::laws::seams(g).empty(), "glued as a seam, the doorway is sound");
+    for (const auto& v : sg::laws::seams(g)) std::printf("        %s\n", v.str().c_str());
+    g.connect("room", "step_out", "yard").functor = "doorway.ab";
+    g.connect("yard", "step_in", "room").functor = "doorway.ba";
+    check(sg::laws::seams(g).empty(), "and walking through it both ways travels along it");
+
+    // The door swings on one side only: the rooms disagree about the seam.
+    room.element("leaf").params.set(sg::keys::yaw, -1.2);
+    check(has_seam_violation(g, "yard.leaf.yaw"), "a door that swings on one side only is caught");
+    room.element("leaf").params.set(sg::keys::yaw, -0.3);
+    check(sg::laws::seams(g).empty(), "and swung back into agreement, it is sound again");
+
+    // One doorway moved without the other: the seam no longer closes.
+    yard.element("gate").params.set(sg::keys::x, 41.0);
+    check(has_seam_violation(g, "yard.gate.x"), "a doorway moved on one side only is caught");
+    yard.element("gate").params.set(sg::keys::x, 40.0);
+
+    // A glue that reaches past the boundary, or leaves part of it unglued.
+    {
+        sg::Seam narrow = *g.seam("doorway");
+        narrow.boundary_b = {"gate"};
+        narrow.boundary_a = {"door"};
+        sg::StateGraph& gg = g;
+        const sg::Seam keep = *g.seam("doorway");
+        gg.add_seam(narrow);
+        check(has_seam_violation(g, "reaches past the boundary"), "a glue reaching past its boundary is caught");
+        gg.add_seam(keep);
+        room.anchor("stray", {1, 0, 1}, 0.0);
+        sg::Seam wide = keep;
+        wide.boundary_a.push_back("stray");
+        wide.boundary_b.push_back("leaf");
+        gg.add_seam(wide);
+        check(has_seam_violation(g, "unglued"), "and so is a boundary the glue leaves out");
+        gg.add_seam(keep);
+    }
+
+    // Travel that drags the doorway along with the traveller.
+    sg::Functor* ab = g.functor("doorway.ab");
+    ab->on_object("door", "gate", sg::seam_carry(door, gate));
+    check(has_seam_violation(g, "part of the boundary"), "travel that writes the doorway is caught");
 }
 
 void test_view_portal() {
@@ -1024,6 +1170,30 @@ void test_surface_and_views() {
     std::ostringstream os;
     sg::render::draw_top_down(world, 8, 6, os);
     check(os.str().find('#') != std::string::npos, "the terminal view draws the crate");
+
+    // A surface that paints itself: repainted when it says so, and only then.
+    struct Sheet : sg::Surface2D {
+        Sheet() : sg::Surface2D("sheet", 6, 4, 1) {}
+        int shade = 40;
+        int paints = 0;
+        void ink(int v) {
+            shade = v;
+            invalidate();
+        }
+        void paint() override {
+            ++paints;
+            fill(shade, shade, shade);
+            put(0, 0, 255, 0, 0);
+        }
+    };
+    Sheet sheet;
+    sheet.raster();
+    sheet.raster();
+    check(sheet.paints == 1, "a painted surface is painted once until it changes");
+    check(sheet.pixel(0, 0)[0] == 255 && sheet.pixel(1, 0)[0] == 40, "with its own pixels");
+    sheet.ink(90);
+    sheet.raster();
+    check(sheet.paints == 2 && sheet.pixel(3, 2)[1] == 90, "and again once it is invalidated");
 }
 
 }  // namespace
@@ -1046,6 +1216,8 @@ int main() {
     test_wall_collisions();
     test_portal_transform();
     test_view_portal();
+    test_open_world();
+    test_seams();
     test_view_portal_validation();
     test_descent();
     test_atlas_is_a_cover();

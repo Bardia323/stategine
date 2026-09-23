@@ -202,8 +202,19 @@ private:
             if (e->sync == EmbedSync::View && !e->in.empty())
                 if (const Functor* f = graph_.functor(e->in)) f->apply(subject, guest);
             guest.step(t);
-            if (e->sync == EmbedSync::Live && !e->out.empty())
+            if (e->sync == EmbedSync::Live && !e->out.empty()) {
                 if (const Functor* f = graph_.functor(e->out)) f->apply(guest, subject);
+                // One guest open in several places - a door hanging in a
+                // doorway both rooms embed - is one state: what it did this
+                // frame reaches every place it is shown, not only here.
+                for (Embedding& other : graph_.embeddings()) {
+                    if (&other == e || !other.open || other.guest != e->guest ||
+                        other.sync != EmbedSync::Live || other.out.empty())
+                        continue;
+                    if (const Functor* f = graph_.functor(other.out))
+                        f->apply(guest, graph_.state(other.subject.empty() ? other.host : other.subject));
+                }
+            }
         }
     }
 
