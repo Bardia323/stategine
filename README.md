@@ -163,7 +163,7 @@ Pin a release; none of the engine's examples, tests or downloads come along.
 include(FetchContent)
 FetchContent_Declare(stategine
   GIT_REPOSITORY https://github.com/Bardia323/stategine.git
-  GIT_TAG        v0.1.0)
+  GIT_TAG        v0.2.0)
 FetchContent_MakeAvailable(stategine)
 
 target_link_libraries(my_game PRIVATE stategine::stategine

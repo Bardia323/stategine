@@ -6,7 +6,7 @@ project says so.
 
 While the major version is 0, a minor bump may break the API.
 
-## Unreleased
+## v0.2.0
 
 - **Looks** (`sg/domains/Look.hpp`): how a state is shown, as a state. A
   `LookState` holds per-pass uniforms, settings and optional shader sources;
@@ -36,6 +36,11 @@ While the major version is 0, a minor bump may break the API.
   centred on it, and each room's look bled into the other's wall.
 - `sg_looks_gl` test (needs a display); `sg_room3d` gains looks, `L` to switch
   the hall's, and `alert` / `crossing` shots.
+- **Breaking:** `PlacedRoom` has a third member, `doorways`, so brace
+  initialisers should give three fields. A look's custom scene vertex shader
+  must write `gl_ClipDistance` from `uClip` / `uClipCount`; `prepare()` names
+  one that does not. `adjacency_defects` may name walls that straddle a doorway
+  plane in existing levels.
 
 ## v0.1.0
 
