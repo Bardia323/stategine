@@ -1052,7 +1052,10 @@ private:
         auto world_it = worlds_.find(e.id);
         const bool is_window = world_it != worlds_.end() && world_it->second.world != nullptr;
 
-        const float hi = (open || e.id == highlight_) ? 1.0f : 0.0f;
+        // An open panel's frame lights up - unless the panel states its own
+        // glow, as a blackboard does: then only when pointed at.
+        const bool says_glow = e.params.has(Key{"glow"});
+        const float hi = ((open && !says_glow) || e.id == highlight_) ? 1.0f : 0.0f;
         if (is_window) {
             // A doorway is cased on four sides, never backed: the opening has to
             // stay clear or there is nothing to see through. `casing` is how
@@ -1175,7 +1178,9 @@ private:
         set_model(room_local(gl::Mat4::translate(pos + face * lift) * panel_turn(pose, e) *
                   gl::Mat4::scale({1.0f, h, w})));
         // `glow` is how much the panel lights itself - a screen more than a
-        // map, paper not at all; an open panel glows at least as a map does.
+        // map, paper not at all; an open panel that does not say glows at
+        // least as a map does. A stated glow is kept: a blackboard or a
+        // photo, open or not, is lit only by the room.
         const float glow = static_cast<float>(e.params.num(Key{"glow"}, 0.12));
         scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
         scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.75)));
@@ -1185,7 +1190,7 @@ private:
         // highlight - only when pointed at; an open screen is lit by its glow.
         scene_->set("uHighlight", !framed(e) && e.id == highlight_ ? 1.0f : 0.0f);
         scene_->set("uTexMix", 1.0f);
-        scene_->set("uGlow", open ? std::max(glow, 0.55f) : glow);
+        scene_->set("uGlow", open && !says_glow ? std::max(glow, 0.55f) : glow);
         // `crt` makes the panel a screen: the glass is drawn per pixel.
         scene_->set("uCRT", static_cast<float>(e.params.num(Key{"crt"}, 0.0)));
         scene_->set("uTexSize", static_cast<float>(surf.px_w()), static_cast<float>(surf.px_h()));
