@@ -162,7 +162,8 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, ReadBuffer, (GLenum))                                                             \
     X(void, GetIntegerv, (GLenum, GLint*))                                                    \
     X(void, DepthMask, (GLboolean))                                                           \
-    X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))
+    X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))                                        \
+    X(void, Finish, ())
 
 #define SG_GL_DECLARE(ret, name, args) inline ret(*gl##name) args = nullptr;
 SG_GL_FUNCS(SG_GL_DECLARE)

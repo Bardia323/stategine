@@ -34,10 +34,13 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <set>
 #include <string>
+#include <future>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -107,6 +110,7 @@ public:
     static constexpr std::size_t kMaxLights = 8;    // matches the scene shader
     static constexpr std::size_t kShadowMaps = 4;  // the strongest four cast
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
+    static constexpr float kNear = 0.05f;          // the near plane, metres
 
     explicit GLWorldView(GLQuality q = {}) : q_(q), standard_(Key{"<standard>"}) {
         standard_look(standard_, q_);
@@ -118,6 +122,16 @@ public:
         double compile_ms = 0;  // time spent compiling
     };
     const LookStats& stats() const { return stats_; }
+
+    // Where the last frame's time went, in milliseconds, when timing is on
+    // (it waits for the GPU between stages, so it is for finding stalls, not
+    // for playing with).
+    struct FrameTimes {
+        double portals = 0, shadows = 0, scene = 0, post = 0, scene_cpu = 0;
+        int portal_views = 0;
+    };
+    void set_timing(bool on) { timing_ = on; }
+    const FrameTimes& times() const { return times_; }
 
     // Advance fades by a fixed step per frame instead of real time: headless
     // renders then show the same moment of a fade on every machine. 0 = real time.
@@ -159,13 +173,31 @@ public:
     // them, coarse far off - and resamples as they move, so the ground has no
     // edge however far they walk. Bump the element's `rev` to have it
     // resampled when the function itself changes. It is called from several
-    // threads at once (while the frame waits), so it must only read.
+    // threads at once, in the background while the game goes on, so it must
+    // be safe to call while the game is changing its state.
     void bind_terrain(Key terrain_element, std::function<double(double, double)> height) {
         terrains_[terrain_element].height = std::move(height);
     }
 
     // Draw a highlight on one element for this frame (a "you can use this" cue).
     void highlight(Key element_id) { highlight_ = element_id; }
+
+    // Draw each of `worlds` once, off screen, and forget it was done: every
+    // program, target and texture the game will need is then used once before
+    // it matters. Drivers finish a shader, or a framebuffer, the first time it
+    // is drawn with, not when it is made - so without this the first step into
+    // another world stalls. Fades are left exactly as they were.
+    void warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
+        const LookFader fader = fader_;
+        const Mix post = post_;
+        const double time = time_;
+        for (Spatial3D* w : worlds)
+            if (w) render(*w, fb_w, fb_h);
+        gl::glFinish();
+        fader_ = fader;
+        post_ = post;
+        time_ = time;
+    }
 
     // One room, standing on its own.
     void render(Spatial3D& world, int fb_w, int fb_h) {
@@ -202,7 +234,23 @@ public:
             wp.target.create(fb_w, fb_h, gl::GL_RGBA16F, 0, false);
             wp.width = fb_w;
             wp.height = fb_h;
+            // Touched once now: drivers allocate on first use, and that is
+            // otherwise the first frame through the doorway.
+            for (gl::RenderTarget* t : {&wp.ms, &wp.target}) {
+                t->bind();
+                gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+            }
+            wp.ms.blit_to(wp.target);
         }
+        times_ = FrameTimes{};
+        const auto mark = [this] {
+            if (timing_) gl::glFinish();
+            return std::chrono::steady_clock::now();
+        };
+        const auto since = [](std::chrono::steady_clock::time_point a) {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+        };
+        auto t0 = mark();
         for (const auto& e : world.elements()) {
             if (e.kind != kinds::portal || !e.alive) continue;
             auto it = worlds_.find(e.id);
@@ -219,17 +267,26 @@ public:
             const Element* back = back_portal(*wp.world, world);
             const PlacedRoom guest{wp.world, Pose{}, {}};
             draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, wp.ms,
-                       /*depth=*/1, 0.05f, back ? back->id : Key{},
+                       /*depth=*/1, kNear, back ? back->id : Key{},
                        {far_side(world, e, *wp.world)});
             wp.ms.blit_to(wp.target);
+            ++times_.portal_views;
         }
+        times_.portals = since(t0);
+        t0 = mark();
 
         // --- the room the viewer is actually standing in ------------------------
-        draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, 0.05f);
+        draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, kNear);
+        times_.scene_cpu = since(t0);
+        if (timing_) gl::glFinish();
+        times_.scene = since(t0);
+        t0 = mark();
 
         scene_target_.blit_to(resolve_);
         run_bloom();
         composite(fb_w, fb_h);
+        if (timing_) gl::glFinish();
+        times_.post = since(t0);
         highlight_ = Key{};
     }
 
@@ -268,6 +325,9 @@ private:
         std::function<double(double, double)> height;
         gl::Mesh mesh;
         double cx = 1e300, cz = 1e300, rev = -1;
+        // A resample under way in the background, and where it is centred.
+        std::future<std::vector<float>> job;
+        double job_cx = 0, job_cz = 0, job_rev = -1;
     };
 
     // Is any of the portal in front of the camera, and near enough to draw?
@@ -476,6 +536,8 @@ private:
             gl::Mat4::perspective(cam.fov, aspect, znear, zfar) *
             gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, {0, 1, 0});
 
+        if (timing_) gl::glFinish();
+        const auto shadow_start = std::chrono::steady_clock::now();
         // --- shadow depth, one pass per shadowed lamp ------------------------
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
@@ -511,6 +573,10 @@ private:
             }
         }
         gl::glCullFace(gl::GL_BACK);
+        if (timing_) {
+            gl::glFinish();
+            times_.shadows += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - shadow_start).count();
+        }
 
         // --- the scene -------------------------------------------------------
         // The first room is the one this view is taken from; its look clears.
@@ -625,8 +691,10 @@ private:
             }
             for (const auto& e : room.elements()) {
                 if (e.kind != kinds::portal || !e.alive) continue;
-                if (!skip_portal.empty() && e.id == skip_portal) continue;  // looked through
-                draw_portal(room, e, depth, target);
+                // The doorway being looked through keeps its frame; only its
+                // view is left out - seen from its own far side it would fill
+                // the whole picture.
+                draw_portal(room, e, depth, target, !skip_portal.empty() && e.id == skip_portal);
             }
         }
         for (int i = 0; i < kMaxBounds; ++i)
@@ -654,24 +722,10 @@ private:
         sphere_.draw();
     }
 
-    // Resample the ground round the viewer when they have moved a grid step,
-    // or when the element asks (`rev`). The grid is fine at the centre and
-    // widens towards `reach`: `cells` across, `step` metres apart at the
-    // middle.
-    void ensure_terrain(const Element& e, const Camera& cam) {
-        auto it = terrains_.find(e.id);
-        if (it == terrains_.end() || !it->second.height) return;
-        TerrainMesh& t = it->second;
-        const int n = std::max(16, std::min(400, static_cast<int>(e.params.num(Key{"cells"}, 160.0)))) / 2 * 2;
-        const double reach = e.params.num(Key{"reach"}, 320.0);
-        const double step = e.params.num(Key{"step"}, 0.5);
-        const double snap = e.params.num(Key{"snap"}, 2.0);
-        const double rev = e.params.num(Key{"rev"}, 0.0);
-        const double cx = std::floor(cam.eye.x / snap) * snap, cz = std::floor(cam.eye.z / snap) * snap;
-        if (t.mesh.valid() && cx == t.cx && cz == t.cz && rev == t.rev) return;
-        t.cx = cx;
-        t.cz = cz;
-        t.rev = rev;
+    // The ground round (cx, cz): `n` cells across, `step` metres apart at the
+    // middle, widening to `reach`. Sampled on every core at once.
+    static std::vector<float> sample_ground(const std::function<double(double, double)>& height, int n, double reach,
+                                            double step, double cx, double cz) {
         const int half = n / 2;
         const double grow = std::max(0.0, (reach - step * half) / (static_cast<double>(half) * half));
         std::vector<double> off(static_cast<std::size_t>(n + 1));
@@ -680,8 +734,6 @@ private:
             off[static_cast<std::size_t>(i)] = (k < 0 ? -1.0 : 1.0) * (step * a + grow * a * a);
         }
         const auto at = [n](int i, int j) { return static_cast<std::size_t>(j) * static_cast<std::size_t>(n + 1) + static_cast<std::size_t>(i); };
-        // Sampled on every core at once, rows dealt out in turn; the frame
-        // waits, so the height function only ever runs while nothing else does.
         std::vector<double> hgt(static_cast<std::size_t>((n + 1) * (n + 1)));
         const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
         std::vector<std::thread> pool;
@@ -689,7 +741,7 @@ private:
             pool.emplace_back([&, w] {
                 for (int j = w; j <= n; j += workers)
                     for (int i = 0; i <= n; ++i)
-                        hgt[at(i, j)] = t.height(cx + off[static_cast<std::size_t>(i)], cz + off[static_cast<std::size_t>(j)]);
+                        hgt[at(i, j)] = height(cx + off[static_cast<std::size_t>(i)], cz + off[static_cast<std::size_t>(j)]);
             });
         for (std::thread& th : pool) th.join();
         std::vector<gl::Vec3> nrm(hgt.size());
@@ -718,7 +770,52 @@ private:
                 put(i + 1, j + 1);
                 put(i + 1, j);
             }
-        t.mesh.update(v);
+        return v;
+    }
+
+    // Keep the ground centred on the viewer. When they have moved a grid step
+    // the ground is resampled in the background, and the ground already there
+    // is drawn until it is ready - it is only a step off centre, and the frame
+    // never waits for it. Only with no ground yet, or after the element asks
+    // (`rev`, as when a desert shifts its origin), does the frame wait.
+    void ensure_terrain(const Element& e, const Camera& cam) {
+        auto it = terrains_.find(e.id);
+        if (it == terrains_.end() || !it->second.height) return;
+        TerrainMesh& t = it->second;
+        const int n = std::max(16, std::min(400, static_cast<int>(e.params.num(Key{"cells"}, 160.0)))) / 2 * 2;
+        const double reach = e.params.num(Key{"reach"}, 320.0);
+        const double step = e.params.num(Key{"step"}, 0.5);
+        const double snap = e.params.num(Key{"snap"}, 2.0);
+        const double rev = e.params.num(Key{"rev"}, 0.0);
+        const double cx = std::floor(cam.eye.x / snap) * snap, cz = std::floor(cam.eye.z / snap) * snap;
+
+        // A finished resample goes in, if it is still the ground wanted.
+        if (t.job.valid() && t.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            std::vector<float> v = t.job.get();
+            if (t.job_rev == rev) {
+                t.mesh.update(v);
+                t.cx = t.job_cx;
+                t.cz = t.job_cz;
+                t.rev = t.job_rev;
+            }
+        }
+        if (t.mesh.valid() && cx == t.cx && cz == t.cz && rev == t.rev) return;
+        if (!t.mesh.valid() || rev != t.rev) {
+            // Nothing sensible to draw meanwhile: wait for it.
+            if (t.job.valid()) t.job.wait();
+            t.mesh.update(sample_ground(t.height, n, reach, step, cx, cz));
+            t.cx = cx;
+            t.cz = cz;
+            t.rev = rev;
+            return;
+        }
+        if (t.job.valid()) return;  // one at a time; the next frame asks again
+        t.job_cx = cx;
+        t.job_cz = cz;
+        t.job_rev = rev;
+        t.job = std::async(std::launch::async, [height = t.height, n, reach, step, cx, cz] {
+            return sample_ground(height, n, reach, step, cx, cz);
+        });
     }
 
     void draw_terrain(const Element& e) {
@@ -933,8 +1030,8 @@ private:
                    {0.09f, 0.09f, 0.10f}, 0.8f, 0.0f);
     }
 
-    void draw_portal(const State& st, const Element& e, int depth,
-                     const gl::RenderTarget& target) {
+    void draw_portal(const State& st, const Element& e, int depth, const gl::RenderTarget& target,
+                     bool frame_only = false) {
         // A portal with nothing bound to it is a marker for a plain opening -
         // the gap between wall segments is the doorway, and it needs no
         // geometry of its own.
@@ -990,6 +1087,7 @@ private:
         }
 
         if (is_window) {
+            if (frame_only) return;
             WorldPortal& wp = world_it->second;
             // `inset` is how far in front of the portal's plane the view is
             // drawn; a doorway walked through wants it on the plane (0).
@@ -1031,16 +1129,19 @@ private:
             scene_->set("uViewport", static_cast<float>(target.width()),
                        static_cast<float>(target.height()));
             quad_.draw();
-            // Stepping through, the viewer comes closer to the doorway than the
-            // near plane, and its quad is cut away. A `tunnel` backs it: the
-            // same view on a larger quad that far behind the plane, so the
-            // last step shows the far side rather than what the quad hid.
-            // Walls keep it out of sight until then.
-            const float tunnel = static_cast<float>(e.params.num(Key{"tunnel"}, 0.0));
-            if (tunnel > 0.0f && side >= 0.0f && side < tunnel + 0.6f) {
-                const float margin = static_cast<float>(e.params.num(Key{"tunnel_margin"}, 1.0)) * 2.0f;
-                set_model(room_local(gl::Mat4::translate(pos + n * (inset - tunnel)) * gl::Mat4::rotate_y(yaw) *
-                          gl::Mat4::scale({1.0f, h + margin, w + margin})));
+            // Stepping through, the eye comes nearer the doorway than the near
+            // plane and the quad is cut away. For those last few centimetres
+            // (`tunnel` > 0) the same view is drawn again just past the near
+            // plane, behind the doorway, on the opening's own outline as seen
+            // from the eye - so it covers exactly what the opening covers, no
+            // more, and nothing about the doorway changes size as you close in.
+            if (e.params.num(Key{"tunnel"}, 0.0) > 0.0 && side >= 0.0f && side < kNear * 2.0f) {
+                const float back = kNear * 2.0f - side;
+                const float k = (std::max(side, 0.002f) + back) / std::max(side, 0.002f);
+                const gl::Vec3 plane = pos + n * inset, eye = to_vec3(eye_here);
+                const gl::Vec3 centre = eye + (plane - eye) * k;
+                set_model(room_local(gl::Mat4::translate(centre) * gl::Mat4::rotate_y(yaw) *
+                          gl::Mat4::scale({1.0f, h * k, w * k})));
                 quad_.draw();
             }
             scene_->set("uScreenUV", 0.0f);
@@ -1420,6 +1521,8 @@ private:
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn
     Key highlight_;
+    bool timing_ = false;
+    FrameTimes times_;
 };
 
 }  // namespace sg::render

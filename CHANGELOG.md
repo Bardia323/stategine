@@ -27,6 +27,20 @@ While the major version is 0, a minor bump may break the API.
 - A guest open Live in several hosts is one state: when the engine steps it
   through one embedding, it writes back through every open Live embedding of
   it, so a door both rooms embed is swung in both at once.
+- **No stall stepping into another world.** Ground is resampled in the
+  background and the ground already there is drawn until it is ready, so
+  walking across a grid step no longer stops the frame (it cost ~8 ms, and a
+  doorway on a grid line cost it on every crossing). A height function bound
+  with `bind_terrain` is now called while the game runs, so it must be safe
+  to call concurrently. `GLWorldView::warm` draws given worlds once, off
+  screen, and restores the fades, so nothing is first used mid-game;
+  `set_timing` / `times()` report where a frame's time went.
+- The doorway being looked through keeps its frame in the far view; only its
+  own view is left out (the far room's door frame no longer vanishes).
+- A doorway's `tunnel` is now exactly the opening's outline as seen from the
+  eye, a few centimetres past the near plane, and only in the last few
+  centimetres before crossing - the opening no longer jumps bigger as you
+  close in. `tunnel_margin` is gone.
 - `glue_doorway(g, name, a, pa, b, pb, also)` builds a doorway's seam from its
   two portals: `name.ab/.ba` carry the camera, `name.glue.ab/.ba` carry the
   doorway (`seam_carry`: the same doorway, facing back) and anything in
