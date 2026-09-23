@@ -435,9 +435,9 @@ private:
         bloom_b_.create(bw, bh, gl::GL_RGBA16F, 0, false);
     }
 
-    // Every lamp in the state, nearest to the viewer first: that one gets the
-    // shadow map, the rest light without casting.
-    std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, const Camera& cam) {
+    // Every lamp in the state, strongest first: the first four get shadow
+    // maps, the rest light without casting.
+    std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, const Camera&) {
         std::vector<Light> out;
         for (const PlacedRoom& placed : rooms) {
             if (!placed.room) continue;
@@ -461,11 +461,15 @@ private:
         // A sun first - it lights everything, so it has the first shadow -
         // then lamps, brightest first. Not nearest: which lamps cast shadows
         // must not change as the viewer walks about, or shadows pop in and out.
-        std::sort(out.begin(), out.end(), [&cam](const Light& a, const Light& b) {
+        // Equal lamps are ordered by where they hang, never by the viewer:
+        // a tie broken by distance hands the shadow maps from lamp to lamp as
+        // the viewer walks, and shadows vanish a step further off.
+        std::sort(out.begin(), out.end(), [](const Light& a, const Light& b) {
             if (a.sun != b.sun) return a.sun;
             if (a.power != b.power) return a.power > b.power;
-            const gl::Vec3 da = a.pos - cam.eye, db = b.pos - cam.eye;
-            return gl::dot(da, da) < gl::dot(db, db);
+            if (a.pos.x != b.pos.x) return a.pos.x < b.pos.x;
+            if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
+            return a.pos.y < b.pos.y;
         });
         if (out.size() > kMaxLights) out.resize(kMaxLights);
         if (out.empty()) {

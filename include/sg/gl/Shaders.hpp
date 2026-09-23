@@ -47,12 +47,19 @@ out vec4 vLightSpace1;
 out vec4 vLightSpace2;
 out vec4 vLightSpace3;
 out vec3 vLocal;
+out vec3 vObject;
+out vec3 vObjNormal;
 
 void main() {
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorld = world.xyz;
     vRoom = (uTexModel * vec4(aPos, 1.0)).xyz;
     vLocal = aPos;
+    // The mesh's own frame at its own size: materials that belong to a thing
+    // (grain, brushing, weave) ride along with it however it is moved.
+    vec3 scale = vec3(length(uModel[0].xyz), length(uModel[1].xyz), length(uModel[2].xyz));
+    vObject = aPos * scale;
+    vObjNormal = aNormal;
     vNormal = normalize(mat3(uModel) * aNormal);
     vUV = aUV;
     vLightSpace0 = uLightViewProj0 * world;
@@ -109,6 +116,8 @@ in vec4 vLightSpace1;
 in vec4 vLightSpace2;
 in vec4 vLightSpace3;
 in vec3 vLocal;
+in vec3 vObject;
+in vec3 vObjNormal;
 
 out vec4 FragColor;
 
@@ -307,27 +316,27 @@ vec3 surface_albedo(out float rough_mod) {
     vec3 a = abs(vLocal);
     float edge = max(max(a.x, a.y), a.z);
     if (uSurface > 3.5 && uSurface < 4.5) {
-        // Wood: long grain along the room's x and z, rings, a softened edge.
-        float along = abs(dot(normalize(vNormal), vec3(0.0, 1.0, 0.0))) > 0.5 ? vRoom.z : vRoom.y;
-        float grain = noise(vec2(vRoom.x * 2.0 + vRoom.z * 2.0, along * 55.0));
-        float rings = 0.5 + 0.5 * sin((vRoom.x + vRoom.z) * 9.0 + grain * 6.0);
+        // Wood: long grain along the thing's own x and z, rings, a softened edge.
+        float along = abs(dot(normalize(vObjNormal), vec3(0.0, 1.0, 0.0))) > 0.5 ? vObject.z : vObject.y;
+        float grain = noise(vec2(vObject.x * 2.0 + vObject.z * 2.0, along * 55.0));
+        float rings = 0.5 + 0.5 * sin((vObject.x + vObject.z) * 9.0 + grain * 6.0);
         rough_mod = -0.05 * rings;
         return uAlbedo * (0.82 + 0.14 * rings + 0.1 * grain) * mix(1.0, 0.8, smoothstep(0.46, 0.5, edge));
     }
     if (uSurface > 4.5 && uSurface < 5.5) {
         // Brushed metal: fine streaks, and smoother than its roughness says.
-        float brush = noise(vec2(vRoom.x * 400.0, vRoom.y * 6.0 + vRoom.z * 6.0));
+        float brush = noise(vec2(vObject.x * 400.0, vObject.y * 6.0 + vObject.z * 6.0));
         rough_mod = -0.2 + 0.1 * brush;
         return uAlbedo * (0.9 + 0.12 * brush);
     }
     if (uSurface > 5.5 && uSurface < 6.5) {
         // Moulded plastic: a faint speckle and rounded, darker edges.
-        float speck = noise(vRoom.xz * 180.0 + vRoom.y * 90.0);
+        float speck = noise(vObject.xz * 180.0 + vObject.y * 90.0);
         return uAlbedo * (0.96 + 0.06 * speck) * mix(1.0, 0.78, smoothstep(0.45, 0.5, edge));
     }
     if (uSurface > 6.5) {
         // Fabric: a weave, matte.
-        vec2 p = (vRoom.xz + vRoom.yy) * 260.0;
+        vec2 p = (vObject.xz + vObject.yy) * 260.0;
         float weave = 0.5 + 0.25 * (sin(p.x) + sin(p.y));
         rough_mod = 0.2;
         return uAlbedo * (0.85 + 0.2 * weave) * mix(1.0, 0.85, smoothstep(0.46, 0.5, edge));
