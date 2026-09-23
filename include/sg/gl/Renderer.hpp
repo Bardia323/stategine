@@ -1,6 +1,7 @@
 // Stategine - GL resources: programs, meshes, textures, render targets.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -196,19 +197,95 @@ inline std::vector<float> cube_vertices() {
 
 // A cylinder standing on y, radius 0.5 and height 1, centred like the cube, so
 // the same model matrix sizes it: sx and sz are its diameters, sy its height.
-inline std::vector<float> cylinder_vertices(int segments = 28) {
+// A box with its edges and corners rounded to `r` metres, `sx` x `sy` x `sz`
+// in size, and narrowing to `taper` of its width and depth at the top (1:
+// straight up). Made in the unit box every mesh shares, so the same model
+// matrix places it; each normal is given pre-divided by the size, so that
+// once the model's scale has been applied to it, it points the way the
+// rounded surface does.
+inline std::vector<float> rounded_box_vertices(float sx, float sy, float sz, float r, float taper = 1.0f,
+                                               int seg = 3) {
+    const float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
+    r = std::max(0.0f, std::min(r, std::min({hx, hy, hz}) * 0.95f));
+    const float ix = hx - r, iy = hy - r, iz = hz - r;
+    // Where the grid lines run along one axis: round the edge, then straight.
+    const auto stops = [&](float h, float inner) {
+        std::vector<float> s;
+        for (int k = 0; k <= seg; ++k) {
+            const float a = 1.5707963f * (1.0f - static_cast<float>(k) / seg);
+            s.push_back(-inner - r * std::sin(a));
+        }
+        for (int k = 0; k <= seg; ++k) {
+            const float a = 1.5707963f * static_cast<float>(k) / seg;
+            s.push_back(inner + r * std::sin(a));
+        }
+        (void)h;
+        return s;
+    };
+    const std::vector<float> xs = stops(hx, ix), ys = stops(hy, iy), zs = stops(hz, iz);
+    std::vector<float> v;
+    // A point on the (unrounded) surface, onto the rounded one: its nearest
+    // point on the inner box, and out from there by r.
+    const auto put = [&](Vec3 p, Vec3 face_n) {
+        const Vec3 q{std::max(-ix, std::min(ix, p.x)), std::max(-iy, std::min(iy, p.y)), std::max(-iz, std::min(iz, p.z))};
+        Vec3 d{p.x - q.x, p.y - q.y, p.z - q.z};
+        const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        Vec3 n = len > 1e-7f ? Vec3{d.x / len, d.y / len, d.z / len} : face_n;
+        Vec3 at = len > 1e-7f ? Vec3{q.x + n.x * r, q.y + n.y * r, q.z + n.z * r} : p;
+        // The taper: narrower towards the top, and the sides lean in with it.
+        const float t = (at.y + hy) / std::max(sy, 1e-6f);
+        const float k = 1.0f + (taper - 1.0f) * t;
+        at.x *= k, at.z *= k;
+        if (taper != 1.0f) {
+            n.y += (n.x * at.x / std::max(hx, 1e-6f) + n.z * at.z / std::max(hz, 1e-6f)) * (1.0f - taper) * 0.5f *
+                   (std::fabs(n.y) < 0.99f ? 1.0f : 0.0f);
+        }
+        // Into the unit box; the normal pre-divided so the model's scale
+        // turns it back the right way (the shader normalises it).
+        v.insert(v.end(), {at.x / sx, at.y / sy, at.z / sz, n.x / sx, n.y / sy, n.z / sz,
+                           (at.x / sx + 0.5f), (at.y / sy + 0.5f)});
+    };
+    // Each face: a grid of the stops of its two axes, at +-h on the third.
+    const auto face = [&](int axis, float sign) {
+        const std::vector<float>& a = axis == 0 ? ys : axis == 1 ? zs : xs;
+        const std::vector<float>& b = axis == 0 ? zs : axis == 1 ? xs : ys;
+        const float h = axis == 0 ? hx : axis == 1 ? hy : hz;
+        const Vec3 fn = axis == 0 ? Vec3{sign, 0, 0} : axis == 1 ? Vec3{0, sign, 0} : Vec3{0, 0, sign};
+        const auto P = [&](float u, float w) {
+            return axis == 0 ? Vec3{sign * h, u, w} : axis == 1 ? Vec3{w, sign * h, u} : Vec3{u, w, sign * h};
+        };
+        for (std::size_t i = 0; i + 1 < a.size(); ++i)
+            for (std::size_t j = 0; j + 1 < b.size(); ++j) {
+                if (a[i + 1] - a[i] < 1e-7f || b[j + 1] - b[j] < 1e-7f) continue;
+                Vec3 p00 = P(a[i], b[j]), p10 = P(a[i + 1], b[j]), p11 = P(a[i + 1], b[j + 1]), p01 = P(a[i], b[j + 1]);
+                if (sign < 0) std::swap(p10, p01);
+                for (const Vec3& p : {p00, p10, p11, p00, p11, p01}) put(p, fn);
+            }
+    };
+    for (int axis = 0; axis < 3; ++axis) {
+        face(axis, 1.0f);
+        face(axis, -1.0f);
+    }
+    return v;
+}
+
+inline std::vector<float> cylinder_vertices(int segments = 28, float taper = 1.0f) {
     std::vector<float> v;
     const float h = 0.5f, pi2 = 6.2831853f;
     for (int i = 0; i < segments; ++i) {
         const float a0 = pi2 * i / segments, a1 = pi2 * (i + 1) / segments;
         const float x0 = std::cos(a0) * h, z0 = std::sin(a0) * h, x1 = std::cos(a1) * h, z1 = std::sin(a1) * h;
+        const float t = taper;  // the top's radius, against the bottom's
         const float u0 = static_cast<float>(i) / segments, u1 = static_cast<float>(i + 1) / segments;
-        const float n0x = std::cos(a0), n0z = std::sin(a0), n1x = std::cos(a1), n1z = std::sin(a1);
-        v.insert(v.end(), {x0, -h, z0, n0x, 0, n0z, u0, 1, x1, -h, z1, n1x, 0, n1z, u1, 1,
-                           x1, h,  z1, n1x, 0, n1z, u1, 0, x0, -h, z0, n0x, 0, n0z, u0, 1,
-                           x1, h,  z1, n1x, 0, n1z, u1, 0, x0, h,  z0, n0x, 0, n0z, u0, 0});
-        v.insert(v.end(), {0, h, 0, 0, 1, 0, 0.5f, 0.5f, x1, h, z1, 0, 1, 0, 0.5f + x1, 0.5f + z1,
-                           x0, h, z0, 0, 1, 0, 0.5f + x0, 0.5f + z0});
+        // A cone's side leans in: its normal tips up by as much.
+        const float lean = (1.0f - t) * h, ny = lean / std::sqrt(lean * lean + 1.0f);
+        const float nr = 1.0f / std::sqrt(lean * lean + 1.0f);
+        const float n0x = std::cos(a0) * nr, n0z = std::sin(a0) * nr, n1x = std::cos(a1) * nr, n1z = std::sin(a1) * nr;
+        v.insert(v.end(), {x0, -h, z0, n0x, ny, n0z, u0, 1, x1, -h, z1, n1x, ny, n1z, u1, 1,
+                           x1 * t, h,  z1 * t, n1x, ny, n1z, u1, 0, x0, -h, z0, n0x, ny, n0z, u0, 1,
+                           x1 * t, h,  z1 * t, n1x, ny, n1z, u1, 0, x0 * t, h,  z0 * t, n0x, ny, n0z, u0, 0});
+        v.insert(v.end(), {0, h, 0, 0, 1, 0, 0.5f, 0.5f, x1 * t, h, z1 * t, 0, 1, 0, 0.5f + x1 * t, 0.5f + z1 * t,
+                           x0 * t, h, z0 * t, 0, 1, 0, 0.5f + x0 * t, 0.5f + z0 * t});
         v.insert(v.end(), {0, -h, 0, 0, -1, 0, 0.5f, 0.5f, x0, -h, z0, 0, -1, 0, 0.5f + x0, 0.5f + z0,
                            x1, -h, z1, 0, -1, 0, 0.5f + x1, 0.5f + z1});
     }

@@ -865,13 +865,35 @@ private:
     // A mesh is a box unless it says otherwise: `shape` = "cylinder" (standing
     // on y; sx and sz are its diameters) or "sphere". All three share the same
     // unit size, so the same model matrix places any of them.
+    //
+    // A box may have `bevel`: its edges rounded to that many metres, as made
+    // things' edges are, so they catch the light. A box or a cylinder may
+    // have `taper`: the top that fraction of the bottom's width (a lamp's
+    // shade, the back of a tube). Those are made once for each size and kept.
     const gl::Mesh& shape_of(const Element& e) const {
-        static const Key shape{"shape"};
-        if (e.kind != kinds::mesh || !e.params.has(shape)) return cube_;
+        static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"};
+        if (e.kind != kinds::mesh) return cube_;
         const std::string s = e.params.get_or<std::string>(shape, "");
-        if (s == "cylinder") return cylinder_;
+        const double tp = e.params.num(taper, 1.0);
         if (s == "sphere") return sphere_;
-        return cube_;
+        if (s == "cylinder") {
+            if (tp == 1.0) return cylinder_;
+            const std::string key = "c" + std::to_string(std::lround(tp * 1000));
+            gl::Mesh& m = shaped_[key];
+            if (!m.valid()) m.create(gl::cylinder_vertices(28, static_cast<float>(tp)));
+            return m;
+        }
+        const double r = e.params.num(bevel, 0.0);
+        if (r <= 0.0 && tp == 1.0) return cube_;
+        // Sizes to the millimetre: near enough the same box is the same mesh.
+        const auto mm = [](double v) { return std::to_string(std::lround(v * 1000)); };
+        const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
+        const std::string key = "b" + mm(sx) + "," + mm(sy) + "," + mm(sz) + "," + mm(r) + "," + mm(tp);
+        gl::Mesh& m = shaped_[key];
+        if (!m.valid())
+            m.create(gl::rounded_box_vertices(static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz),
+                                              static_cast<float>(r), static_cast<float>(tp)));
+        return m;
     }
 
     // Boxes sit on the floor: y is the base, not the centre. The pose comes from
@@ -1584,6 +1606,7 @@ private:
     double fixed_step_ = 0.0;
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
+    mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
     gl::FullscreenTriangle screen_;
     gl::ShadowMap shadow_[kShadowMaps];
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
