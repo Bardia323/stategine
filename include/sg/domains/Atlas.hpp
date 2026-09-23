@@ -20,6 +20,7 @@
 // same fact as room B moving, told from the other side.
 #pragma once
 
+#include <algorithm>
 #include <deque>
 #include <string>
 #include <unordered_map>
@@ -212,11 +213,51 @@ inline std::vector<std::string> travel_defects(const Cover& cover, const StateGr
 // applying anything to anybody: placing one room by the doorway must land its
 // doorway exactly on the other's, facing back the other way. A doorway that
 // fails this is one the two rooms disagree about.
+// Two glued rooms are adjacent, not overlapping. A doorway's plane is the
+// boundary between them: each room's solid geometry lies on its own side of
+// it, and the two only touch there. A wall centred on the glue plane puts half
+// of itself inside the neighbour, and the two rooms then fight to draw the
+// same surface. This names every solid that reaches across, and how far.
+inline std::vector<std::string> adjacency_defects(const Atlas& atlas, const StateGraph& g,
+                                                  double tolerance = 1e-6) {
+    std::vector<std::string> out;
+    for (const Doorway& d : atlas.doorways()) {
+        const std::pair<Key, Key> sides[2] = {{d.room_a, d.portal_a}, {d.room_b, d.portal_b}};
+        for (const auto& side : sides) {
+            const State* room = g.find(side.first);
+            const Element* portal = room ? room->find(side.second) : nullptr;
+            if (!portal) continue;  // descent_defects names a missing side
+            const HalfSpace own = room_side(*room, *portal, Pose{});
+            for (const Element& e : room->elements()) {
+                if (!e.alive || (e.kind != kinds::wall && e.kind != kinds::mesh)) continue;
+                // A box sits on the floor at its pose, sx by sz, turned by yaw.
+                const Pose p = world_pose(*room, e);
+                const double hx = e.params.num(keys::sx, 1.0) * 0.5;
+                const double hz = e.params.num(keys::sz, 1.0) * 0.5;
+                double deepest = 0.0;
+                for (const double cx : {-hx, hx})
+                    for (const double cz : {-hz, hz}) {
+                        const Vec3d c = rotate_xz({cx, 0.0, cz}, p.yaw);
+                        deepest = std::min(
+                            deepest,
+                            own.at({p.position.x + c.x, p.position.y, p.position.z + c.z}));
+                    }
+                if (deepest < -tolerance)
+                    out.push_back(side.first.str() + "." + e.id.str() + " reaches " +
+                                  std::to_string(-deepest) + " m past doorway " + d.name.str() +
+                                  ", into the room on the other side");
+            }
+        }
+    }
+    return out;
+}
+
 inline std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g,
                                                 int max_cycle = 4) {
     const Cover cover = as_cover(atlas, g);
     std::vector<std::string> out = cover.descent_defects(g, max_cycle);
     for (const auto& d : travel_defects(cover, g)) out.push_back(d);
+    for (const auto& d : adjacency_defects(atlas, g)) out.push_back(d);
 
     for (const Doorway& d : atlas.doorways()) {
         const State* a = g.find(d.room_a);
@@ -253,7 +294,13 @@ inline std::vector<PlacedRoom> place_rooms(StateGraph& g, const Atlas& atlas, Ke
     for (const Chart& c : atlas.charts(g, root, max_depth)) {
         State* s = g.find(c.room);
         if (!s) continue;
-        out.push_back(PlacedRoom{static_cast<Spatial3D*>(s), c.pose});
+        PlacedRoom placed{static_cast<Spatial3D*>(s), c.pose, {}};
+        // The same doorways that place the rooms bound them.
+        for (const Doorway& d : atlas.doorways()) {
+            if (d.room_a == c.room) placed.doorways.push_back(d.portal_a);
+            if (d.room_b == c.room) placed.doorways.push_back(d.portal_b);
+        }
+        out.push_back(std::move(placed));
     }
     return out;
 }

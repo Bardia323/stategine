@@ -15,5 +15,6 @@
 #include "sg/core/StateGraph.hpp"
 #include "sg/core/Typed.hpp"
 #include "sg/domains/Console.hpp"
+#include "sg/domains/Look.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"

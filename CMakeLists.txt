@@ -73,6 +73,18 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
   if(WIN32)
     target_link_libraries(sg_room3d PRIVATE opengl32)
   endif()
+
+  # Looks against a real GL context: broken shaders are named, fall back to
+  # the built-ins, and anything prepare() did not see is counted as late.
+  # Needs a display, so it only exists alongside the GL example.
+  if(SG_BUILD_TESTS)
+    add_executable(sg_looks_gl tests/looks_gl.cpp)
+    target_link_libraries(sg_looks_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_looks_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_looks_gl COMMAND sg_looks_gl)
+  endif()
 endif()
 
 if(SG_BUILD_TESTS)

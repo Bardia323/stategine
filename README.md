@@ -81,8 +81,20 @@ for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: "
 A doorway's transition is *derived* from its two portal elements each time it is
 asked for, so it cannot drift from the geometry it describes.
 
+Glued rooms are **adjacent, never overlapping**. A doorway's plane is where one
+room ends and the next begins: each room's solids stay on its own side, and the
+renderer draws each room only on its own side. A wall centred on the plane
+would put half of itself in the neighbour, and each room's look would bleed
+into the other's wall. `descent_defects` names it:
+
+```
+seam: hall.e_a reaches 0.150000 m past doorway doorway, into the room on the other side
+```
+
 Every image here is reproducible:
-`./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north>`.
+`./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north|alert|crossing>`.
+Shots advance fades by a fixed 1/60 s per frame, so a mid-fade frame is the same
+on every run (`crossing` steps through the doorway at frame 30).
 
 ## The laws
 
@@ -271,6 +283,48 @@ parameters (`r/g/b`, `roughness`, `intensity`, ...).
 
 ![Standing in the annex, looking into the hall: both rooms lit and shadowed by their own lamps](docs/images/east.png)
 
+### Looks
+
+How a room is shown is a state too. A `LookState` has one element per pass
+(`shadow`, `scene`, `bright`, `blur`, `composite`); a parameter starting with `u`
+is a uniform of that pass, and `fs`/`vs` replace its shaders. A look only states
+how it differs from the standard one. Rooms *wear* looks through an embedding,
+so looks are ordinary, reachable, validated states:
+
+```cpp
+auto& alert = graph.add<sg::LookState>("hall.alert");
+alert.uniform(sg::passes::composite, "uTint", 1.3, 0.62, 0.55)
+     .uniform(sg::passes::scene, "uFogDensity", 0.035)
+     .fade(0.35);                                  // seconds to fade in
+cool.shader(sg::passes::composite, my_composite);  // a pass with its own shader
+
+sg::wear(graph, "hall", "hall.calm");              // the first worn is active
+sg::wear(graph, "hall", "hall.alert");
+sg::set_look(hall, "hall.alert");                  // a parameter write; the renderer fades
+```
+
+Each room is drawn in its own look, so the annex keeps its fog when seen from
+the hall. The post passes follow the room the viewer stands in.
+
+What is on screen is a *blend* of looks, as weights. A change of look moves
+weight towards the look now wanted, at the rate its `fade` sets, and never
+jumps. If the change is undone half way, the blend walks back along the same
+path to where it started. A third look reached mid-fade starts from the blend
+on screen, not from either end. Numbers are weighted averages. The composite
+pass runs every program in the blend and averages them, so a change of shader
+dissolves too. The other passes use the shader of the heaviest look.
+
+`view.prepare(graph)` compiles every look reachable in the graph before the
+first frame. Looks that only change numbers share the built-in programs. It
+also reports, as counterexamples, shaders that do not build (the built-in is
+used instead), shaders missing a uniform the renderer sets, and looks that set
+a uniform their shader does not have. `view.stats().late` counts anything
+compiled mid-game because `prepare` never saw it.
+
+| Calm | Alert (`L`) |
+| --- | --- |
+| ![The hall in its calm look](docs/images/room.png) | ![The same view in the alert look](docs/images/alert.png) |
+
 ## Performance
 
 Names are interned once, so hot paths compare pointers; morphisms are bucketed
@@ -293,7 +347,7 @@ include/sg/
     Core.hpp State.hpp Functor.hpp Adjunction.hpp Embedding.hpp
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
-  domains/   what a state is about: Spatial, Atlas, Console, Surface
+  domains/   what a state is about: Spatial, Atlas, Console, Surface, Look
   render/    how a state is shown: Ascii, GLWorld
   gl/        the GL backend
   sg.hpp     umbrella for core + domains (renderers are opt-in)
@@ -314,13 +368,14 @@ ctest --test-dir build                     # unit tests, laws, must-not-compile 
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, two maps |
 | `sg_room` | the same room and lens, in the terminal |
 | `sg_demo` | console/2D/3D states, an isomorphic pair, transitions, a portal, the laws - headless |
-| `sg_tests` | 155 assertions over the core, functors, portals and rooms |
+| `sg_tests` | 178 assertions over the core, functors, portals, rooms and looks |
 | `sg_laws` | every data law holding, then broken on purpose and read back |
+| `sg_looks_gl` | looks on a real GL context: broken shaders named, fallbacks, late compiles counted (needs a display) |
 | `compile_fail_*` | pass only if an ill-typed composition is refused with stategine's own message |
 | `sg_core_only` | the core with no domain or renderer - the layering, as a build failure |
 | `sg_bench` | hot-path throughput |
 
 `sg_room3d` controls: `WASD` walk (moves the token in map mode), mouse look,
 `E` use a map, `Tab` next token, `C` cancel, `Q`/`R` slide the lamp, `F` dim,
-`Esc` release mouse / quit. `./build/sg_room3d 120 frame.ppm` renders 120 frames
+`L` switch the hall's look, `Esc` release mouse / quit. `./build/sg_room3d 120 frame.ppm` renders 120 frames
 to a PPM and exits.

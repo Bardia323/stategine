@@ -25,6 +25,14 @@ uniform mat4 uViewProj;
 uniform mat4 uLightViewProj0;
 uniform mat4 uLightViewProj1;
 
+// The half-spaces this room owns: one per doorway, the room's own side of the
+// plane it is glued along. Two rooms both build a wall on that plane; each
+// keeps only its half, so no surface is drawn twice and none fight.
+const int MAX_BOUNDS = 8;
+uniform vec4 uClip[MAX_BOUNDS];
+uniform int  uClipCount;
+out float gl_ClipDistance[MAX_BOUNDS];
+
 out vec3 vWorld;
 out vec3 vRoom;
 out vec3 vNormal;
@@ -42,6 +50,8 @@ void main() {
     vUV = aUV;
     vLightSpace0 = uLightViewProj0 * world;
     vLightSpace1 = uLightViewProj1 * world;
+    for (int i = 0; i < MAX_BOUNDS; ++i)
+        gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
 })";
 }
@@ -79,6 +89,9 @@ uniform float uCosOuter[MAX_LIGHTS];
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+uniform vec3  uSky;           // ambient from above
+uniform vec3  uGround;        // ambient bounced from the floor
+uniform float uAmbient;
 
 uniform sampler2DShadow uShadowMap0;
 uniform sampler2DShadow uShadowMap1;
@@ -189,10 +202,8 @@ void main() {
         direct += (albedo * ndl + vec3(spec) * ndl) * uLightColor[i] * atten * cone * shadow;
     }
 
-    // Hemispheric ambient: cool from above, warm bounce from the floor.
-    vec3 sky = vec3(0.10, 0.13, 0.20);
-    vec3 ground = vec3(0.14, 0.10, 0.07);
-    vec3 ambient = albedo * mix(ground, sky, n.y * 0.5 + 0.5) * 0.55;
+    // Hemispheric ambient: one colour from above, the floor's bounce from below.
+    vec3 ambient = albedo * mix(uGround, uSky, n.y * 0.5 + 0.5) * uAmbient;
 
     vec3 color = ambient + direct + albedo * (uEmissive + uGlow);
     color = mix(color, vec3(1.0, 0.86, 0.45) * (0.3 + 0.7 * length(color)), uHighlight * 0.35);
@@ -271,6 +282,10 @@ uniform sampler2D uBloom;
 uniform float uBloomStrength;
 uniform float uExposure;
 uniform vec2  uTexel;
+uniform vec3  uTint;
+uniform float uSaturation;
+uniform float uVignette;
+uniform float uGrain;
 
 // Narkowicz's ACES approximation.
 vec3 aces(vec3 x) {
@@ -300,10 +315,12 @@ void main() {
         color = mix(color, aces(blur * uExposure), clamp(edge * 2.0, 0.0, 0.6));
     }
 
+    color = mix(vec3(luma(color)), color, uSaturation) * uTint;
+
     // Vignette and a touch of grain, so flat walls do not band.
     vec2 d = vUV - 0.5;
-    color *= 1.0 - dot(d, d) * 0.55;
-    color += (fract(sin(dot(vUV, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
+    color *= 1.0 - dot(d, d) * uVignette;
+    color += (fract(sin(dot(vUV, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrain;
 
     FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
 })";

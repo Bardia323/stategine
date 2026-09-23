@@ -20,12 +20,18 @@
 // the same edit reads as the annex moving. Neither reading is privileged;
 // that is the point.
 //
+// How each room is shown is a state as well: a LookState it wears. The hall
+// has two and switches between them; the annex has one of its own, with its
+// own composite shader. Walking through the doorway fades from one to the
+// other, and every look is compiled before the first frame.
+//
 //   move      W A S D      (in map mode: move the selected token)
 //   look      mouse        (Esc releases the mouse, Esc again quits)
 //   use map   E            while standing in front of one
 //   select    Tab          cycle tokens while the crate map is open
 //   cancel    C            close the map, discarding this session's edits
 //   lamp      Q / R        slide the lamp of the room you are in   F  dim
+//   alarm     L            switch the hall between its calm and alert looks
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +56,37 @@ constexpr double kAnnexH = 3.6;
 
 constexpr double kWallT = 0.3;
 constexpr double kGapHalf = 1.4;  // half the doorway's width
+
+// The annex's own composite pass: a slight colour fringe towards the edges and
+// faint moving scanlines, over the same tone curve as the hall's. A look only
+// has to declare the uniforms it reads; the renderer checks, before the first
+// frame, that it still has the ones the renderer sets.
+const char* kAnnexComposite = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+uniform float uExposure;
+uniform vec2  uTexel;
+uniform float uTime;
+
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    vec2 d = vUV - 0.5;
+    vec2 shift = d * dot(d, d) * 0.02;
+    vec3 scene = vec3(texture(uScene, vUV + shift).r, texture(uScene, vUV).g,
+                      texture(uScene, vUV - shift).b);
+    scene += texture(uBloom, vUV).rgb * uBloomStrength;
+    vec3 color = aces(scene * uExposure);
+    color *= 0.975 + 0.025 * sin(vUV.y / uTexel.y * 1.6 + uTime * 3.0);
+    color *= 1.0 - dot(d, d) * 0.75;
+    FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
+})";
 
 constexpr int kCols = 6;       // crate map cells
 constexpr int kRows = 6;
@@ -158,15 +195,20 @@ void fit_walls_to_door(sg::Spatial3D& hall, double station) {
         const double lo = has_door ? along - kGapHalf : side.length;
         const double hi = has_door ? along + kGapHalf : side.length;
 
+        // A wall stands inside the hall, its outer face on the perimeter. Any
+        // side may hold the doorway, and a doorway's plane is where the hall
+        // ends and the next room begins: the two are adjacent there, never
+        // overlapping, or each room's look shows through on the other's wall.
+        const double inward = side.fixed > 0.0 ? -kWallT * 0.5 : kWallT * 0.5;
         auto place = [&](sg::Key id, double from, double to, double base, double height) {
             sg::Element& e = hall.element(id);
             const double len = std::max(0.0, to - from);
             const double mid = (from + to) * 0.5;
             if (side.horizontal) {
-                sg::set_position(e, {mid, base, side.fixed});
+                sg::set_position(e, {mid, base, side.fixed + inward});
                 e.params.set(sg::keys::sx, len).set(sg::keys::sz, kWallT);
             } else {
-                sg::set_position(e, {side.fixed, base, mid});
+                sg::set_position(e, {side.fixed + inward, base, mid});
                 e.params.set(sg::keys::sx, kWallT).set(sg::keys::sz, len);
             }
             e.params.set(sg::keys::sy, height);
@@ -241,12 +283,15 @@ int main(int argc, char** argv) {
     annex.params().set("wall_r", 0.26).set("wall_g", 0.36).set("wall_b", 0.42);
 
     // Its own doorway sits in the middle of its south wall, and never moves.
+    // That wall stands inside the annex, its outer face on the doorway plane:
+    // the hall's wall meets it there from the other side.
     const double a_gap = kAnnexW * 0.5;
-    annex.wall("a_south_a", {(a_gap - kGapHalf) * 0.5, 0.0, 0.0}, a_gap - kGapHalf, kAnnexH,
+    const double a_south = kWallT * 0.5;
+    annex.wall("a_south_a", {(a_gap - kGapHalf) * 0.5, 0.0, a_south}, a_gap - kGapHalf, kAnnexH,
                kWallT);
-    annex.wall("a_south_b", {(a_gap + kGapHalf + kAnnexW) * 0.5, 0.0, 0.0},
+    annex.wall("a_south_b", {(a_gap + kGapHalf + kAnnexW) * 0.5, 0.0, a_south},
                kAnnexW - a_gap - kGapHalf, kAnnexH, kWallT);
-    annex.wall("a_south_top", {a_gap, 3.0, 0.0}, kGapHalf * 2, kAnnexH - 3.0, kWallT);
+    annex.wall("a_south_top", {a_gap, 3.0, a_south}, kGapHalf * 2, kAnnexH - 3.0, kWallT);
     annex.wall("a_north", {kAnnexW * 0.5, 0.0, kAnnexD}, kAnnexW + kWallT, kAnnexH, kWallT);
     annex.wall("a_west", {0.0, 0.0, kAnnexD * 0.5}, kWallT, kAnnexH, kAnnexD);
     annex.wall("a_east", {kAnnexW, 0.0, kAnnexD * 0.5}, kWallT, kAnnexH, kAnnexD);
@@ -271,6 +316,33 @@ int main(int argc, char** argv) {
 
     // The door map hangs on the annex's north wall, facing back down the room.
     annex.portal("door_map", {kAnnexW * 0.5, 1.8, kAnnexD - 0.3}, 2.8, 2.1, -1.5707963);
+
+    // --- the looks -------------------------------------------------------------------
+    // A look states only how it differs from the standard one. The hall wears
+    // two and starts calm; the annex wears one, with a shader of its own.
+    auto& calm = graph.add<sg::LookState>("hall.calm");
+    calm.uniform(sg::passes::scene, "uFogColor", 0.07, 0.06, 0.05).fade(0.8);
+
+    auto& alert = graph.add<sg::LookState>("hall.alert");
+    alert.uniform(sg::passes::scene, "uFogColor", 0.16, 0.03, 0.02)
+        .uniform(sg::passes::scene, "uFogDensity", 0.035)
+        .uniform(sg::passes::composite, "uTint", 1.3, 0.62, 0.55)
+        .uniform(sg::passes::composite, "uSaturation", 0.55)
+        .uniform(sg::passes::composite, "uExposure", 1.3)
+        .fade(0.35);
+
+    auto& cool = graph.add<sg::LookState>("annex.cool");
+    cool.uniform(sg::passes::scene, "uFogColor", 0.03, 0.06, 0.10)
+        .uniform(sg::passes::scene, "uFogDensity", 0.03)
+        .uniform(sg::passes::scene, "uSky", 0.08, 0.14, 0.26)
+        .uniform(sg::passes::composite, "uExposure", 1.05)
+        .uniform(sg::passes::composite, "uBloomStrength", 0.8)
+        .shader(sg::passes::composite, kAnnexComposite)
+        .fade(0.7);
+
+    sg::wear(graph, "hall", "hall.calm");
+    sg::wear(graph, "hall", "hall.alert");
+    sg::wear(graph, "annex", "annex.cool");
 
     // --- the glue ------------------------------------------------------------------
     // One doorway, named from both sides. This is the whole relation between
@@ -375,6 +447,10 @@ int main(int argc, char** argv) {
     hall.emit("door.moved");
     hall.dispatch_pending();
 
+    // The rooms glue into one space: the doorway closes up, and the two rooms
+    // meet along it without either reaching into the other.
+    for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: " << seam << "\n";
+
     hall.camera().params.set(sg::keys::x, kHallW * 0.5).set(sg::keys::y, 1.7)
         .set(sg::keys::z, kHallD * 0.5);
     hall.camera().params.set(sg::keys::yaw, 0.0).set(sg::keys::pitch, -0.02);
@@ -390,6 +466,12 @@ int main(int argc, char** argv) {
     view.bind_surface("crate_map", &crate_map);
     view.bind_surface("door_map", &door_map);
 
+    // Every look the graph can reach, compiled and checked now rather than
+    // the first time someone walks into a room that wears it.
+    for (const auto& problem : view.prepare(graph)) std::cout << "! " << problem << "\n";
+    std::cout << "looks: " << view.stats().programs << " programs compiled in "
+              << view.stats().compile_ms << " ms\n";
+
     sg::Engine engine(graph);
     engine.start();
 
@@ -399,6 +481,7 @@ int main(int argc, char** argv) {
 
     if (!shot.empty()) {
         window.capture_mouse(false);
+        view.set_fixed_step(1.0 / 60.0);  // a shot shows the same moment every time
         auto pose_in = [&](sg::Spatial3D& room, double x, double z, double yaw, double pitch) {
             room.camera().params.set(sg::keys::x, x).set(sg::keys::z, z);
             room.camera().params.set(sg::keys::yaw, yaw).set(sg::keys::pitch, pitch);
@@ -430,6 +513,13 @@ int main(int argc, char** argv) {
             if (shot == "after")
                 crate_map.element(sg::Key{crates[2].id.str() + "_tok"})
                     .params.set(sg::keys::x, 4.0);
+        } else if (shot == "crossing") {
+            // Just short of the doorway; the loop steps through part way into
+            // the run, so the last frame is caught half way between the looks.
+            pose_in(hall, kHallW - 1.2, kHallD * 0.5, 0.0, -0.02);
+        } else if (shot == "alert") {
+            pose_in(hall, kHallW - 1.4, kHallD - 1.4, -2.3, -0.14);
+            sg::set_look(hall, "hall.alert");
         } else if (shot == "dim") {
             pose_in(hall, kHallW - 1.4, kHallD - 1.4, -2.3, -0.14);
             hall_lamp.params.set(sg::keys::intensity, 0.35);
@@ -448,7 +538,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "WASD move, mouse look, E to use a map, Tab to select, C to cancel, "
-                 "Q/R lamp, F dim, Esc for the mouse\n";
+                 "Q/R lamp, F dim, L alarm, Esc for the mouse\n";
 
     while (!window.should_close() && engine.running()) {
         window.poll();
@@ -533,6 +623,11 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The crossing shot walks through at frame 30. At 60 frames a second
+        // and the annex look's 0.7 s fade, a 51-frame run ends half way
+        // between the looks; a longer one ends in the annex's own.
+        if (shot == "crossing" && frames == 30) engine.fire("step_through");
+
         engine.tick(dt);
         // The door may have been moved by the map. The hall's walls follow it,
         // and so does the doorway's transition, which is rebuilt from the two
@@ -588,6 +683,11 @@ int main(int argc, char** argv) {
             lamp->params.set(sg::keys::intensity, i > 0.6 ? 0.3 : 1.1);
         }
 
+        // The alarm is a change of look: one parameter, faded by the renderer.
+        if (window.pressed(GLFW_KEY_L))
+            sg::set_look(hall, sg::active_look(hall) == sg::Key{"hall.calm"} ? "hall.alert"
+                                                                             : "hall.calm");
+
         if (window.pressed(GLFW_KEY_ESCAPE)) {
             if (window.mouse_captured()) {
                 window.capture_mouse(false);
@@ -616,6 +716,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cout << "closed after " << frames << " frames\n";
+    std::cout << "closed after " << frames << " frames; " << view.stats().late
+              << " shaders compiled mid-game\n";
     return 0;
 }

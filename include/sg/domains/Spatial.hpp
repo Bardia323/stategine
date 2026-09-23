@@ -238,10 +238,35 @@ inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 
 
 // A room together with where it sits, in some chosen room's coordinates. The
 // pose is not a property of the room - it is the answer to "seen from where?".
+//
+// `doorways` are the portal elements that glue it to its neighbours. Each one
+// is the boundary between two charts, and a room owns only its own side of
+// it: the wall two rooms both build on the glue plane is split there, so no
+// point of the glued space belongs to - or is drawn by - both.
 struct PlacedRoom {
     Spatial3D* room = nullptr;
     Pose pose;
+    std::vector<Key> doorways;
 };
+
+// A half-space: the points where `at(p) >= 0`.
+struct HalfSpace {
+    Vec3d normal;
+    double offset = 0.0;
+    double at(const Vec3d& p) const {
+        return normal.x * p.x + normal.y * p.y + normal.z * p.z + offset;
+    }
+};
+
+// The side of `portal` its room is on, in the frame `placed` puts the room in.
+// A portal faces into its own room (walk in against its facing, out along the
+// other's), so the room is the half-space ahead of it. Derived from the portal
+// every time it is asked for, so it moves with the doorway and cannot drift.
+inline HalfSpace room_side(const State& room, const Element& portal, const Pose& placed) {
+    const Pose p = compose_pose(placed, world_pose(room, portal));
+    const Vec3d n = heading(p.yaw);
+    return HalfSpace{n, -(n.x * p.position.x + n.y * p.position.y + n.z * p.position.z)};
+}
 
 // --- walls -----------------------------------------------------------------------
 // Push `mover` out of any wall element it has ended up inside. Walls are boxes

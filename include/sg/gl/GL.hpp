@@ -38,6 +38,9 @@ constexpr GLenum GL_BLEND = 0x0BE2;
 constexpr GLenum GL_SRC_ALPHA = 0x0302;
 constexpr GLenum GL_ONE = 1;
 constexpr GLenum GL_ONE_MINUS_SRC_ALPHA = 0x0303;
+constexpr GLenum GL_CLIP_DISTANCE0 = 0x3000;
+constexpr GLenum GL_CONSTANT_ALPHA = 0x8003;
+constexpr GLenum GL_ONE_MINUS_CONSTANT_ALPHA = 0x8004;
 constexpr GLenum GL_TEXTURE_2D = 0x0DE1;
 constexpr GLenum GL_UNSIGNED_BYTE = 0x1401;
 constexpr GLenum GL_FLOAT = 0x1406;
@@ -89,6 +92,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, Viewport, (GLint, GLint, GLsizei, GLsizei))                                       \
     X(void, DepthFunc, (GLenum))                                                              \
     X(void, BlendFunc, (GLenum, GLenum))                                                      \
+    X(void, BlendColor, (GLfloat, GLfloat, GLfloat, GLfloat))                                 \
     X(void, CullFace, (GLenum))                                                               \
     X(void, FrontFace, (GLenum))                                                              \
     X(void, PolygonOffset, (GLfloat, GLfloat))                                                \
@@ -113,6 +117,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, Uniform1f, (GLint, GLfloat))                                                      \
     X(void, Uniform2f, (GLint, GLfloat, GLfloat))                                             \
     X(void, Uniform3f, (GLint, GLfloat, GLfloat, GLfloat))                                    \
+    X(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat))                           \
     X(void, GenVertexArrays, (GLsizei, GLuint*))                                              \
     X(void, BindVertexArray, (GLuint))                                                        \
     X(void, DeleteVertexArrays, (GLsizei, const GLuint*))                                     \

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "sg/gl/GL.hpp"
@@ -45,18 +46,35 @@ public:
     }
 
     void use() const { glUseProgram(id_); }
-    GLint uniform(const char* name) const { return glGetUniformLocation(id_, name); }
+
+    // Locations are asked of the driver once per name and remembered: a frame
+    // sets a few hundred uniforms, and the driver lookup is the slow part.
+    GLint uniform(const char* name) const {
+        auto it = locations_.find(name);
+        if (it != locations_.end()) return it->second;
+        const GLint loc = glGetUniformLocation(id_, name);
+        locations_.emplace(name, loc);
+        return loc;
+    }
+
+    // Whether the linked program has this uniform. One that is declared but
+    // unused has been optimised away, and does not count.
+    bool has(const char* name) const { return uniform(name) >= 0; }
 
     void set(const char* n, const Mat4& m) const { glUniformMatrix4fv(uniform(n), 1, 0, m.m); }
     void set(const char* n, const Vec3& v) const { glUniform3f(uniform(n), v.x, v.y, v.z); }
     void set(const char* n, float f) const { glUniform1f(uniform(n), f); }
     void set(const char* n, float a, float b) const { glUniform2f(uniform(n), a, b); }
+    void set(const char* n, float a, float b, float c, float d) const {
+        glUniform4f(uniform(n), a, b, c, d);
+    }
     void set(const char* n, int i) const { glUniform1i(uniform(n), i); }
 
     GLuint id() const { return id_; }
 
 private:
     GLuint id_ = 0;
+    mutable std::unordered_map<std::string, GLint> locations_;
 };
 
 // An RGBA texture the CPU refills - how a 2D state's raster becomes a surface

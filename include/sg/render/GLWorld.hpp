@@ -13,14 +13,27 @@
 // Frame: for each world portal, render the other room into its own target from
 // that room's own camera (a View embedding aims it); then the shadow pass, the
 // scene into a multisampled HDR target, resolve, bright pass, blur, composite.
+//
+// How each pass looks is itself a state: a LookState worn by the room (see
+// domains/Look.hpp). Each room is drawn with its own look, so fog and shaders
+// can differ on either side of a doorway; the post passes follow the room the
+// viewer stands in. When a room's look changes, or the viewer changes rooms,
+// numbers fade over the incoming look's `fade` seconds and the composite pass
+// crossfades between shaders. `prepare(graph)` compiles every look the graph
+// can reach before the first frame, so none of that compiles mid-game.
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "sg/domains/Look.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
 #include "sg/gl/Renderer.hpp"
@@ -52,12 +65,68 @@ struct GLQuality {
     int bloom_passes = 3;  // horizontal+vertical pairs
 };
 
+// The standard look: every value the built-in shaders read, and the fallback
+// for anything a look leaves unset. A look therefore only states how it
+// differs, and two looks always have a value to fade between.
+inline void standard_look(LookState& l, const GLQuality& q = {}) {
+    l.uniform(passes::scene, "uFogColor", 0.05, 0.06, 0.09)
+        .uniform(passes::scene, "uFogDensity", 0.018)
+        .uniform(passes::scene, "uSky", 0.10, 0.13, 0.20)
+        .uniform(passes::scene, "uGround", 0.14, 0.10, 0.07)
+        .uniform(passes::scene, "uAmbient", 0.55)
+        .setting(passes::scene, "clear.x", 0.012)
+        .setting(passes::scene, "clear.y", 0.014)
+        .setting(passes::scene, "clear.z", 0.022)
+        .uniform(passes::bright, "uThreshold", q.bloom_threshold)
+        .setting(passes::blur, "passes", q.bloom_passes)
+        .uniform(passes::composite, "uBloomStrength", q.bloom_strength)
+        .uniform(passes::composite, "uExposure", q.exposure)
+        .uniform(passes::composite, "uTint", 1.0, 1.0, 1.0)
+        .uniform(passes::composite, "uSaturation", 1.0)
+        .uniform(passes::composite, "uVignette", 0.55)
+        .uniform(passes::composite, "uGrain", 0.015);
+}
+
 class GLWorldView {
 public:
     static constexpr std::size_t kMaxLights = 4;    // matches the scene shader
     static constexpr std::size_t kShadowMaps = 2;  // the nearest two cast
+    static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
 
-    explicit GLWorldView(GLQuality q = {}) : q_(q) {}
+    explicit GLWorldView(GLQuality q = {}) : q_(q), standard_(Key{"<standard>"}) {
+        standard_look(standard_, q_);
+    }
+
+    struct LookStats {
+        int programs = 0;       // compiled, shared by every look with the same source
+        int late = 0;           // compiled mid-frame, because prepare() never saw them
+        double compile_ms = 0;  // time spent compiling
+    };
+    const LookStats& stats() const { return stats_; }
+
+    // Advance fades by a fixed step per frame instead of real time: headless
+    // renders then show the same moment of a fade on every machine. 0 = real time.
+    void set_fixed_step(double seconds) { fixed_step_ = seconds; }
+
+    // Compile every look the graph can show - those worn by the states
+    // reachable from its initial one - and check each against what this
+    // renderer feeds it. Call once there is a GL context, before the first
+    // frame. What comes back is what is wrong, as counterexamples; a look
+    // whose shader fails is shown with the built-in one instead.
+    std::vector<std::string> prepare(const StateGraph& g) {
+        graph_ = &g;
+        ensure_resources();
+        std::vector<std::string> out = look_defects(g);
+        std::set<Key> reach = g.reachable();
+        if (reach.empty())
+            for (Key id : g.ids()) reach.insert(id);
+        preparing_ = true;
+        for (Key id : reach)
+            if (const auto* look = dynamic_cast<const LookState*>(g.find(id)))
+                check_look(*look, out);
+        preparing_ = false;
+        return out;
+    }
 
     // Attach a 2D state to a portal element: its raster becomes the texture.
     void bind_surface(Key portal_element, Surface2D* surface) {
@@ -75,7 +144,7 @@ public:
 
     // One room, standing on its own.
     void render(Spatial3D& world, int fb_w, int fb_h) {
-        const PlacedRoom one{&world, Pose{}};
+        const PlacedRoom one{&world, Pose{}, {}};
         render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
     }
 
@@ -87,8 +156,12 @@ public:
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
         ensure_resources();
         ensure_targets(fb_w, fb_h);
+        advance_clock();
 
         Spatial3D& world = *rooms.front().room;
+        // The post passes belong to the viewer, so they wear the look of the
+        // room the viewer is in, and fade when that room changes.
+        post_ = mix(view_key(), look_of(world));
         const Camera eye_cam = camera_of(world);
         const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
 
@@ -117,7 +190,7 @@ public:
                                             gl::normalize(guest_cam.forward));
                 znear = std::max(0.05f, along + 0.02f);
             }
-            const PlacedRoom guest{wp.world, Pose{}};
+            const PlacedRoom guest{wp.world, Pose{}, {}};
             draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, wp.target,
                        /*depth=*/1, znear, back ? back->id : Key{});
         }
@@ -193,11 +266,17 @@ private:
 
     void ensure_resources() {
         if (ready_) return;
-        scene_ = gl::Program(gl::scene_vs(), gl::scene_fs(), "scene");
-        depth_ = gl::Program(gl::depth_vs(), gl::depth_fs(), "depth");
-        bright_ = gl::Program(gl::post_vs(), gl::bright_fs(), "bright");
-        blur_ = gl::Program(gl::post_vs(), gl::blur_fs(), "blur");
-        composite_ = gl::Program(gl::post_vs(), gl::composite_fs(), "composite");
+        builtin_ = {
+            {passes::shadow, {gl::depth_vs(), gl::depth_fs()}},
+            {passes::scene, {gl::scene_vs(), gl::scene_fs()}},
+            {passes::bright, {gl::post_vs(), gl::bright_fs()}},
+            {passes::blur, {gl::post_vs(), gl::blur_fs()}},
+            {passes::composite, {gl::post_vs(), gl::composite_fs()}},
+        };
+        const bool was = preparing_;
+        preparing_ = true;  // the built-ins are never late
+        for (Key p : passes::all()) program_for(standard_, p);
+        preparing_ = was;
         cube_.create(gl::cube_vertices());
         quad_.create(gl::quad_vertices());
         screen_.create();
@@ -282,21 +361,23 @@ private:
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
         gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
-        depth_.use();
+        const gl::Program& caster = *program_for(post_.shown(), passes::shadow);
+        caster.use();
+        apply_uniforms(caster, post_, passes::shadow);
         for (std::size_t i = 0; i < shadowed; ++i) {
             shadow_[i].bind();
             gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
-            depth_.set("uLightViewProj", light_vp[i]);
+            caster.set("uLightViewProj", light_vp[i]);
             for (const PlacedRoom& placed : rooms) {
                 if (!placed.room) continue;
                 set_frame(placed.pose);
                 for (const auto& e : placed.room->elements()) {
                     if (!e.alive) continue;
                     if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                        depth_.set("uModel", frame_matrix_ * box_model(*placed.room, e).m);
+                        caster.set("uModel", frame_matrix_ * box_model(*placed.room, e).m);
                         cube_.draw();
                     } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
-                        depth_.set("uModel",
+                        caster.set("uModel",
                                    frame_matrix_ * portal_frame_model(*placed.room, e).m);
                         cube_.draw();
                     }
@@ -306,46 +387,78 @@ private:
         gl::glCullFace(gl::GL_BACK);
 
         // --- the scene -------------------------------------------------------
+        // The first room is the one this view is taken from; its look clears.
+        const Mix first = mix(rooms.front().room->id(), look_of(*rooms.front().room));
         target.bind();
-        gl::glClearColor(0.012f, 0.014f, 0.022f, 1.0f);
+        gl::glClearColor(static_cast<float>(setting(first, passes::scene, "clear.x", 0.012)),
+                         static_cast<float>(setting(first, passes::scene, "clear.y", 0.014)),
+                         static_cast<float>(setting(first, passes::scene, "clear.z", 0.022)),
+                         1.0f);
         gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glDepthFunc(gl::GL_LESS);
         gl::glEnable(gl::GL_MULTISAMPLE);
         gl::glDisable(gl::GL_CULL_FACE);
-
-        scene_.use();
-        scene_.set("uViewProj", view_proj);
-        scene_.set("uLightViewProj0", light_vp[0]);
-        scene_.set("uLightViewProj1", light_vp[1]);
-        scene_.set("uLightCount", static_cast<int>(lights.size()));
-        for (std::size_t i = 0; i < lights.size(); ++i) {
-            const std::string ix = "[" + std::to_string(i) + "]";
-            scene_.set(("uLightPos" + ix).c_str(), lights[i].pos);
-            scene_.set(("uLightDir" + ix).c_str(), lights[i].dir);
-            scene_.set(("uLightColor" + ix).c_str(), lights[i].color);
-            scene_.set(("uLightPower" + ix).c_str(), lights[i].power);
-            scene_.set(("uCosInner" + ix).c_str(), std::cos(lights[i].inner));
-            scene_.set(("uCosOuter" + ix).c_str(), std::cos(lights[i].outer));
-        }
-        scene_.set("uViewPos", cam.eye);
-        scene_.set("uFogColor", gl::Vec3{0.05f, 0.06f, 0.09f});
-        scene_.set("uFogDensity", 0.018f);
-        scene_.set("uShadowTexel", 1.0f / static_cast<float>(shadow_[0].size()),
-                   1.0f / static_cast<float>(shadow_[0].size()));
-        scene_.set("uShadowMap0", 1);
-        scene_.set("uShadowMap1", 2);
-        scene_.set("uTex", 0);
-        scene_.set("uScreenUV", 0.0f);
-        scene_.set("uViewport", static_cast<float>(target.width()),
-                   static_cast<float>(target.height()));
+        for (int i = 0; i < kMaxBounds; ++i)
+            gl::glEnable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
         shadow_[0].bind_depth(1);
         shadow_[1].bind_depth(2);
 
+        // Everything a scene shader is fed that is not the look's. Set again
+        // whenever a room's look brings a different program.
+        const auto frame_uniforms = [&](const gl::Program& p) {
+            p.set("uViewProj", view_proj);
+            p.set("uLightViewProj0", light_vp[0]);
+            p.set("uLightViewProj1", light_vp[1]);
+            p.set("uLightCount", static_cast<int>(lights.size()));
+            for (std::size_t i = 0; i < lights.size(); ++i) {
+                p.set(light_uniform(i, 0), lights[i].pos);
+                p.set(light_uniform(i, 1), lights[i].dir);
+                p.set(light_uniform(i, 2), lights[i].color);
+                p.set(light_uniform(i, 3), lights[i].power);
+                p.set(light_uniform(i, 4), std::cos(lights[i].inner));
+                p.set(light_uniform(i, 5), std::cos(lights[i].outer));
+            }
+            p.set("uViewPos", cam.eye);
+            p.set("uTime", static_cast<float>(time_));
+            p.set("uShadowTexel", 1.0f / static_cast<float>(shadow_[0].size()),
+                  1.0f / static_cast<float>(shadow_[0].size()));
+            p.set("uShadowMap0", 1);
+            p.set("uShadowMap1", 2);
+            p.set("uTex", 0);
+            p.set("uScreenUV", 0.0f);
+            p.set("uViewport", static_cast<float>(target.width()),
+                  static_cast<float>(target.height()));
+        };
+
+        scene_ = nullptr;
         for (const PlacedRoom& placed : rooms) {
             if (!placed.room) continue;
             set_frame(placed.pose);
             Spatial3D& room = *placed.room;
+
+            // Each room in its own look: the annex seen through the doorway
+            // keeps its own fog, whichever side you stand on.
+            const Mix look = mix(room.id(), look_of(room));
+            const gl::Program* program = program_for(look.shown(), passes::scene);
+            if (program != scene_) {
+                scene_ = program;
+                scene_->use();
+                frame_uniforms(*scene_);
+            }
+            apply_uniforms(*scene_, look, passes::scene);
+
+            // This room's side of each doorway, from the portals as they are now.
+            int bounds = 0;
+            for (Key d : placed.doorways) {
+                const Element* portal = room.find(d);
+                if (!portal || bounds >= kMaxBounds) continue;
+                const HalfSpace h = room_side(room, *portal, placed.pose);
+                scene_->set(clip_uniform(bounds++), static_cast<float>(h.normal.x),
+                            static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
+                            static_cast<float>(h.offset));
+            }
+            scene_->set("uClipCount", bounds);
 
             draw_room(room);
             for (const auto& e : room.elements()) {
@@ -364,6 +477,8 @@ private:
                 draw_portal(room, e, depth, target);
             }
         }
+        for (int i = 0; i < kMaxBounds; ++i)
+            gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
         set_frame(Pose{});
     }
 
@@ -403,13 +518,13 @@ private:
     void draw_solid(const RoomMatrix& local, const gl::Vec3& albedo, float roughness,
                     float surface, float emissive = 0.0f, float highlight = 0.0f) {
         set_model(local);
-        scene_.set("uAlbedo", albedo);
-        scene_.set("uRoughness", roughness);
-        scene_.set("uSurface", surface);
-        scene_.set("uEmissive", emissive);
-        scene_.set("uHighlight", highlight);
-        scene_.set("uTexMix", 0.0f);
-        scene_.set("uGlow", 0.0f);
+        scene_->set("uAlbedo", albedo);
+        scene_->set("uRoughness", roughness);
+        scene_->set("uSurface", surface);
+        scene_->set("uEmissive", emissive);
+        scene_->set("uHighlight", highlight);
+        scene_->set("uTexMix", 0.0f);
+        scene_->set("uGlow", 0.0f);
         cube_.draw();
     }
 
@@ -424,8 +539,8 @@ private:
     // implicit box, which is all a single-room scene needs.
     // The one place a room's placement is applied.
     void set_model(const RoomMatrix& local) {
-        scene_.set("uModel", frame_matrix_ * local.m);
-        scene_.set("uTexModel", local.m);
+        scene_->set("uModel", frame_matrix_ * local.m);
+        scene_->set("uTexModel", local.m);
     }
 
     void draw_room(Spatial3D& world) {
@@ -560,13 +675,13 @@ private:
                 // One level deep: a window seen through a window is just glass.
                 set_model(room_local(gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
                           gl::Mat4::scale({1.0f, h, w})));
-                scene_.set("uAlbedo", gl::Vec3{0.05f, 0.06f, 0.08f});
-                scene_.set("uRoughness", 0.25f);
-                scene_.set("uSurface", 0.0f);
-                scene_.set("uEmissive", 0.0f);
-                scene_.set("uHighlight", 0.0f);
-                scene_.set("uTexMix", 0.0f);
-                scene_.set("uGlow", 0.0f);
+                scene_->set("uAlbedo", gl::Vec3{0.05f, 0.06f, 0.08f});
+                scene_->set("uRoughness", 0.25f);
+                scene_->set("uSurface", 0.0f);
+                scene_->set("uEmissive", 0.0f);
+                scene_->set("uHighlight", 0.0f);
+                scene_->set("uTexMix", 0.0f);
+                scene_->set("uGlow", 0.0f);
                 quad_.draw();
                 return;
             }
@@ -574,20 +689,20 @@ private:
             wp.target.bind_color(0);
             set_model(room_local(gl::Mat4::translate(pos + n * 0.06f) * gl::Mat4::rotate_y(yaw) *
                       gl::Mat4::scale({1.0f, h, w})));
-            scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
-            scene_.set("uRoughness", 1.0f);
-            scene_.set("uSurface", 0.0f);
-            scene_.set("uEmissive", 1.0f);  // the far room arrives already lit
-            scene_.set("uHighlight", 0.0f);
-            scene_.set("uTexMix", 1.0f);
-            scene_.set("uGlow", 0.0f);
-            scene_.set("uScreenUV", 1.0f);
-            scene_.set("uViewport", static_cast<float>(target.width()),
+            scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
+            scene_->set("uRoughness", 1.0f);
+            scene_->set("uSurface", 0.0f);
+            scene_->set("uEmissive", 1.0f);  // the far room arrives already lit
+            scene_->set("uHighlight", 0.0f);
+            scene_->set("uTexMix", 1.0f);
+            scene_->set("uGlow", 0.0f);
+            scene_->set("uScreenUV", 1.0f);
+            scene_->set("uViewport", static_cast<float>(target.width()),
                        static_cast<float>(target.height()));
             quad_.draw();
-            scene_.set("uScreenUV", 0.0f);
-            scene_.set("uTexMix", 0.0f);
-            scene_.set("uEmissive", 0.0f);
+            scene_->set("uScreenUV", 0.0f);
+            scene_->set("uTexMix", 0.0f);
+            scene_->set("uEmissive", 0.0f);
             return;
         }
 
@@ -607,67 +722,335 @@ private:
         // Clear of the frame slab (half-thickness 0.06), or the panel sinks into it.
         set_model(room_local(gl::Mat4::translate(pos + n * 0.08f) * gl::Mat4::rotate_y(yaw) *
                   gl::Mat4::scale({1.0f, h, w})));
-        scene_.set("uAlbedo", gl::Vec3{1, 1, 1});
-        scene_.set("uRoughness", 0.75f);
-        scene_.set("uSurface", 0.0f);
-        scene_.set("uEmissive", 0.0f);
-        scene_.set("uHighlight", 0.0f);
-        scene_.set("uTexMix", 1.0f);
-        scene_.set("uGlow", open ? 0.55f : 0.12f);
+        scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
+        scene_->set("uRoughness", 0.75f);
+        scene_->set("uSurface", 0.0f);
+        scene_->set("uEmissive", 0.0f);
+        scene_->set("uHighlight", 0.0f);
+        scene_->set("uTexMix", 1.0f);
+        scene_->set("uGlow", open ? 0.55f : 0.12f);
         quad_.draw();
-        scene_.set("uTexMix", 0.0f);
-        scene_.set("uGlow", 0.0f);
+        scene_->set("uTexMix", 0.0f);
+        scene_->set("uGlow", 0.0f);
     }
 
     void run_bloom() {
         gl::glDisable(gl::GL_DEPTH_TEST);
         bloom_a_.bind();
         gl::glClear(gl::GL_COLOR_BUFFER_BIT);
-        bright_.use();
-        bright_.set("uScene", 0);
-        bright_.set("uThreshold", q_.bloom_threshold);
+        const gl::Program& bright = *program_for(post_.shown(), passes::bright);
+        bright.use();
+        apply_uniforms(bright, post_, passes::bright);
+        bright.set("uScene", 0);
         resolve_.bind_color(0);
         screen_.draw();
 
-        blur_.use();
-        blur_.set("uSource", 0);
+        const gl::Program& blur = *program_for(post_.shown(), passes::blur);
+        blur.use();
+        apply_uniforms(blur, post_, passes::blur);
+        blur.set("uSource", 0);
         const float tx = 1.0f / static_cast<float>(bloom_a_.width());
         const float ty = 1.0f / static_cast<float>(bloom_a_.height());
-        for (int i = 0; i < q_.bloom_passes; ++i) {
+        const long rounds = std::lround(setting(post_, passes::blur, "passes", q_.bloom_passes));
+        for (long i = 0; i < rounds; ++i) {
             bloom_b_.bind();
-            blur_.set("uDirection", tx, 0.0f);
+            blur.set("uDirection", tx, 0.0f);
             bloom_a_.bind_color(0);
             screen_.draw();
 
             bloom_a_.bind();
-            blur_.set("uDirection", 0.0f, ty);
+            blur.set("uDirection", 0.0f, ty);
             bloom_b_.bind_color(0);
             screen_.draw();
         }
     }
 
+    // The last pass, and the one a change of look is most visible in. Every
+    // program in the blend on screen runs, and they are averaged by weight, so
+    // a change of shader is as continuous as a change of number: it dissolves,
+    // and a dissolve turned back half way dissolves back.
     void composite(int fb_w, int fb_h) {
         gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
         gl::glViewport(0, 0, fb_w, fb_h);
         gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-        composite_.use();
-        composite_.set("uScene", 0);
-        composite_.set("uBloom", 1);
-        composite_.set("uBloomStrength", q_.bloom_strength);
-        composite_.set("uExposure", q_.exposure);
-        composite_.set("uTexel", 1.0f / static_cast<float>(fb_w),
-                       1.0f / static_cast<float>(fb_h));
         resolve_.bind_color(0);
         bloom_a_.bind_color(1);
-        screen_.draw();
+
+        const auto draw = [&](const gl::Program& p) {
+            p.use();
+            apply_uniforms(p, post_, passes::composite);
+            p.set("uScene", 0);
+            p.set("uBloom", 1);
+            p.set("uTime", static_cast<float>(time_));
+            p.set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
+            screen_.draw();
+        };
+        // Looks that share a program share its draw.
+        programs_in_mix_.clear();
+        for (const Mix::Part& part : post_.parts) {
+            const gl::Program* p = program_for(*part.look, passes::composite);
+            auto it = std::find_if(programs_in_mix_.begin(), programs_in_mix_.end(),
+                                   [p](const auto& e) { return e.first == p; });
+            if (it == programs_in_mix_.end()) {
+                programs_in_mix_.emplace_back(p, part.weight);
+            } else {
+                it->second += part.weight;
+            }
+        }
+        // A running weighted mean: the k-th program is blended over the ones
+        // before it with alpha = its weight / the weight drawn so far.
+        float drawn = 0.0f;
+        for (const auto& e : programs_in_mix_) {
+            drawn += e.second;
+            if (drawn == e.second) {
+                draw(*e.first);
+                continue;
+            }
+            gl::glEnable(gl::GL_BLEND);
+            gl::glBlendColor(0.0f, 0.0f, 0.0f, e.second / drawn);
+            gl::glBlendFunc(gl::GL_CONSTANT_ALPHA, gl::GL_ONE_MINUS_CONSTANT_ALPHA);
+            draw(*e.first);
+            gl::glDisable(gl::GL_BLEND);
+        }
         gl::glEnable(gl::GL_DEPTH_TEST);
     }
+
+    // --- looks ------------------------------------------------------------------
+    // The fading itself is GL-free and lives with the looks (LookFader); what
+    // is here is only what a GL renderer does with it.
+    using Mix = LookMix;
+
+    static Key view_key() { return Key{"<view>"}; }
+
+    // Real time by default; a fixed step makes headless frames reproducible.
+    void advance_clock() {
+        const auto now = std::chrono::steady_clock::now();
+        if (fixed_step_ > 0.0) {
+            dt_ = fixed_step_;
+        } else {
+            dt_ = clock_started_
+                      ? std::min(0.25, std::chrono::duration<double>(now - last_frame_).count())
+                      : 0.0;
+        }
+        clock_started_ = true;
+        last_frame_ = now;
+        time_ += dt_;
+        fader_.advance(dt_);
+    }
+
+    const LookState& look_of(const State& s) const { return fader_.look_of(graph_, s); }
+    Mix mix(Key who, const LookState& target) { return fader_.mix(who, target); }
+
+    double value(const LookState& l, Key pass, Key k, double fallback) const {
+        return fader_.value(l, pass, k, fallback);
+    }
+
+    double setting(const Mix& m, Key pass, const char* name, double fallback) const {
+        return fader_.value(m, pass, Key{name}, fallback);
+    }
+
+    // Every uniform the standard look and the looks in the blend give this
+    // pass, weighted, and set. `name.x/.y/.z` components become a vector.
+    void apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
+        uniform_keys_.clear();
+        const auto collect = [&](const LookState& l) {
+            const Element* e = l.find(pass);
+            if (!e) return;
+            for (const auto& kv : e->params)
+                if (is_uniform_key(kv.first) &&
+                    std::find(uniform_keys_.begin(), uniform_keys_.end(), kv.first) ==
+                        uniform_keys_.end())
+                    uniform_keys_.push_back(kv.first);
+        };
+        collect(standard_);
+        for (const Mix::Part& part : m.parts) collect(*part.look);
+        vectors_.clear();
+        for (Key k : uniform_keys_) {
+            const std::string& name = k.str();
+            const float v = static_cast<float>(fader_.value(m, pass, k, 0.0));
+            const std::size_t dot = name.find('.');
+            if (dot == std::string::npos) {
+                p.set(name.c_str(), v);
+                continue;
+            }
+            const std::string base = name.substr(0, dot);
+            const char c = dot + 1 < name.size() ? name[dot + 1] : 'x';
+            const int i = c == 'y' ? 1 : (c == 'z' ? 2 : 0);
+            auto it = std::find_if(vectors_.begin(), vectors_.end(),
+                                   [&](const VectorUniform& u) { return u.name == base; });
+            if (it == vectors_.end()) {
+                vectors_.push_back(VectorUniform{base, {0, 0, 0}, 0});
+                it = vectors_.end() - 1;
+            }
+            it->v[i] = v;
+            it->n = std::max(it->n, i + 1);
+        }
+        for (const VectorUniform& u : vectors_) {
+            if (u.n == 3) {
+                p.set(u.name.c_str(), gl::Vec3{u.v[0], u.v[1], u.v[2]});
+            } else if (u.n == 2) {
+                p.set(u.name.c_str(), u.v[0], u.v[1]);
+            } else {
+                p.set(u.name.c_str(), u.v[0]);
+            }
+        }
+    }
+
+    // The program for one pass of one look. Programs are shared by source, so
+    // looks that only change numbers all use the built-in ones; a look's slot
+    // remembers its source, so a shader edited while running is picked up.
+    const gl::Program* program_for(const LookState& look, Key pass) {
+        const std::string& vs = source(look, pass, look_keys::vs);
+        const std::string& fs = source(look, pass, look_keys::fs);
+        PassProgram& slot = resolved_[look.id()][pass];
+        if (slot.program && slot.vs == vs && slot.fs == fs) return slot.program;
+        slot.vs = vs;
+        slot.fs = fs;
+        slot.error.clear();
+        slot.program = shared_program(vs, fs, look.id().str() + "." + pass.str(), slot.error);
+        // A shader that will not build is reported by prepare(); the pass
+        // falls back to the built-in rather than drawing nothing.
+        if (!slot.program && &look != &standard_) slot.program = program_for(standard_, pass);
+        return slot.program;
+    }
+
+    const std::string& source(const LookState& look, Key pass, Key which) const {
+        if (const Element* e = look.find(pass))
+            if (e->params.has(which))
+                if (const auto* s = std::get_if<std::string>(&e->params.get(which)))
+                    if (!s->empty()) return *s;
+        const auto& b = builtin_.at(pass);
+        return which == look_keys::vs ? b.first : b.second;
+    }
+
+    const gl::Program* shared_program(const std::string& vs, const std::string& fs,
+                                      const std::string& tag, std::string& error) {
+        std::string key;
+        key.reserve(vs.size() + fs.size() + 1);
+        key += vs;
+        key += '\0';
+        key += fs;
+        auto it = programs_.find(key);
+        if (it != programs_.end()) return it->second.get();
+        const auto t0 = std::chrono::steady_clock::now();
+        std::unique_ptr<gl::Program> p;
+        try {
+            p = std::make_unique<gl::Program>(vs.c_str(), fs.c_str(), tag.c_str());
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        stats_.compile_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count();
+        if (!p) return nullptr;
+        ++stats_.programs;
+        if (!preparing_) ++stats_.late;
+        return programs_.emplace(std::move(key), std::move(p)).first->second.get();
+    }
+
+    // Compile a look's passes and hold them to what this renderer feeds them.
+    void check_look(const LookState& look, std::vector<std::string>& out) {
+        static const std::unordered_map<Key, std::vector<const char*>> required{
+            {passes::shadow, {"uModel", "uLightViewProj"}},
+            // Without the clip planes two glued rooms both draw their shared wall.
+            {passes::scene, {"uModel", "uViewProj", "uClipCount"}},
+            {passes::bright, {"uScene"}},
+            {passes::blur, {"uSource", "uDirection"}},
+            {passes::composite, {"uScene"}},
+        };
+        const std::string tag = "look " + look.id().str() + ": ";
+        for (Key pass : passes::all()) {
+            const gl::Program* p = program_for(look, pass);
+            const PassProgram& slot = resolved_[look.id()][pass];
+            if (!slot.error.empty()) {
+                const std::string& e = slot.error;
+                out.push_back(tag + pass.str() + " shader does not build, so the built-in is used - " +
+                              e.substr(0, e.find('\n')));
+                continue;
+            }
+            const Element* el = look.find(pass);
+            const bool custom = el && (el->params.has(look_keys::vs) || el->params.has(look_keys::fs));
+            if (custom)
+                for (const char* name : required.at(pass))
+                    if (!p->has(name))
+                        out.push_back(tag + "its " + pass.str() + " shader has no " + name +
+                                      ", which the renderer sets on every draw");
+            if (!el) continue;
+            std::vector<std::string> named;  // a vector's three components are one name
+            for (const auto& kv : el->params) {
+                if (!is_uniform_key(kv.first)) continue;
+                const std::string& name = kv.first.str();
+                const std::string base = name.substr(0, name.find('.'));
+                if (std::find(named.begin(), named.end(), base) != named.end()) continue;
+                named.push_back(base);
+                if (!p->has(base.c_str()))
+                    out.push_back(tag + pass.str() + " sets " + base +
+                                  ", which its shader does not have (misspelt, or declared "
+                                  "and never used)");
+            }
+        }
+    }
+
+    static const char* clip_uniform(int i) {
+        static const auto names = [] {
+            std::array<std::string, kMaxBounds> n;
+            for (int b = 0; b < kMaxBounds; ++b)
+                n[static_cast<std::size_t>(b)] = "uClip[" + std::to_string(b) + "]";
+            return n;
+        }();
+        return names[static_cast<std::size_t>(i)].c_str();
+    }
+
+    // Light uniform names, built once: they are asked for every frame.
+    static const char* light_uniform(std::size_t i, int field) {
+        static const auto names = [] {
+            static const char* fields[] = {"uLightPos",   "uLightDir", "uLightColor",
+                                           "uLightPower", "uCosInner", "uCosOuter"};
+            std::array<std::array<std::string, 6>, kMaxLights> n;
+            for (std::size_t l = 0; l < kMaxLights; ++l)
+                for (int f = 0; f < 6; ++f)
+                    n[l][static_cast<std::size_t>(f)] =
+                        std::string(fields[f]) + "[" + std::to_string(l) + "]";
+            return n;
+        }();
+        return names[i][static_cast<std::size_t>(field)].c_str();
+    }
+
+    struct PassProgram {
+        std::string vs, fs;
+        const gl::Program* program = nullptr;
+        std::string error;
+    };
+
+    struct VectorUniform {
+        std::string name;
+        float v[3];
+        int n;
+    };
 
     GLQuality q_;
     bool ready_ = false;
     int target_w_ = 0, target_h_ = 0;
 
-    gl::Program scene_, depth_, bright_, blur_, composite_;
+    // Looks, and the programs they compile to.
+    const StateGraph* graph_ = nullptr;
+    LookState standard_;
+    std::unordered_map<Key, std::pair<std::string, std::string>> builtin_;
+    std::unordered_map<std::string, std::unique_ptr<gl::Program>> programs_;
+    std::unordered_map<Key, std::unordered_map<Key, PassProgram>> resolved_;
+    LookFader fader_{standard_};
+    Mix post_{{{&standard_, 1.0f}}};
+    std::vector<std::pair<const gl::Program*, float>> programs_in_mix_;
+    const gl::Program* scene_ = nullptr;  // the scene program currently bound
+    std::vector<Key> uniform_keys_;
+    std::vector<VectorUniform> vectors_;
+    LookStats stats_;
+    bool preparing_ = false;
+    std::chrono::steady_clock::time_point last_frame_{};
+    bool clock_started_ = false;
+    double dt_ = 0.0, time_ = 0.0;
+    double fixed_step_ = 0.0;
+
     gl::Mesh cube_, quad_;
     gl::FullscreenTriangle screen_;
     gl::ShadowMap shadow_[kShadowMaps];

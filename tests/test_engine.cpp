@@ -862,6 +862,150 @@ void test_graph_analysis() {
     check(g.to_dot(false).find("digraph") == 0, "dot export produced");
 }
 
+// --- glued rooms are adjacent, never overlapping -------------------------------------
+// A wall centred on the glue plane puts half of itself in the neighbour; each
+// room then draws the same surface in its own look, and one bleeds through the
+// other. The gluing law names it; standing each wall on its own side clears it.
+void test_rooms_are_adjacent() {
+    const auto build = [](double hall_wall_x, double annex_wall_z, sg::StateGraph& g,
+                          sg::Atlas& atlas) {
+        auto& hall = g.add<sg::Spatial3D>("hall");
+        auto& annex = g.add<sg::Spatial3D>("annex");
+        hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265358979);  // faces -x, into the hall
+        annex.portal("door", {4.5, 1.5, 0.0}, 2.8, 3.0, 1.5707963267949);   // faces +z, into the annex
+        hall.wall("east", {hall_wall_x, 0.0, 3.0}, 0.3, 4.0, 5.6);
+        annex.wall("south", {2.0, 0.0, annex_wall_z}, 3.0, 3.6, 0.3);
+        g.set_initial("hall");
+        atlas.glue("doorway", "hall", "door", "annex", "door");
+    };
+
+    sg::StateGraph centred;
+    sg::Atlas a1;
+    build(14.0, 0.0, centred, a1);
+    const auto named = sg::adjacency_defects(a1, centred);
+    for (const auto& d : named) std::printf("        %s\n", d.c_str());
+    check(named.size() == 2, "walls centred on the glue plane are both named");
+    check(!named.empty() && named[0].find("0.150000 m past doorway") != std::string::npos,
+          "with how far each reaches into the other room");
+
+    sg::StateGraph adjacent;
+    sg::Atlas a2;
+    build(13.85, 0.15, adjacent, a2);
+    check(sg::adjacency_defects(a2, adjacent).empty() && sg::descent_defects(a2, adjacent).empty(),
+          "walls standing on their own side meet at the plane, and glue");
+
+    // The same boundary, as the renderer's clip: a room's own side of its doorway.
+    const sg::HalfSpace side = sg::room_side(adjacent.state("hall"),
+                                             adjacent.state("hall").element("door"), sg::Pose{});
+    check(side.at({13.0, 0.0, 7.0}) > 0.0 && side.at({15.0, 0.0, 7.0}) < 0.0 &&
+              near(side.at({14.0, 0.0, 3.0}), 0.0),
+          "a room owns the half-space its doorway faces into, bounded by the plane");
+}
+
+// --- looks: how a state is shown, as states ------------------------------------------
+void test_looks() {
+    namespace p = sg::passes;
+    sg::StateGraph g;
+    auto& hall = g.add<sg::Spatial3D>("hall");
+    auto& calm = g.add<sg::LookState>("calm");
+    auto& alert = g.add<sg::LookState>("alert");
+    calm.uniform(p::scene, "uFogDensity", 0.02);
+    alert.uniform(p::scene, "uFogDensity", 0.06)
+        .uniform(p::composite, "uTint", 1.0, 0.5, 0.5)
+        .fade(0.5);
+    g.set_initial("hall");
+    sg::wear(g, "hall", "calm");
+    sg::wear(g, "hall", "alert");
+
+    check(sg::active_look(hall) == sg::Key{"calm"}, "the first look a room wears is the one shown");
+    check(sg::worn_looks(g, "hall").size() == 2, "and it may wear more than one");
+    check(g.validate().empty(), "looks are reachable through the rooms that wear them");
+    check(sg::look_defects(g).empty(), "a room showing a look it wears has nothing wrong");
+    check(sg::verify(g).ok(), "and a graph with looks in it keeps every law");
+
+    sg::LookState standard("<standard>");
+    standard.uniform(p::scene, "uFogDensity", 0.018).uniform(p::composite, "uTint", 1.0, 1.0, 1.0);
+    sg::LookFader fader(standard);
+
+    const auto step = [&](double dt) {
+        fader.advance(dt);
+        return fader.mix("hall", fader.look_of(&g, hall));
+    };
+    const auto fog = [&](const sg::LookMix& mx) {
+        return fader.value(mx, p::scene, "uFogDensity", 0.0);
+    };
+
+    sg::LookMix m = step(0.0);
+    check(m.settled() && m.weight(&calm) == 1.0f,
+          "a first sighting starts in its look, with nothing to fade from");
+
+    sg::set_look(hall, "alert");
+    m = step(0.25);
+    check(roughly(m.weight(&alert), 0.5) && roughly(m.weight(&calm), 0.5),
+          "a change of look moves weight over the incoming look's own time");
+    check(roughly(fog(m), 0.04), "numbers are the weighted blend of the looks");
+    check(roughly(fader.value(m, p::composite, "uTint.y", 0.0), 0.75),
+          "and one a look never set comes from the standard look");
+    m = fader.mix("hall", fader.look_of(&g, hall));
+    check(roughly(m.weight(&alert), 0.5), "asked twice in one frame, a fade moves once");
+
+    // Turned back half way: it walks back down the same path, no jump.
+    sg::set_look(hall, "calm");
+    double last = fog(m), worst = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        m = step(0.8 / 20.0);  // calm's fade is the default 0.6 s
+        worst = std::max(worst, std::fabs(fog(m) - last));
+        last = fog(m);
+    }
+    check(worst < 0.004,
+          "undone half way, a change flows back continuously - no frame jumps");
+    check(m.settled() && m.weight(&calm) == 1.0f && roughly(fog(m), 0.02),
+          "and ends exactly where it started");
+
+    // Forward then back by the same weight is the identity: the reverse is
+    // the same path, walked the other way.
+    sg::set_look(hall, "alert");
+    m = step(0.1);  // alert gains 0.2
+    sg::set_look(hall, "calm");
+    m = step(0.12);  // calm regains 0.2 at its own rate (0.12 / 0.6)
+    check(m.settled() && roughly(fog(m), 0.02), "forward then back by the same amount is no change");
+
+    // A third look mid-change leaves from the blend on screen, not from an end.
+    sg::set_look(hall, "alert");
+    m = step(0.25);
+    const double before = fog(m);  // half calm, half alert
+    auto& storm = g.add<sg::LookState>("storm");
+    storm.uniform(p::scene, "uFogDensity", 0.10).fade(1.0);
+    sg::wear(g, "hall", "storm");
+    sg::set_look(hall, "storm");
+    m = step(0.01);
+    check(std::fabs(fog(m) - before) < 0.001 && m.parts.size() == 3,
+          "a change to a third look mid-fade starts from the blend it was in");
+    for (int i = 0; i < 100; ++i) m = step(0.01);
+    check(m.settled() && &m.shown() == &storm && roughly(fog(m), 0.10),
+          "and arrives in the third look");
+    sg::set_look(hall, "alert");
+    for (int i = 0; i < 10; ++i) m = step(0.1);
+
+    sg::set_look(hall, "nowhere");
+    check(&fader.look_of(&g, hall) == &standard, "a look that is not there shows the standard one");
+    bool named = false;
+    for (const auto& d : sg::look_defects(g)) named = named || d.find("does not wear") != std::string::npos;
+    check(named, "and showing a look a room does not wear is named");
+    sg::set_look(hall, "calm");
+
+    g.add<sg::State>("notes");
+    sg::wear(g, "hall", "notes");
+    alert.add_element("sepia", sg::kinds::pass);
+    bool not_a_look = false, no_pass = false;
+    for (const auto& d : sg::look_defects(g)) {
+        not_a_look = not_a_look || d.find("notes, which is not a look") != std::string::npos;
+        no_pass = no_pass || d.find("no pass named sepia") != std::string::npos;
+    }
+    check(not_a_look, "wearing a state that is not a look is named");
+    check(no_pass, "and so is a look with a pass no renderer has");
+}
+
 void test_surface_and_views() {
     sg::Surface2D surf("panel", 4, 3, 8);
     surf.sprite("tok", 1, 1);
@@ -909,6 +1053,8 @@ int main() {
     test_guards_against_past_mistakes();
     test_graph_analysis();
     test_surface_and_views();
+    test_looks();
+    test_rooms_are_adjacent();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }
