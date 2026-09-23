@@ -272,8 +272,10 @@ private:
 // MSAA and then resolved into a texture the post chain can sample.
 class RenderTarget {
 public:
+    // `depth_texture`: a single-sampled target keeps its depth as a texture a
+    // later pass can read (bind_depth), not a renderbuffer only it can use.
     void create(int w, int h, GLenum internal_format = GL_RGBA16F, int samples = 0,
-                bool with_depth = true) {
+                bool with_depth = true, bool depth_texture = false) {
         destroy();
         w_ = w;
         h_ = h;
@@ -298,7 +300,17 @@ public:
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                    color_tex_, 0);
         }
-        if (with_depth) {
+        if (with_depth && depth_texture && samples == 0) {
+            glGenTextures(1, &depth_tex_);
+            glBindTexture(GL_TEXTURE_2D, depth_tex_);
+            glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(GL_DEPTH_COMPONENT24), w, h, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth_tex_, 0);
+        } else if (with_depth) {
             glGenRenderbuffers(1, &depth_rb_);
             glBindRenderbuffer(GL_RENDERBUFFER, depth_rb_);
             if (samples > 0) {
@@ -328,6 +340,19 @@ public:
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
+    // Resolve depth too: a multisampled target's depth into a plain one's.
+    void blit_depth_to(const RenderTarget& dst) const {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
+        glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    void bind_depth(int unit) const {
+        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+        glBindTexture(GL_TEXTURE_2D, depth_tex_);
+    }
+
     void bind_color(int unit) const {
         glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
         glBindTexture(GL_TEXTURE_2D, color_tex_);
@@ -338,7 +363,8 @@ public:
         if (color_tex_) glDeleteTextures(1, &color_tex_);
         if (color_rb_) glDeleteRenderbuffers(1, &color_rb_);
         if (depth_rb_) glDeleteRenderbuffers(1, &depth_rb_);
-        fbo_ = color_tex_ = color_rb_ = depth_rb_ = 0;
+        if (depth_tex_) glDeleteTextures(1, &depth_tex_);
+        fbo_ = color_tex_ = color_rb_ = depth_rb_ = depth_tex_ = 0;
     }
 
     int width() const { return w_; }
@@ -346,7 +372,7 @@ public:
     bool valid() const { return fbo_ != 0; }
 
 private:
-    GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0;
+    GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0, depth_tex_ = 0;
     int w_ = 0, h_ = 0, samples_ = 0;
 };
 

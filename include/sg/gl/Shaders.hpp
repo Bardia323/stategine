@@ -135,7 +135,7 @@ uniform float uGlow;          // extra emission for an active interface
 // bright they are, not where the viewer is, so shadows do not come and go as
 // you walk. A sun is always first: it lights everything, from one direction,
 // without falling off.
-const int MAX_LIGHTS = 8;
+const int MAX_LIGHTS = 16;
 uniform int   uLightCount;
 uniform vec3  uLightPos[MAX_LIGHTS];
 uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
@@ -144,6 +144,7 @@ uniform float uLightPower[MAX_LIGHTS];
 uniform float uCosInner[MAX_LIGHTS];
 uniform float uCosOuter[MAX_LIGHTS];
 uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
+uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -255,7 +256,7 @@ vec3 sky(vec3 dir) {
 // Percentage-closer filtering: 5x5 taps, each one the hardware's own 2x2,
 // spread `uShadowSoft` texels apart, with a slope-scaled bias. What is left
 // in the darkest shadow is `uShadowFloor`.
-float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l, float bias_scale) {
+float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l, float bias_scale, float floor_) {
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
@@ -268,7 +269,7 @@ float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l
             sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
         }
     }
-    return mix(uShadowFloor, 1.0, sum / 25.0);
+    return mix(floor_, 1.0, sum / 25.0);
 }
 
 vec3 surface_albedo(out float rough_mod) {
@@ -390,10 +391,11 @@ void main() {
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
         if (ndl > 0.0) {
-            if (i == 0) shadow = shadow_factor(vLightSpace0, uShadowMap0, n, l, uShadowBias.x);
-            else if (i == 1) shadow = shadow_factor(vLightSpace1, uShadowMap1, n, l, uShadowBias.y);
-            else if (i == 2) shadow = shadow_factor(vLightSpace2, uShadowMap2, n, l, uShadowBias.z);
-            else if (i == 3) shadow = shadow_factor(vLightSpace3, uShadowMap3, n, l, uShadowBias.w);
+            float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
+            if (i == 0) shadow = shadow_factor(vLightSpace0, uShadowMap0, n, l, uShadowBias.x, fl);
+            else if (i == 1) shadow = shadow_factor(vLightSpace1, uShadowMap1, n, l, uShadowBias.y, fl);
+            else if (i == 2) shadow = shadow_factor(vLightSpace2, uShadowMap2, n, l, uShadowBias.z, fl);
+            else if (i == 3) shadow = shadow_factor(vLightSpace3, uShadowMap3, n, l, uShadowBias.w, fl);
         }
 
         // GGX-ish specular, kept cheap.
@@ -478,6 +480,115 @@ void main() {
         sum += texture(uSource, vUV - uDirection * float(i)).rgb * w[i];
     }
     FragColor = vec4(sum, 1.0);
+})";
+}
+
+// --- ambient occlusion ---------------------------------------------------------
+// How much of the sky each pixel can see, from the depth buffer alone: a
+// hemisphere of taps round it, each asking whether the depth there stands in
+// front. Creases, corners and whatever sits on something darken, as bounced
+// light does not reach them. The tap pattern turns with the pixel over a 4x4
+// tile, so the blur after it (a 4x4 box, kept to one surface by depth)
+// averages the noise away.
+inline const char* ao_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uDepth;
+uniform vec2  uTexel;     // one pixel of the depth buffer
+uniform float uNear, uFar, uTanHalf, uAspect, uRadius;
+
+float linear(float d) {
+    float z = d * 2.0 - 1.0;
+    return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
+}
+vec3 view_at(vec2 uv) {
+    float z = linear(texture(uDepth, uv).r);
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * uTanHalf * uAspect * z, ndc.y * uTanHalf * z, -z);
+}
+
+void main() {
+    float d = texture(uDepth, vUV).r;
+    if (d >= 1.0) { FragColor = vec4(1.0); return; }
+    vec3 p = view_at(vUV);
+    // The surface's normal from its neighbours, each side's nearer one, so
+    // an edge does not bend it.
+    vec3 px1 = view_at(vUV + vec2(uTexel.x, 0.0)) - p, px0 = p - view_at(vUV - vec2(uTexel.x, 0.0));
+    vec3 py1 = view_at(vUV + vec2(0.0, uTexel.y)) - p, py0 = p - view_at(vUV - vec2(0.0, uTexel.y));
+    vec3 dx = abs(px1.z) < abs(px0.z) ? px1 : px0;
+    vec3 dy = abs(py1.z) < abs(py0.z) ? py1 : py0;
+    vec3 n = normalize(cross(dx, dy));
+    vec3 t = normalize(abs(n.y) < 0.9 ? cross(n, vec3(0, 1, 0)) : cross(n, vec3(1, 0, 0)));
+    vec3 b = cross(n, t);
+
+    vec2 cell = mod(floor(gl_FragCoord.xy), 4.0);
+    float turn = (cell.x * 4.0 + cell.y) / 16.0 * 6.2831853;
+    const int N = 16;
+    float occluded = 0.0;
+    for (int i = 0; i < N; ++i) {
+        float fi = float(i);
+        float a = fi * 2.3999632 + turn;                 // the golden angle
+        float h = fract(fi * 0.618034 + 0.13);           // how far up the hemisphere
+        float r = mix(0.12, 1.0, (fi + 0.5) / float(N));
+        r *= r;                                           // more taps close in
+        vec3 dir = normalize(cos(a) * sqrt(1.0 - h * h) * t + sin(a) * sqrt(1.0 - h * h) * b + h * n);
+        vec3 s = p + dir * (r * uRadius);
+        vec2 uv = vec2(s.x / (-s.z * uTanHalf * uAspect), s.y / (-s.z * uTanHalf)) * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
+        float there = linear(texture(uDepth, uv).r);
+        float in_front = step(there, -s.z - 0.02);
+        float near = smoothstep(0.0, 1.0, uRadius / max(abs(-p.z - there), 1e-4));
+        occluded += in_front * near;
+    }
+    float ao = 1.0 - occluded / float(N);
+    FragColor = vec4(vec3(ao), 1.0);
+})";
+}
+
+inline const char* ao_blur_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uAO;
+uniform sampler2D uDepth;
+uniform vec2  uTexel;     // one pixel of the AO target
+uniform float uNear, uFar;
+float linear(float d) {
+    float z = d * 2.0 - 1.0;
+    return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
+}
+void main() {
+    float zc = linear(texture(uDepth, vUV).r);
+    float sum = 0.0, weight = 0.0;
+    for (int y = -2; y < 2; ++y)
+        for (int x = -2; x < 2; ++x) {
+            vec2 uv = vUV + (vec2(x, y) + 0.5) * uTexel;
+            float z = linear(texture(uDepth, uv).r);
+            float w = exp(-abs(z - zc) / max(zc * 0.03, 0.01));
+            sum += texture(uAO, uv).r * w;
+            weight += w;
+        }
+    FragColor = vec4(vec3(sum / max(weight, 1e-4)), 1.0);
+})";
+}
+
+// The scene with its occlusion laid on: `uStrength` of it, less where the
+// picture is bright - a lamp or a lit screen is not darkened by what is
+// round it.
+inline const char* ao_apply_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform sampler2D uAO;
+uniform float uStrength;
+void main() {
+    vec3 c = texture(uScene, vUV).rgb;
+    float ao = texture(uAO, vUV).r;
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float k = uStrength * (1.0 - smoothstep(0.9, 3.5, luma));
+    FragColor = vec4(c * mix(1.0, pow(ao, 1.6), k), 1.0);
 })";
 }
 

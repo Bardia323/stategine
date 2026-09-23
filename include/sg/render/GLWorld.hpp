@@ -19,7 +19,9 @@
 //
 // Frame: for each world portal, render the other room into its own target from
 // that room's own camera (a View embedding aims it); then the shadow pass, the
-// scene into a multisampled HDR target, resolve, bright pass, blur, composite.
+// scene into a multisampled HDR target, resolve, ambient occlusion (when the
+// look asks for it: the composite pass's `ao` setting is its strength, `ao.radius`
+// its reach in metres), bright pass, blur, composite.
 //
 // How each pass looks is itself a state: a LookState worn by the room (see
 // domains/Look.hpp). Each room is drawn with its own look, so fog and shaders
@@ -107,7 +109,7 @@ inline void standard_look(LookState& l, const GLQuality& q = {}) {
 
 class GLWorldView {
 public:
-    static constexpr std::size_t kMaxLights = 8;    // matches the scene shader
+    static constexpr std::size_t kMaxLights = 16;   // matches the scene shader
     static constexpr std::size_t kShadowMaps = 4;  // the strongest four cast
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
@@ -283,6 +285,15 @@ public:
         t0 = mark();
 
         scene_target_.blit_to(resolve_);
+        scene_src_ = &resolve_;
+        const double ao = setting(post_, passes::composite, "ao", 0.0);
+        if (ao > 0.0) {
+            view_ = ViewParams{eye_cam.fov, aspect, kNear,
+                               static_cast<float>(world.params().num(Key{"far"}, 120.0))};
+            run_ao(static_cast<float>(ao),
+                   static_cast<float>(setting(post_, passes::composite, "ao.radius", 0.45)));
+            scene_src_ = &lit_;
+        }
         run_bloom();
         composite(fb_w, fb_h);
         if (timing_) gl::glFinish();
@@ -306,6 +317,7 @@ private:
         float outer = 1.15f;
         bool sun = false;      // parallel, from `dir`; its shadow is a box round the viewer
         float extent = 40.0f;  // a sun's shadow reaches this far either side of the viewer
+        float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
     };
 
     struct BoundSurface {
@@ -430,6 +442,11 @@ private:
         msaa_ = most > 0 ? std::min(q_.msaa, static_cast<int>(most)) : q_.msaa;
         scene_target_.create(w, h, gl::GL_RGBA16F, msaa_, true);
         resolve_.create(w, h, gl::GL_RGBA16F, 0, false);
+        depth_.create(w, h, gl::GL_RGBA16F, 0, true, /*depth_texture=*/true);
+        lit_.create(w, h, gl::GL_RGBA16F, 0, false);
+        const int aw = std::max(1, w / 2), ah = std::max(1, h / 2);
+        ao_a_.create(aw, ah, gl::GL_RGBA16F, 0, false);
+        ao_b_.create(aw, ah, gl::GL_RGBA16F, 0, false);
         const int bw = std::max(1, w / 2), bh = std::max(1, h / 2);
         bloom_a_.create(bw, bh, gl::GL_RGBA16F, 0, false);
         bloom_b_.create(bw, bh, gl::GL_RGBA16F, 0, false);
@@ -454,6 +471,7 @@ private:
             l.outer = static_cast<float>(e.params.num(Key{"outer"}, 1.15));
             l.sun = e.params.num(Key{"sun"}, 0.0) > 0.5;
             l.extent = static_cast<float>(e.params.num(Key{"extent"}, 40.0));
+            l.floor = static_cast<float>(e.params.num(Key{"shadow_floor"}, -1.0));
             if (l.power <= 0.0f) continue;  // switched off
             out.push_back(l);
             }
@@ -617,6 +635,7 @@ private:
                 p.set(light_uniform(i, 4), std::cos(lights[i].inner));
                 p.set(light_uniform(i, 5), std::cos(lights[i].outer));
                 p.set(light_uniform(i, 6), lights[i].sun ? 1.0f : 0.0f);
+                p.set(light_uniform(i, 7), lights[i].floor);
                 if (lights[i].sun && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
                     sun_dir = gl::normalize(lights[i].dir) * -1.0f;
                     sun_color = lights[i].color;
@@ -1200,6 +1219,52 @@ private:
         scene_->set("uCRT", 0.0f);
     }
 
+    // Occlusion, at half the resolution: the depth resolved, the occlusion
+    // found and blurred along surfaces, and laid over the scene into `lit_`.
+    void run_ao(float strength, float radius) {
+        if (!ao_prog_) {
+            ao_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::ao_fs(), "ao");
+            ao_blur_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::ao_blur_fs(), "ao blur");
+            ao_apply_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::ao_apply_fs(), "ao apply");
+        }
+        gl::glDisable(gl::GL_DEPTH_TEST);
+        scene_target_.blit_depth_to(depth_);
+        const float tan_half = std::tan(view_.fov * 0.5f);
+
+        ao_a_.bind();
+        ao_prog_->use();
+        ao_prog_->set("uDepth", 0);
+        depth_.bind_depth(0);
+        ao_prog_->set("uTexel", 1.0f / static_cast<float>(ao_a_.width()), 1.0f / static_cast<float>(ao_a_.height()));
+        ao_prog_->set("uNear", view_.znear);
+        ao_prog_->set("uFar", view_.zfar);
+        ao_prog_->set("uTanHalf", tan_half);
+        ao_prog_->set("uAspect", view_.aspect);
+        ao_prog_->set("uRadius", radius);
+        screen_.draw();
+
+        ao_b_.bind();
+        ao_blur_prog_->use();
+        ao_blur_prog_->set("uAO", 0);
+        ao_blur_prog_->set("uDepth", 1);
+        ao_a_.bind_color(0);
+        depth_.bind_depth(1);
+        ao_blur_prog_->set("uTexel", 1.0f / static_cast<float>(ao_b_.width()), 1.0f / static_cast<float>(ao_b_.height()));
+        ao_blur_prog_->set("uNear", view_.znear);
+        ao_blur_prog_->set("uFar", view_.zfar);
+        screen_.draw();
+
+        lit_.bind();
+        ao_apply_prog_->use();
+        ao_apply_prog_->set("uScene", 0);
+        ao_apply_prog_->set("uAO", 1);
+        ao_apply_prog_->set("uStrength", strength);
+        resolve_.bind_color(0);
+        ao_b_.bind_color(1);
+        screen_.draw();
+        gl::glActiveTexture(gl::GL_TEXTURE0);
+    }
+
     void run_bloom() {
         gl::glDisable(gl::GL_DEPTH_TEST);
         bloom_a_.bind();
@@ -1208,7 +1273,7 @@ private:
         bright.use();
         apply_uniforms(bright, post_, passes::bright);
         bright.set("uScene", 0);
-        resolve_.bind_color(0);
+        scene_src_->bind_color(0);
         screen_.draw();
 
         const gl::Program& blur = *program_for(post_.shown(), passes::blur);
@@ -1239,7 +1304,7 @@ private:
         gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
         gl::glViewport(0, 0, fb_w, fb_h);
         gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-        resolve_.bind_color(0);
+        scene_src_->bind_color(0);
         bloom_a_.bind_color(1);
 
         const auto draw = [&](const gl::Program& p) {
@@ -1470,11 +1535,11 @@ private:
     // Light uniform names, built once: they are asked for every frame.
     static const char* light_uniform(std::size_t i, int field) {
         static const auto names = [] {
-            static const char* fields[] = {"uLightPos",   "uLightDir", "uLightColor",
-                                           "uLightPower", "uCosInner", "uCosOuter", "uLightSun"};
-            std::array<std::array<std::string, 7>, kMaxLights> n;
+            static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
+                                           "uCosInner", "uCosOuter", "uLightSun", "uLightFloor"};
+            std::array<std::array<std::string, 8>, kMaxLights> n;
             for (std::size_t l = 0; l < kMaxLights; ++l)
-                for (int f = 0; f < 7; ++f)
+                for (int f = 0; f < 8; ++f)
                     n[l][static_cast<std::size_t>(f)] =
                         std::string(fields[f]) + "[" + std::to_string(l) + "]";
             return n;
@@ -1522,6 +1587,14 @@ private:
     gl::FullscreenTriangle screen_;
     gl::ShadowMap shadow_[kShadowMaps];
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
+    // Ambient occlusion: the resolved depth, the occlusion and its blur, and
+    // the scene with it laid on. `scene_src_` is what the post chain reads.
+    gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
+    const gl::RenderTarget* scene_src_ = &resolve_;
+    std::unique_ptr<gl::Program> ao_prog_, ao_blur_prog_, ao_apply_prog_;
+    struct ViewParams {
+        float fov = 1.2f, aspect = 1.0f, znear = 0.05f, zfar = 120.0f;
+    } view_;
 
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
