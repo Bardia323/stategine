@@ -8,6 +8,15 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **`Adjunction` is an adjunction.** It used to call F -| G whatever made the
+  round trips come home, which is an isomorphism. Now a unit arrow
+  `a -> G(F(a))` and a counit arrow `F(G(b)) -> b` are declared per object
+  (`unit`, `counit`; `identity` names a no-op loop that stands for id), and
+  `check` / `holds` verify unit and counit naturality and both triangle
+  identities on the arrows, composites unfolded and identities dropped.
+  `laws::adjunction` runs the same equations on live data. `unit_defects`,
+  `counit_defects`, `data_defects` and `is_isomorphism` are unchanged and now
+  documented as what they are: the test for an isomorphism.
 - **Seams: the law every interface between like states owes.** An interface
   is a boundary in each domain and a gluing between the boundaries. A `Seam`
   (`StateGraph::add_seam`) names both boundaries (`boundary_a`, `boundary_b` -

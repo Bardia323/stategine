@@ -188,7 +188,7 @@ release breaks is in `CHANGELOG.md`.
 | Transition | `graph.connect(from, trigger, to)` | arrow in the state graph |
 | Data transport | `Functor` on a transition or portal | functor `A -> B` |
 | View + edit pair | `graph.add_lens(...)` | a functor pair |
-| Lossless pair | `Adjunction` | `F -| G`, isomorphism when both units are trivial |
+| Adjoint pair | `Adjunction` | `F -| G` by unit, counit and triangle laws; isomorphism when both are identities |
 | Nested interface | `graph.embed(...)` | a state inside an object of another |
 | Cover, gluing | `Cover`, `Atlas`, `sections(root)` | descent |
 
@@ -251,8 +251,16 @@ graph.connect("world2d", "toggle", "world3d").functor = "lift";
 graph.compose_functors("roundtrip", {"lift", "flatten"});   // g * f, checked at the seam
 ```
 
-`Adjunction` reports what a round trip loses (`unit_defects`, `counit_defects`,
-`data_defects`, `is_isomorphism`).
+`Adjunction` is `F -| G` witnessed properly: declare a unit arrow
+`a -> G(F(a))` and a counit arrow `F(G(b)) -> b` per object (`unit`,
+`counit`, with `identity` marking no-op loops that stand for identities), and
+`check` verifies both naturality squares and both triangle identities, on the
+arrows. `laws::adjunction(graph, adj)` runs the same equations on live data.
+The round trip need not come home - the order `0 < 1` collapsed onto a point
+is adjoint to picking out `1`, with unit `0 -> 1` - so an adjunction is not an
+isomorphism. What a round trip loses is still reported (`unit_defects`,
+`counit_defects`, `data_defects`, `is_isomorphism`): those measure whether the
+pair is an isomorphism, not whether it is adjoint.
 
 ### Embeddings
 

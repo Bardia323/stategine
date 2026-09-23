@@ -1198,6 +1198,56 @@ void test_surface_and_views() {
 
 }  // namespace
 
+void test_adjunction_is_not_an_isomorphism() {
+    // A = the order 0 < 1, B = one object. F collapses A; G picks out 1.
+    // F -| G with unit eta_0 = u : 0 -> 1 and eta_1 = id: an adjunction
+    // whose round trip does not come home, so not an isomorphism.
+    sg::StateGraph g;
+    auto& A = g.add<sg::State>("A");
+    auto& B = g.add<sg::State>("B");
+    A.add_element("0", "n");
+    A.add_element("1", "n");
+    B.add_element("*", "n");
+    A.arrow("u", "0", "1", "never",
+            [](sg::State&, sg::Element&, sg::Element* to, const sg::Event&) {
+                if (to) to->params.set("reached", 1.0);
+            });
+    A.loop("id_1", "1", "never", nullptr);
+    B.loop("id_*", "*", "never", nullptr);
+
+    sg::Functor& F = g.add_functor("F", "A", "B");
+    F.on_object("0", "*").on_object("1", "*").on_morphism("u", "id_*").on_morphism("id_1", "id_*");
+    sg::Functor& G = g.add_functor("G", "B", "A");
+    G.on_object("*", "1").on_morphism("id_*", "id_1");
+
+    sg::Adjunction adj("F -| G", &F, &G);
+    adj.identity("id_1").identity("id_*").unit("0", "u").unit("1").counit("*");
+    const auto defects = adj.check(A, B);
+    for (const auto& d : defects) std::printf("        %s\n", d.c_str());
+    check(defects.empty(), "unit, counit, naturality and both triangles hold");
+    check(!adj.unit_defects(A).empty(), "yet G(F(0)) is 1, not 0");
+    check(!adj.is_isomorphism(A, B), "so it is an adjunction and not an isomorphism");
+    check(sg::laws::adjunction(g, adj).empty(), "and the equations hold on live data");
+
+    // Without a unit arrow where G(F(x)) is not x, there is nothing to check.
+    sg::Adjunction bare("F -| G, no unit", &F, &G);
+    bare.identity("id_1").identity("id_*");
+    check(!bare.holds(A, B), "a missing unit component is refused");
+
+    // A second arrow 0 -> 1 makes Hom(0, G*) two arrows against Hom(F0, *)'s
+    // one: no bijection, and naturality at the new arrow says so.
+    A.arrow("v", "0", "1", "never", nullptr);
+    F.on_morphism("v", "id_*");
+    check(!adj.holds(A, B), "two parallel arrows collapsed by F break unit naturality");
+
+    // G sending * to 0 needs a unit 1 -> 0, which A does not have.
+    sg::Functor G0("G0", "B", "A");
+    G0.on_object("*", "0");
+    sg::Adjunction wrong("F -| G0", &F, &G0);
+    wrong.identity("id_*").unit("1", "u");
+    check(!wrong.holds(A, B), "a unit of the wrong type is refused");
+}
+
 int main() {
     test_one_rotation();
     test_keys_and_params();
@@ -1209,6 +1259,7 @@ int main() {
     test_transports();
     test_functor_roundtrip();
     test_functor_composition();
+    test_adjunction_is_not_an_isomorphism();
     test_lens();
     test_embedding();
     test_anchors();

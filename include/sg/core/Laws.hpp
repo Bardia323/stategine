@@ -40,6 +40,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sg/core/Adjunction.hpp"
 #include "sg/core/StateGraph.hpp"
 
 namespace sg {
@@ -710,6 +711,36 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {}) {
 inline std::vector<Violation> diagram(StateGraph& g, const Diagram& d) {
     std::vector<Violation> out;
     for (const Equation& eq : d.equations()) append(out, check(g, eq));
+    return out;
+}
+
+// --- adjunctions -----------------------------------------------------------------
+// F -| G on live data: the four equations `Adjunction::check` decides on the
+// arrows (unit and counit naturality, both triangles), each run from its
+// object on the states' current data. The structural check says the paths
+// are the same word; this says they do the same thing, which is all a pair
+// of different words can be asked for.
+inline std::vector<Violation> adjunction(StateGraph& g, const Adjunction& adj,
+                                         const LawOptions& o = {}) {
+    std::vector<Violation> out;
+    const State* a = g.find(adj.left().from());
+    const State* b = g.find(adj.left().to());
+    if (!a || !b) {
+        out.push_back(Violation{"adjunction", adj.name().str(), "", "", {}, {}, "", "", "", "",
+                                "", "a state it joins is not in the graph"});
+        return out;
+    }
+    const auto path = [&](Key state, Key at, const Adjunction::Word& w) {
+        Path p(state, at);
+        for (Key k : w)
+            if (!adj.is_identity(k)) p.arrow(k);
+        return p;
+    };
+    for (const auto& e : adj.equations(*a, *b)) {
+        const Key sid = e.in_a ? a->id() : b->id();
+        append(out, check(g, Equation{"adjunction", adj.name().str() + ", " + e.law,
+                                      path(sid, e.at, e.lhs), path(sid, e.at, e.rhs), o.args}));
+    }
     return out;
 }
 
