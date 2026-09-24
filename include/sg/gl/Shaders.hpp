@@ -129,6 +129,7 @@ uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate
                               // 5 brushed metal, 6 moulded plastic, 7 fabric, 8 sand and
                               // rock, 9 sky
 uniform float uTexMix;        // 0 albedo only, 1 texture only
+uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv)
 uniform float uGlow;          // extra emission for an active interface
 
 // Up to eight lights; the four strongest carry shadow maps - chosen by how
@@ -228,6 +229,32 @@ vec3 crt_sample(vec2 uv) {
     float lip = 1.0 - clamp(glass_sd * 14.0, 0.0, 1.0);
     vec3 bezel = vec3(0.022, 0.021, 0.02) * (1.0 + lip) + 0.01 * (1.0 - uv.y);
     return mix(bezel, screen, glass);
+}
+
+// A skinned box: the texture is an atlas of six cells, three across and two
+// down - +x, -x, +z on top, -z, +y, -y below - each face showing its own cell,
+// upright on the four sides. So a book's spine, covers and page edges are one
+// picture.
+vec2 skin_uv() {
+    vec3 n = vObjNormal, a = abs(n), p = vLocal;
+    float cell, u, v;
+    if (a.x >= a.y && a.x >= a.z) {
+        cell = n.x > 0.0 ? 0.0 : 1.0;
+        u = n.x > 0.0 ? 0.5 - p.z : p.z + 0.5;
+        v = p.y + 0.5;
+    } else if (a.z >= a.y) {
+        cell = n.z > 0.0 ? 2.0 : 3.0;
+        u = n.z > 0.0 ? p.x + 0.5 : 0.5 - p.x;
+        v = p.y + 0.5;
+    } else {
+        cell = n.y > 0.0 ? 4.0 : 5.0;
+        u = p.x + 0.5;
+        v = n.y > 0.0 ? 0.5 - p.z : p.z + 0.5;
+    }
+    u = clamp(u, 0.002, 0.998);
+    v = clamp(v, 0.002, 0.998);
+    float col = mod(cell, 3.0), row = floor(cell / 3.0);
+    return vec2((col + u) / 3.0, (row + 1.0 - v) / 2.0);
 }
 
 vec3 sky(vec3 dir) {
@@ -357,7 +384,7 @@ void main() {
     float rough_mod;
     vec3 albedo = surface_albedo(rough_mod);
     if (uTexMix > 0.0) {
-        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : vUV;
+        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : uSkin > 0.5 ? skin_uv() : vUV;
         vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texture(uTex, uv).rgb;
         albedo = mix(albedo, tex, uTexMix);
     }

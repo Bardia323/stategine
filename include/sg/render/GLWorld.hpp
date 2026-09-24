@@ -5,6 +5,9 @@
 // 3D state gets this renderer for free as long as it uses the shared parameter
 // vocabulary (x/y/z, sx/sy/sz, r/g/b, w/h/yaw).
 //
+// A mesh bound to a surface wears it as a skin: a texture atlas, one cell per
+// face (see skin_uv in Shaders.hpp) - a book's spine and covers.
+//
 // A portal element shows whatever is bound to it:
 //   bind_surface(portal, Surface2D*)                 a 2D state, as a panel
 //   bind_world(portal, Spatial3D*)                   another 3D state, as a
@@ -1049,8 +1052,29 @@ private:
         scene_->set("uSurface", static_cast<float>(e.params.num(Key{"surface"}, 3.0)));
         scene_->set("uEmissive", static_cast<float>(e.params.num(Key{"emissive"}, 0.0)));
         scene_->set("uHighlight", e.id == highlight_ ? 1.0f : 0.0f);
-        scene_->set("uTexMix", 0.0f);
         scene_->set("uGlow", 0.0f);
+        // A surface bound to a mesh is its skin: an atlas, a cell a face.
+        auto skin = surfaces_.find(e.id);
+        if (skin != surfaces_.end() && skin->second.surface) {
+            BoundSurface& bound = skin->second;
+            Surface2D& surf = *bound.surface;
+            const auto& pixels = surf.raster();
+            if (!bound.texture.valid()) bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+            if (bound.revision != surf.revision()) {
+                bound.texture.upload(pixels);
+                bound.revision = surf.revision();
+            }
+            bound.texture.bind(0);
+            scene_->set("uTexMix", 1.0f);
+            scene_->set("uSkin", 1.0f);
+            scene_->set("uScreenUV", 0.0f);
+            scene_->set("uCRT", 0.0f);
+            shape_of(e).draw();
+            scene_->set("uSkin", 0.0f);
+            scene_->set("uTexMix", 0.0f);
+            return;
+        }
+        scene_->set("uTexMix", 0.0f);
         shape_of(e).draw();
     }
 
