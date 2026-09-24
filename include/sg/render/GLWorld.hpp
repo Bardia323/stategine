@@ -447,9 +447,10 @@ private:
         resolve_.create(w, h, gl::GL_RGBA16F, 0, false);
         depth_.create(w, h, gl::GL_RGBA16F, 0, true, /*depth_texture=*/true);
         lit_.create(w, h, gl::GL_RGBA16F, 0, false);
-        const int aw = std::max(1, w / 2), ah = std::max(1, h / 2);
-        ao_a_.create(aw, ah, gl::GL_RGBA16F, 0, false);
-        ao_b_.create(aw, ah, gl::GL_RGBA16F, 0, false);
+        // Full resolution: at half, the occlusion's edges stair-step over the
+        // antialiased picture.
+        ao_a_.create(w, h, gl::GL_RGBA16F, 0, false);
+        ao_b_.create(w, h, gl::GL_RGBA16F, 0, false);
         const int bw = std::max(1, w / 2), bh = std::max(1, h / 2);
         bloom_a_.create(bw, bh, gl::GL_RGBA16F, 0, false);
         bloom_b_.create(bw, bh, gl::GL_RGBA16F, 0, false);
@@ -1265,7 +1266,7 @@ private:
         scene_->set("uCRT", 0.0f);
     }
 
-    // Occlusion, at half the resolution: the depth resolved, the occlusion
+    // Occlusion, at full resolution: the depth resolved, the occlusion
     // found and blurred along surfaces, and laid over the scene into `lit_`.
     void run_ao(float strength, float radius) {
         if (!ao_prog_) {
@@ -1305,8 +1306,13 @@ private:
         ao_apply_prog_->set("uScene", 0);
         ao_apply_prog_->set("uAO", 1);
         ao_apply_prog_->set("uStrength", strength);
+        ao_apply_prog_->set("uDepth", 2);
+        ao_apply_prog_->set("uNear", view_.znear);
+        ao_apply_prog_->set("uFar", view_.zfar);
+        ao_apply_prog_->set("uTexel", 1.0f / static_cast<float>(lit_.width()), 1.0f / static_cast<float>(lit_.height()));
         resolve_.bind_color(0);
         ao_b_.bind_color(1);
+        depth_.bind_depth(2);
         screen_.draw();
         gl::glActiveTexture(gl::GL_TEXTURE0);
     }

@@ -393,6 +393,12 @@ void main() {
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
     float a2 = roughness * roughness * roughness * roughness;
+    // Specular antialiasing (Kaplanyan & Hill): where the normal turns fast
+    // across a pixel - a rounded edge thinner than a pixel - the highlight is
+    // widened by as much, or it flickers from pixel to pixel and steps.
+    vec3 dndx = dFdx(n), dndy = dFdy(n);
+    float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
+    a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
 
     vec3 direct = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
@@ -588,11 +594,13 @@ float linear(float d) {
 void main() {
     float zc = linear(texture(uDepth, vUV).r);
     float sum = 0.0, weight = 0.0;
+    // Exactly the 4x4 tile the taps turn over, so their pattern cancels;
+    // a neighbour on another surface (a depth break) is left out.
     for (int y = -2; y < 2; ++y)
         for (int x = -2; x < 2; ++x) {
-            vec2 uv = vUV + (vec2(x, y) + 0.5) * uTexel;
+            vec2 uv = vUV + vec2(x, y) * uTexel;
             float z = linear(texture(uDepth, uv).r);
-            float w = exp(-abs(z - zc) / max(zc * 0.03, 0.01));
+            float w = abs(z - zc) < zc * 0.04 ? 1.0 : 0.0;
             sum += texture(uAO, uv).r * w;
             weight += w;
         }
@@ -609,10 +617,29 @@ in vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uScene;
 uniform sampler2D uAO;
+uniform sampler2D uDepth;
 uniform float uStrength;
+uniform float uNear, uFar;
+uniform vec2  uTexel;
+float linear(float d) {
+    float z = d * 2.0 - 1.0;
+    return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
+}
 void main() {
     vec3 c = texture(uScene, vUV).rgb;
     float ao = texture(uAO, vUV).r;
+    // On a silhouette the picture is a blend of both sides (it was
+    // multisampled) but the occlusion belongs to one: take the lightest
+    // round it, so no dark, stepped fringe is laid along the edge.
+    float zc = linear(texture(uDepth, vUV).r), edge = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec2 o = vec2(i == 0 ? 1.0 : i == 1 ? -1.0 : 0.0, i == 2 ? 1.0 : i == 3 ? -1.0 : 0.0) * uTexel;
+        edge = max(edge, abs(linear(texture(uDepth, vUV + o).r) - zc) / zc);
+    }
+    if (edge > 0.02) {
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) ao = max(ao, texture(uAO, vUV + vec2(x, y) * uTexel).r);
+    }
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
     float k = uStrength * (1.0 - smoothstep(0.9, 3.5, luma));
     FragColor = vec4(c * mix(1.0, pow(ao, 1.6), k), 1.0);
