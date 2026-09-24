@@ -145,6 +145,11 @@ public:
         int portal_views = 0;
     };
     void set_timing(bool on) { timing_ = on; }
+    // The state the viewer is attending to - an interface they sit at, say.
+    // Its active look is laid over every room's own (the uniforms it sets win),
+    // blended by the look fader like any look: so what the eyes are adjusted
+    // to belongs to that state, and switching its look is how they adjust.
+    void attend(const State* s) { attend_ = s; }
     const FrameTimes& times() const { return times_; }
 
     // Advance fades by a fixed step per frame instead of real time: headless
@@ -674,6 +679,7 @@ private:
         // whenever a room's look brings a different program.
         const auto frame_uniforms = [&](const gl::Program& p) {
             p.set("uViewProj", view_proj);
+            p.set("uDim", 0.0f);
             p.set("uLightViewProj0", light_vp[0]);
             p.set("uLightViewProj1", light_vp[1]);
             p.set("uLightViewProj2", light_vp[2]);
@@ -728,6 +734,7 @@ private:
                 frame_uniforms(*scene_);
             }
             apply_uniforms(*scene_, look, passes::scene);
+            apply_attended(*scene_, passes::scene);
 
             // This room's side of each doorway, from the portals as they are now,
             // and whatever the caller cuts away besides.
@@ -1050,12 +1057,21 @@ private:
                               static_cast<float>(world.params().num(Key{"wall_g"}, 0.50)),
                               static_cast<float>(world.params().num(Key{"wall_b"}, 0.48))};
 
+        // `floor_surface` and `ceiling_surface` pick their materials (tiles
+        // and plaster if not said); `ceiling_r/g/b` its colour.
+        const float floor_s = static_cast<float>(world.params().num(Key{"floor_surface"}, 1.0));
+        const float ceil_s = static_cast<float>(world.params().num(Key{"ceiling_surface"}, 2.0));
+        const gl::Vec3 ceil_c = world.params().has(Key{"ceiling_r"})
+                                    ? gl::Vec3{static_cast<float>(world.params().num(Key{"ceiling_r"})),
+                                               static_cast<float>(world.params().num(Key{"ceiling_g"})),
+                                               static_cast<float>(world.params().num(Key{"ceiling_b"}))}
+                                    : wall_c * 0.5f;
         draw_solid(room_local(gl::Mat4::translate({w / 2, -t / 2, d / 2}) *
                        gl::Mat4::scale({w, t, d})),
-                   floor_c, 0.55f, 1.0f);
+                   floor_c, 0.55f, floor_s);
         draw_solid(room_local(gl::Mat4::translate({w / 2, h + t / 2, d / 2}) *
                        gl::Mat4::scale({w, t, d})),
-                   wall_c * 0.5f, 0.95f, 2.0f);
+                   ceil_c, 0.95f, ceil_s);
 
         if (has_walls(world)) return;  // the state places its own walls
 
@@ -1094,7 +1110,8 @@ private:
     // A wall element: level geometry placed by hand (or by an anchor), rather
     // than the implicit shell a plain room gets.
     void draw_wall_element(const State& st, const Element& e) {
-        draw_wall(box_model(st, e), color_of(e, {0.52f, 0.50f, 0.48f}));
+        // `surface` picks a wall's material; plaster if it does not say.
+        draw_solid(box_model(st, e), color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f, static_cast<float>(e.params.num(Key{"surface"}, 2.0)));
     }
 
     // `surface` picks the material: 3 (the default) crate planks, 4 wood,
@@ -1321,11 +1338,14 @@ private:
         scene_->set("uGlow", open && !says_glow ? std::max(glow, 0.55f) : glow);
         // `crt` makes the panel a screen: the glass is drawn per pixel.
         scene_->set("uCRT", static_cast<float>(e.params.num(Key{"crt"}, 0.0)));
+        // `halo`: how much the tube's phosphor glows into the glass round it.
+        scene_->set("uHalo", static_cast<float>(e.params.num(Key{"halo"}, 0.0)));
         scene_->set("uTexSize", static_cast<float>(surf.px_w()), static_cast<float>(surf.px_h()));
         quad_.draw();
         scene_->set("uTexMix", 0.0f);
         scene_->set("uGlow", 0.0f);
         scene_->set("uCRT", 0.0f);
+        scene_->set("uHalo", 0.0f);
     }
 
     // Occlusion, at full resolution: the depth resolved, the occlusion
@@ -1424,6 +1444,7 @@ private:
         const auto draw = [&](const gl::Program& p) {
             p.use();
             apply_uniforms(p, post_, passes::composite);
+            apply_attended(p, passes::composite);
             p.set("uScene", 0);
             p.set("uBloom", 1);
             p.set("uTime", static_cast<float>(time_));
@@ -1496,6 +1517,21 @@ private:
 
     // Every uniform the standard look and the looks in the blend give this
     // pass, weighted, and set. `name.x/.y/.z` components become a vector.
+    // The attended state's look, over whatever was set: each scalar uniform
+    // its looks name, as the blend on screen has it.
+    void apply_attended(const gl::Program& p, Key pass) {
+        if (!attend_) return;
+        const Mix& am = mix(Key{"attend:" + attend_->id().str()}, look_of(*attend_));
+        std::vector<Key> keys;
+        for (const Mix::Part& part : am.parts)
+            if (const Element* e = part.look->find(pass))
+                for (const auto& kv : e->params)
+                    if (is_uniform_key(kv.first) && kv.first.str().find('.') == std::string::npos &&
+                        std::find(keys.begin(), keys.end(), kv.first) == keys.end())
+                        keys.push_back(kv.first);
+        for (Key k : keys) p.set(k.str().c_str(), static_cast<float>(fader_.value(am, pass, k, 0.0)));
+    }
+
     void apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
         uniform_keys_.clear();
         const auto collect = [&](const LookState& l) {
@@ -1719,6 +1755,7 @@ private:
     gl::Vec3 cam_eye_;  // the camera of the view being drawn
     Key highlight_;
     bool timing_ = false;
+    const State* attend_ = nullptr;
     FrameTimes times_;
 };
 

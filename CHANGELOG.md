@@ -8,6 +8,11 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Rooms of any finish.** A room's floor and ceiling take `floor_surface` and `ceiling_surface` (and `ceiling_r/g/b`); a wall element takes `surface`. New materials laid in the room's own metres, so they keep their size on any surface: 10 planks, 11 concrete, 12 checker, 13 brick, 14 carpet, 15 metal plate, 16 grass.
+- **The attended state's look.** `GLWorldView::attend(state)` lays the active look of the state the viewer is attending to (an interface they sit at) over every room's own, blended by the look fader like any look. `uDim` in a scene look dims everything but a CRT screen's picture - eyes adjusting to a screen held close.
+
+- A CRT screen can glow: `halo` on a `crt` panel spreads the phosphor's light into the glass round it (halation), in the shader - so what is painted onto the screen can stay flat and cheap.
+
 - **A world portal is seen from a camera of its own.** `GLWorldView::bind_world`
   takes an optional `carry` - how the viewer's camera crosses the portal (the
   seam's own travel, handed in by the game) - and an optional `back`, the far

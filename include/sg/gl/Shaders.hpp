@@ -127,7 +127,9 @@ uniform float uEmissive;
 uniform float uHighlight;
 uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate, 4 wood,
                               // 5 brushed metal, 6 moulded plastic, 7 fabric, 8 sand and
-                              // rock, 9 sky
+                              // rock, 9 sky; laid in the room's own metres, for floors,
+                              // walls and ceilings of any size: 10 planks, 11 concrete,
+                              // 12 checker, 13 brick, 14 carpet, 15 metal plate, 16 grass
 uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv)
 uniform float uGlow;          // extra emission for an active interface
@@ -183,6 +185,11 @@ uniform vec2  uViewport;
 // dark bezel and rounded corners, every edge antialiased. 0 is a flat picture.
 uniform float uCRT;
 uniform vec2  uTexSize;
+// Halation: how much of the phosphor's light spreads in the glass round it.
+uniform float uHalo;
+// The eye's adjustment: how much everything but a screen's picture is
+// dimmed (0: not at all - what an unset uniform says).
+uniform float uDim;
 )") + crt_glsl_constants() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
@@ -209,6 +216,20 @@ vec3 crt_sample(vec2 uv) {
     float picture = 1.0 - smoothstep(-ppx, ppx, pic_sd);
     vec2 s = clamp(w * 0.5 + 0.5, 0.0, 1.0);
     vec3 col = texture(uTex, s).rgb;
+    // Halation: light from the phosphor spreading in the glass - a ring of
+    // samples round each point, near and farther out, added as light. Done
+    // here, per pixel of the tube, so what is painted onto it stays flat.
+    if (uHalo > 0.0) {
+        vec2 t = 1.0 / uTexSize;
+        vec3 near = vec3(0.0), far = vec3(0.0);
+        for (int i = 0; i < 8; ++i) {
+            float a = float(i) * 0.7853982 + 0.39;
+            vec2 d = vec2(cos(a), sin(a));
+            near += texture(uTex, s + d * t * 2.0).rgb;
+            far += texture(uTex, s + d * t * 6.0).rgb;
+        }
+        col += uHalo * (near * 0.045 + far * 0.03);
+    }
     // Scanlines, two texels to a line, and an aperture grille in texels -
     // both fading out as the screen is seen smaller than its texture, where
     // they would only alias into moire.
@@ -227,7 +248,7 @@ vec3 crt_sample(vec2 uv) {
     screen += vec3(0.018) * smoothstep(0.1, 0.9, -g.y) * (1.0 - 0.6 * r2);
     // The bezel: dark plastic, a lighter lip where it meets the glass.
     float lip = 1.0 - clamp(glass_sd * 14.0, 0.0, 1.0);
-    vec3 bezel = vec3(0.022, 0.021, 0.02) * (1.0 + lip) + 0.01 * (1.0 - uv.y);
+    vec3 bezel = (vec3(0.022, 0.021, 0.02) * (1.0 + lip) + 0.01 * (1.0 - uv.y)) * (1.0 - uDim);
     return mix(bezel, screen, glass);
 }
 
@@ -299,9 +320,77 @@ float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l
     return mix(floor_, 1.0, sum / 25.0);
 }
 
+// A point of a floor, wall or ceiling, flattened onto the plane it faces,
+// in metres: so a pattern keeps its size however big the surface.
+vec2 room_plane() {
+    vec3 n = abs(normalize(vNormal));
+    if (n.y > 0.7) return vRoom.xz;
+    return n.x > n.z ? vec2(vRoom.z, vRoom.y) : vec2(vRoom.x, vRoom.y);
+}
+
+vec3 room_material(out float rough_mod) {
+    vec2 p = room_plane();
+    rough_mod = 0.0;
+    if (uSurface < 10.5) {
+        // Planks: long boards, staggered, each its own shade, with grain.
+        vec2 q = p * vec2(0.6, 6.0);
+        float row = floor(q.y);
+        q.x += hash(vec2(row, 3.0)) * 7.0;
+        vec2 cell = fract(q);
+        float seam = smoothstep(0.0, 0.04, min(cell.y, 1.0 - cell.y)) * smoothstep(0.0, 0.01, min(cell.x, 1.0 - cell.x));
+        float shade = 0.78 + 0.3 * hash(floor(q));
+        float grain = noise(vec2(q.x * 30.0, q.y * 3.0));
+        rough_mod = -0.1;
+        return uAlbedo * shade * (0.85 + 0.2 * grain) * mix(0.5, 1.0, seam);
+    }
+    if (uSurface < 11.5) {
+        // Concrete: mottled, with pour lines.
+        float m = noise(p * 1.3) * 0.6 + noise(p * 7.0) * 0.3 + noise(p * 40.0) * 0.1;
+        float lines = smoothstep(0.0, 0.02, abs(fract(p.y * 0.8) - 0.5) - 0.48);
+        rough_mod = 0.15;
+        return uAlbedo * (0.8 + 0.3 * m) * (1.0 - 0.08 * lines);
+    }
+    if (uSurface < 12.5) {
+        // Checker: squares of half a metre, two tones.
+        vec2 c = floor(p * 2.0);
+        float k = mod(c.x + c.y, 2.0);
+        return uAlbedo * mix(0.35, 1.0, k) * (0.96 + 0.06 * noise(p * 9.0));
+    }
+    if (uSurface < 13.5) {
+        // Brick: running bond, mortar between.
+        vec2 q = p * vec2(4.0, 12.0);
+        q.x += mod(floor(q.y), 2.0) * 0.5;
+        vec2 cell = fract(q);
+        float mortar = smoothstep(0.0, 0.06, min(cell.y, 1.0 - cell.y)) * smoothstep(0.0, 0.03, min(cell.x, 1.0 - cell.x));
+        float shade = 0.75 + 0.35 * hash(floor(q));
+        rough_mod = 0.1;
+        return mix(vec3(0.62, 0.6, 0.56), uAlbedo * shade * (0.9 + 0.15 * noise(p * 20.0)), mortar);
+    }
+    if (uSurface < 14.5) {
+        // Carpet: a dense short pile.
+        float pile = noise(p * 90.0) * 0.5 + noise(p * 23.0) * 0.5;
+        rough_mod = 0.3;
+        return uAlbedo * (0.82 + 0.3 * pile);
+    }
+    if (uSurface < 15.5) {
+        // Metal plate: panels with seams and a diamond tread.
+        vec2 cell = fract(p * 0.8);
+        float seam = smoothstep(0.0, 0.015, min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y)));
+        vec2 d = fract(vec2(p.x + p.y, p.x - p.y) * 12.0);
+        float tread = smoothstep(0.35, 0.5, 1.0 - abs(d.x - 0.5) * 2.0) * 0.12;
+        rough_mod = -0.25;
+        return uAlbedo * (0.85 + tread + 0.08 * noise(vec2(p.x * 300.0, p.y * 4.0))) * mix(0.45, 1.0, seam);
+    }
+    // Grass: clumps of green and dry.
+    float c = noise(p * 3.0) * 0.5 + noise(p * 17.0) * 0.3 + noise(p * 80.0) * 0.2;
+    rough_mod = 0.3;
+    return uAlbedo * mix(vec3(0.75, 0.8, 0.5), vec3(1.1, 1.15, 0.9), c);
+}
+
 vec3 surface_albedo(out float rough_mod) {
     rough_mod = 0.0;
     if (uSurface < 0.5) return uAlbedo;
+    if (uSurface > 9.5) return room_material(rough_mod);
 
     if (uSurface < 1.5) {
         // Floor: large tiles with grout and a little grain.
@@ -376,9 +465,9 @@ vec3 surface_albedo(out float rough_mod) {
 }
 
 void main() {
-    if (uSurface > 8.5) {
+    if (uSurface > 8.5 && uSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
-        FragColor = vec4(sky(normalize(vWorld - uViewPos)), 1.0);
+        FragColor = vec4(sky(normalize(vWorld - uViewPos)) * (1.0 - uDim), 1.0);
         return;
     }
     float rough_mod;
@@ -392,7 +481,7 @@ void main() {
     // by that room's own light and air: it is shown as it is, not lit or
     // fogged a second time by the room it is seen from.
     if (uScreenUV > 0.5 && uTexMix > 0.99) {
-        FragColor = vec4(albedo, 1.0);
+        FragColor = vec4(albedo * (1.0 - uDim), 1.0);
         return;
     }
     float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
@@ -461,7 +550,9 @@ void main() {
     vec3 haze = uFogColor + uSunColor * toward * 0.25;
     color = mix(color, haze, clamp(fog, 0.0, 0.85));
 
-    FragColor = vec4(color, 1.0);
+    // The eye adjusted to a screen: the room around it dims, the picture
+    // on the screen does not.
+    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), 1.0);
 })";
     return source.c_str();
 }
