@@ -66,6 +66,16 @@ public:
 
     void invalidate() { dirty_ = true; }
 
+    // A new size, in cells: the raster is made again at that size, and drawn
+    // afresh. A renderer showing it makes its texture again to match.
+    void resize(int cols, int rows) {
+        if (cols == this->cols() && rows == this->rows()) return;
+        params().set(keys::w, static_cast<int64_t>(std::max(1, cols)));
+        params().set(keys::h, static_cast<int64_t>(std::max(1, rows)));
+        pixels_.assign(static_cast<std::size_t>(px_w()) * static_cast<std::size_t>(px_h()) * 4, 0);
+        dirty_ = true;
+    }
+
     // Bumped on every redraw, so a texture upload can be skipped when nothing
     // about the surface changed this frame.
     uint64_t revision() const { return revision_; }

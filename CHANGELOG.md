@@ -8,6 +8,23 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **A world portal is seen from a camera of its own.** `GLWorldView::bind_world`
+  takes an optional `carry` - how the viewer's camera crosses the portal (the
+  seam's own travel, handed in by the game) - and an optional `back`, the far
+  side's portal to leave out of the view. With a carry, the guest's own camera
+  is not used, so a door and a window can open onto the same room by
+  different gluings, and a room can open onto itself. Without one, nothing
+  changes. `unbind_world` makes a portal a plain opening again.
+- **Screens.** A world portal with `screen` = 1 is a projection: it is cut by
+  no plane, it is not there when seen through another portal, and screens that
+  show the same world from the same eye share one view. A room walled in
+  screens can look like it goes on for ever.
+- `Surface2D::resize(cols, rows)`: a surface can change size; the renderer
+  makes its texture again to match (`gl::Texture::create` frees the old one).
+- `StateGraph::drop_seam(name)`: two states are no longer glued.
+- `State::remove_with_arrows(id)`: an element taken away with every arrow on
+  it. `remove_element` still leaves them for `validate()` to name.
+
 - **`Adjunction` is an adjunction.** It used to call F -| G whatever made the
   round trips come home, which is an isomorphism. Now a unit arrow
   `a -> G(F(a))` and a counit arrow `F(G(b)) -> b` are declared per object

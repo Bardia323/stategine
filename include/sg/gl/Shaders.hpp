@@ -388,6 +388,13 @@ void main() {
         vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texture(uTex, uv).rgb;
         albedo = mix(albedo, tex, uTexMix);
     }
+    // A portal's view of another room arrives already lit and already fogged,
+    // by that room's own light and air: it is shown as it is, not lit or
+    // fogged a second time by the room it is seen from.
+    if (uScreenUV > 0.5 && uTexMix > 0.99) {
+        FragColor = vec4(albedo, 1.0);
+        return;
+    }
     float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
 
     vec3 n = normalize(vNormal);

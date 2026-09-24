@@ -10,8 +10,17 @@
 //
 // A portal element shows whatever is bound to it:
 //   bind_surface(portal, Surface2D*)                 a 2D state, as a panel
-//   bind_world(portal, Spatial3D*)                   another 3D state, as a
+//   bind_world(portal, Spatial3D*, carry, back)      another 3D state, as a
 //                                                    window you can walk through
+//
+// A world portal is seen from a camera of its own: the viewer's, carried
+// across by `carry` - the seam's travel, handed in by the game - so a door and
+// a window can open onto the same room by different gluings, and a room can
+// even open onto itself. With no carry the guest's own camera is used (a View
+// embedding keeps it aimed). A portal with `screen` = 1 is a projection: drawn
+// only from the room it stands in (seen through another portal it is not
+// there), cut by no plane, and screens showing the same world from the same
+// eye share one view.
 //
 // An open world - `sky` = 1 on the state - has a sky instead of a ceiling and
 // walls, and may carry a `terrain` element: ground that goes on for ever,
@@ -167,11 +176,26 @@ public:
         surfaces_[portal_element].surface = surface;
     }
 
-    // Attach another 3D state: the portal becomes a window into it, rendered
-    // from that state's own camera. A `View` embedding is what keeps that
-    // camera aimed - see sg::portal_carry - so the renderer does no portal
-    // maths of its own.
-    void bind_world(Key portal_element, Spatial3D* world) { worlds_[portal_element].world = world; }
+    // How the viewer's camera crosses a portal into the room it shows: the
+    // near room's camera in, the far room's eye out.
+    using Carry = std::function<void(const Element& from, Element& to)>;
+
+    // Attach another 3D state: the portal becomes a window into it. It is
+    // rendered from the viewer's camera carried across by `carry` - the seam's
+    // travel, which the game owns - or, with none, from that state's own
+    // camera, which a `View` embedding keeps aimed (see sg::portal_carry).
+    // Either way the renderer does no portal maths of its own. `back` is the
+    // far side's own portal onto this one, left out of the view (it would fill
+    // it); with none, any portal there bound to this room is.
+    void bind_world(Key portal_element, Spatial3D* world, Carry carry = {}, Key back = {}) {
+        WorldPortal& wp = worlds_[portal_element];
+        wp.world = world;
+        wp.carry = std::move(carry);
+        wp.back = back;
+    }
+
+    // The portal shows nothing any more: it is a plain opening again.
+    void unbind_world(Key portal_element) { worlds_.erase(portal_element); }
 
     // Ground for a `terrain` element: its height at any (x, z) of the state.
     // The renderer samples it on a grid centred on the viewer - fine near
@@ -256,11 +280,15 @@ public:
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
         };
         auto t0 = mark();
+        // Screens already drawn this frame: the same world from the same eye
+        // is one view, whichever screen shows it.
+        std::vector<std::pair<WorldPortal*, Element>> screens;
         for (const auto& e : world.elements()) {
             if (e.kind != kinds::portal || !e.alive) continue;
             auto it = worlds_.find(e.id);
             if (it == worlds_.end() || !it->second.world) continue;
             WorldPortal& wp = it->second;
+            wp.shared = nullptr;
             if (!in_view(world, e, eye_cam)) continue;
             // The virtual camera stands behind the far side's doorway - that is
             // what a portal is. What lies between it and the doorway is cut
@@ -268,12 +296,22 @@ public:
             // side by the same turn and shift that carried the camera. So a
             // window beside a door shows the far side beside it, and nothing
             // standing behind the far doorway gets in the way.
-            const Camera guest_cam = camera_of(*wp.world);
-            const Element* back = back_portal(*wp.world, world);
+            Element eye = wp.world->camera();
+            if (wp.carry) wp.carry(world.camera(), eye);
+            const bool screen = is_screen(e);
+            if (screen) {
+                for (const auto& [drawn, at] : screens)
+                    if (drawn->world == wp.world && same_eye(at, eye)) wp.shared = drawn;
+                if (wp.shared) continue;
+                screens.emplace_back(&wp, eye);
+            }
+            const Camera guest_cam = camera_of(eye);
+            const Element* back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
             const PlacedRoom guest{wp.world, Pose{}, {}};
+            std::vector<HalfSpace> clips;
+            if (!screen) clips.push_back(far_side(world, e, eye));
             draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, wp.ms,
-                       /*depth=*/1, kNear, back ? back->id : Key{},
-                       {far_side(world, e, *wp.world)});
+                       /*depth=*/1, kNear, back ? back->id : Key{}, clips);
             wp.ms.blit_to(wp.target);
             ++times_.portal_views;
         }
@@ -331,6 +369,9 @@ private:
 
     struct WorldPortal {
         Spatial3D* world = nullptr;
+        Carry carry;
+        Key back;
+        WorldPortal* shared = nullptr;  // this frame, showing another screen's view
         gl::RenderTarget ms;      // drawn into, multisampled
         gl::RenderTarget target;  // resolved, and sampled by the portal's quad
         int width = 0, height = 0;
@@ -366,13 +407,12 @@ private:
     // from it: the far side is drawn only beyond it. The turn and shift are
     // read off the two cameras - the guest's was carried from the host's by
     // the portal's own functor, so the pair of them is that functor.
-    static HalfSpace far_side(Spatial3D& host, const Element& portal, Spatial3D& guest) {
+    static HalfSpace far_side(Spatial3D& host, const Element& portal, const Element& gc) {
         const Pose p = world_pose(host, portal);
         const Vec3d n = heading(p.yaw);
         const double inset = portal.params.num(Key{"inset"}, 0.06);
         const Vec3d at{p.position.x + n.x * inset, p.position.y, p.position.z + n.z * inset};
         const Element& hc = host.camera();
-        const Element& gc = guest.camera();
         const double turn = gc.params.num(keys::yaw) - hc.params.num(keys::yaw);
         const Vec3d he = position_of(hc), ge = position_of(gc);
         const Vec3d off = rotate_xz({at.x - he.x, at.y - he.y, at.z - he.z}, turn);
@@ -394,8 +434,9 @@ private:
         return it != surfaces_.end() && it->second.surface != nullptr;
     }
 
-    static Camera camera_of(Spatial3D& world) {
-        const Element& cam = world.camera();
+    static Camera camera_of(Spatial3D& world) { return camera_of(world.camera()); }
+
+    static Camera camera_of(const Element& cam) {
         Camera c;
         c.eye = to_vec3(position_of(cam));
         c.forward = to_vec3(forward_of(cam));
@@ -506,6 +547,14 @@ private:
     // through. Its plane is where the portal view has to start, or the wall it
     // is set into hides everything; and it must not be drawn in that view, or
     // seen from the virtual camera it fills the whole frame.
+    static bool is_screen(const Element& e) { return e.params.num(Key{"screen"}, 0.0) > 0.5; }
+
+    static bool same_eye(const Element& a, const Element& b) {
+        for (Key k : {keys::x, keys::y, keys::z, keys::yaw, keys::pitch, keys::fov})
+            if (a.params.num(k, 0.0) != b.params.num(k, 0.0)) return false;
+        return true;
+    }
+
     const Element* back_portal(Spatial3D& guest, Spatial3D& host) const {
         for (const auto& e : guest.elements()) {
             if (e.kind != kinds::portal || !e.alive) continue;
@@ -700,7 +749,11 @@ private:
             scene_->set("uClipCount", bounds);
 
             if (room.params().num(Key{"sky"}, 0.0) > 0.5) {
+                // The sky is at no distance a plane can cut: it is the room's
+                // ceiling, whatever bounds its ground.
+                scene_->set("uClipCount", 0);
                 draw_sky(cam, zfar);
+                scene_->set("uClipCount", bounds);
             } else {
                 draw_room(room);
             }
@@ -1060,7 +1113,10 @@ private:
             BoundSurface& bound = skin->second;
             Surface2D& surf = *bound.surface;
             const auto& pixels = surf.raster();
-            if (!bound.texture.valid()) bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+            if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
+                bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+                bound.revision = ~uint64_t{0};
+            }
             if (bound.revision != surf.revision()) {
                 bound.texture.upload(pixels);
                 bound.revision = surf.revision();
@@ -1161,7 +1217,10 @@ private:
 
         if (is_window) {
             if (frame_only) return;
-            WorldPortal& wp = world_it->second;
+            // Seen through another portal, a screen is not there at all: what
+            // it projects is already what lies beyond it.
+            if (depth > 0 && is_screen(e)) return;
+            WorldPortal& wp = world_it->second.shared ? *world_it->second.shared : world_it->second;
             // `inset` is how far in front of the portal's plane the view is
             // drawn; a doorway walked through wants it on the plane (0).
             const float inset = static_cast<float>(e.params.num(Key{"inset"}, 0.06));
@@ -1229,8 +1288,11 @@ private:
         Surface2D& surf = *bound.surface;
 
         const auto& pixels = surf.raster();
-        if (!bound.texture.valid())
+        // A surface that has changed size gets a texture its new size.
+        if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
             bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+            bound.revision = ~uint64_t{0};
+        }
         if (bound.revision != surf.revision()) {
             bound.texture.upload(pixels);
             bound.revision = surf.revision();

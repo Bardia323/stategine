@@ -86,6 +86,7 @@ public:
     // With mipmaps, a detailed texture seen small or at a grazing angle - print
     // on a sheet across the room - averages out instead of shimmering.
     void create(int w, int h, bool mipmaps = false, bool srgb = false) {
+        if (id_) glDeleteTextures(1, &id_);  // made again, at a new size
         w_ = w;
         h_ = h;
         mipmaps_ = mipmaps;

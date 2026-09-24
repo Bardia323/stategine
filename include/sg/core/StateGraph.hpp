@@ -295,6 +295,15 @@ public:
         seams_.push_back(std::move(s));
         return seams_.back();
     }
+    // Unglued: the two sides are no longer one place, and nothing holds them
+    // to agree.
+    void drop_seam(Key name) {
+        for (auto it = seams_.begin(); it != seams_.end(); ++it)
+            if (it->name == name) {
+                seams_.erase(it);
+                return;
+            }
+    }
     const std::deque<Seam>& seams() const { return seams_; }
     const Seam* seam(Key name) const {
         for (const Seam& s : seams_)

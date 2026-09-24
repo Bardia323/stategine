@@ -96,6 +96,21 @@ public:
         reindex();
     }
 
+    // Take an element away together with its arrows: an arrow from or to
+    // something that is not there is not an arrow. (remove_element alone
+    // leaves them dangling, for validate() to name.)
+    void remove_with_arrows(Key id) {
+        remove_element(id);
+        const std::size_t had = morphisms_.size();
+        for (std::size_t i = morphisms_.size(); i-- > 0;)
+            if (morphisms_[i].from == id || morphisms_[i].to == id)
+                morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(i));
+        if (morphisms_.size() != had) {
+            by_trigger_.clear();
+            for (std::size_t i = 0; i < morphisms_.size(); ++i) by_trigger_[morphisms_[i].trigger].push_back(i);
+        }
+    }
+
     std::deque<Element>& elements() { return elements_; }
     const std::deque<Element>& elements() const { return elements_; }
 
