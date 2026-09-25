@@ -12,6 +12,13 @@
 //   bind_surface(portal, Surface2D*)                 a 2D state, as a panel
 //   bind_world(portal, Spatial3D*, carry, back)      another 3D state, as a
 //                                                    window you can walk through
+//   bind_feed(portal, Spatial3D*, w, h)              another 3D state, as a
+//                                                    picture on a screen
+//
+// A feed is that world drawn from its own camera in its own look - every
+// pass, its composite too - at w x h, and laid on the panel as a surface is:
+// so a `crt` panel shows it through its glass. The look belongs to the world,
+// the glass to the screen: whoever shows the world, it looks as it looks.
 //
 // A world portal is seen from a camera of its own: the viewer's, carried
 // across by `carry` - the seam's travel, handed in by the game - so a door and
@@ -105,6 +112,9 @@ inline void standard_look(LookState& l, const GLQuality& q = {}) {
         .uniform(passes::scene, "uShadowFloor", 0.0)
         .uniform(passes::scene, "uWind", 0.0)
         .uniform(passes::scene, "uStars", 0.0)
+        .uniform(passes::scene, "uClouds", 0.0)
+        .uniform(passes::scene, "uCloudColor", 1.0, 0.95, 0.92)
+        .uniform(passes::scene, "uCloudShade", 0.55, 0.52, 0.62)
         .uniform(passes::scene, "uSkyTop", 0.20, 0.40, 0.75)
         .uniform(passes::scene, "uSkyHorizon", 0.72, 0.78, 0.84)
         .setting(passes::scene, "clear.x", 0.012)
@@ -210,6 +220,33 @@ public:
     // The portal shows nothing any more: it is a plain opening again.
     void unbind_world(Key portal_element) { worlds_.erase(portal_element); }
 
+    // Show another 3D state on a panel as a picture (see the top of this
+    // file): drawn from its own camera, in its own look, `w` x `h` pixels.
+    // Only drawn while the panel is in the room being drawn and in view.
+    // Bound again with another world or size, it follows. Not `live`, it
+    // holds the last picture it drew - a paused tape.
+    void bind_feed(Key portal_element, Spatial3D* world, int w, int h, bool live = true) {
+        Feed& f = feeds_[portal_element];
+        if (f.world != world) f.drawn = false;
+        f.world = world;
+        f.live = live;
+        if (f.w != w || f.h != h || !f.out.valid()) {
+            f.w = std::max(1, w), f.h = std::max(1, h);
+            // Written as the composite writes the screen, encoded; read back
+            // as the panel reads any picture, decoded.
+            f.out.create(f.w, f.h, gl::GL_SRGB8_ALPHA8, 0, false);
+            f.drawn = false;
+        }
+        if (!f.view) {
+            GLQuality q = q_;
+            q.shadow_size = std::min(q_.shadow_size, 1024);
+            f.view = std::make_unique<GLWorldView>(q);
+        }
+        f.view->set_fixed_step(fixed_step_);
+    }
+    void unbind_feed(Key portal_element) { feeds_.erase(portal_element); }
+    bool has_feed(Key portal_element) const { return feeds_.count(portal_element) != 0; }
+
     // Ground for a `terrain` element: its height at any (x, z) of the state.
     // The renderer samples it on a grid centred on the viewer - fine near
     // them, coarse far off - and resamples as they move, so the ground has no
@@ -253,6 +290,22 @@ public:
     // different root and the same geometry is drawn from the other side.
     void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+        // Feeds first, each whole, into its own picture: a screen showing a
+        // world shows it as it is this frame.
+        for (auto& [id, f] : feeds_) {
+            if (!f.world || !f.view || (!f.live && f.drawn)) continue;
+            bool here = false;
+            for (const PlacedRoom& placed : rooms)
+                if (placed.room)
+                    if (const Element* e = placed.room->find(id); e && e->alive && in_view(*placed.room, *e, camera_of(*rooms.front().room)))
+                        here = true;
+            if (!here) continue;
+            f.drawn = true;
+            f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
+            f.view->output_ = &f.out;
+            f.view->render(*f.world, f.w, f.h);
+            f.view->output_ = nullptr;
+        }
         poses_.clear();
         models_.clear();
         ensure_resources();
@@ -361,6 +414,7 @@ private:
     struct Camera {
         gl::Vec3 eye;
         gl::Vec3 forward{0, 0, -1};
+        gl::Vec3 up{0, 1, 0};
         float fov = 1.2f;
     };
 
@@ -448,7 +502,9 @@ private:
 
     bool has_surface(const Element& e) const {
         auto it = surfaces_.find(e.id);
-        return it != surfaces_.end() && it->second.surface != nullptr;
+        if (it != surfaces_.end() && it->second.surface != nullptr) return true;
+        auto f = feeds_.find(e.id);
+        return f != feeds_.end() && f->second.world != nullptr;
     }
 
     static Camera camera_of(Spatial3D& world) { return camera_of(world.camera()); }
@@ -458,6 +514,12 @@ private:
         c.eye = to_vec3(position_of(cam));
         c.forward = to_vec3(forward_of(cam));
         c.fov = static_cast<float>(cam.params.num(keys::fov, 70.0)) * 3.14159265f / 180.0f;
+        // `roll`: the head tipped about the line of sight (radians).
+        if (const float roll = static_cast<float>(cam.params.num(keys::roll, 0.0)); roll != 0.0f) {
+            const gl::Vec3 side = gl::normalize(gl::cross(c.forward, gl::Vec3{0, 1, 0}));
+            const gl::Vec3 up = gl::cross(side, c.forward);
+            c.up = up * std::cos(roll) + side * std::sin(roll);
+        }
         return c;
     }
 
@@ -633,7 +695,7 @@ private:
         }
         const gl::Mat4 view_proj =
             gl::Mat4::perspective(cam.fov, aspect, znear, zfar) *
-            gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, {0, 1, 0});
+            gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
 
         if (timing_) gl::glFinish();
         const auto shadow_start = std::chrono::steady_clock::now();
@@ -1177,6 +1239,10 @@ private:
         scene_->set("uEmissive", static_cast<float>(e.params.num(Key{"emissive"}, 0.0)));
         scene_->set("uHighlight", e.id == highlight_ ? 1.0f : 0.0f);
         scene_->set("uGlow", 0.0f);
+        // `mirror`: how much of the real sky it reflects, rather than the
+        // light from all round - glossy stone, still water, under a sky.
+        const float mirror = static_cast<float>(e.params.num(Key{"mirror"}, 0.0));
+        scene_->set("uMirror", mirror);
         // A surface bound to a mesh is its skin: an atlas, a cell a face.
         auto skin = surfaces_.find(e.id);
         if (skin != surfaces_.end() && skin->second.surface) {
@@ -1199,10 +1265,12 @@ private:
             shape_of(e).draw();
             scene_->set("uSkin", 0.0f);
             scene_->set("uTexMix", 0.0f);
+            if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
             return;
         }
         scene_->set("uTexMix", 0.0f);
         shape_of(e).draw();
+        if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
     }
 
     // A lamp hangs from the ceiling in a housing, unless `fixture` is 0: then
@@ -1352,22 +1420,31 @@ private:
             return;
         }
 
-        auto it = surfaces_.find(e.id);
-        if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening
-        BoundSurface& bound = it->second;
-        Surface2D& surf = *bound.surface;
-
-        const auto& pixels = surf.raster();
-        // A surface that has changed size gets a texture its new size.
-        if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
-            bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
-            bound.revision = ~uint64_t{0};
+        // The picture: a world's feed, or a 2D state's pixels.
+        int tex_w = 0, tex_h = 0;
+        if (auto f = feeds_.find(e.id); f != feeds_.end() && f->second.world && f->second.out.valid()) {
+            f->second.out.bind_color(0);
+            tex_w = f->second.w, tex_h = f->second.h;
+            scene_->set("uTexFlip", 1.0f);
+            scene_->set("uUntone", 1.0f);
+        } else {
+            auto it = surfaces_.find(e.id);
+            if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening
+            BoundSurface& bound = it->second;
+            Surface2D& surf = *bound.surface;
+            const auto& pixels = surf.raster();
+            // A surface that has changed size gets a texture its new size.
+            if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
+                bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+                bound.revision = ~uint64_t{0};
+            }
+            if (bound.revision != surf.revision()) {
+                bound.texture.upload(pixels);
+                bound.revision = surf.revision();
+            }
+            bound.texture.bind(0);
+            tex_w = surf.px_w(), tex_h = surf.px_h();
         }
-        if (bound.revision != surf.revision()) {
-            bound.texture.upload(pixels);
-            bound.revision = surf.revision();
-        }
-        bound.texture.bind(0);
 
         // Clear of the frame slab (half-thickness 0.06), or the panel sinks into
         // it; a bare sheet's face sits just off its own body.
@@ -1395,8 +1472,10 @@ private:
         scene_->set("uHalo", static_cast<float>(e.params.num(Key{"halo"}, 0.0)));
         // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
         scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
-        scene_->set("uTexSize", static_cast<float>(surf.px_w()), static_cast<float>(surf.px_h()));
+        scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
         quad_.draw();
+        scene_->set("uTexFlip", 0.0f);
+        scene_->set("uUntone", 0.0f);
         scene_->set("uTexMix", 0.0f);
         scene_->set("uGlow", 0.0f);
         scene_->set("uCRT", 0.0f);
@@ -1541,8 +1620,12 @@ private:
     // a change of shader is as continuous as a change of number: it dissolves,
     // and a dissolve turned back half way dissolves back.
     void composite(int fb_w, int fb_h) {
-        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
-        gl::glViewport(0, 0, fb_w, fb_h);
+        if (output_) {
+            output_->bind();
+        } else {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glViewport(0, 0, fb_w, fb_h);
+        }
         gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
         scene_src_->bind_color(0);
         bloom_a_.bind_color(1);
@@ -1897,6 +1980,16 @@ private:
                static_cast<double>(std::hash<std::string>{}(e.params.get_or<std::string>(Key{"shape"}, "")) % 9973);
     }
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
+    // Where the composite writes: the screen, or a feed's picture.
+    const gl::RenderTarget* output_ = nullptr;
+    struct Feed {
+        Spatial3D* world = nullptr;
+        int w = 0, h = 0;
+        bool live = true, drawn = false;
+        gl::RenderTarget out;
+        std::unique_ptr<GLWorldView> view;
+    };
+    std::unordered_map<Key, Feed> feeds_;
     static constexpr int kBloomLevels = 5;
     gl::RenderTarget bloom_chain_[kBloomLevels];
     int bloom_levels_ = 0;

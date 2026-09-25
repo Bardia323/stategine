@@ -189,6 +189,12 @@ uniform float uShadowFloor;   // how much light is left in a full shadow - bounc
 uniform float uTime;
 uniform float uWind;          // sand drifting over the dunes, 0 for none
 uniform float uStars;         // how much of the night sky shows, 0 by day
+uniform float uClouds;        // how much of the sky is cloud, 0 for none
+uniform vec3  uCloudColor;    // a cloud's lit side
+uniform vec3  uCloudShade;    // and its shaded underside
+uniform float uMirror;        // how much of the real sky a surface reflects
+uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
+uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
 
 // A portal into another room is sampled in screen space: the other side was
 // rendered with the matching virtual camera, so the quad becomes a window
@@ -307,6 +313,20 @@ vec3 sky(vec3 dir) {
     c = mix(c, uSkyHorizon * 0.8, clamp(-t * 5.0, 0.0, 1.0));  // below the horizon, haze
     float s = max(dot(dir, normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0);
     c += uSunColor * (pow(s, 1200.0) * 40.0 + pow(s, 24.0) * 0.35 + pow(s, 4.0) * 0.1);
+    // Clouds: a layer overhead, seen in perspective, drifting; lit on the
+    // side towards the sun and gold at the rim, their undersides shaded,
+    // thinning into the haze at the horizon.
+    if (uClouds > 0.0 && dir.y > 0.0) {
+        vec2 p = dir.xz / (dir.y + 0.06) * 0.9 + vec2(uTime * 0.006, uTime * 0.002);
+        float d = noise(p * 1.1) * 0.5 + noise(p * 2.3 + 3.7) * 0.25 + noise(p * 4.9 + 9.1) * 0.15 + noise(p * 10.3) * 0.1;
+        float cover = smoothstep(1.0 - uClouds, 1.0 - uClouds + 0.28, d);
+        float thick = smoothstep(1.0 - uClouds + 0.1, 1.0, d);
+        vec3 sd = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
+        float toward = max(dot(dir, sd), 0.0);
+        vec3 cloud = mix(uCloudColor, uCloudShade, thick * 0.8);
+        cloud += uSunColor * (pow(toward, 6.0) * 0.8 + pow(toward, 40.0) * 1.2) * (1.0 - thick * 0.6);
+        c = mix(c, cloud, cover * smoothstep(0.0, 0.12, dir.y));
+    }
     // Stars: one in a few thousand cells of the sky's grid lit, twinkling,
     // fading into the haze near the horizon.
     if (uStars > 0.0 && dir.y > 0.0) {
@@ -348,7 +368,11 @@ float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l
         vec2 off = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / 16.0) * reach;
         sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
     }
-    return mix(floor_, 1.0, sum / 16.0);
+    // Towards the edge of the map, the shadow fades out rather than stopping
+    // on a line: a sun's box round the viewer has an edge a lamp's cone does
+    // not, and far off is where it would show.
+    float edge = smoothstep(0.82, 0.98, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
+    return mix(mix(floor_, 1.0, sum / 16.0), 1.0, edge);
 }
 
 // How much a surface reflects of light arriving from all round, by angle and
@@ -421,6 +445,26 @@ vec3 room_material(out float rough_mod) {
         float tread = smoothstep(0.35, 0.5, 1.0 - abs(d.x - 0.5) * 2.0) * 0.12;
         rough_mod = -0.25;
         return uAlbedo * (0.85 + tread + 0.08 * noise(vec2(p.x * 300.0, p.y * 4.0))) * mix(0.45, 1.0, seam);
+    }
+    if (uSurface > 16.5 && uSurface < 17.5) {
+        // Marble: large slabs, faintly different, with soft veins that
+        // wander across them in a darker, warmer tint of the stone.
+        vec2 q = p * 0.9;
+        vec2 slab = floor(p * 0.8);
+        vec2 cell = fract(p * 0.8);
+        float seam = smoothstep(0.0, 0.006, min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y)));
+        float warp = noise(q * 1.7 + slab * 3.1) * 3.0 + noise(q * 4.3) * 1.2;
+        float vein = 1.0 - smoothstep(0.0, 0.12, abs(sin((q.x + q.y * 0.6) * 2.2 + warp)));
+        float fine = 1.0 - smoothstep(0.0, 0.06, abs(sin((q.x * 0.4 - q.y) * 5.0 + warp * 1.7)));
+        rough_mod = -0.1;
+        vec3 veins = uAlbedo * vec3(0.78, 0.58, 0.70);
+        vec3 stone = uAlbedo * (0.96 + 0.05 * hash(slab));
+        return mix(mix(stone, veins, vein * 0.55 + fine * 0.25), uAlbedo * 0.8, 1.0 - seam);
+    }
+    if (uSurface > 17.5 && uSurface < 18.5) {
+        // Water: its colour; the waves are in its normal (main).
+        rough_mod = -0.2;
+        return uAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05));
     }
     // Grass: clumps of green and dry.
     float c = noise(p * 3.0) * 0.5 + noise(p * 17.0) * 0.3 + noise(p * 80.0) * 0.2;
@@ -515,7 +559,17 @@ void main() {
     vec3 albedo = surface_albedo(rough_mod);
     if (uTexMix > 0.0) {
         vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : uSkin > 0.5 ? skin_uv() : vUV;
+        if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texture(uTex, uv).rgb;
+        if (uUntone > 0.5) {
+            // A picture already developed - a world drawn in its own look -
+            // is taken back through the tone curve (ACES, solved for its
+            // input), so that developed again with the room it comes out as
+            // it went in, not twice as flat.
+            vec3 y = min(tex, vec3(0.985));
+            vec3 a = 2.43 * y - 2.51, b = 0.59 * y - 0.03, c = 0.14 * y;
+            tex = max((-b - sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a), 0.0);
+        }
         albedo = mix(albedo, tex, uTexMix);
     }
     // A portal's view of another room arrives already lit and already fogged,
@@ -536,6 +590,25 @@ void main() {
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
+    if (uSurface > 17.5 && uSurface < 18.5 && n.y > 0.5) {
+        // Waves: the slope of a few long swells and shorter chop, each a
+        // travelling sine, crossing; the short ones fade with distance
+        // before they would shimmer.
+        vec2 p = vRoom.xz;
+        float t = uTime;
+        float far = length(vWorld - uViewPos);
+        vec2 slope = vec2(0.0);
+        const vec2 dirs[6] = vec2[](vec2(0.8, 0.6), vec2(-0.45, 0.89), vec2(0.96, -0.28), vec2(0.2, 0.98),
+                                    vec2(-0.87, 0.5), vec2(0.6, -0.8));
+        for (int i = 0; i < 6; ++i) {
+            float k = 0.35 * pow(1.9, float(i));               // wavenumber
+            float a = 0.09 / (1.0 + float(i) * 0.8);           // steepness
+            float fade = exp(-far * k * 0.004);
+            float phase = dot(dirs[i], p) * k - t * sqrt(9.8 * k) + float(i) * 1.7;
+            slope += dirs[i] * cos(phase) * a * k * fade / k * 1.6;
+        }
+        n = normalize(n - vec3(slope.x, 0.0, slope.y));
+    }
     float ndv = clamp(dot(n, v), 1e-3, 1.0);
     float a2 = roughness * roughness * roughness * roughness;
     // Specular antialiasing (Kaplanyan & Hill): where the normal turns fast
@@ -607,6 +680,9 @@ void main() {
     float up = mix(r.y, n.y, roughness * roughness);
     vec3 around = mix(uGround, uSky, n.y * 0.5 + 0.5) * uAmbient;
     vec3 mirrored = mix(uGround, uSky, smoothstep(-0.35, 0.35, up)) * uAmbient;
+    // Under an open sky a glossy surface reflects the sky itself - its
+    // colours, its clouds, the sun's glint - as rougher surfaces cannot.
+    if (uMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), uMirror * (1.0 - roughness));
     vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected + bounced;
 
     vec3 color = ambient + direct + albedo * (uEmissive + uGlow);
