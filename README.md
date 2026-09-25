@@ -9,6 +9,10 @@ time where it can, on live data where it must.
 
 Header-only C++17, no dependencies. The OpenGL example fetches GLFW on demand.
 
+Building on it, or changing it? [AGENTS.md](AGENTS.md) is the short version of
+how: standalone states, joined only through interfaces the graph declares and
+the laws check - and the engine watching that they are.
+
 ![The room, lit by one lamp, with the map on the far wall](docs/images/room.png)
 
 ## The idea, in four frames
