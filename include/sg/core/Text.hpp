@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <variant>
@@ -71,9 +72,10 @@ inline std::string value(const Value& v) {
     if (const bool* b = std::get_if<bool>(&v)) return *b ? "b:true" : "b:false";
     if (const int64_t* i = std::get_if<int64_t>(&v)) return "i:" + std::to_string(*i);
     if (const double* d = std::get_if<double>(&v)) {
-        char buf[40];
-        std::snprintf(buf, sizeof buf, "d:%.17g", *d);
-        return buf;
+        // The shortest text that reads back to the very same number.
+        char buf[40] = {'d', ':'};
+        const auto r = std::to_chars(buf + 2, buf + sizeof buf, *d);
+        return std::string(buf, r.ptr);
     }
     if (const std::string* s = std::get_if<std::string>(&v)) return "s:" + escape(*s);
     return "-";
@@ -103,12 +105,17 @@ inline bool parse(const std::string& t, Value& out) {
 
 }  // namespace text_detail
 
-// The state's data as text (see the top of this file).
-inline std::string to_text(const State& s) {
+// The state's data as text (see the top of this file). `keep_element` and
+// `keep_param`, if given, leave out what is not part of what the state is -
+// who is looking at it, what time it is there.
+inline std::string to_text(const State& s, const std::function<bool(const Element&)>& keep_element = {},
+                           const std::function<bool(Key)>& keep_param = {}) {
     using namespace text_detail;
     std::string out = "state " + escape(s.id().str()) + " " + escape(s.kind().str()) + "\n";
-    for (const auto& [k, v] : s.params()) out += "param " + escape(k.str()) + " " + value(v) + "\n";
+    for (const auto& [k, v] : s.params())
+        if (!keep_param || keep_param(k)) out += "param " + escape(k.str()) + " " + value(v) + "\n";
     for (const Element& e : s.elements()) {
+        if (keep_element && !keep_element(e)) continue;
         out += "element " + escape(e.id.str()) + " " + escape(e.kind.str()) + (e.alive ? "" : " dead") + "\n";
         for (const auto& [k, v] : e.params) out += "  " + escape(k.str()) + " " + value(v) + "\n";
     }
