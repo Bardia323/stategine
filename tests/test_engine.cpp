@@ -1049,6 +1049,37 @@ void test_rooms_are_adjacent() {
 }
 
 // --- looks: how a state is shown, as states ------------------------------------------
+void test_light() {
+    const sg::Daylight noon = sg::daylight(12.0), night = sg::daylight(0.0), dusk = sg::daylight(18.0);
+    check(noon.sun.y > 0.8 && noon.day > 0.99 && noon.stars < 0.01, "at noon the sun is overhead and it is day");
+    check(night.sun.y > 0.5 && night.day < 0.01 && night.stars > 0.99, "at midnight the moon is up, and the stars");
+    check(night.intensity < noon.intensity && night.light.b > night.light.r, "moonlight is dimmer than the sun, and blue");
+    check(dusk.light.r > dusk.light.b * 2.0, "the setting sun is red");
+    check(sg::daylight(36.0).sun.y == noon.sun.y, "the hour wraps");
+
+    sg::LookState look("sky");
+    sg::show_daylight(look, noon);
+    check(std::fabs(look.element(sg::passes::scene).params.num(sg::Key{"uAmbient"}) - noon.ambient) < 1e-12,
+          "the day goes into a look");
+
+    sg::Surface2D red(sg::Key{"red"}, 4, 3, 8);
+    red.set_background(255, 0, 0);
+    red.raster();
+    sg::Element lamp;
+    lamp.params.set(sg::keys::r, 1.0).set(sg::keys::g, 1.0).set(sg::keys::b, 1.0).set(sg::keys::intensity, 0.0);
+    for (int i = 0; i < 60; ++i) sg::spill(lamp, red, 0.05);
+    check(lamp.params.num(sg::keys::r) > 0.99 && lamp.params.num(sg::keys::g) < 0.4,
+          "a screen's lamp takes the colour of its picture, paler");
+    sg::Surface2D white(sg::Key{"white"}, 4, 3, 8);
+    white.set_background(255, 255, 255);
+    white.raster();
+    sg::Element bright = lamp;
+    for (int i = 0; i < 60; ++i) sg::spill(bright, white, 0.05);
+    check(std::fabs(bright.params.num(sg::keys::intensity) - 0.05) < 1e-3 &&
+              lamp.params.num(sg::keys::intensity) < 0.03,
+          "as strong as the picture is bright");
+}
+
 void test_looks() {
     namespace p = sg::passes;
     sg::StateGraph g;
@@ -1277,6 +1308,7 @@ int main() {
     test_graph_analysis();
     test_surface_and_views();
     test_looks();
+    test_light();
     test_rooms_are_adjacent();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;

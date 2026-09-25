@@ -117,7 +117,14 @@ inline void standard_look(LookState& l, const GLQuality& q = {}) {
         .uniform(passes::composite, "uTint", 1.0, 1.0, 1.0)
         .uniform(passes::composite, "uSaturation", 1.0)
         .uniform(passes::composite, "uVignette", 0.55)
-        .uniform(passes::composite, "uGrain", 0.015);
+        .uniform(passes::composite, "uGrain", 0.015)
+        .uniform(passes::composite, "uRays", 0.0)
+        .uniform(passes::composite, "uRayCut", 1.0)
+        .uniform(passes::composite, "uRaySpread", 0.3)
+        .uniform(passes::composite, "uRayColor", 1.0, 1.0, 1.0)
+        .uniform(passes::composite, "uRayDir", 0.0, 1.0, 0.0)
+        .uniform(passes::composite, "uCamFwd", 0.0, 0.0, -1.0)
+        .uniform(passes::composite, "uTanHalf", 0.7);
 }
 
 class GLWorldView {

@@ -922,6 +922,81 @@ vec3 film(vec3 c, float grain, float time) {
 )";
 }
 
+// Light shafts, drawn in the composite on the screen: from each pixel, a
+// march towards where the source stands on screen, gathering whatever is
+// bright near it. Whatever dark stands between - a window bar, a cliff, a
+// door's frame - gathers nothing, so it casts its shadow through the shafts.
+// The source is a direction from the eye (uRayDir) with the camera's own
+// (uCamFwd, uTanHalf): sg::aim_rays sets them. GLSL to paste into a composite
+// shader after uScene and uTexel; it gives `godrays(uv)`.
+//   uRays       how strong (0: none)          uRayColor   their colour
+//   uRayCut     how bright a pixel must be     uRaySpread  how far from the
+//               to shine                                   source it may be
+inline const char* godrays_glsl() {
+    return R"(
+uniform vec3  uRayDir;
+uniform vec3  uCamFwd;
+uniform float uTanHalf;
+uniform float uRays;
+uniform vec3  uRayColor;
+uniform float uRayCut;
+uniform float uRaySpread;
+
+float ray_hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+vec3 godrays(vec2 uv) {
+    if (uRays <= 0.0) return vec3(0.0);
+    vec3 f = normalize(uCamFwd);
+    vec3 r = normalize(cross(f, abs(f.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0)));
+    vec3 u = cross(r, f);
+    vec3 d = normalize(uRayDir);
+    float z = dot(d, f);
+    if (z <= 0.02) return vec3(0.0);  // behind: nothing to stream from
+    float aspect = uTexel.y / uTexel.x;
+    vec2 src = vec2(dot(d, r) / (z * uTanHalf * aspect), dot(d, u) / (z * uTanHalf)) * 0.5 + 0.5;
+
+    // Fewer shafts as the source leaves the screen or turns away.
+    float seen = smoothstep(0.05, 0.35, z) * (1.0 - smoothstep(0.7, 1.6, length(src - 0.5)));
+    if (seen <= 0.0) return vec3(0.0);
+
+    const int N = 56;
+    vec2 stp = (src - uv) / float(N) * 0.92;
+    vec2 p = uv + stp * ray_hash(uv * 911.0);  // jittered, so the steps do not band
+    float w = 1.0;
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        p += stp;
+        vec3 s = texture(uScene, clamp(p, vec2(0.0), vec2(1.0))).rgb;
+        vec2 off = (p - src) * vec2(aspect, 1.0);
+        float near_src = exp(-dot(off, off) / (uRaySpread * uRaySpread));
+        // Cut on brightness, not per channel, so the shafts keep the
+        // colour of what they stream from.
+        float ls = dot(s, vec3(0.299, 0.587, 0.114));
+        sum += s * (max(ls - uRayCut, 0.0) / max(ls, 1e-4)) * near_src * w;
+        w *= 0.965;
+    }
+    return sum / float(N) * uRays * uRayColor * seen;
+}
+)";
+}
+
+// A cheap FXAA: where the toned picture has an edge, blend towards the
+// average of the four neighbours. GLSL to paste into a composite shader after
+// uScene, uTexel, uExposure and tonemap (film_glsl); it gives
+// `smooth_edges(uv, toned)`.
+inline const char* fxaa_glsl() {
+    return R"(
+vec3 smooth_edges(vec2 uv, vec3 toned) {
+    const vec3 w = vec3(0.299, 0.587, 0.114);
+    vec3 n = texture(uScene, uv + vec2(0.0, uTexel.y)).rgb, s = texture(uScene, uv - vec2(0.0, uTexel.y)).rgb;
+    vec3 e = texture(uScene, uv + vec2(uTexel.x, 0.0)).rgb, o = texture(uScene, uv - vec2(uTexel.x, 0.0)).rgb;
+    float edge = abs(dot(n + s + e + o, w) * uExposure - 4.0 * dot(toned, w));
+    if (edge <= 0.12) return toned;
+    return mix(toned, tonemap((n + s + e + o) * 0.25 * uExposure), clamp(edge * 2.0, 0.0, 0.6));
+}
+)";
+}
+
 inline const char* composite_fs() {
     static const std::string source = std::string(R"(#version 330 core
 in vec2 vUV;
@@ -937,30 +1012,15 @@ uniform float uSaturation;
 uniform float uVignette;
 uniform float uGrain;
 uniform float uTime;
-)") + film_glsl() + R"(
-vec3 aces(vec3 x) { return tonemap(x); }
+)") + film_glsl() + godrays_glsl() + fxaa_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
     scene += texture(uBloom, vUV).rgb * uBloomStrength;
-    vec3 color = aces(scene * uExposure);
-
-    // Cheap FXAA: blend towards the neighbourhood average along the edge.
-    float l  = luma(color);
-    float lN = luma(texture(uScene, vUV + vec2(0.0,  uTexel.y)).rgb * uExposure);
-    float lS = luma(texture(uScene, vUV - vec2(0.0,  uTexel.y)).rgb * uExposure);
-    float lE = luma(texture(uScene, vUV + vec2(uTexel.x, 0.0)).rgb * uExposure);
-    float lW = luma(texture(uScene, vUV - vec2(uTexel.x, 0.0)).rgb * uExposure);
-    float edge = abs(lN + lS + lE + lW - 4.0 * l);
-    if (edge > 0.12) {
-        vec3 blur = (texture(uScene, vUV + vec2(uTexel.x, 0.0)).rgb +
-                     texture(uScene, vUV - vec2(uTexel.x, 0.0)).rgb +
-                     texture(uScene, vUV + vec2(0.0, uTexel.y)).rgb +
-                     texture(uScene, vUV - vec2(0.0, uTexel.y)).rgb) * 0.25;
-        color = mix(color, aces(blur * uExposure), clamp(edge * 2.0, 0.0, 0.6));
-    }
+    scene += godrays(vUV);
+    vec3 color = smooth_edges(vUV, tonemap(scene * uExposure));
 
     color = mix(vec3(luma(color)), color, uSaturation) * uTint;
 
