@@ -189,6 +189,26 @@ int main() {
 #endif
         check(ms < most, "a step of forty-one bodies takes under " + std::to_string(static_cast<int>(most)) + " ms");
     }
+    // A thing's shape: its big parts, and every small one at its outside.
+    {
+        std::vector<PartBox> chair;
+        chair.push_back({{-0.25, 0.4, -0.25}, {0.25, 0.46, 0.25}, 0.015});      // the seat
+        chair.push_back({{-0.2, 0.46, 0.2}, {0.2, 1.0, 0.24}, 0.0086});         // the back
+        for (int k = 0; k < 5; ++k) {                                            // five castors, on the floor
+            const double a = k * 1.2566, x = std::cos(a) * 0.28, z = std::sin(a) * 0.28;
+            chair.push_back({{x - 0.03, 0.0, z - 0.03}, {x + 0.03, 0.06, z + 0.03}, 0.0002});
+        }
+        chair.push_back({{-0.21, 1.0, 0.19}, {0.21, 1.04, 0.25}, 0.0001});       // the top rail
+        chair.push_back({{0.0, 0.3, 0.0}, {0.02, 0.32, 0.02}, 0.00001});          // a knob under the seat
+        const auto kept = outline(chair);
+        const auto has = [&](std::size_t i) { return std::find(kept.begin(), kept.end(), i) != kept.end(); };
+        bool castors = true;
+        for (std::size_t i = 2; i < 7; ++i) castors &= has(i);
+        check(has(0) && has(1), "a thing's shape has its big parts");
+        check(castors && has(7), "and every small part at its outside - all five castors, the top rail");
+        check(!has(8), "but not a small part inside it");
+    }
+
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;
 }

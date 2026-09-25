@@ -572,6 +572,42 @@ inline int touch(const Hull& ha, const Body::Placed& pa, const Hull& hb, const B
 }
 
 // Where a ray first meets a hull, or -1; and the face it meets there.
+// Which of a thing's parts make its shape. A thing made of many parts (a
+// chair: seat, back, legs, five castors, a knob) is too many hulls to collide
+// cheaply, and the small ones mostly do not matter - but the outermost always
+// do: they are what meets the floor, a wall, another thing, however it lies.
+// So: every part of any size (at least `small` of the biggest's volume), and
+// every smaller one that reaches the outside of the whole, on any side, within
+// `margin` - every castor and foot, the top rail of a chair's back - the
+// lowest first, up to `most` in all. Each part as its box in the thing's own
+// frame (`lo`, `hi`) and its volume; the answer is their indices.
+struct PartBox {
+    V3 lo, hi;
+    double volume = 0;
+};
+inline std::vector<std::size_t> outline(const std::vector<PartBox>& parts, std::size_t most = 28, double margin = 0.01,
+                                        double small = 0.01) {
+    double biggest = 0;
+    V3 lo{1e18, 1e18, 1e18}, hi{-1e18, -1e18, -1e18};
+    for (const PartBox& p : parts) {
+        biggest = std::max(biggest, p.volume);
+        lo = {std::min(lo.x, p.lo.x), std::min(lo.y, p.lo.y), std::min(lo.z, p.lo.z)};
+        hi = {std::max(hi.x, p.hi.x), std::max(hi.y, p.hi.y), std::max(hi.z, p.hi.z)};
+    }
+    std::vector<std::size_t> keep, rest;
+    for (std::size_t i = 0; i < parts.size(); ++i) (parts[i].volume >= biggest * small ? keep : rest).push_back(i);
+    std::sort(rest.begin(), rest.end(), [&](std::size_t a, std::size_t b) { return parts[a].lo.y < parts[b].lo.y; });
+    for (std::size_t i : rest) {
+        if (keep.size() >= most) break;
+        const PartBox& q = parts[i];
+        if (q.lo.x < lo.x + margin || q.lo.y < lo.y + margin || q.lo.z < lo.z + margin || q.hi.x > hi.x - margin ||
+            q.hi.y > hi.y - margin || q.hi.z > hi.z - margin)
+            keep.push_back(i);
+    }
+    if (keep.size() > most) keep.resize(most);
+    return keep;
+}
+
 inline double ray_hull(const Body::Placed& p, V3 o, V3 d, double reach, V3* normal = nullptr) {
     double t0 = 0, t1 = reach;
     int face = -1;
