@@ -163,6 +163,7 @@ uniform float uCosOuter[MAX_LIGHTS];
 uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
 uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
+uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -561,7 +562,11 @@ void main() {
             float theta = dot(-l, normalize(uLightDir[i]));
             cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
             cone *= cone;
-            atten = uLightPower[i] / (1.0 + 0.22 * dist + 0.14 * dist * dist);
+            // Softly, or as real light does: the inverse square, kept
+            // finite at the lamp itself.
+            float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
+            float square = 1.0 / (1.0 + 2.0 * dist * dist);
+            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]);
         }
         vec3 h = normalize(l + v);
 

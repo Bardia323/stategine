@@ -375,6 +375,7 @@ private:
         float extent = 40.0f;  // a sun's shadow reaches this far either side of the viewer
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
+        float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
     };
 
     struct BoundSurface {
@@ -536,6 +537,7 @@ private:
             l.extent = static_cast<float>(e.params.num(Key{"extent"}, 40.0));
             l.floor = static_cast<float>(e.params.num(Key{"shadow_floor"}, -1.0));
             l.indirect = e.params.num(Key{"indirect"}, 0.0) > 0.5;
+            l.falloff = static_cast<float>(std::clamp(e.params.num(Key{"falloff"}, 0.0), 0.0, 1.0));
             if (l.power <= 0.0f) continue;  // switched off
             out.push_back(l);
             }
@@ -727,6 +729,7 @@ private:
                 p.set(light_uniform(i, 6), lights[i].sun ? 1.0f : 0.0f);
                 p.set(light_uniform(i, 7), lights[i].floor);
                 p.set(light_uniform(i, 8), lights[i].indirect ? 1.0f : 0.0f);
+                p.set(light_uniform(i, 9), lights[i].falloff);
                 if (lights[i].sun && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
                     sun_dir = gl::normalize(lights[i].dir) * -1.0f;
                     sun_color = lights[i].color;
@@ -1790,10 +1793,10 @@ private:
         static const auto names = [] {
             static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                            "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
-                                           "uLightIndirect"};
-            std::array<std::array<std::string, 9>, kMaxLights> n;
+                                           "uLightIndirect", "uLightFalloff"};
+            std::array<std::array<std::string, 10>, kMaxLights> n;
             for (std::size_t l = 0; l < kMaxLights; ++l)
-                for (int f = 0; f < 9; ++f)
+                for (int f = 0; f < 10; ++f)
                     n[l][static_cast<std::size_t>(f)] =
                         std::string(fields[f]) + "[" + std::to_string(l) + "]";
             return n;
