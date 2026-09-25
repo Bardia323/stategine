@@ -47,6 +47,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -245,6 +246,8 @@ public:
     // different root and the same geometry is drawn from the other side.
     void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+        poses_.clear();
+        models_.clear();
         ensure_resources();
         ensure_targets(fb_w, fb_h);
         advance_clock();
@@ -393,7 +396,7 @@ private:
 
     // Is any of the portal in front of the camera, and near enough to draw?
     bool in_view(Spatial3D& world, const Element& e, const Camera& cam) const {
-        const Pose p = world_pose(world, e);
+        const Pose p = pose_of(world, e);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
         const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
         const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across(p.yaw));
@@ -477,7 +480,6 @@ private:
         sphere_.create(gl::sphere_vertices());
         quad_.create(gl::quad_vertices());
         screen_.create();
-        for (auto& sm : shadow_) sm.create(q_.shadow_size);
         ready_ = true;
     }
 
@@ -511,7 +513,7 @@ private:
             for (const auto& e : placed.room->elements()) {
             if (e.kind != kinds::light || !e.alive) continue;
             Light l;
-            l.pos = to_vec3(compose_pose(placed.pose, world_pose(*placed.room, e)).position);
+            l.pos = to_vec3(compose_pose(placed.pose, pose_of(*placed.room, e)).position);
             l.color = color_of(e, l.color);
             l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
             l.dir = gl::normalize({static_cast<float>(e.params.num(Key{"dx"}, 0.0)),
@@ -619,14 +621,28 @@ private:
         if (timing_) gl::glFinish();
         const auto shadow_start = std::chrono::steady_clock::now();
         // --- shadow depth, one pass per shadowed lamp ------------------------
+        // Each world seen (the room, and whatever a portal shows) keeps its own
+        // maps, and a map is drawn again only when its lamp has moved or
+        // turned, or anything that casts has: most frames, nothing has, and
+        // the shadows cost nothing.
+        ShadowSet& maps = shadows_for(rooms.front().room);
+        const uint64_t casters = caster_signature(rooms);
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
         gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
         const gl::Program& caster = *program_for(post_.shown(), passes::shadow);
-        caster.use();
-        apply_uniforms(caster, post_, passes::shadow);
+        bool caster_ready = false;
         for (std::size_t i = 0; i < shadowed; ++i) {
-            shadow_[i].bind();
+            uint64_t sig = casters ^ (0x9E3779B97F4A7C15ULL * (i + 1));
+            for (float f : light_vp[i].m) sig = mix_bits(sig, f);
+            if (maps.sig[i] == sig) continue;
+            maps.sig[i] = sig;
+            if (!caster_ready) {
+                caster.use();
+                apply_uniforms(caster, post_, passes::shadow);
+                caster_ready = true;
+            }
+            maps.map[i].bind();
             gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
             caster.set("uLightViewProj", light_vp[i]);
             for (const PlacedRoom& placed : rooms) {
@@ -637,7 +653,7 @@ private:
                     if (e.kind == kinds::mesh || e.kind == kinds::wall) {
                         // A lamp's own shade does not shadow its lamp.
                         if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
-                        caster.set("uModel", frame_matrix_ * box_model(*placed.room, e).m);
+                        caster.set("uModel", frame_matrix_ * box_matrix(*placed.room, e).m);
                         shape_of(e).draw();
                     } else if (e.kind == terrain_kind()) {
                         auto t = terrains_.find(e.id);
@@ -673,7 +689,7 @@ private:
         gl::glDisable(gl::GL_CULL_FACE);
         for (int i = 0; i < kMaxBounds; ++i)
             gl::glEnable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
-        for (std::size_t i = 0; i < kShadowMaps; ++i) shadow_[i].bind_depth(static_cast<int>(i) + 1);
+        for (std::size_t i = 0; i < kShadowMaps; ++i) maps.map[i].bind_depth(static_cast<int>(i) + 1);
 
         // Everything a scene shader is fed that is not the look's. Set again
         // whenever a room's look brings a different program.
@@ -705,8 +721,8 @@ private:
             p.set("uShadowBias", bias[0], bias[1], bias[2], bias[3]);
             p.set("uViewPos", cam.eye);
             p.set("uTime", static_cast<float>(time_));
-            p.set("uShadowTexel", 1.0f / static_cast<float>(shadow_[0].size()),
-                  1.0f / static_cast<float>(shadow_[0].size()));
+            p.set("uShadowTexel", 1.0f / static_cast<float>(maps.map[0].size()),
+                  1.0f / static_cast<float>(maps.map[0].size()));
             p.set("uShadowMap0", 1);
             p.set("uShadowMap1", 2);
             p.set("uShadowMap2", 3);
@@ -788,6 +804,24 @@ private:
             gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
         set_frame(Pose{});
     }
+
+    // Where each element is, and each box's matrix, worked out once a frame:
+    // the shadow passes, the scene and any view through a portal all ask.
+    // (Nothing moves while a frame is drawn.)
+    Pose pose_of(const State& st, const Element& e) const {
+        const auto it = poses_.find(&e);
+        if (it != poses_.end()) return it->second;
+        const Pose p = world_pose(st, e);
+        poses_.emplace(&e, p);
+        return p;
+    }
+    const RoomMatrix& box_matrix(const State& st, const Element& e) const {
+        const auto it = models_.find(&e);
+        if (it != models_.end()) return it->second;
+        return models_.emplace(&e, box_model(st, e)).first->second;
+    }
+    mutable std::unordered_map<const Element*, Pose> poses_;
+    mutable std::unordered_map<const Element*, RoomMatrix> models_;
 
     static Key terrain_kind() {
         static const Key k{"terrain"};
@@ -968,7 +1002,7 @@ private:
         const gl::Vec3 s{static_cast<float>(e.params.num(keys::sx, 1.0)),
                          static_cast<float>(e.params.num(keys::sy, 1.0)),
                          static_cast<float>(e.params.num(keys::sz, 1.0))};
-        const Pose w = world_pose(st, e);
+        const Pose w = pose_of(st, e);
         const gl::Vec3 p{static_cast<float>(w.position.x),
                          static_cast<float>(w.position.y) + s.y * 0.5f,
                          static_cast<float>(w.position.z)};
@@ -1004,7 +1038,7 @@ private:
     }
 
     RoomMatrix portal_frame_model(const State& st, const Element& e) const {
-        const Pose pose = world_pose(st, e);
+        const Pose pose = pose_of(st, e);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
         const float border = static_cast<float>(e.params.num(Key{"border"}, 0.15));
@@ -1111,13 +1145,13 @@ private:
     // than the implicit shell a plain room gets.
     void draw_wall_element(const State& st, const Element& e) {
         // `surface` picks a wall's material; plaster if it does not say.
-        draw_solid(box_model(st, e), color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f, static_cast<float>(e.params.num(Key{"surface"}, 2.0)));
+        draw_solid(box_matrix(st, e), color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f, static_cast<float>(e.params.num(Key{"surface"}, 2.0)));
     }
 
     // `surface` picks the material: 3 (the default) crate planks, 4 wood,
     // 5 brushed metal, 6 moulded plastic, 7 fabric, 0 plain.
     void draw_crate(const State& st, const Element& e) {
-        set_model(box_model(st, e));
+        set_model(box_matrix(st, e));
         scene_->set("uAlbedo", color_of(e, {0.8f, 0.5f, 0.25f}));
         scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.6)));
         scene_->set("uSurface", static_cast<float>(e.params.num(Key{"surface"}, 3.0)));
@@ -1156,7 +1190,7 @@ private:
     // it is only light, for a lamp whose body is modelled elsewhere.
     void draw_lamp(Spatial3D& world, const Element& e) {
         if (e.params.num(Key{"fixture"}, 1.0) < 0.5) return;
-        const gl::Vec3 pos = to_vec3(world_pose(world, e).position);
+        const gl::Vec3 pos = to_vec3(pose_of(world, e).position);
         const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
         const float room_h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
 
@@ -1180,7 +1214,7 @@ private:
         // geometry of its own.
         if (!has_surface(e) && !is_doorway(e)) return;
 
-        const Pose pose = world_pose(st, e);
+        const Pose pose = pose_of(st, e);
         const gl::Vec3 pos = to_vec3(pose.position);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0));
         const float h = static_cast<float>(e.params.num(keys::h, 2.0));
@@ -1340,12 +1374,15 @@ private:
         scene_->set("uCRT", static_cast<float>(e.params.num(Key{"crt"}, 0.0)));
         // `halo`: how much the tube's phosphor glows into the glass round it.
         scene_->set("uHalo", static_cast<float>(e.params.num(Key{"halo"}, 0.0)));
+        // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
+        scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
         scene_->set("uTexSize", static_cast<float>(surf.px_w()), static_cast<float>(surf.px_h()));
         quad_.draw();
         scene_->set("uTexMix", 0.0f);
         scene_->set("uGlow", 0.0f);
         scene_->set("uCRT", 0.0f);
         scene_->set("uHalo", 0.0f);
+        scene_->set("uFlat", 0.0f);
     }
 
     // Occlusion, at full resolution: the depth resolved, the occlusion
@@ -1736,7 +1773,59 @@ private:
     gl::Mesh cube_, quad_, cylinder_, sphere_;
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
     gl::FullscreenTriangle screen_;
-    gl::ShadowMap shadow_[kShadowMaps];
+    // Shadow maps, a set for each world drawn, and what each was drawn of.
+    struct ShadowSet {
+        gl::ShadowMap map[kShadowMaps];
+        uint64_t sig[kShadowMaps] = {};
+    };
+    std::unordered_map<const void*, std::unique_ptr<ShadowSet>> shadow_sets_;
+    ShadowSet& shadows_for(const void* world) {
+        auto& set = shadow_sets_[world];
+        if (!set) {
+            set = std::make_unique<ShadowSet>();
+            for (auto& m : set->map) m.create(q_.shadow_size);
+        }
+        return *set;
+    }
+    static uint64_t mix_bits(uint64_t h, float f) {
+        uint32_t b = 0;
+        std::memcpy(&b, &f, sizeof b);
+        return (h ^ b) * 1099511628211ULL;
+    }
+    // Everything that casts a shadow, where it is now: its matrix, bit for
+    // bit. Equal from one frame to the next, the maps from last frame stand.
+    uint64_t caster_signature(const std::vector<PlacedRoom>& rooms) {
+        uint64_t h = 1469598103934665603ULL;
+        for (const PlacedRoom& placed : rooms) {
+            if (!placed.room) continue;
+            h = mix_bits(h, static_cast<float>(placed.pose.position.x));
+            h = mix_bits(h, static_cast<float>(placed.pose.position.z));
+            h = mix_bits(h, static_cast<float>(placed.pose.yaw));
+            for (const auto& e : placed.room->elements()) {
+                if (!e.alive) continue;
+                if (e.kind == kinds::mesh || e.kind == kinds::wall) {
+                    if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+                    h = (h ^ reinterpret_cast<std::uintptr_t>(&e)) * 1099511628211ULL;
+                    for (float f : box_matrix(*placed.room, e).m.m) h = mix_bits(h, f);
+                    h = mix_bits(h, static_cast<float>(shape_hash(e)));
+                } else if (e.kind == terrain_kind()) {
+                    auto t = terrains_.find(e.id);
+                    if (t == terrains_.end()) continue;
+                    h = mix_bits(h, static_cast<float>(t->second.cx));
+                    h = mix_bits(h, static_cast<float>(t->second.cz));
+                    h = mix_bits(h, static_cast<float>(t->second.rev));
+                } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
+                    for (float f : portal_frame_model(*placed.room, e).m.m) h = mix_bits(h, f);
+                }
+            }
+        }
+        return h;
+    }
+    // Which mesh a box is drawn with (its shape, rounding and taper).
+    static double shape_hash(const Element& e) {
+        return e.params.num(Key{"bevel"}, 0.0) * 131.0 + e.params.num(Key{"taper"}, 1.0) * 17.0 +
+               static_cast<double>(std::hash<std::string>{}(e.params.get_or<std::string>(Key{"shape"}, "")) % 9973);
+    }
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
     // Ambient occlusion: the resolved depth, the occlusion and its blur, and
     // the scene with it laid on. `scene_src_` is what the post chain reads.

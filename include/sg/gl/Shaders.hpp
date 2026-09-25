@@ -85,12 +85,26 @@ struct CrtGlass {
     static constexpr float fit = 0.975f;     // the picture inside the glass, with a margin
 };
 
+// A tube seen flat (`flat`, 0..1, the panel's `flat` parameter): as someone
+// with their face up to it sees it - the picture straight, filling the glass
+// edge to edge, the corners all but square. The glass as it is at `flat`.
+struct CrtShape {
+    double half_w, half_h, corner, bulge, fit;
+};
+inline CrtShape crt_shape(double flat) {
+    const double t = flat < 0 ? 0.0 : flat > 1 ? 1.0 : flat;
+    const auto mix = [t](double a, double b) { return a + (b - a) * t; };
+    return {mix(CrtGlass::half_w, 1.0), mix(CrtGlass::half_h, 1.0), mix(CrtGlass::corner, 0.012),
+            CrtGlass::bulge * (1.0 - t), mix(CrtGlass::fit, 1.0)};
+}
+
 // Panel coordinates (0..1, v down) to picture coordinates. False where the
 // glass shows the dark margin rather than the picture.
-inline bool crt_picture(double u, double v, double& pu, double& pv) {
-    const double gx = (u * 2 - 1) / CrtGlass::half_w, gy = (v * 2 - 1) / CrtGlass::half_h;
+inline bool crt_picture(double u, double v, double& pu, double& pv, double flat = 0.0) {
+    const CrtShape c = crt_shape(flat);
+    const double gx = (u * 2 - 1) / c.half_w, gy = (v * 2 - 1) / c.half_h;
     const double r2 = gx * gx + gy * gy;
-    const double k = (1.0 + CrtGlass::bulge * r2) / CrtGlass::fit;
+    const double k = (1.0 + c.bulge * r2) / c.fit;
     const double wx = gx * k, wy = gy * k;
     pu = wx * 0.5 + 0.5;
     pv = wy * 0.5 + 0.5;
@@ -190,6 +204,8 @@ uniform float uHalo;
 // The eye's adjustment: how much everything but a screen's picture is
 // dimmed (0: not at all - what an unset uniform says).
 uniform float uDim;
+// How flat the tube is seen (crt_shape): 0 as it is, 1 face up to the glass.
+uniform float uFlat;
 )") + crt_glsl_constants() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
@@ -201,16 +217,18 @@ float noise(vec2 p) {
 }
 
 vec3 crt_sample(vec2 uv) {
-    vec2 g = (uv * 2.0 - 1.0) / vec2(kGlassW, kGlassH);
+    // Seen flat, the same sums with the glass straightened (crt_shape).
+    float corner = mix(kCorner, 0.012, uFlat);
+    vec2 g = (uv * 2.0 - 1.0) / mix(vec2(kGlassW, kGlassH), vec2(1.0), uFlat);
     // The glass: a rounded rectangle, its edge spread over one pixel.
-    vec2 d = abs(g) - vec2(1.0 - kCorner);
-    float glass_sd = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - kCorner;
+    vec2 d = abs(g) - vec2(1.0 - corner);
+    float glass_sd = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - corner;
     float gpx = max(fwidth(glass_sd), 1e-5);
     float glass = 1.0 - smoothstep(-gpx, gpx, glass_sd);
     // The picture bows out with the tube and sits wholly inside the glass,
     // with a dark margin, the way a real one does - no corner of it is lost.
     float r2 = dot(g, g);
-    vec2 w = g * (1.0 + kBulge * uCRT * r2) / kFit;
+    vec2 w = g * (1.0 + kBulge * (1.0 - uFlat) * uCRT * r2) / mix(kFit, 1.0, uFlat);
     float pic_sd = max(abs(w.x), abs(w.y)) - 1.0;
     float ppx = max(fwidth(pic_sd), 1e-5);
     float picture = 1.0 - smoothstep(-ppx, ppx, pic_sd);
@@ -241,14 +259,17 @@ vec3 crt_sample(vec2 uv) {
     float stripe = mod(floor(s.x * uTexSize.x), 3.0);
     vec3 mask = vec3(stripe == 0.0 ? 1.0 : 1.0 - mask_amount, stripe == 1.0 ? 1.0 : 1.0 - mask_amount,
                      stripe == 2.0 ? 1.0 : 1.0 - mask_amount);
-    float vignette = 1.0 - 0.16 * r2;
-    vec3 black = vec3(0.012, 0.013, 0.013);
-    vec3 screen = mix(black, col * line * mask * vignette + 0.012, picture);
+    // Seen flat the picture keeps its lines, its grille and its glow, and
+    // loses most of the tube's fall-off and all of its grey: black is black.
+    float vignette = 1.0 - mix(0.16, 0.05, uFlat) * r2;
+    vec3 black = vec3(0.012, 0.013, 0.013) * (1.0 - uFlat);
+    vec3 screen = mix(black, col * line * mask * vignette + 0.012 * (1.0 - uFlat), picture);
     // A faint sheen on the curved glass, brightest towards the top.
-    screen += vec3(0.018) * smoothstep(0.1, 0.9, -g.y) * (1.0 - 0.6 * r2);
-    // The bezel: dark plastic, a lighter lip where it meets the glass.
+    screen += vec3(0.018) * (1.0 - uFlat) * smoothstep(0.1, 0.9, -g.y) * (1.0 - 0.6 * r2);
+    // The bezel: dark plastic, a lighter lip where it meets the glass - gone
+    // to black as the eye leaves it.
     float lip = 1.0 - clamp(glass_sd * 14.0, 0.0, 1.0);
-    vec3 bezel = (vec3(0.022, 0.021, 0.02) * (1.0 + lip) + 0.01 * (1.0 - uv.y)) * (1.0 - uDim);
+    vec3 bezel = (vec3(0.022, 0.021, 0.02) * (1.0 + lip) + 0.01 * (1.0 - uv.y)) * (1.0 - uDim) * (1.0 - uFlat);
     return mix(bezel, screen, glass);
 }
 

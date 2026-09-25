@@ -193,9 +193,11 @@ inline Pose world_pose(const State& s, const Element& e, int max_depth = 8) {
     Pose p = local_pose(e);
     const Element* cur = &e;
     for (int i = 0; i < max_depth; ++i) {
-        const std::string parent_id = cur->params.get_or<std::string>(keys::parent, "");
-        if (parent_id.empty()) break;
-        const Element* parent = s.find(Key{parent_id});
+        // (The parent's name read where it is, not copied out.)
+        if (!cur->params.has(keys::parent)) break;
+        const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+        if (!parent_id || parent_id->empty()) break;
+        const Element* parent = s.find(Key{*parent_id});
         if (!parent) break;
         p = compose_pose(local_pose(*parent), p);
         cur = parent;

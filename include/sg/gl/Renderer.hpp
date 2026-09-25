@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,11 +52,21 @@ public:
 
     // Locations are asked of the driver once per name and remembered: a frame
     // sets a few hundred uniforms, and the driver lookup is the slow part.
+    // Names are nearly always string literals: found first by where their
+    // characters are (checked against the name, so a reused buffer cannot be
+    // taken for another), and only then by the characters themselves.
     GLint uniform(const char* name) const {
+        auto hit = by_address_.find(name);
+        if (hit != by_address_.end() && std::strcmp(hit->second.first, name) == 0) return hit->second.second;
         auto it = locations_.find(name);
-        if (it != locations_.end()) return it->second;
-        const GLint loc = glGetUniformLocation(id_, name);
-        locations_.emplace(name, loc);
+        GLint loc;
+        if (it != locations_.end()) {
+            loc = it->second;
+        } else {
+            loc = glGetUniformLocation(id_, name);
+            it = locations_.emplace(name, loc).first;
+        }
+        by_address_[name] = {it->first.c_str(), loc};
         return loc;
     }
 
@@ -77,6 +88,7 @@ public:
 private:
     GLuint id_ = 0;
     mutable std::unordered_map<std::string, GLint> locations_;
+    mutable std::unordered_map<const char*, std::pair<const char*, GLint>> by_address_;
 };
 
 // An RGBA texture the CPU refills - how a 2D state's raster becomes a surface

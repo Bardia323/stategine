@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -29,8 +30,8 @@ namespace sg {
 class Key {
 public:
     Key() = default;
-    Key(const char* s) : text_(intern(std::string(s))) {}          // NOLINT: implicit on purpose
-    Key(const std::string& s) : text_(intern(s)) {}                // NOLINT
+    Key(const char* s) : text_(intern_literal(s)) {}               // NOLINT: implicit on purpose
+    Key(const std::string& s) : text_(intern_ref(s)) {}            // NOLINT
     Key(std::string&& s) : text_(intern(std::move(s))) {}          // NOLINT
 
     const std::string& str() const {
@@ -48,9 +49,34 @@ public:
     const void* handle() const { return text_; }
 
 private:
-    static const std::string* intern(std::string s) {
-        static std::unordered_set<std::string> table;
-        return &*table.insert(std::move(s)).first;
+    static std::unordered_set<std::string>& table() {
+        static std::unordered_set<std::string> t;
+        return t;
+    }
+    static const std::string* intern(std::string s) { return &*table().insert(std::move(s)).first; }
+    // Looked up without copying when it is there already - the usual case.
+    static const std::string* intern_ref(const std::string& s) {
+        auto& t = table();
+        const auto it = t.find(s);
+        return it != t.end() ? &*it : &*t.insert(s).first;
+    }
+    // Most names in code are string literals, met over and over in a frame
+    // (`params.num("x")`): each is remembered by where its characters are, in
+    // a small table keyed by that address, and taken from there after one
+    // comparison of the characters - a buffer reused for another name is
+    // simply looked up again.
+    static const std::string* intern_literal(const char* s) {
+        struct Slot {
+            const char* at = nullptr;
+            const std::string* key = nullptr;
+        };
+        static Slot slots[4096];
+        Slot& slot = slots[(reinterpret_cast<std::uintptr_t>(s) >> 2) & 4095];
+        if (slot.at == s && std::strcmp(slot.key->c_str(), s) == 0) return slot.key;
+        const std::string* key = intern_ref(std::string(s));
+        slot.at = s;
+        slot.key = key;
+        return key;
     }
 
     const std::string* text_ = nullptr;
