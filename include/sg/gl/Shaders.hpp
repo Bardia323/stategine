@@ -3,8 +3,8 @@
 // Scene: up to eight lights - spots, and suns - the nearest two with PCF
 // shadows, a hemispheric ambient term, a Cook-Torrance-ish specular lobe,
 // procedural surface detail, a sky for open worlds and distance fog, written
-// to an HDR target. Post: bright pass, separable blur, then ACES
-// tonemap with bloom, vignette and a light FXAA.
+// to an HDR target. Post: bright pass, separable blur and a wide mip-chain
+// glow, then the film (ACES tone curve, grain) with bloom, vignette and a light FXAA.
 #pragma once
 
 #include <string>
@@ -162,6 +162,7 @@ uniform float uCosInner[MAX_LIGHTS];
 uniform float uCosOuter[MAX_LIGHTS];
 uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
+uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -322,23 +323,41 @@ vec3 sky(vec3 dir) {
     return c;
 }
 
-// Percentage-closer filtering: 5x5 taps, each one the hardware's own 2x2,
-// spread `uShadowSoft` texels apart, with a slope-scaled bias. What is left
-// in the darkest shadow is `uShadowFloor`.
+// Interleaved gradient noise (Jimenez): a per-pixel number in [0, 1) whose
+// neighbours differ as much as they can, so a pattern turned by it dithers
+// finely instead of showing its shape.
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
+// hardware's own 2x2, the spiral turned for each pixel so the penumbra is a
+// smooth gradient dithered finely, not the steps of a fixed grid. The disc
+// reaches `uShadowSoft` times two texels, with a slope-scaled bias. What is
+// left in the darkest shadow is `uShadowFloor`.
 float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l, float bias_scale, float floor_) {
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
     float spread = max(uShadowSoft, 0.5);
     float bias = max(0.0016 * (1.0 - dot(n, l)), 0.0006) * bias_scale * (0.6 + 0.4 * spread);
+    float turn = ign(gl_FragCoord.xy) * 6.2831853;
+    vec2 reach = 2.4 * spread * uShadowTexel;
     float sum = 0.0;
-    for (int y = -2; y <= 2; ++y) {
-        for (int x = -2; x <= 2; ++x) {
-            vec2 off = vec2(x, y) * spread * uShadowTexel;
-            sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
-        }
+    for (int i = 0; i < 16; ++i) {
+        float a = float(i) * 2.3999632 + turn;
+        vec2 off = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / 16.0) * reach;
+        sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
     }
-    return mix(floor_, 1.0, sum / 25.0);
+    return mix(floor_, 1.0, sum / 16.0);
+}
+
+// How much a surface reflects of light arriving from all round, by angle and
+// roughness: Karis's fit of the split-sum environment term, (scale, bias) on F0.
+vec2 env_brdf(float ndv, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
 }
 
 // A point of a floor, wall or ceiling, flattened onto the plane it faces,
@@ -488,7 +507,7 @@ vec3 surface_albedo(out float rough_mod) {
 void main() {
     if (uSurface > 8.5 && uSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
-        FragColor = vec4(sky(normalize(vWorld - uViewPos)) * (1.0 - uDim), 1.0);
+        FragColor = vec4(sky(normalize(vWorld - uViewPos)) * (1.0 - uDim), 0.0);
         return;
     }
     float rough_mod;
@@ -502,13 +521,21 @@ void main() {
     // by that room's own light and air: it is shown as it is, not lit or
     // fogged a second time by the room it is seen from.
     if (uScreenUV > 0.5 && uTexMix > 0.99) {
-        FragColor = vec4(albedo * (1.0 - uDim), 1.0);
+        FragColor = vec4(albedo * (1.0 - uDim), 0.0);
         return;
     }
     float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
+    // Metal (the brushed surface) reflects in its own colour and scatters
+    // less. Only partly: most of what wears it is painted, and a bare metal
+    // with only the sky and the floor to reflect would go dark. Everything
+    // else reflects 4% head on, white.
+    float metal = (uSurface > 4.5 && uSurface < 5.5) ? 0.35 : 0.0;
+    vec3 f0 = mix(vec3(0.04), albedo, metal);
+    vec3 diffuse = albedo * (1.0 - metal);
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
+    float ndv = clamp(dot(n, v), 1e-3, 1.0);
     float a2 = roughness * roughness * roughness * roughness;
     // Specular antialiasing (Kaplanyan & Hill): where the normal turns fast
     // across a pixel - a rounded edge thinner than a pixel - the highlight is
@@ -517,7 +544,7 @@ void main() {
     float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
 
-    vec3 direct = vec3(0.0);
+    vec3 direct = vec3(0.0), bounced = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
         vec3 l;
@@ -548,19 +575,40 @@ void main() {
             else if (i == 3) shadow = shadow_factor(vLightSpace3, uShadowMap3, n, l, uShadowBias.w, fl);
         }
 
-        // GGX-ish specular, kept cheap.
+        // Cook-Torrance: GGX for the spread of the highlight, Smith's
+        // height-correlated masking (Hammon's fit), and Schlick's Fresnel -
+        // a surface reflects more the more edge-on it is seen. What it
+        // reflects is not also scattered, so the diffuse loses as much.
+        // (The diffuse carries pi folded into the light, so the highlight does.)
         float ndh = max(dot(n, h), 0.0);
+        float vdh = clamp(dot(v, h), 0.0, 1.0);
         float denom = ndh * ndh * (a2 - 1.0) + 1.0;
-        float spec = a2 / (3.14159 * denom * denom + 1e-4);
-        spec *= mix(0.04, 0.35, 1.0 - roughness);
+        float d = a2 / (denom * denom + 1e-7);
+        float vis = 0.5 / mix(2.0 * ndl * ndv, ndl + ndv, sqrt(a2));
+        vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
+        vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
 
-        direct += (albedo * ndl + vec3(spec) * ndl) * uLightColor[i] * atten * cone * shadow;
+        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * atten * cone * shadow;
+        else direct += lobe * ndl * uLightColor[i] * atten * cone * shadow;
     }
 
-    // Hemispheric ambient: one colour from above, the floor's bounce from below.
-    vec3 ambient = albedo * mix(uGround, uSky, n.y * 0.5 + 0.5) * uAmbient;
+    // Light from all round: the sky's colour from above, the floor's bounce
+    // from below. Scattered by the diffuse, and seen in the mirror direction
+    // by the reflection - blurred towards the normal as the surface roughens,
+    // and weighted by how much it reflects at this angle.
+    vec2 ab = env_brdf(ndv, roughness);
+    vec3 reflected = f0 * ab.x + ab.y;
+    vec3 r = reflect(-v, n);
+    float up = mix(r.y, n.y, roughness * roughness);
+    vec3 around = mix(uGround, uSky, n.y * 0.5 + 0.5) * uAmbient;
+    vec3 mirrored = mix(uGround, uSky, smoothstep(-0.35, 0.35, up)) * uAmbient;
+    vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected + bounced;
 
     vec3 color = ambient + direct + albedo * (uEmissive + uGlow);
+    // How much of what is seen here is light from all round - the only part
+    // occlusion takes away (ao_apply_fs): a corner in lamplight stays lit.
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+    float indirect = clamp(dot(ambient, lum) / max(dot(color, lum), 1e-5), 0.0, 1.0);
     color = mix(color, vec3(1.0, 0.86, 0.45) * (0.3 + 0.7 * length(color)), uHighlight * 0.35);
 
     // Fog, brighter where it is looked at towards the sun: light scattered
@@ -572,8 +620,8 @@ void main() {
     color = mix(color, haze, clamp(fog, 0.0, 0.85));
 
     // The eye adjusted to a screen: the room around it dims, the picture
-    // on the screen does not.
-    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), 1.0);
+    // on the screen does not. Alpha: the share of it occlusion may darken.
+    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - clamp(fog, 0.0, 0.85)));
 })";
     return source.c_str();
 }
@@ -632,6 +680,56 @@ void main() {
         sum += texture(uSource, vUV - uDirection * float(i)).rgb * w[i];
     }
     FragColor = vec4(sum, 1.0);
+})";
+}
+
+// The wide glow: the bright pass taken down a chain of halvings (Jimenez's
+// 13 taps, the first level a Karis average so one hot pixel does not flash)
+// and back up with a tent, each level adding its own. Light spreads in a lens
+// and an eye as far as it is bright, not a fixed few pixels.
+inline const char* bloom_down_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSource;
+uniform vec2 uTexel;       // one pixel of the source
+uniform float uFirst;
+float w(vec3 c) { return 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722))); }
+void main() {
+    vec2 t = uTexel;
+    vec3 a = texture(uSource, vUV + t * vec2(-2, 2)).rgb, b = texture(uSource, vUV + t * vec2(0, 2)).rgb;
+    vec3 c = texture(uSource, vUV + t * vec2(2, 2)).rgb, d = texture(uSource, vUV + t * vec2(-2, 0)).rgb;
+    vec3 e = texture(uSource, vUV).rgb, f = texture(uSource, vUV + t * vec2(2, 0)).rgb;
+    vec3 g = texture(uSource, vUV + t * vec2(-2, -2)).rgb, h = texture(uSource, vUV + t * vec2(0, -2)).rgb;
+    vec3 i = texture(uSource, vUV + t * vec2(2, -2)).rgb, j = texture(uSource, vUV + t * vec2(-1, 1)).rgb;
+    vec3 k = texture(uSource, vUV + t * vec2(1, 1)).rgb, l = texture(uSource, vUV + t * vec2(-1, -1)).rgb;
+    vec3 m = texture(uSource, vUV + t * vec2(1, -1)).rgb;
+    vec3 g0 = (j + k + l + m) * 0.25, g1 = (a + b + d + e) * 0.25, g2 = (b + c + e + f) * 0.25;
+    vec3 g3 = (d + e + g + h) * 0.25, g4 = (e + f + h + i) * 0.25;
+    if (uFirst > 0.5) {
+        float w0 = w(g0) * 0.5, w1 = w(g1) * 0.125, w2 = w(g2) * 0.125, w3 = w(g3) * 0.125, w4 = w(g4) * 0.125;
+        FragColor = vec4((g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / (w0 + w1 + w2 + w3 + w4), 1.0);
+    } else {
+        FragColor = vec4(g0 * 0.5 + (g1 + g2 + g3 + g4) * 0.125, 1.0);
+    }
+})";
+}
+
+inline const char* bloom_up_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uSource;
+uniform vec2 uTexel;       // one pixel of the source
+uniform float uWeight;
+void main() {
+    vec2 t = uTexel;
+    vec3 s = texture(uSource, vUV).rgb * 4.0;
+    s += (texture(uSource, vUV + vec2(t.x, 0)).rgb + texture(uSource, vUV - vec2(t.x, 0)).rgb +
+          texture(uSource, vUV + vec2(0, t.y)).rgb + texture(uSource, vUV - vec2(0, t.y)).rgb) * 2.0;
+    s += texture(uSource, vUV + t).rgb + texture(uSource, vUV - t).rgb +
+         texture(uSource, vUV + vec2(t.x, -t.y)).rgb + texture(uSource, vUV + vec2(-t.x, t.y)).rgb;
+    FragColor = vec4(s / 16.0 * uWeight, 1.0);
 })";
 }
 
@@ -727,9 +825,9 @@ void main() {
 })";
 }
 
-// The scene with its occlusion laid on: `uStrength` of it, less where the
-// picture is bright - a lamp or a lit screen is not darkened by what is
-// round it.
+// The scene with its occlusion laid on: `uStrength` of it, on the share of
+// each pixel that is light from all round (the scene's alpha) - a lamp, a lit
+// screen or a patch of sun is not darkened by what is round it.
 inline const char* ao_apply_fs() {
     return R"(#version 330 core
 in vec2 vUV;
@@ -745,7 +843,8 @@ float linear(float d) {
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
 }
 void main() {
-    vec3 c = texture(uScene, vUV).rgb;
+    vec4 scene = texture(uScene, vUV);
+    vec3 c = scene.rgb;
     float ao = texture(uAO, vUV).r;
     // On a silhouette the picture is a blend of both sides (it was
     // multisampled) but the occlusion belongs to one: take the lightest
@@ -759,14 +858,72 @@ void main() {
         for (int y = -1; y <= 1; ++y)
             for (int x = -1; x <= 1; ++x) ao = max(ao, texture(uAO, vUV + vec2(x, y) * uTexel).r);
     }
-    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float k = uStrength * (1.0 - smoothstep(0.9, 3.5, luma));
+    float k = uStrength * scene.a;
     FragColor = vec4(c * mix(1.0, pow(ao, 1.6), k), 1.0);
 })";
 }
 
+// The film every composite develops its picture on: GLSL to paste into a
+// composite shader.
+//   vec3 tonemap(vec3 hdr)  scene light to display light: the ACES curve,
+//                           half per channel and half on luminance, so bright
+//                           colours keep most of their hue on the way to white.
+//   vec3 film(vec3 c, float grain, float time)
+//                           display light to the screen: encoded, then grain -
+//                           soft, a pixel and a half across, strongest in the
+//                           mid tones and least in the highlights, moving each
+//                           frame - and a last dither, so nothing bands.
+inline const char* film_glsl() {
+    return R"(
+vec3 film_aces(vec3 x) {
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+vec3 tonemap(vec3 hdr) {
+    // Per channel, the curve turns a bright orange yellow and a bright blue
+    // violet; on luminance alone it keeps the hue but runs a colour past
+    // white. Half of each: the tone of the one, most of the hue of the other,
+    // and past a knee the brightest channel is bent smoothly towards white.
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+    vec3 x = max(hdr, vec3(0.0));
+    float l = max(dot(x, lum), 1e-6);
+    float lt = film_aces(vec3(l)).x;
+    vec3 c = x * (lt / l);
+    float m = max(c.r, max(c.g, c.b));
+    const float knee = 0.75;
+    if (m > knee) {
+        float target = knee + (1.0 - knee) * (1.0 - exp(-(m - knee) / (1.0 - knee)));
+        c = lt + clamp((target - lt) / max(m - lt, 1e-6), 0.0, 1.0) * (c - lt);
+    }
+    return clamp(mix(film_aces(x), c, 0.5), 0.0, 1.0);
+}
+float film_hash(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+float film_noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(film_hash(i), film_hash(i + vec2(1, 0)), f.x),
+               mix(film_hash(i + vec2(0, 1)), film_hash(i + vec2(1, 1)), f.x), f.y);
+}
+vec3 film(vec3 c, float grain, float time) {
+    vec3 e = pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));
+    vec2 px = gl_FragCoord.xy;
+    vec2 jump = vec2(film_hash(vec2(floor(time * 24.0), 7.0)), film_hash(vec2(floor(time * 24.0), 13.0))) * 911.0;
+    float y = dot(e, vec3(0.2126, 0.7152, 0.0722));
+    float g = film_noise((px + jump) / 1.5) * 0.6 + film_hash(px + jump) * 0.4 - 0.5;
+    float amount = grain * 2.4 * mix(0.45, 1.0, smoothstep(0.0, 0.3, y)) * (1.0 - 0.7 * smoothstep(0.55, 1.0, y));
+    vec3 chroma = vec3(film_hash(px + jump + 3.1), film_hash(px + jump + 5.7), film_hash(px + jump + 9.3)) - 0.5;
+    e += (g + chroma * 0.15) * amount;
+    e += (film_hash(px + jump * 1.37) - film_hash(px + 17.0 + jump) ) / 255.0;
+    return e;
+}
+)";
+}
+
 inline const char* composite_fs() {
-    return R"(#version 330 core
+    static const std::string source = std::string(R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 
@@ -779,12 +936,9 @@ uniform vec3  uTint;
 uniform float uSaturation;
 uniform float uVignette;
 uniform float uGrain;
-
-// Narkowicz's ACES approximation.
-vec3 aces(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
+uniform float uTime;
+)") + film_glsl() + R"(
+vec3 aces(vec3 x) { return tonemap(x); }
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -810,13 +964,12 @@ void main() {
 
     color = mix(vec3(luma(color)), color, uSaturation) * uTint;
 
-    // Vignette and a touch of grain, so flat walls do not band.
+    // Vignette, then the film.
     vec2 d = vUV - 0.5;
     color *= 1.0 - dot(d, d) * uVignette;
-    color += (fract(sin(dot(vUV, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrain;
-
-    FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0);
+    FragColor = vec4(film(color, uGrain, uTime), 1.0);
 })";
+    return source.c_str();
 }
 
 }  // namespace sg::gl

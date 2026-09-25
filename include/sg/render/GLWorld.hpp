@@ -367,6 +367,7 @@ private:
         bool sun = false;      // parallel, from `dir`; its shadow is a box round the viewer
         float extent = 40.0f;  // a sun's shadow reaches this far either side of the viewer
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
+        bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
     };
 
     struct BoundSurface {
@@ -502,6 +503,9 @@ private:
         const int bw = std::max(1, w / 2), bh = std::max(1, h / 2);
         bloom_a_.create(bw, bh, gl::GL_RGBA16F, 0, false);
         bloom_b_.create(bw, bh, gl::GL_RGBA16F, 0, false);
+        bloom_levels_ = 0;
+        for (int lw = bw / 2, lh = bh / 2; bloom_levels_ < kBloomLevels && lw >= 8 && lh >= 8; lw /= 2, lh /= 2)
+            bloom_chain_[bloom_levels_++].create(lw, lh, gl::GL_RGBA16F, 0, false);
     }
 
     // Every lamp in the state, strongest first: the first four get shadow
@@ -524,6 +528,7 @@ private:
             l.sun = e.params.num(Key{"sun"}, 0.0) > 0.5;
             l.extent = static_cast<float>(e.params.num(Key{"extent"}, 40.0));
             l.floor = static_cast<float>(e.params.num(Key{"shadow_floor"}, -1.0));
+            l.indirect = e.params.num(Key{"indirect"}, 0.0) > 0.5;
             if (l.power <= 0.0f) continue;  // switched off
             out.push_back(l);
             }
@@ -534,7 +539,10 @@ private:
         // Equal lamps are ordered by where they hang, never by the viewer:
         // a tie broken by distance hands the shadow maps from lamp to lamp as
         // the viewer walks, and shadows vanish a step further off.
+        // Bounce light stands in for light from all round and casts no
+        // shadow worth a map: it comes after every real lamp.
         std::sort(out.begin(), out.end(), [](const Light& a, const Light& b) {
+            if (a.indirect != b.indirect) return b.indirect;
             if (a.sun != b.sun) return a.sun;
             if (a.power != b.power) return a.power > b.power;
             if (a.pos.x != b.pos.x) return a.pos.x < b.pos.x;
@@ -711,6 +719,7 @@ private:
                 p.set(light_uniform(i, 5), std::cos(lights[i].outer));
                 p.set(light_uniform(i, 6), lights[i].sun ? 1.0f : 0.0f);
                 p.set(light_uniform(i, 7), lights[i].floor);
+                p.set(light_uniform(i, 8), lights[i].indirect ? 1.0f : 0.0f);
                 if (lights[i].sun && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
                     sun_dir = gl::normalize(lights[i].dir) * -1.0f;
                     sun_color = lights[i].color;
@@ -1465,6 +1474,56 @@ private:
             bloom_b_.bind_color(0);
             screen_.draw();
         }
+        run_wide_bloom(static_cast<float>(setting(post_, passes::blur, "wide", 0.5)));
+    }
+
+    // The wide glow (bloom_down_fs): the tight bloom taken down the chain and
+    // back up, each level adding its own, then mixed into the tight bloom by
+    // `wide` - how much of the glow spreads far rather than near.
+    void run_wide_bloom(float wide) {
+        if (wide <= 0.0f || bloom_levels_ == 0) return;
+        if (!bloom_down_) {
+            bloom_down_ = std::make_unique<gl::Program>(gl::post_vs(), gl::bloom_down_fs(), "bloom down");
+            bloom_up_ = std::make_unique<gl::Program>(gl::post_vs(), gl::bloom_up_fs(), "bloom up");
+        }
+        const auto texel = [](const gl::RenderTarget& t) {
+            return std::pair{1.0f / static_cast<float>(t.width()), 1.0f / static_cast<float>(t.height())};
+        };
+        bloom_down_->use();
+        bloom_down_->set("uSource", 0);
+        const gl::RenderTarget* from = &bloom_a_;
+        for (int i = 0; i < bloom_levels_; ++i) {
+            bloom_chain_[i].bind();
+            from->bind_color(0);
+            const auto [tx, ty] = texel(*from);
+            bloom_down_->set("uTexel", tx, ty);
+            bloom_down_->set("uFirst", i == 0 ? 1.0f : 0.0f);
+            screen_.draw();
+            from = &bloom_chain_[i];
+        }
+        bloom_up_->use();
+        bloom_up_->set("uSource", 0);
+        bloom_up_->set("uWeight", 1.0f);
+        gl::glEnable(gl::GL_BLEND);
+        gl::glBlendFunc(gl::GL_ONE, gl::GL_ONE);
+        for (int i = bloom_levels_ - 1; i > 0; --i) {
+            bloom_chain_[i - 1].bind();
+            bloom_chain_[i].bind_color(0);
+            const auto [tx, ty] = texel(bloom_chain_[i]);
+            bloom_up_->set("uTexel", tx, ty);
+            screen_.draw();
+        }
+        // Every level has added the whole of the light once: their sum,
+        // divided among them, is as bright as the tight bloom it came from.
+        bloom_a_.bind();
+        bloom_chain_[0].bind_color(0);
+        const auto [tx, ty] = texel(bloom_chain_[0]);
+        bloom_up_->set("uTexel", tx, ty);
+        bloom_up_->set("uWeight", 1.0f / static_cast<float>(bloom_levels_));
+        gl::glBlendColor(0.0f, 0.0f, 0.0f, std::min(wide, 1.0f));
+        gl::glBlendFunc(gl::GL_CONSTANT_ALPHA, gl::GL_ONE_MINUS_CONSTANT_ALPHA);
+        screen_.draw();
+        gl::glDisable(gl::GL_BLEND);
     }
 
     // The last pass, and the one a change of look is most visible in. Every
@@ -1723,10 +1782,11 @@ private:
     static const char* light_uniform(std::size_t i, int field) {
         static const auto names = [] {
             static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
-                                           "uCosInner", "uCosOuter", "uLightSun", "uLightFloor"};
-            std::array<std::array<std::string, 8>, kMaxLights> n;
+                                           "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
+                                           "uLightIndirect"};
+            std::array<std::array<std::string, 9>, kMaxLights> n;
             for (std::size_t l = 0; l < kMaxLights; ++l)
-                for (int f = 0; f < 8; ++f)
+                for (int f = 0; f < 9; ++f)
                     n[l][static_cast<std::size_t>(f)] =
                         std::string(fields[f]) + "[" + std::to_string(l) + "]";
             return n;
@@ -1827,6 +1887,10 @@ private:
                static_cast<double>(std::hash<std::string>{}(e.params.get_or<std::string>(Key{"shape"}, "")) % 9973);
     }
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
+    static constexpr int kBloomLevels = 5;
+    gl::RenderTarget bloom_chain_[kBloomLevels];
+    int bloom_levels_ = 0;
+    std::unique_ptr<gl::Program> bloom_down_, bloom_up_;
     // Ambient occlusion: the resolved depth, the occlusion and its blur, and
     // the scene with it laid on. `scene_src_` is what the post chain reads.
     gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
