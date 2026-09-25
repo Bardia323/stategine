@@ -100,6 +100,16 @@ if(SG_BUILD_TESTS)
   target_link_libraries(sg_core_only PRIVATE stategine_dev)
   add_test(NAME sg_core_only COMMAND sg_core_only)
 
+  # Physics (sg/physics): rigid bodies - resting, stacking, tipping, rolling,
+  # a table turned over by its edge, a mug carried, and how long a step takes -
+  # and ropes: hanging, lying over edges, calming down, coming to rest.
+  add_executable(sg_rigid tests/test_rigid.cpp)
+  target_link_libraries(sg_rigid PRIVATE stategine_dev)
+  add_test(NAME sg_rigid COMMAND sg_rigid)
+  add_executable(sg_rope tests/test_rope.cpp)
+  target_link_libraries(sg_rope PRIVATE stategine_dev)
+  add_test(NAME sg_rope COMMAND sg_rope)
+
   # The laws on live data, each one shown both holding and breaking.
   add_executable(sg_laws tests/test_laws.cpp)
   target_link_libraries(sg_laws PRIVATE stategine_dev)

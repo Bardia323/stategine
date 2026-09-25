@@ -8,6 +8,10 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Physics** (`sg/physics`): solvers a state steps in its own arrows, on plain data it keeps in its params, so the laws can run them again from any moment.
+  - `sg/physics/Rigid.hpp` (`sg::rigid`): rigid bodies - convex hulls, contacts found by separating axes and kept from step to step, a soft-step impulse solver in substeps, friction, bounce, islands that sleep, and a hand that holds a body by a spring at a point of it. Moved here from stategine-lab, where the dev room's loose things have used it; its tests come with it (`sg_rigid`).
+  - `sg/physics/Rope.hpp` (`sg::rope`): a rope of equal links between two ends - damped by the air and by itself (a pull runs along it once and dies, no ripples), resisting bending evenly, never stretching (each joint within the rope's length of either end), led in substeps when an end moves far, lying on the floor and over blocks and lumps and never passing through them (a link leaving a top leaves at its edge), gripped where it lies. `Rope::laid` lays one out at its whole length; `Rope::within` keeps a thing on its end within reach. Tests: `sg_rope`.
+
 - **Rooms of any finish.** A room's floor and ceiling take `floor_surface` and `ceiling_surface` (and `ceiling_r/g/b`); a wall element takes `surface`. New materials laid in the room's own metres, so they keep their size on any surface: 10 planks, 11 concrete, 12 checker, 13 brick, 14 carpet, 15 metal plate, 16 grass.
 - **The attended state's look.** `GLWorldView::attend(state)` lays the active look of the state the viewer is attending to (an interface they sit at) over every room's own, blended by the look fader like any look. `uDim` in a scene look dims everything but a CRT screen's picture - eyes adjusting to a screen held close.
 

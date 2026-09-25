@@ -360,6 +360,9 @@ include/sg/
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
   domains/   what a state is about: Spatial, Atlas, Console, Surface, Look
+  physics/   solvers a state can step in its arrows, plain data in and out:
+    Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)
+    Rope.hpp  (sg::rope: cords that hang, lie over edges, never pass through)
   render/    how a state is shown: Ascii, GLWorld
   gl/        the GL backend
   sg.hpp     umbrella for core + domains (renderers are opt-in)
