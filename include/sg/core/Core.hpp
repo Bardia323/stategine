@@ -324,6 +324,12 @@ struct Vec3d {
     double x = 0, y = 0, z = 0;
 };
 
+// The arithmetic every world needs of a point, once, here - so no two of them
+// write it out and disagree.
+inline Vec3d operator+(const Vec3d& a, const Vec3d& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline Vec3d operator-(const Vec3d& a, const Vec3d& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline Vec3d operator*(const Vec3d& a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+
 // --- one rotation, one heading ----------------------------------------------
 // Every sign error this engine has shipped came from writing a rotation out by
 // hand a second time, or from two places disagreeing about what an angle is
