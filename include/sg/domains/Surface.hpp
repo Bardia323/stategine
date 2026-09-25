@@ -17,6 +17,8 @@ namespace sg {
 
 class Surface2D : public Spatial2D {
 public:
+    void on_restored() override { invalidate(); }
+
     Surface2D(Key id, int cols, int rows, int cell_px = 24)
         : Spatial2D(id, cols, rows), cell_(cell_px) {
         set_integrating(false);  // an interface is edited, not simulated

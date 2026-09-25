@@ -214,7 +214,12 @@ public:
             for (std::size_t i = 0; i < morphisms_.size(); ++i)
                 by_trigger_[morphisms_[i].trigger].push_back(i);
         }
+        on_restored();
     }
+
+    // Put back as it was (restore): whatever a state keeps that follows from
+    // its data - a picture, a cache - made to follow it again.
+    virtual void on_restored() {}
 
     // --- events -------------------------------------------------------------
     void emit(Event e) {

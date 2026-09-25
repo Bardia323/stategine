@@ -112,6 +112,16 @@ public:
         return body(id, {x, y, z}, kinds::mesh, glyph);
     }
 
+    // A mesh that stays where it is put: architecture, a leaf of a tree, a
+    // part hung off an anchor. No velocity, so no arrow of its own - a world
+    // built of thousands of them costs its laws, and its frames, nothing.
+    // (Move it through its anchor, or by setting where it is.)
+    Element& fixture(Key id, double x, double y, double z) {
+        Element& e = add_element(id, kinds::mesh);
+        set_position(e, {x, y, z});
+        return e;
+    }
+
     // A light is an element like any other, so morphisms can move it.
     Element& light(Key id, Vec3d pos, double r = 1.0, double g = 0.93, double b = 0.82) {
         Element& e = add_element(id, kinds::light);

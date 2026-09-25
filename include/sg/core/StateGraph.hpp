@@ -105,6 +105,7 @@ public:
 
     // --- transitions ---------------------------------------------------------
     Transition& connect(Transition t) {
+        ++revision_;
         if (t.name.empty())
             t.name = Key{t.from.str() + "-" + t.trigger.str() + "->" + t.to.str()};
         transitions_.push_back(std::move(t));
@@ -158,6 +159,7 @@ public:
 
     // --- functors -------------------------------------------------------------
     Functor& add_functor(Functor f) {
+        ++revision_;
         const Key name = f.name();
         if (name.empty()) throw std::runtime_error("functor needs a name");
         if (functors_.count(name)) throw std::runtime_error("duplicate functor " + name.str());
@@ -171,6 +173,7 @@ public:
     // are rebuilt rather than declared, so that they cannot drift out of step
     // with what they describe.
     Functor& set_functor(Functor f) {
+        ++revision_;
         const Key name = f.name();
         if (name.empty()) throw std::runtime_error("functor needs a name");
         composites_.erase(name);  // whatever it was composed from, it is not now
@@ -238,6 +241,7 @@ public:
 
     // --- embeddings ------------------------------------------------------------
     Embedding& embed(Embedding e) {
+        ++revision_;
         if (e.name.empty())
             e.name = Key{e.host.str() + "/" + e.portal.str() + ":" + e.guest.str()};
         for (const auto& x : embeddings_)
@@ -273,6 +277,20 @@ public:
         return nullptr;
     }
 
+    // Taken away: the guest no longer lives in that portal. (Close it first
+    // if it is open; a closed one leaves nothing behind.)
+    bool drop_embedding(Key name) {
+        for (auto it = embeddings_.begin(); it != embeddings_.end(); ++it)
+            if (it->name == name) {
+                embeddings_.erase(it);
+                by_host_.clear();
+                for (std::size_t i = 0; i < embeddings_.size(); ++i) by_host_[embeddings_[i].host].push_back(i);
+                ++revision_;
+                return true;
+            }
+        return false;
+    }
+
     std::deque<Embedding>& embeddings() { return embeddings_; }
     const std::deque<Embedding>& embeddings() const { return embeddings_; }
 
@@ -290,6 +308,7 @@ public:
     // Registered by name; registering the same name again replaces it (a seam
     // is rebuilt whenever its doorways move).
     Seam& add_seam(Seam s) {
+        ++revision_;
         for (Seam& have : seams_)
             if (have.name == s.name) return have = std::move(s);
         seams_.push_back(std::move(s));
@@ -298,6 +317,7 @@ public:
     // Unglued: the two sides are no longer one place, and nothing holds them
     // to agree.
     void drop_seam(Key name) {
+        ++revision_;
         for (auto it = seams_.begin(); it != seams_.end(); ++it)
             if (it->name == name) {
                 seams_.erase(it);
@@ -311,7 +331,44 @@ public:
         return nullptr;
     }
 
-    void set_initial(Key id) { initial_ = id; }
+    void set_initial(Key id) {
+        initial_ = id;
+        ++revision_;
+    }
+    // Counts every change to what the graph is made of - a state, an arrow
+    // between states, an embedding, a seam - so whoever checks it knows when
+    // it must look again.
+    uint64_t revision() const { return revision_; }
+
+    // --- defaults ------------------------------------------------------------------
+    // Every state has a starting point - how it was when it was made - and can
+    // be put back to it. `keep_defaults` takes it for every state that has
+    // none yet (the engine does, as it starts; a state made later keeps its
+    // own when this is called again, or by `keep_default`).
+    void keep_defaults() {
+        for (const auto& kv : states_)
+            if (!defaults_.count(kv.first)) defaults_.emplace(kv.first, kv.second->snapshot());
+    }
+    void keep_default(Key id) {
+        if (State* s = find(id)) defaults_[id] = s->snapshot();
+    }
+    bool has_default(Key id) const { return defaults_.count(id) != 0; }
+    // Put `id` back as it started; with `guests`, whatever lives in its
+    // portals too, and theirs. False if it has no default.
+    bool restore_default(Key id, bool guests = false) {
+        std::set<Key> done;
+        return restore_default(id, guests, done);
+    }
+    bool restore_default(Key id, bool guests, std::set<Key>& done) {
+        auto it = defaults_.find(id);
+        State* s = find(id);
+        if (it == defaults_.end() || !s || !done.insert(id).second) return false;
+        s->restore(it->second);
+        if (guests)
+            for (const auto& e : embeddings_)
+                if (e.host == id) restore_default(e.guest, true, done);
+        return true;
+    }
     Key initial() const { return initial_; }
 
     // --- analysis -------------------------------------------------------------
@@ -430,6 +487,11 @@ public:
                 if (e.host != cur) continue;
                 if (seen.insert(e.guest).second) stack.push_back(e.guest);
             }
+            // And a room through a seam glued to it: a doorway goes both ways.
+            for (const auto& s : seams_) {
+                const Key other = s.a == cur ? s.b : s.b == cur ? s.a : Key{};
+                if (!other.empty() && seen.insert(other).second) stack.push_back(other);
+            }
         }
         return seen;
     }
@@ -488,6 +550,7 @@ private:
         if (states_.count(id)) throw std::runtime_error("duplicate state " + id.str());
         states_.emplace(id, std::move(s));
         if (initial_.empty()) initial_ = id;
+        ++revision_;
     }
 
     void check_portal_functor(std::vector<std::string>& errors, const Embedding& e, Key fname,
@@ -510,6 +573,8 @@ private:
     std::map<Key, Functor> functors_;
     std::map<Key, std::vector<Key>> composites_;
     std::deque<Embedding> embeddings_;
+    uint64_t revision_ = 0;
+    std::unordered_map<Key, State::Snapshot> defaults_;
     std::deque<Seam> seams_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     Key initial_;

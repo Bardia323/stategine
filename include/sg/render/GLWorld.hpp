@@ -15,6 +15,11 @@
 //   bind_feed(portal, Spatial3D*, w, h)              another 3D state, as a
 //                                                    picture on a screen
 //
+// And without being told: a portal with `feed` = 1 that the graph embeds a 3D
+// state in, while that embedding is open, shows it as a feed (`feed_w` x
+// `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture). What is
+// shown is what the graph declares, and only that.
+//
 // A feed is that world drawn from its own camera in its own look - every
 // pass, its composite too - at w x h, and laid on the panel as a surface is:
 // so a `crt` panel shows it through its glass. The look belongs to the world,
@@ -290,6 +295,26 @@ public:
     // different root and the same geometry is drawn from the other side.
     void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+        // Feeds the graph declares: an open embedding of a 3D state in a
+        // `feed` portal. Those it no longer declares go.
+        if (graph_) {
+            for (auto& [id, f] : feeds_) f.seen = false;
+            for (const Embedding& em : graph_->embeddings()) {
+                if (!em.open) continue;
+                auto* guest = dynamic_cast<Spatial3D*>(graph_->find(em.guest));
+                const State* host = graph_->find(em.host);
+                const Element* panel = host ? host->find(em.portal) : nullptr;
+                if (!guest || !panel || panel->params.num(Key{"feed"}, 0.0) < 0.5) continue;
+                bind_feed(em.portal, guest, static_cast<int>(panel->params.num(Key{"feed_w"}, 640.0)),
+                          static_cast<int>(panel->params.num(Key{"feed_h"}, 480.0)),
+                          panel->params.num(Key{"live"}, 1.0) > 0.5);
+                Feed& f = feeds_[em.portal];
+                f.seen = true;
+                f.from_graph = true;
+            }
+            for (auto it = feeds_.begin(); it != feeds_.end();)
+                it = it->second.from_graph && !it->second.seen ? feeds_.erase(it) : std::next(it);
+        }
         // Feeds first, each whole, into its own picture: a screen showing a
         // world shows it as it is this frame.
         for (auto& [id, f] : feeds_) {
@@ -1986,6 +2011,7 @@ private:
         Spatial3D* world = nullptr;
         int w = 0, h = 0;
         bool live = true, drawn = false;
+        bool from_graph = false, seen = false;
         gl::RenderTarget out;
         std::unique_ptr<GLWorldView> view;
     };

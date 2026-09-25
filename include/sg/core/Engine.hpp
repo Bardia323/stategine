@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <stdexcept>
+#include <string>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -29,6 +32,7 @@ public:
         if (target.empty()) throw std::runtime_error("engine: no initial state");
         stack_.clear();
         running_ = true;
+        graph_.keep_defaults();  // how everything starts, to go back to
         clock_start_ = Clock::now();
         last_ = clock_start_;
         enter(graph_.state(target), args);
@@ -119,6 +123,43 @@ public:
         return e && e->open;
     }
 
+    // Give an open embedding focus, or take it away: input goes to its guest
+    // (the innermost focused one) or back to whoever had it before.
+    void focus_embed(Key name, bool on) {
+        Embedding* e = graph_.embedding(name);
+        if (!e) return;
+        e->focus = on;
+        focus_.erase(std::remove(focus_.begin(), focus_.end(), name), focus_.end());
+        if (on && e->open) focus_.push_back(name);
+    }
+
+    // --- the graph, watched ---------------------------------------------------------
+    // States are distinct, and meet only through what the graph declares:
+    // transitions, embeddings, functors and seams. After any tick in which
+    // what the graph is made of changed, the engine checks it again
+    // (StateGraph::validate - every state reachable through an interface,
+    // every arrow's ends there, every functor lawful) - at most once a
+    // `watch_interval` of seconds - and reports what is newly wrong: to
+    // `on_problem` if set, else to stderr; with `strict`, it throws.
+    std::function<void(const std::string&)> on_problem;
+    void set_strict(bool on) { strict_ = on; }
+    void set_watch_interval(double seconds) { watch_interval_ = seconds; }
+    const std::vector<std::string>& problems() const { return problems_; }
+    // Check now, whatever changed: what is wrong, all of it.
+    std::vector<std::string> check_graph() {
+        watched_ = graph_.revision();
+        last_watch_ = elapsed();
+        std::vector<std::string> now = graph_.validate();
+        for (const std::string& p : now) {
+            if (std::find(problems_.begin(), problems_.end(), p) != problems_.end()) continue;
+            problems_.push_back(p);
+            if (on_problem) on_problem(p);
+            else std::cerr << "[sg] " << p << "\n";
+        }
+        if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
+        return now;
+    }
+
     // The guest currently receiving events, if any.
     State* focused() {
         while (!focus_.empty()) {
@@ -143,6 +184,7 @@ public:
             step_embeddings(*c, t);
         }
         if (stack_.empty()) running_ = false;
+        if (graph_.revision() != watched_ && elapsed() - last_watch_ >= watch_interval_) check_graph();
     }
 
     // Real-time loop. max_frames = 0 runs until stop() or the stack empties.
@@ -319,6 +361,10 @@ private:
     uint64_t frame_ = 0;
     bool running_ = false;
     bool trace_ = false;
+    bool strict_ = false;
+    uint64_t watched_ = ~uint64_t{0};
+    double watch_interval_ = 1.0, last_watch_ = -1e9;
+    std::vector<std::string> problems_;
 };
 
 }  // namespace sg

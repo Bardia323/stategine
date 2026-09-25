@@ -1099,6 +1099,67 @@ void test_text_and_store() {
     fs::remove_all(dir);
 }
 
+void test_the_graph_is_watched() {
+    // States meet only through what the graph declares; the engine keeps
+    // checking, and says when one floats free.
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    room.portal("screen", {0, 1, 0}, 1.0, 0.75);
+    g.set_initial("room");
+    sg::Engine engine(g);
+    std::vector<std::string> said;
+    engine.on_problem = [&](const std::string& p) { said.push_back(p); };
+    engine.set_watch_interval(0.0);
+    engine.start();
+    engine.tick(0.01);
+    check(said.empty(), "a graph of one room has nothing wrong");
+    auto& realm = g.add<sg::Spatial3D>("realm");
+    engine.tick(0.01);
+    check(!said.empty() && said.back().find("realm") != std::string::npos,
+          "a state added with no interface to it is reported as it appears");
+    g.embed(sg::Key{"screen.realm"}, room.id(), sg::Key{"screen"}, realm.id(), sg::Key{}, sg::Key{}).focus = false;
+    engine.tick(0.01);
+    check(engine.check_graph().empty(), "embedded in a portal, it is reached through it, and all is well");
+    engine.open_embed(sg::Key{"screen.realm"});
+    check(engine.focused() == nullptr, "an embedding without focus takes no input");
+    engine.focus_embed(sg::Key{"screen.realm"}, true);
+    check(engine.focused() == &realm, "given focus, its guest does");
+    engine.focus_embed(sg::Key{"screen.realm"}, false);
+    engine.close_embed(sg::Key{"screen.realm"});
+    check(g.drop_embedding(sg::Key{"screen.realm"}) && !g.embedding(sg::Key{"screen.realm"}), "an embedding can be taken away");
+    engine.set_strict(true);
+    bool threw = false;
+    try {
+        engine.check_graph();
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "strict, a graph that breaks throws");
+
+    // A room glued by a seam is reached through it.
+    sg::StateGraph h;
+    h.add<sg::Spatial3D>("a");
+    h.add<sg::Spatial3D>("b");
+    h.set_initial("a");
+    sg::Seam seam;
+    seam.name = sg::Key{"a|b"};
+    seam.a = sg::Key{"a"}, seam.b = sg::Key{"b"};
+    h.add_seam(seam);
+    check(h.reachable().count(sg::Key{"b"}) == 1, "a room glued by a seam is reachable through it");
+
+    // Every state starts somewhere, and can go back there.
+    sg::StateGraph d;
+    auto& s = d.add<sg::Spatial3D>("s");
+    s.mesh("crate", 1, 0, 1);
+    d.keep_defaults();
+    s.element(sg::Key{"crate"}).params.set(sg::keys::x, 5.0);
+    s.mesh("extra", 0, 0, 0);
+    s.params().set("mood", 3.0);
+    check(d.restore_default(sg::Key{"s"}) && s.element(sg::Key{"crate"}).params.num(sg::keys::x) == 1.0 &&
+              !s.find(sg::Key{"extra"}) && !s.params().has(sg::Key{"mood"}),
+          "restored, a state is exactly as it started");
+}
+
 void test_light() {
     const sg::Daylight noon = sg::daylight(12.0), night = sg::daylight(0.0), dusk = sg::daylight(18.0);
     check(noon.sun.y > 0.8 && noon.day > 0.99 && noon.stars < 0.01, "at noon the sun is overhead and it is day");
@@ -1359,6 +1420,7 @@ int main() {
     test_surface_and_views();
     test_looks();
     test_light();
+    test_the_graph_is_watched();
     test_text_and_store();
     test_rooms_are_adjacent();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
