@@ -1,5 +1,9 @@
 // Stategine - assertions over states, morphisms, functors, portals.
 #include <cmath>
+#include <cstdlib>
+#include <chrono>
+#include <fstream>
+#include <filesystem>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -1049,6 +1053,52 @@ void test_rooms_are_adjacent() {
 }
 
 // --- looks: how a state is shown, as states ------------------------------------------
+void test_text_and_store() {
+    // A state written out and read back is the same state.
+    sg::Spatial3D a("room a");
+    sg::Element& m = a.mesh("desk top", 1.5, 0.75, -2.0);
+    m.params.set("note", std::string("line one\nline two\twith a tab \ and a slash"))
+        .set("n", int64_t{42})
+        .set("on", true)
+        .set(sg::keys::sx, 1.0 / 3.0);
+    a.params().set("far", 99.5);
+    a.element(a.camera_id()).alive = false;
+    const std::string src = sg::to_text(a);
+    sg::Spatial3D b("room b");
+    std::string why;
+    check(sg::from_text(b, src, &why), "a state's text reads back" + (why.empty() ? "" : ": " + why));
+    const sg::Element* bm = b.find(sg::Key{"desk top"});
+    check(bm && bm->params.get_or<std::string>("note", "") == m.params.get_or<std::string>("note", "x") &&
+              bm->params.num("n") == 42 && bm->params.get_or<bool>("on", false) &&
+              bm->params.num(sg::keys::sx) == 1.0 / 3.0 && b.params().num("far") == 99.5,
+          "every value comes back exactly: text, whole numbers, flags, numbers to the last bit");
+    check(!b.element(b.camera_id()).alive, "and whether each element is there");
+    check(sg::to_text(b).substr(sg::to_text(b).find('\n')) == src.substr(src.find('\n')),
+          "and written out again, it is the same text");
+    check(!sg::from_text(b, "element x mesh\n  k q:1\n", &why) && !why.empty(), "a line it cannot read is refused");
+
+    // Texts in files: read once, written only when changed, re-read when
+    // changed from outside.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("sg_store_" + std::to_string(std::rand()));
+    sg::TextStore store;
+    store.bind("p", dir / "p.txt", "first");
+    check(*store.get("p") == "first" && fs::exists(dir / "p.txt"), "a text bound to no file yet is written there");
+    const auto stamp = fs::last_write_time(dir / "p.txt");
+    store.put("p", "first");
+    check(fs::last_write_time(dir / "p.txt") == stamp, "put the same again, the file is not touched");
+    check(store.poll(0.0).empty(), "nothing changed outside: nothing to read");
+    {
+        std::ofstream(dir / "p.txt", std::ios::trunc) << "edited by hand";
+    }
+    fs::last_write_time(dir / "p.txt", stamp + std::chrono::seconds(2));
+    const auto changed = store.poll(1.0);
+    check(changed.size() == 1 && *store.get("p") == "edited by hand", "edited outside, it is read again");
+    sg::TextStore again;
+    check(again.bind("p", dir / "p.txt", "first") == "edited by hand", "bound again, the file wins");
+    fs::remove_all(dir);
+}
+
 void test_light() {
     const sg::Daylight noon = sg::daylight(12.0), night = sg::daylight(0.0), dusk = sg::daylight(18.0);
     check(noon.sun.y > 0.8 && noon.day > 0.99 && noon.stars < 0.01, "at noon the sun is overhead and it is day");
@@ -1309,6 +1359,7 @@ int main() {
     test_surface_and_views();
     test_looks();
     test_light();
+    test_text_and_store();
     test_rooms_are_adjacent();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;

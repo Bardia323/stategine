@@ -13,6 +13,8 @@
 #include "sg/core/Laws.hpp"
 #include "sg/core/State.hpp"
 #include "sg/core/StateGraph.hpp"
+#include "sg/core/Store.hpp"
+#include "sg/core/Text.hpp"
 #include "sg/core/Typed.hpp"
 #include "sg/domains/Console.hpp"
 #include "sg/domains/Light.hpp"
