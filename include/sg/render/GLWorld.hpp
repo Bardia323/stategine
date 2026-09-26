@@ -694,10 +694,12 @@ private:
             const gl::Vec3 at = to_vec3(compose_pose(placed.pose, door).position);
             const gl::Vec3 across_door = to_vec3(across(door.yaw + placed.pose.yaw));
             const gl::Vec3 into = to_vec3(heading(door.yaw + placed.pose.yaw));  // a portal faces into its own room
-            // Whatever stands in the opening - a door shut in it - keeps out
-            // as much of what comes through as it covers.
-            const float open = 1.0f - covered(room, e, door, half_w, half_h);
-            if (open <= 0.01f) continue;
+            // A door shut in the opening lets nothing through. Ajar, what
+            // comes through throws the leaf's shadow (its own shadow map);
+            // `open` is only for a light past the maps there are.
+            bool shut = false;
+            const float open = 1.0f - covered(room, e, door, half_w, half_h, shut);
+            if (shut) continue;
             const auto gate = [&](Light& l) {
                 l.gated = true;
                 l.gate_at = at, l.gate_across = across_door, l.gate_in = into, l.gate_w = half_w, l.gate_h = half_h;
@@ -749,11 +751,14 @@ private:
 
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the
-    // opening's plane, seen square on to it. A door shut in its frame covers
-    // it all; swung open it is edge on, and covers a sliver.
-    float covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h) const {
+    // opening's plane, seen square on to it - the most any one of them does
+    // (a door's panels lie on its slab: covering the same, not more). A door
+    // shut in its frame covers it all; swung open it is edge on, and covers
+    // a sliver. `shut`: something lying flat in the opening fills it.
+    float covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h, bool& shut) const {
         const Vec3d a = across(door.yaw), n = heading(door.yaw);
-        float sum = 0.0f;
+        float most = 0.0f;
+        shut = false;
         for (const auto& e : room.elements()) {
             if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.id == portal.id) continue;
             if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
@@ -774,9 +779,11 @@ private:
             if (d1 < -0.25f || d0 > 0.25f) continue;
             const float w = std::max(0.0f, std::min(u1, half_w) - std::max(u0, -half_w));
             const float h = std::max(0.0f, std::min(v1, half_h) - std::max(v0, -half_h));
-            sum += w * h;
+            const float part = w * h / (4.0f * half_w * half_h);
+            most = std::max(most, part);
+            if (part > 0.95f && d1 - d0 < 0.1f) shut = true;
         }
-        return std::clamp(sum / (4.0f * half_w * half_h), 0.0f, 1.0f);
+        return std::clamp(most, 0.0f, 1.0f);
     }
 
     // Every lamp that lights these rooms, strongest first: the first four of

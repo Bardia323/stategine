@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <tuple>
 #include <vector>
 
 #include "sg/gl/Window.hpp"
@@ -58,6 +60,17 @@ int main() {
     sg::Element& slab = near.fixture("slab", 0.0, -0.05, 0.0);
     slab.params.set(sg::keys::sx, 1.1).set(sg::keys::sy, 2.1).set(sg::keys::sz, 0.05);
     sg::attach_to(slab, "hinge");
+    // A door as doors are made: a leaf on a hinge at one side of the
+    // opening, with panels standing proud of it on both faces (they cover
+    // what the leaf covers - no more).
+    near.anchor("door_hinge", {6.5, 0.0, 30.0});
+    for (const auto& [id, y, z, sy, sz] : {std::tuple{"leaf", -0.05, 0.0, 2.1, 0.04}, std::tuple{"panel_a", 0.1, 0.03, 0.8, 0.02},
+                                          std::tuple{"panel_b", 1.0, 0.03, 0.8, 0.02}, std::tuple{"panel_c", 0.1, -0.03, 0.8, 0.02},
+                                          std::tuple{"panel_d", 1.0, -0.03, 0.8, 0.02}}) {
+        sg::Element& p = near.fixture(id, 0.5, y, z);
+        p.params.set(sg::keys::sx, id == std::string("leaf") ? 1.0 : 0.8).set(sg::keys::sy, sy).set(sg::keys::sz, sz);
+        sg::attach_to(p, "door_hinge");
+    }
 
     sg::Element& eye = near.camera();
     eye.params.set(sg::keys::x, 7.0).set(sg::keys::y, 1.6).set(sg::keys::z, 3.5).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, -0.55);
@@ -83,6 +96,16 @@ int main() {
     near.element("slab").params.set(sg::keys::sx, 0.55).set(sg::keys::x, -0.25);
     shot();
     const double left = floor_brightness(W, H, 0.3, 0.45), right = floor_brightness(W, H, 0.55, 0.7);
+    near.element("hinge").params.set(sg::keys::z, 30.0);
+    // The door swung open a little at a time: the light comes in as it
+    // opens, more the wider it is - not only once it is wide open.
+    near.element("door_hinge").params.set(sg::keys::z, 0.3);
+    std::vector<double> swing;
+    for (int deg : {0, 15, 30, 45, 60, 75, 90}) {
+        near.element("door_hinge").params.set(sg::keys::yaw, deg * 3.14159265 / 180.0);
+        swing.push_back(shot());
+    }
+    near.element("door_hinge").params.set(sg::keys::z, 30.0);
 
     std::printf("floor by the doorway: open %.1f, light = 0 %.1f, shut %.1f; half shut: left %.1f right %.1f\n", through,
                 none, shut, left, right);
@@ -95,5 +118,11 @@ int main() {
     check(shut < none + 2.0, "a slab shut in the opening keeps it out, hung off a hinge as a door is");
     check(std::abs(right - left) > 40.0 && std::min(left, right) < none + 20.0,
           "half shut, it throws a shadow the shape of what is in the way");
+    std::printf("a door swung open 0..90 degrees:");
+    for (double b : swing) std::printf(" %.1f", b);
+    std::printf("\n");
+    bool grows = swing.front() < none + 2.0 && swing[2] > none + 15.0;
+    for (std::size_t i = 1; i < swing.size(); ++i) grows = grows && swing[i] >= swing[i - 1] - 3.0;
+    check(grows, "a door opening lets the light in as it opens, more the wider it is");
     return ok ? 0 : 1;
 }

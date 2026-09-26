@@ -6,7 +6,10 @@
 // that do not move - the floor, the walls, a bookcase - are bodies too, of no
 // mass. Each step:
 //
-//   collide   every pair that can touch, by their boxes; then, hull against
+//   collide   every pair that can touch, by their boxes - found by sweeping
+//             along x (sweep and prune: only boxes whose spans along x meet
+//             are compared, and a thing at rest is never compared with
+//             another at rest); then, hull against
 //             hull, the axis they are least deep along (faces of either, or
 //             an edge of each: the separating axis test), and where they
 //             touch - the face of one clipped by the other's, up to four
@@ -21,6 +24,13 @@
 //   sleep     bodies touching each other are an island; an island that has
 //             lain still a moment sleeps, costs nothing, and wakes when
 //             something moving touches it.
+//
+// Joints hold two bodies together (or one to the room): at a point (a
+// ball), and turning only about an axis (a hinge - a door, a wheel), with
+// limits to how far, a motor to drive it and a spring to draw it back; or
+// two points drawn to a length by a spring. They are solved with the
+// contacts, softly as they are, and join islands: what is joined sleeps and
+// wakes together.
 //
 // A hand holds a body by a soft spring at a point of it, as strong as the
 // arm: a mug comes up whole and is held square to the eye; a table taken by
@@ -660,6 +670,38 @@ inline bool ride(const Body& b, V3 x0, const M3& r0, V3 v0, double dt, V3& p, M3
     return false;
 }
 
+// --- joints ---------------------------------------------------------------------------
+// Two bodies held together at a point, `b` empty for the room itself. Made
+// by World::ball, hinge and spring, from where things are now.
+struct Joint {
+    enum Kind { Ball, Hinge, Spring };
+    Kind kind = Ball;
+    std::string a, b;   // b empty: the room
+    V3 la, lb;          // the point, in each one's frame (the room's, for the room)
+    V3 axis_a, axis_b;  // a hinge's axis, in each frame
+    V3 ref_a, ref_b;    // across the axis, in each frame: its angle is between them
+    // A hinge turns only between `lower` and `upper` (radians) if `limit`;
+    // a motor drives it at `speed` with at most `torque`; a spring draws it
+    // to `target`, `hertz` stiff, `damping` damped (1: just no overshoot).
+    bool limit = false;
+    double lower = 0, upper = 0;
+    bool motor = false;
+    double speed = 0, torque = 0;
+    bool spring = false;
+    double target = 0, hertz = 2, damping = 1;
+    double rest = 0;    // a Spring joint's length (hertz and damping as above)
+    // What it pushed with last substep, to start the next from (per substep).
+    V3 point;
+    double tilt1 = 0, tilt2 = 0, drive = 0, pull = 0, low = 0, high = 0;
+    int moving = -1;
+};
+
+// A direction across `n`, and another across both.
+inline void across_of(V3 n, V3& p1, V3& p2) {
+    p1 = normalize(std::fabs(n.x) > 0.57 ? V3{n.y, -n.x, 0} : V3{0, n.z, -n.y});
+    p2 = cross(n, p1);
+}
+
 // --- the world ------------------------------------------------------------------------
 class World {
 public:
@@ -671,6 +713,9 @@ public:
     double contact_hertz = 30; // how stiff the springs that push things apart are
     double max_push = 2.0;     // and how fast they may push, m/s
     double sleep_after = 0.5;  // s still before an island sleeps
+    // Pairs found by sweeping along x; false: every awake body against every
+    // other, as it was (to compare - the same pairs either way).
+    bool sweep = true;
 
     std::vector<Body> bodies;
 
@@ -694,6 +739,7 @@ public:
         if (it == index_.end()) return;
         const std::size_t i = it->second;
         release(id);
+        unjoin(id);
         bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(i));
         manifolds_.clear();
         index_.clear();
@@ -704,6 +750,7 @@ public:
         index_.clear();
         manifolds_.clear();
         grabs_.clear();
+        joints.clear();
     }
 
     // Put a body somewhere, as if it had always been there (not moved
@@ -740,6 +787,37 @@ public:
         for (const Body& b : bodies)
             if (b.dynamic() && b.awake) return true;
         return false;
+    }
+
+    // --- joints ----------------------------------------------------------------------
+    std::vector<Joint> joints;
+
+    // `a` and `b` (or the room, `b` empty) held together at `at`, each free
+    // to turn about it.
+    Joint& ball(const std::string& a, const std::string& b, V3 at) { return join(Joint::Ball, a, b, at, {0, 1, 0}); }
+    // Held at `at`, and turning only about `axis` - as they stand now is angle 0.
+    Joint& hinge(const std::string& a, const std::string& b, V3 at, V3 axis) { return join(Joint::Hinge, a, b, at, normalize(axis)); }
+    // The point `pa` of `a` and `pb` of `b` (or of the room) drawn to the
+    // length they are apart now, by a spring `hertz` stiff.
+    Joint& spring(const std::string& a, const std::string& b, V3 pa, V3 pb, double hertz, double damping = 1.0) {
+        Joint& j = join(Joint::Spring, a, b, pa, {0, 1, 0});
+        const Body* B = b.empty() ? nullptr : find(b);
+        j.lb = B ? transpose(B->r) * (pb - B->x) : pb;
+        j.rest = length(pb - pa), j.hertz = hertz, j.damping = damping;
+        return j;
+    }
+    // How far a hinge has turned from where it was made: `a` against `b`
+    // (a door against its frame), radians about the axis.
+    double angle(const Joint& j) const {
+        const Body* A = find(j.a);
+        const Body* B = j.b.empty() ? nullptr : find(j.b);
+        if (!A) return 0;
+        const V3 axis = A->r * j.axis_a, ra = A->r * j.ref_a, rb = B ? B->r * j.ref_b : j.ref_b;
+        return std::atan2(dot(cross(rb, ra), axis), dot(ra, rb));
+    }
+    // Whatever holds `id` to anything, let go.
+    void unjoin(const std::string& id) {
+        joints.erase(std::remove_if(joints.begin(), joints.end(), [&](const Joint& j) { return j.a == id || j.b == id; }), joints.end());
     }
 
     // --- the hand ----------------------------------------------------------------------
@@ -937,6 +1015,7 @@ private:
         std::vector<Point> pts;
         double friction = 0.5, restitution = 0.2;
         bool live = false;
+        int moving = -1;  // which of the two moved when its impulses were found (1: a, 2: b)
     };
 
     // Per body scratch for a step (kept apart from Body's public face).
@@ -948,6 +1027,13 @@ public:
     // from where it started once before.
     using Contacts = std::unordered_map<uint64_t, Manifold>;
     Contacts contacts() const { return manifolds_; }
+    // The pairs of hulls touching now, by their keys, in order.
+    std::vector<uint64_t> touching() const {
+        std::vector<uint64_t> out;
+        for (const auto& [k, m] : manifolds_) out.push_back(k);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
     void set_contacts(Contacts c) { manifolds_ = std::move(c); }
 
 private:
@@ -963,29 +1049,284 @@ private:
         for (auto& [k, m] : manifolds_) m.live = false;
         live_.clear();
         for (Body& b : bodies) b.contacts = 0;
-        const double reach = margin;
-        for (std::size_t i = 0; i < bodies.size(); ++i) {
-            Body& a = bodies[i];
-            if (!a.dynamic() || !a.awake) continue;
-            // How far it can go this step, so nothing is passed through.
-            const double sweep = length(a.v) * (1.0 / 60.0);
-            const V3 lo = a.lo - V3{reach + sweep, reach + sweep, reach + sweep}, hi = a.hi + V3{reach + sweep, reach + sweep, reach + sweep};
-            for (std::size_t j = 0; j < bodies.size(); ++j) {
-                if (j == i) continue;
-                Body& b = bodies[j];
-                if (b.dynamic() && b.awake && j < i) continue;  // (the pair is met from the other side)
-                if (b.hi.x < lo.x || b.lo.x > hi.x || b.hi.y < lo.y || b.lo.y > hi.y || b.hi.z < lo.z || b.lo.z > hi.z) continue;
-                if (b.dynamic() && !b.awake) b.place();
-                pair(std::min(i, j), std::max(i, j), margin + sweep);
-            }
-        }
+        if (sweep) sweep_pairs();
+        else every_pair();
         for (auto it = manifolds_.begin(); it != manifolds_.end();)
             it = it->second.live ? std::next(it) : manifolds_.erase(it);
         for (auto& [k, m] : manifolds_) {
             live_.push_back(&m);
             ++bodies[m.a].contacts, ++bodies[m.b].contacts;
         }
+        // The solver meets the contacts in one order, whatever found them
+        // and however the table of them grew: by the pair, then the hulls.
+        std::sort(live_.begin(), live_.end(), [](const Manifold* x, const Manifold* y) {
+            if (x->a != y->a) return x->a < y->a;
+            if (x->b != y->b) return x->b < y->b;
+            if (x->ha != y->ha) return x->ha < y->ha;
+            return x->hb < y->hb;
+        });
     }
+
+    Joint& join(Joint::Kind kind, const std::string& a, const std::string& b, V3 at, V3 axis) {
+        Joint j;
+        j.kind = kind, j.a = a, j.b = b;
+        const Body* A = find(a);
+        const Body* B = b.empty() ? nullptr : find(b);
+        const M3 ta = A ? transpose(A->r) : M3{}, tb = B ? transpose(B->r) : M3{};
+        j.la = A ? ta * (at - A->x) : at;
+        j.lb = B ? tb * (at - B->x) : at;
+        V3 p1, p2;
+        across_of(axis, p1, p2);
+        j.axis_a = ta * axis, j.axis_b = tb * axis;
+        j.ref_a = ta * p1, j.ref_b = tb * p1;
+        joints.push_back(j);
+        if (Body* x = find(a)) wake(*x);
+        if (Body* x = b.empty() ? nullptr : find(b)) wake(*x);
+        return joints.back();
+    }
+
+    // The joints, held: at their points, about their axes, within their
+    // limits, driven and sprung - a soft step as the contacts take, stiffer
+    // (`joint_hertz`); `springs` false, only what moves now is held (the
+    // relaxing pass), as for the contacts. What sleeps does not move.
+    double joint_hertz = 60.0;
+    struct Held {
+        Body* A;
+        Body* B;
+        V3 ra, rb, pa, pb;
+        double ma, mb;
+        M3 ia, ib;
+    };
+    bool held(Joint& j, Held& h) {
+        h.A = find(j.a);
+        h.B = j.b.empty() ? nullptr : find(j.b);
+        if (!h.A) return false;
+        const bool ma = moves(*h.A), mb = h.B && moves(*h.B);
+        if (!ma && !mb) return false;
+        h.ma = ma ? h.A->inv_mass : 0.0, h.mb = mb ? h.B->inv_mass : 0.0;
+        h.ia = ma ? h.A->inv_inertia() : zero3(), h.ib = mb ? h.B->inv_inertia() : zero3();
+        h.pa = h.A->x + h.A->r * j.la;
+        h.pb = h.B ? h.B->x + h.B->r * j.lb : j.lb;
+        h.ra = h.pa - h.A->com();
+        h.rb = h.B ? h.pb - h.B->com() : V3{};
+        const int moving_now = (ma ? 1 : 0) | (mb ? 2 : 0);
+        if (j.moving != moving_now) {
+            // Found against something that could not move then: not handed on.
+            j.point = {}, j.tilt1 = j.tilt2 = j.drive = j.pull = j.low = j.high = 0;
+            j.moving = moving_now;
+        }
+        return true;
+    }
+    void push(Held& h, V3 j) {
+        if (h.ma > 0) h.A->v -= j * h.ma, h.A->w -= h.ia * cross(h.ra, j);
+        if (h.mb > 0) h.B->v += j * h.mb, h.B->w += h.ib * cross(h.rb, j);
+    }
+    void twist(Held& h, V3 t) {
+        if (h.ma > 0) h.A->w -= h.ia * t;
+        if (h.mb > 0) h.B->w += h.ib * t;
+    }
+    V3 spin_between(const Held& h) const { return (h.mb > 0 ? h.B->w : V3{}) - (h.ma > 0 ? h.A->w : V3{}); }
+    V3 speed_between(const Held& h) const {
+        const V3 vb = h.mb > 0 ? h.B->v + cross(h.B->w, h.rb) : V3{};
+        const V3 va = h.ma > 0 ? h.A->v + cross(h.A->w, h.ra) : V3{};
+        return vb - va;
+    }
+    static double soft(double hz, double zeta, double h, double& ms, double& is) {
+        const double omega = 2.0 * 3.14159265358979 * hz, a1 = 2.0 * zeta + h * omega, a2 = h * omega * a1, a3 = 1.0 / (1.0 + a2);
+        ms = a2 * a3, is = a3;
+        return omega / a1;
+    }
+
+    void warm_joints() {
+        for (Joint& j : joints) {
+            Held h;
+            if (!held(j, h)) continue;
+            push(h, j.point);
+            if (j.kind == Joint::Hinge) {
+                const V3 axis = h.A->r * j.axis_a;
+                V3 p1, p2;
+                across_of(axis, p1, p2);
+                twist(h, p1 * j.tilt1 + p2 * j.tilt2 - axis * (j.drive + j.pull + j.low - j.high));
+            } else if (j.kind == Joint::Spring) {
+                const V3 d = h.pb - h.pa;
+                const double len = length(d);
+                if (len > 1e-9) push(h, d * (j.pull / len));
+            }
+        }
+    }
+
+    void solve_joints(double hstep, bool springs) {
+        double ms = 1, is = 0;
+        const double bias_rate = springs ? soft(joint_hertz, 5.0, hstep, ms, is) : 0.0;
+        if (!springs) ms = 1, is = 0;
+        for (Joint& j : joints) {
+            Held h;
+            if (!held(j, h)) continue;
+            const auto effective = [&](V3 d) {  // along d, at the points
+                const V3 xa = cross(h.ra, d), xb = cross(h.rb, d);
+                const double k = h.ma + h.mb + dot(xa, h.ia * xa) + dot(xb, h.ib * xb);
+                return k > 1e-12 ? 1.0 / k : 0.0;
+            };
+            const auto turning = [&](V3 d) {  // about d
+                const double k = dot(d, h.ia * d) + dot(d, h.ib * d);
+                return k > 1e-12 ? 1.0 / k : 0.0;
+            };
+            if (j.kind == Joint::Spring) {
+                const V3 d = h.pb - h.pa;
+                const double len = length(d);
+                if (len < 1e-9) continue;
+                const V3 n = d * (1.0 / len);
+                double sms = 1, sis = 0;
+                const double rate = soft(j.hertz, j.damping, hstep, sms, sis);
+                if (!springs) continue;  // a spring is a force, not a correction
+                const double lambda = -effective(n) * sms * (dot(speed_between(h), n) + rate * (len - j.rest)) - sis * j.pull;
+                j.pull += lambda;
+                push(h, n * lambda);
+                continue;
+            }
+            if (j.kind == Joint::Hinge) {
+                const V3 axis = h.A->r * j.axis_a, other = h.B ? h.B->r * j.axis_b : j.axis_b;
+                V3 p1, p2;
+                across_of(axis, p1, p2);
+                const V3 w = spin_between(h);
+                // Only about the axis: the other two ways, held.
+                const V3 tilt = cross(axis, other);
+                for (int k = 0; k < 2; ++k) {
+                    const V3 d = k ? p2 : p1;
+                    double& acc = k ? j.tilt2 : j.tilt1;
+                    const double lambda = -turning(d) * ms * (dot(w, d) + bias_rate * dot(tilt, d)) - is * acc;
+                    acc += lambda;
+                    twist(h, d * lambda);
+                }
+                const double m_axis = turning(axis);
+                const double theta = angle(j);
+                // Along the axis, what turns is `a` against `b`: a twist of
+                // `ax` turns `a` forward.
+                const V3 ax = axis * -1.0;
+                // The motor: towards its speed, with no more than its torque.
+                if (j.motor) {
+                    const double most = j.torque * hstep;
+                    const double want = -m_axis * (dot(spin_between(h), ax) - j.speed);
+                    const double total = std::clamp(j.drive + want, -most, most);
+                    twist(h, ax * (total - j.drive));
+                    j.drive = total;
+                }
+                // The spring: drawn back towards its angle.
+                if (j.spring && springs) {
+                    double sms = 1, sis = 0;
+                    const double rate = soft(j.hertz, j.damping, hstep, sms, sis);
+                    const double lambda = -m_axis * sms * (dot(spin_between(h), ax) + rate * std::remainder(theta - j.target, 2 * 3.14159265358979)) -
+                                          sis * j.pull;
+                    j.pull += lambda;
+                    twist(h, ax * lambda);
+                }
+                // The limits: never past them (closed at once from a gap,
+                // pushed out softly from within, as a contact is).
+                if (j.limit) {
+                    for (int side = 0; side < 2; ++side) {
+                        const double gap = side ? j.upper - theta : theta - j.lower;
+                        const double s = side ? -1.0 : 1.0;
+                        double& acc = side ? j.high : j.low;
+                        double bias = 0, lms = 1, lis = 0;
+                        if (gap > 0) bias = gap / hstep;
+                        else if (springs) bias = std::max(bias_rate * gap, -4.0), lms = ms, lis = is;
+                        const double lambda = -m_axis * lms * (s * dot(spin_between(h), ax) + bias) - lis * acc;
+                        const double total = std::max(acc + lambda, 0.0);
+                        twist(h, ax * (s * (total - acc)));
+                        acc = total;
+                    }
+                }
+            }
+            // The points held together: every way at once.
+            {
+                const V3 cdot = speed_between(h);
+                const V3 c = h.pb - h.pa;
+                const M3 xa = skew(h.ra), xb = skew(h.rb);
+                const M3 k = M3{} * (h.ma + h.mb) + xa * h.ia * transpose(xa) + xb * h.ib * transpose(xb);
+                const V3 imp = inverse(k) * (cdot + c * bias_rate) * -ms - j.point * is;
+                j.point = j.point + imp;
+                push(h, imp);
+            }
+        }
+    }
+
+    static bool moving(const Body& b) { return b.dynamic() && b.awake; }
+    // How far past its box a moving body is looked for: the margin, and as
+    // far as it can go this step, so nothing is passed through.
+    double looked_for(const Body& b) const { return margin + length(b.v) * (1.0 / 60.0); }
+
+    // A moving body `i` and any other `j`: if `i`'s box, grown by its reach,
+    // meets `j`'s, they are a pair. (Of two moving bodies, the one met first
+    // by number is the one grown.)
+    void consider(std::size_t i, std::size_t j) {
+        const Body& a = bodies[i];
+        Body& b = bodies[j];
+        const double r = looked_for(a);
+        if (b.hi.x < a.lo.x - r || b.lo.x > a.hi.x + r || b.hi.y < a.lo.y - r || b.lo.y > a.hi.y + r || b.hi.z < a.lo.z - r ||
+            b.lo.z > a.hi.z + r)
+            return;
+        if (b.dynamic() && !b.awake) b.place();
+        pair(std::min(i, j), std::max(i, j), r);
+    }
+
+    // Every moving body against every other.
+    void every_pair() {
+        for (std::size_t i = 0; i < bodies.size(); ++i) {
+            if (!moving(bodies[i])) continue;
+            for (std::size_t j = 0; j < bodies.size(); ++j) {
+                if (j == i || (moving(bodies[j]) && j < i)) continue;  // (the pair is met from the other side)
+                consider(i, j);
+            }
+        }
+    }
+
+    // Sweep and prune: the bodies in order of where their spans along x
+    // begin (a moving one's grown by its reach), kept from step to step and
+    // put back in order by insertion - little moves in a step, so that is
+    // nearly a pass over them. Going along, those whose spans have not
+    // ended yet are open; a body meets only the open ones, and a body at
+    // rest only the open ones that move.
+    void sweep_pairs() {
+        const std::size_t n = bodies.size();
+        span_lo_.resize(n);
+        span_hi_.resize(n);
+        for (std::size_t k = 0; k < n; ++k) {
+            const Body& b = bodies[k];
+            const double g = moving(b) ? looked_for(b) : 0.0;
+            span_lo_[k] = b.lo.x - g, span_hi_[k] = b.hi.x + g;
+        }
+        const auto before = [&](std::size_t a, std::size_t b) { return span_lo_[a] < span_lo_[b] || (span_lo_[a] == span_lo_[b] && a < b); };
+        if (order_.size() != n) {
+            order_.resize(n);
+            for (std::size_t k = 0; k < n; ++k) order_[k] = k;
+            std::sort(order_.begin(), order_.end(), before);
+        } else {
+            for (std::size_t i = 1; i < n; ++i) {
+                const std::size_t v = order_[i];
+                std::size_t j = i;
+                for (; j > 0 && before(v, order_[j - 1]); --j) order_[j] = order_[j - 1];
+                order_[j] = v;
+            }
+        }
+        const auto prune = [&](std::vector<std::size_t>& open, double at) {
+            for (std::size_t i = 0; i < open.size();)
+                if (span_hi_[open[i]] < at) open[i] = open.back(), open.pop_back();
+                else ++i;
+        };
+        open_moving_.clear();
+        open_still_.clear();
+        for (std::size_t k : order_) {
+            prune(open_moving_, span_lo_[k]);
+            prune(open_still_, span_lo_[k]);
+            const bool mk = moving(bodies[k]);
+            for (std::size_t m : open_moving_) consider(mk ? std::min(m, k) : m, mk ? std::max(m, k) : k);
+            if (mk)
+                for (std::size_t st : open_still_) consider(k, st);
+            (mk ? open_moving_ : open_still_).push_back(k);
+        }
+    }
+    std::vector<std::size_t> order_, open_moving_, open_still_;  // the sweep's scratch
+    std::vector<double> span_lo_, span_hi_;
 
     void pair(std::size_t ia, std::size_t ib, double reach) {
         Body& a = bodies[ia];
@@ -1050,6 +1391,16 @@ private:
             const V3 ca = a.com(), cb = b.com();
             const M3 ia = a.dynamic() && a.awake ? a.inv_inertia() : zero3(), ib = b.dynamic() && b.awake ? b.inv_inertia() : zero3();
             const double ma = a.dynamic() && a.awake ? a.inv_mass : 0.0, mb = b.dynamic() && b.awake ? b.inv_mass : 0.0;
+            // Impulses found while one of them slept were found against a
+            // thing that could not move - a wall, as far as the other knew:
+            // woken, it must not be handed them (a marker on a tray the
+            // board was pulled from under would be flung off). Nor the
+            // other way. Whatever moves now starts from nothing.
+            const int moving = (moves(a) ? 1 : 0) | (moves(b) ? 2 : 0);
+            if (m->moving != moving) {
+                for (Point& p : m->pts) p.pn = p.pt1 = p.pt2 = 0;
+                m->moving = moving;
+            }
             const M3 rbt = transpose(b.r);
             for (Point& p : m->pts) {
                 p.ra = p.p - ca;
@@ -1099,6 +1450,7 @@ private:
 
     void warm_start() {
         for (Grab& g : grabs_) g.impulse = {}, g.spin = {};
+        warm_joints();
         for (Manifold* m : live_) {
             Body& a = bodies[m->a];
             Body& b = bodies[m->b];
@@ -1122,6 +1474,7 @@ private:
         for (int it = 0; it < iterations; ++it) {
             // The hand is a spring itself: pulled with it, not relaxed.
             if (springs) solve_grabs(h);
+            solve_joints(h, springs);
             for (Manifold* m : live_) {
                 Body& a = bodies[m->a];
                 Body& b = bodies[m->b];
@@ -1259,6 +1612,23 @@ private:
                 if (length(moving.v) > 0.05 || length(moving.w) > 0.2 || moving.grabbed) wake(bodies[a.awake ? m->b : m->a]);
             }
             parent[root(m->a)] = root(m->b);
+        }
+        // Joined things are one island: a door and its frame, a chain.
+        for (const Joint& j : joints) {
+            Body* A = find(j.a);
+            Body* B = j.b.empty() ? nullptr : find(j.b);
+            if (!A) continue;
+            // A motor driving it, or a spring not yet where it draws it: it
+            // is still on its way, however slowly (a door closing the last
+            // degree), and does not sleep.
+            if (j.kind == Joint::Hinge && ((j.motor && j.speed != 0.0) ||
+                                           (j.spring && std::fabs(std::remainder(angle(j) - j.target, 2 * 3.14159265358979)) > 0.002))) {
+                if (A->dynamic()) wake(*A);
+                if (B && B->dynamic()) wake(*B);
+            }
+            if (!B || !A->dynamic() || !B->dynamic()) continue;
+            if (A->awake != B->awake) wake(A->awake ? *B : *A);
+            parent[root(index_[A->id])] = root(index_[B->id]);
         }
         std::unordered_map<std::size_t, double> least;
         for (std::size_t i = 0; i < bodies.size(); ++i) {
