@@ -105,7 +105,7 @@ public:
 inline Key look_slot_id() { return Key{"look"}; }
 
 // `host` may be shown with `look`. The first look a state wears is its active one.
-inline Embedding& wear(StateGraph& g, Key host, Key look) {
+inline const Embedding& wear(StateGraph& g, Key host, Key look) {
     State& h = g.state(host);
     Element* slot = h.find(look_slot_id());
     if (!slot) slot = &h.add_element(look_slot_id(), kinds::look_slot);

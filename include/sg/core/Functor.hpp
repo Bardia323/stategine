@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -74,13 +75,77 @@ inline Transport then(Transport a, Transport b) {
 
 }  // namespace transport
 
+// The element halfway along a composite transport: made fresh each time, as
+// far as anything can tell - its id and kind, no params, alive - but in a
+// buffer kept for its depth of nesting, so carrying through a composite does
+// not allocate once warm.
+class Middle {
+public:
+    Middle() : depth_(depth()++) {
+        auto& p = pool();
+        if (p.size() <= depth_) p.emplace_back(new Element());
+    }
+    ~Middle() { --depth(); }
+    Middle(const Middle&) = delete;
+    Middle& operator=(const Middle&) = delete;
+
+    Element& element(const Element& like) {
+        Element& e = *pool()[depth_];
+        e.id = like.id;
+        e.kind = like.kind;
+        e.alive = true;
+        e.params.clear();
+        return e;
+    }
+
+private:
+    static std::size_t& depth() {
+        static thread_local std::size_t d = 0;
+        return d;
+    }
+    static std::vector<std::unique_ptr<Element>>& pool() {
+        static thread_local std::vector<std::unique_ptr<Element>> p;
+        return p;
+    }
+    std::size_t depth_;
+};
+
 class Functor {
 public:
     Functor() = default;
     Functor(Key name, Key from, Key to) : name_(name), from_(from), to_(to) {}
+    // A copy is the same maps, belonging to no graph until one takes it; one
+    // put in place of another keeps the place's graph.
+    Functor(const Functor& o)
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), stamp_(o.stamp_),
+          obj_(o.obj_), mor_(o.mor_), evt_(o.evt_) {}
+    Functor(Functor&& o) noexcept
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), stamp_(o.stamp_),
+          obj_(std::move(o.obj_)), mor_(std::move(o.mor_)), evt_(std::move(o.evt_)) {}
+    Functor& operator=(const Functor& o) {
+        if (this != &o) *this = Functor(o);
+        return *this;
+    }
+    Functor& operator=(Functor&& o) noexcept {
+        name_ = o.name_;
+        from_ = o.from_;
+        to_ = o.to_;
+        identity_ = o.identity_;
+        stamp_ = o.stamp_;
+        obj_ = std::move(o.obj_);
+        mor_ = std::move(o.mor_);
+        evt_ = std::move(o.evt_);
+        return *this;
+    }
 
     Key name() const { return name_; }
-    void rename(Key n) { name_ = n; }
+    void rename(Key n) {
+        name_ = n;
+        remapped("rename");
+    }
+    // Which version of its maps this functor is: new whenever an object, an
+    // arrow or an event is mapped, carried along when it is copied.
+    uint64_t stamp() const { return stamp_; }
     Key from() const { return from_; }  // source state
     Key to() const { return to_; }      // target state
 
@@ -88,6 +153,7 @@ public:
     Functor& on_object(Key src_element, Key dst_element, Transport t = nullptr) {
         refuse_if_identity("on_object");
         obj_[src_element] = ObjMap{dst_element, std::move(t)};
+        remapped("on_object");
         return *this;
     }
 
@@ -95,12 +161,14 @@ public:
     Functor& on_morphism(Key src_morphism, Key dst_morphism) {
         refuse_if_identity("on_morphism");
         mor_[src_morphism] = dst_morphism;
+        remapped("on_morphism");
         return *this;
     }
 
     // Events emitted in the source are relabelled on the way into the target.
     Functor& on_event(Key src_event, Key dst_event) {
         evt_[src_event] = dst_event;
+        remapped("on_event");
         return *this;
     }
 
@@ -164,6 +232,64 @@ public:
         }
     }
 
+    // --- application, only where something changed -------------------------------
+    // What `apply` would do, done only for the objects whose source or target
+    // has changed since the last time - which is all `apply` would change,
+    // for a transport that is what a transport should be: a function of the
+    // two elements' params, the same one each time (`put-put` checks it).
+    //
+    // A Memo is how the last time is remembered: which element went to which,
+    // found once, and the stamps both held after the transport ran (see
+    // Stamps in Core.hpp). It owns nothing and means nothing; thrown away, it
+    // is built again from the functor and the two states, by one full apply.
+    // It is rebuilt whenever the functor, or either state's list of elements,
+    // is not what it was built on.
+    struct Memo {
+        struct Pair {
+            const Element* src;
+            Element* dst;
+            const Transport* transport;
+            uint64_t src_stamp, dst_stamp;
+        };
+        const Functor* functor = nullptr;
+        const State* src = nullptr;
+        const State* dst = nullptr;
+        uint64_t functor_stamp = 0, src_structure = 0, dst_structure = 0;
+        uint64_t seen = 0;  // last_stamp() after the last pass: nothing since, nothing to do
+        std::vector<Pair> pairs;
+        bool built = false;
+        void clear() { built = false; }
+    };
+
+    // Returns how many objects were carried (every one, when the memo was
+    // built afresh).
+    std::size_t apply(const State& src, State& dst, Memo& m) const {
+        if (!m.built || m.functor != this || m.src != &src || m.dst != &dst ||
+            m.functor_stamp != stamp_ || m.src_structure != src.structure() ||
+            m.dst_structure != dst.structure()) {
+            apply(src, dst);
+            build(src, dst, m);
+            return m.pairs.size();
+        }
+        if (m.seen == last_stamp()) return 0;
+        std::size_t carried = 0;
+        for (Memo::Pair& p : m.pairs) {
+            if (p.src->params.stamp() == p.src_stamp && p.dst->params.stamp() == p.dst_stamp) continue;
+            if (p.transport && *p.transport) {
+                (*p.transport)(*p.src, *p.dst);
+            } else {
+                transport::copy_all(*p.src, *p.dst);
+            }
+            p.src_stamp = p.src->params.stamp();
+            p.dst_stamp = p.dst->params.stamp();
+            ++carried;
+        }
+        // A transport that wrote a target another pair reads makes that pair
+        // look again next time, as it must.
+        m.seen = last_stamp();
+        return carried;
+    }
+
     // Same, plus relabelled events forwarded into the target's queue.
     void apply(const State& src, State& dst, const std::vector<Event>& carry) const {
         apply(src, dst);
@@ -197,7 +323,8 @@ public:
             Transport tg = mid->second.transport;
             h.obj_[kv.first] = ObjMap{mid->second.dst,
                                       [tf, tg](const Element& s, Element& d) {
-                                          Element scratch(s.id, s.kind);
+                                          Middle held;
+                                          Element& scratch = held.element(s);
                                           if (tf) {
                                               tf(s, scratch);
                                           } else {
@@ -287,6 +414,37 @@ private:
         Transport transport;
     };
 
+    void build(const State& src, State& dst, Memo& m) const {
+        m.pairs.clear();
+        const auto pair = [&](const Element& s, Key to, const Transport* t) {
+            if (Element* d = dst.find(to)) m.pairs.push_back({&s, d, t, s.params.stamp(), d->params.stamp()});
+        };
+        if (identity_) {
+            if (&src != &dst)
+                for (const auto& s : src.elements()) pair(s, s.id, nullptr);
+        } else {
+            for (const auto& kv : obj_)
+                if (const Element* s = src.find(kv.first)) pair(*s, kv.second.dst, &kv.second.transport);
+        }
+        m.functor = this;
+        m.src = &src;
+        m.dst = &dst;
+        m.functor_stamp = stamp_;
+        m.src_structure = src.structure();
+        m.dst_structure = dst.structure();
+        m.seen = last_stamp();
+        m.built = true;
+    }
+
+    friend class StateGraph;
+
+    // Its maps changed: a new stamp, and a change to the structure of the
+    // graph that holds it, if any.
+    void remapped(const char* what) {
+        if (revision_) revision_->rewired(what);
+        stamp_ = next_stamp();
+    }
+
     void refuse_if_identity(const char* what) const {
         if (identity_)
             throw std::runtime_error("functor " + name_.str() + ": " + what +
@@ -297,9 +455,11 @@ private:
     Key from_;
     Key to_;
     bool identity_ = false;
+    uint64_t stamp_ = next_stamp();
     std::unordered_map<Key, ObjMap> obj_;
     std::unordered_map<Key, Key> mor_;
     std::unordered_map<Key, Key> evt_;
+    detail::Revision* revision_ = nullptr;  // the graph's count, once a graph holds it
 };
 
 }  // namespace sg

@@ -114,6 +114,65 @@ inline std::string to_string(const Value& v) {
 }
 
 // ---------------------------------------------------------------------------
+// Stamps: what version of its content a thing holds.
+//
+// Every change to a thing's content - a parameter set to a new value, one
+// taken away - is given the next number of one process-wide count, and the
+// thing carries it. Content copied carries its stamp with it: the stamp names
+// the content, not the place it is kept, so two things with the same stamp
+// hold the same content, and a state put back from a snapshot is, stamp for
+// stamp, what it was. That is all anything derived needs to know whether to
+// look again - a portal's sync, a law already checked, a cached path - and
+// it is never part of what a state *is*: nothing reads a stamp to decide what
+// the world does, only whether work already done still stands.
+// ---------------------------------------------------------------------------
+inline uint64_t& stamp_count() {
+    static uint64_t n = 0;
+    return n;
+}
+inline uint64_t next_stamp() { return ++stamp_count(); }
+// The newest stamp given out: if it has not moved, nothing anywhere changed.
+inline uint64_t last_stamp() { return stamp_count(); }
+
+// ---------------------------------------------------------------------------
+// A change to what the graph is made of, refused: the graph was being checked
+// (a law's trial run), and a check must not leave the world rewritten. The
+// trial is undone; the check that tried it reports it.
+// ---------------------------------------------------------------------------
+struct RewriteRefused : std::logic_error {
+    using std::logic_error::logic_error;
+};
+
+namespace detail {
+
+// Where a graph counts changes to its structure. The graph owns one and hands
+// its address to every state and functor it takes in, so a change made
+// through any of them - an element added, an object mapped - is counted where
+// it belongs, with an add. Changing a value is not a change of structure and
+// never comes here.
+struct Revision {
+    uint64_t all = 0;       // anything structural: elements and arrows too
+    uint64_t topology = 0;  // the interfaces: states, functors, embeddings, seams, transitions
+    int sealed = 0;         // > 0 while a law's trial runs
+
+    void element() noexcept { ++all; }
+    void rewired(const char* what) {
+        if (sealed)
+            throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
+        ++all;
+        ++topology;
+    }
+};
+
+}  // namespace detail
+
+// Folds a stamp into a running version of many (a state's, a law's).
+inline uint64_t mix_stamp(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return h * 0xff51afd7ed558ccdull;
+}
+
+// ---------------------------------------------------------------------------
 // Params: a small flat map. Elements carry a handful of entries, so a linear
 // scan over contiguous memory beats hashing - and there is no per-key node.
 // ---------------------------------------------------------------------------
@@ -121,14 +180,22 @@ class Params {
 public:
     using Entry = std::pair<Key, Value>;
 
+    // Setting a value it already holds is no change, and is not stamped as
+    // one: whatever follows from these params need not look again.
     Params& set(Key key, Value v) {
         if (Value* slot = slot_of(key)) {
+            if (*slot == v) return *this;
             *slot = std::move(v);
         } else {
             entries_.emplace_back(key, std::move(v));
         }
+        stamp_ = next_stamp();
         return *this;
     }
+
+    // Which version of its content this is (see Stamps above). Zero is the
+    // empty content nobody has written.
+    uint64_t stamp() const { return stamp_; }
 
     bool has(Key key) const { return slot_of(key) != nullptr; }
 
@@ -158,6 +225,7 @@ public:
             if (entries_[i].first == key) {
                 entries_[i] = std::move(entries_.back());
                 entries_.pop_back();
+                stamp_ = next_stamp();
                 return;
             }
         }
@@ -165,7 +233,11 @@ public:
 
     std::size_t size() const { return entries_.size(); }
     bool empty() const { return entries_.empty(); }
-    void clear() { entries_.clear(); }
+    void clear() {
+        if (entries_.empty()) return;
+        entries_.clear();
+        stamp_ = next_stamp();
+    }
 
     std::vector<Entry>::const_iterator begin() const { return entries_.begin(); }
     std::vector<Entry>::const_iterator end() const { return entries_.end(); }
@@ -185,6 +257,7 @@ private:
     }
 
     std::vector<Entry> entries_;
+    uint64_t stamp_ = 0;
 };
 
 // ---------------------------------------------------------------------------

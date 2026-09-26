@@ -134,10 +134,14 @@ void test_guards_and_wildcards() {
     g.add<sg::Spatial2D>("play");
     g.add<sg::Spatial2D>("dead");
     g.state("play").params().set("hp", int64_t{2});
-    auto& t = g.connect("*", "hit", "dead");
+    sg::Transition t;
+    t.from = "*";
+    t.trigger = "hit";
+    t.to = "dead";
     t.guard = [](const sg::State& from, const sg::Event&) {
         return from.params().get_or<int64_t>("hp", 1) <= 0;
     };
+    g.connect(std::move(t));
     g.set_initial("play");
 
     sg::Engine e(g);
@@ -222,7 +226,7 @@ void test_functor_roundtrip() {
     sg::Spatial2D s2b("s2b");
     check(!lossy_adj.data_defects(flat, s3b, s2b).empty(), "a lossy transport is reported");
 
-    g.connect("f2", "toggle", "f3").functor = "lift";
+    g.connect("f2", "toggle", "f3", "lift");
     g.set_initial("f2");
     sg::Engine e(g);
     e.start();
@@ -334,7 +338,7 @@ void test_embedding() {
     check(near(world.element("rock").params.num(sg::keys::x), 9.0),
           "discarded edits stay in the guest");
 
-    g.embedding("map_portal")->sync = sg::EmbedSync::Live;
+    g.set_sync("map_portal", sg::EmbedSync::Live);
     e.open_embed("map_portal");
     map.element("rock_token").params.set(sg::keys::x, 3.0);
     e.tick(0.0);
@@ -648,11 +652,12 @@ void test_seams() {
     sg::pose_carry(door, gate)(room.element("leaf"), leaf_there);
     hang(yard, sg::position_of(leaf_there), leaf_there.params.num(sg::keys::yaw));
     sg::glue_doorway(g, "doorway", "room", "door", "yard", "gate", {{"leaf", "leaf"}});
-    g.embeddings().front().in = "doorway.ab";
+    g.drop_embedding("window");  // the window, now the seam's way through
+    g.embed("window", "room", "door", "yard", "doorway.ab", sg::Key{}, sg::EmbedSync::View);
     check(sg::laws::seams(g).empty(), "glued as a seam, the doorway is sound");
     for (const auto& v : sg::laws::seams(g)) std::printf("        %s\n", v.str().c_str());
-    g.connect("room", "step_out", "yard").functor = "doorway.ab";
-    g.connect("yard", "step_in", "room").functor = "doorway.ba";
+    g.connect("room", "step_out", "yard", "doorway.ab");
+    g.connect("yard", "step_in", "room", "doorway.ba");
     check(sg::laws::seams(g).empty(), "and walking through it both ways travels along it");
 
     // The door swings on one side only: the rooms disagree about the seam.
@@ -703,7 +708,7 @@ void test_view_portal() {
         .on_object(sg::SpatialState::camera_id(), sg::SpatialState::camera_id(),
                    sg::portal_carry(room.element("door_out"), lab.element("door_in")));
     g.embed("window", "room", "door_out", "lab", "peek", sg::Key{}, sg::EmbedSync::View);
-    g.connect("room", "step_through", "lab").functor = "peek";
+    g.connect("room", "step_through", "lab", "peek");
     g.set_initial("room");
     check(g.validate().empty(), "a View portal validates");
 
@@ -1117,7 +1122,7 @@ void test_the_graph_is_watched() {
     engine.tick(0.01);
     check(!said.empty() && said.back().find("realm") != std::string::npos,
           "a state added with no interface to it is reported as it appears");
-    g.embed(sg::Key{"screen.realm"}, room.id(), sg::Key{"screen"}, realm.id(), sg::Key{}, sg::Key{}).focus = false;
+    g.set_focus(g.embed(sg::Key{"screen.realm"}, room.id(), sg::Key{"screen"}, realm.id(), sg::Key{}, sg::Key{}).name, false);
     engine.tick(0.01);
     check(engine.check_graph().empty(), "embedded in a portal, it is reached through it, and all is well");
     engine.open_embed(sg::Key{"screen.realm"});

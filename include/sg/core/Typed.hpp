@@ -301,15 +301,19 @@ Fun<A, C> compose(StateGraph& g, Key name, const Fun<B2, C>& second, const Fun<A
 // A transition is typed by the functor it carries: there is no way to put a
 // Battle -> Menu functor on a transition out of anything but Battle.
 template <class A, class B>
-Transition& connect(StateGraph& g, Key trigger, const Fun<A, B>& carry,
-                    TransitionKind kind = TransitionKind::Switch) {
-    Transition& t = g.connect(key<A>(), trigger, key<B>(), kind);
+const Transition& connect(StateGraph& g, Key trigger, const Fun<A, B>& carry,
+                          TransitionKind kind = TransitionKind::Switch) {
+    Transition t;
+    t.from = key<A>();
+    t.to = key<B>();
+    t.trigger = trigger;
+    t.kind = kind;
     t.functor = carry.name();
-    return t;
+    return g.connect(std::move(t));
 }
 
 template <class A, class B>
-Transition& connect(StateGraph& g, Key trigger, TransitionKind kind = TransitionKind::Switch) {
+const Transition& connect(StateGraph& g, Key trigger, TransitionKind kind = TransitionKind::Switch) {
     static_assert(!is_object<A>::value && !is_object<B>::value,
                   "sg: a transition runs between states");
     return g.connect(key<A>(), trigger, key<B>(), kind);
@@ -320,8 +324,8 @@ Transition& connect(StateGraph& g, Key trigger, TransitionKind kind = Transition
 // each other - a lens whose halves disagree about what they view does not
 // compile. The subject is whatever `in` starts from.
 template <class Portal, class S, class G, class G2, class S2>
-Embedding& embed(StateGraph& g, Key name, const Fun<S, G>& in, const Fun<G2, S2>& out,
-                 EmbedSync sync = EmbedSync::Commit) {
+const Embedding& embed(StateGraph& g, Key name, const Fun<S, G>& in, const Fun<G2, S2>& out,
+                       EmbedSync sync = EmbedSync::Commit) {
     static_assert(is_object<Portal>::value, "sg: a portal is an object of its host state");
     static_assert(std::is_same<G, G2>::value && std::is_same<S, S2>::value,
                   "sg: embed(in, out) needs out to run back along in: in : S -> G, out : G -> S");
@@ -333,7 +337,7 @@ Embedding& embed(StateGraph& g, Key name, const Fun<S, G>& in, const Fun<G2, S2>
 
 // A read-only window: `in` only.
 template <class Portal, class S, class G>
-Embedding& view(StateGraph& g, Key name, const Fun<S, G>& in) {
+const Embedding& view(StateGraph& g, Key name, const Fun<S, G>& in) {
     static_assert(is_object<Portal>::value, "sg: a portal is an object of its host state");
     const Key host = key<state_of<Portal>>();
     const Key subject = key<S>();

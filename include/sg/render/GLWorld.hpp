@@ -215,7 +215,7 @@ public:
     // Either way the renderer does no portal maths of its own. `back` is the
     // far side's own portal onto this one, left out of the view (it would fill
     // it); with none, any portal there bound to this room is.
-    void bind_world(Key portal_element, Spatial3D* world, Carry carry = {}, Key back = {}) {
+    void bind_world(Key portal_element, const Spatial3D* world, Carry carry = {}, Key back = {}) {
         WorldPortal& wp = worlds_[portal_element];
         wp.world = world;
         wp.carry = std::move(carry);
@@ -230,7 +230,7 @@ public:
     // Only drawn while the panel is in the room being drawn and in view.
     // Bound again with another world or size, it follows. Not `live`, it
     // holds the last picture it drew - a paused tape.
-    void bind_feed(Key portal_element, Spatial3D* world, int w, int h, bool live = true) {
+    void bind_feed(Key portal_element, const Spatial3D* world, int w, int h, bool live = true) {
         Feed& f = feeds_[portal_element];
         if (f.world != world) f.drawn = false;
         f.world = world;
@@ -284,7 +284,7 @@ public:
     }
 
     // One room, standing on its own.
-    void render(Spatial3D& world, int fb_w, int fb_h) {
+    void render(const Spatial3D& world, int fb_w, int fb_h) {
         const PlacedRoom one{&world, Pose{}, {}};
         render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
     }
@@ -301,7 +301,7 @@ public:
             for (auto& [id, f] : feeds_) f.seen = false;
             for (const Embedding& em : graph_->embeddings()) {
                 if (!em.open) continue;
-                auto* guest = dynamic_cast<Spatial3D*>(graph_->find(em.guest));
+                auto* guest = dynamic_cast<const Spatial3D*>(graph_->find(em.guest));
                 const State* host = graph_->find(em.host);
                 const Element* panel = host ? host->find(em.portal) : nullptr;
                 if (!guest || !panel || panel->params.num(Key{"feed"}, 0.0) < 0.5) continue;
@@ -337,7 +337,7 @@ public:
         ensure_targets(fb_w, fb_h);
         advance_clock();
 
-        Spatial3D& world = *rooms.front().room;
+        const Spatial3D& world = *rooms.front().room;
         // The post passes belong to the viewer, so they wear the look of the
         // room the viewer is in, and fade when that room changes.
         post_ = mix(view_key(), look_of(world));
@@ -464,7 +464,7 @@ private:
     };
 
     struct WorldPortal {
-        Spatial3D* world = nullptr;
+        const Spatial3D* world = nullptr;
         Carry carry;
         Key back;
         WorldPortal* shared = nullptr;  // this frame, showing another screen's view
@@ -483,7 +483,7 @@ private:
     };
 
     // Is any of the portal in front of the camera, and near enough to draw?
-    bool in_view(Spatial3D& world, const Element& e, const Camera& cam) const {
+    bool in_view(const Spatial3D& world, const Element& e, const Camera& cam) const {
         const Pose p = pose_of(world, e);
         const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
         const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
@@ -503,7 +503,7 @@ private:
     // from it: the far side is drawn only beyond it. The turn and shift are
     // read off the two cameras - the guest's was carried from the host's by
     // the portal's own functor, so the pair of them is that functor.
-    static HalfSpace far_side(Spatial3D& host, const Element& portal, const Element& gc) {
+    static HalfSpace far_side(const Spatial3D& host, const Element& portal, const Element& gc) {
         const Pose p = world_pose(host, portal);
         const Vec3d n = heading(p.yaw);
         const double inset = portal.params.num(Key{"inset"}, 0.06);
@@ -532,7 +532,7 @@ private:
         return f != feeds_.end() && f->second.world != nullptr;
     }
 
-    static Camera camera_of(Spatial3D& world) { return camera_of(world.camera()); }
+    static Camera camera_of(const Spatial3D& world) { return camera_of(world.camera()); }
 
     static Camera camera_of(const Element& cam) {
         Camera c;
@@ -666,7 +666,7 @@ private:
         return true;
     }
 
-    const Element* back_portal(Spatial3D& guest, Spatial3D& host) const {
+    const Element* back_portal(const Spatial3D& guest, const Spatial3D& host) const {
         for (const auto& e : guest.elements()) {
             if (e.kind != kinds::portal || !e.alive) continue;
             auto it = worlds_.find(e.id);
@@ -844,7 +844,7 @@ private:
         for (const PlacedRoom& placed : rooms) {
             if (!placed.room) continue;
             set_frame(placed.pose);
-            Spatial3D& room = *placed.room;
+            const Spatial3D& room = *placed.room;
 
             // Each room in its own look: the annex seen through the doorway
             // keeps its own fog, whichever side you stand on.
@@ -1185,7 +1185,7 @@ private:
         scene_->set("uTexModel", local.m);
     }
 
-    void draw_room(Spatial3D& world) {
+    void draw_room(const Spatial3D& world) {
         const float w = static_cast<float>(world.params().num(Key{"room_w"}, 14.0));
         const float d = static_cast<float>(world.params().num(Key{"room_d"}, 12.0));
         const float h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
@@ -1300,7 +1300,7 @@ private:
 
     // A lamp hangs from the ceiling in a housing, unless `fixture` is 0: then
     // it is only light, for a lamp whose body is modelled elsewhere.
-    void draw_lamp(Spatial3D& world, const Element& e) {
+    void draw_lamp(const Spatial3D& world, const Element& e) {
         if (e.params.num(Key{"fixture"}, 1.0) < 0.5) return;
         const gl::Vec3 pos = to_vec3(pose_of(world, e).position);
         const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
@@ -2008,7 +2008,7 @@ private:
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     struct Feed {
-        Spatial3D* world = nullptr;
+        const Spatial3D* world = nullptr;
         int w = 0, h = 0;
         bool live = true, drawn = false;
         bool from_graph = false, seen = false;

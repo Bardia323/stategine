@@ -275,6 +275,23 @@ A transition replaces the active state; an embedding nests one inside an element
 * `EmbedSync::Commit` - `out` runs on close; `close_embed(name, false)` cancels.
 * `EmbedSync::View` - `in` runs every frame, nothing comes back.
 
+"Every frame" is as the embedding's `Propagation` says (`graph.set_propagation`):
+
+* `OnChange` (the default) - only the objects whose source or target changed
+  since the direction last ran, found by their stamps; with nothing changed it
+  costs a comparison. The same result as running every frame, for a transport
+  that is a function of the two elements' params.
+* `Continuous` - every object, every frame: for a transport that reads anything
+  else (the time, another element).
+* `OnEvent` - only in a frame in which an event crossed into the guest through it.
+* `Manual` - only when `engine.sync_embed(name)` says so.
+
+An embedding is declared, then read: `embed` hands back a const view, and what
+it joins changes only through the graph (`set_sync`, `set_propagation`,
+`drop_embedding`), each counted. `set_focus(name, on)` says whether it takes
+input when opened. The subject need not be the host - a panel hanging in one
+room can act on another.
+
 Open and close with `engine.open_embed(name)` / `close_embed(name)`, or fire
 `embed.open` / `embed.close` with a `name`. A focused portal receives the
 engine's events; portals nest.
@@ -345,11 +362,64 @@ portal textures redraw only when something moved. `./build/sg_bench` here
 (512 bodies, -O2):
 
 ```
-element lookup                     103,000 k/s
-frames (512 integrator arrows)          47 k/s      ~24M arrow applications/s
+element lookup                      96,000 k/s
+frames (512 integrator arrows)          40 k/s      ~20M arrow applications/s
 functor apply (512 objects)         21,000 k/s
-frames with a live portal               11 k/s
+frames with a live portal               16 k/s      (9 k/s carrying everything every frame)
 ```
+
+**Pay when the structure changes, not while it stands.** Everything the engine
+works out and keeps is derived from the one graph, holds nothing of its own,
+and is thrown away and found again when what it was found on changes:
+
+* *Stamps.* Every change of an element's params gets the next number of one
+  count (`Params::stamp()`; setting a value it already holds is no change). A
+  stamp names content, so a copy - a snapshot, a restored default - carries it.
+  `State::structure()` is stamped when elements or arrows come or go;
+  `State::content_version()` folds a state's stamps into one number.
+* *Portals.* An embedding's route (states, functors) is resolved once per
+  change of the graph's `topology()`; its functor keeps a `Functor::Memo` of
+  which element went where and what each held, and carries only what changed.
+* *Validation.* `validate()` checks a state's arrows, a functor's endpoints and
+  reachability again only when their structure moved; `validate(false)` checks
+  everything, to compare.
+* *Laws.* A `LawCache` keeps each equation's answer with the versions of what
+  its paths read (`verify(graph, cache)`), reuses a side of an equation that is
+  unchanged when the other is not, and checks directly an equation that is
+  cheaper to run than to keep or never comes out the same twice. Without a
+  cache, `verify` is still faster: a side's end state is taken, not copied,
+  and sides that left the same stamps agree without a value compared.
+
+`./build/sg_bench_scale` measures all of it at 1K..1M objects against the
+plain way (`--quick`, `--big`, or case numbers). Some of what it shows: a Live
+portal of 100K objects costs 0.5 ms a frame idle and 1.6 ms with 1% changing,
+against 72 ms carrying everything; with every object changing, still less
+than half. A graph verified again unchanged costs about 45% of a fresh check.
+
+## Who may change what
+
+Whoever holds the `StateGraph` - the code that builds the world, and whatever
+rewrites it as it runs - may change anything in it. Whoever holds it `const`
+may look at everything and change nothing: a const graph gives const states,
+elements, functors. The engine shows the world const (`current()`,
+`focused()`, `graph()`): a caller acts on it by firing events. A state changes
+its own data in its update and its arrows (handed the state); functors carry
+data into the state they land in; an embedding acts on its declared subject.
+
+What the graph is made of - states, their elements and arrows, functors and
+their maps, embeddings, seams, transitions - is counted by `revision()` (the
+interfaces alone by `topology()`), one add per change and nothing else;
+changing a value never counts. Embeddings, transitions, seams and arrows are
+declared and then read: nothing rewrites one in place behind the graph's back
+(`set_sync`, `set_propagation`, `set_carry`, `drop_embedding`, `set_functor`
+do it, counted). The engine checks the graph again at its next frame after the
+count moved; unchanged, it is not checked.
+
+A law's trial runs arrows on the live graph, then undoes their data. It cannot
+undo a rewritten graph, so while a trial runs the interfaces are sealed: an
+arrow that adds a functor or an embedding throws `RewriteRefused`, the trial is
+undone, and the law reports the path as not running. Elements and arrows added
+inside a state on trial are allowed - the trial takes them away again.
 
 ## Layout
 

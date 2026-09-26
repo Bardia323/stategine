@@ -115,6 +115,19 @@ if(SG_BUILD_TESTS)
   target_link_libraries(sg_laws PRIVATE stategine_dev)
   add_test(NAME sg_laws COMMAND sg_laws)
 
+  # Work kept - a portal's carry, the laws' answers, validate's - is the same
+  # as work done again: each run both ways and held to one answer.
+  add_executable(sg_incremental tests/test_incremental.cpp)
+  target_link_libraries(sg_incremental PRIVATE stategine_dev)
+  add_test(NAME sg_incremental COMMAND sg_incremental)
+
+  # Who may change what: watching is const (checked by the compiler), the
+  # legitimate ways still work - an embedding acting on a state other than
+  # its host - and structure is counted while values are not.
+  add_executable(sg_authority tests/test_authority.cpp)
+  target_link_libraries(sg_authority PRIVATE stategine_dev)
+  add_test(NAME sg_authority COMMAND sg_authority)
+
   # --- typed composition: mistakes that must not compile -------------------------
   # Each case builds as a control, so the file itself is known good. With
   # SG_EXPECT_FAIL it gains one ill-typed line, and the test passes only when the
@@ -142,4 +155,9 @@ if(SG_BUILD_TESTS)
   add_executable(sg_bench tests/bench.cpp)
   target_link_libraries(sg_bench PRIVATE stategine_dev)
   target_compile_options(sg_bench PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2>)
+
+  # How the costs grow with the world, and what each shortcut saves (or not).
+  add_executable(sg_bench_scale tests/bench_scale.cpp)
+  target_link_libraries(sg_bench_scale PRIVATE stategine_dev)
+  target_compile_options(sg_bench_scale PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2>)
 endif()

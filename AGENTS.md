@@ -82,7 +82,16 @@ CRT panel's glass is the television's. Composites share `gl::film_glsl()`,
 `godrays_glsl()`, `fxaa_glsl()`; lighting that is the same in every world
 lives in `sg/domains/Light.hpp`, not in a game.
 
-**8. Cheap by construction.** States that are idle compute nothing; repaint
+**8. Watching is const; structure is counted.** The engine and a const graph
+show the world const - act by firing events, never by writing into what
+`engine.current()` returns. Embeddings, transitions, seams and arrows are
+declared, then read; to change one, use the graph (`set_sync`,
+`set_propagation`, `set_carry`, `drop_embedding`, `set_functor`), which counts
+it. Never `const_cast` your way past this. A Live or View functor whose
+transport reads more than its two elements is declared
+`Propagation::Continuous`.
+
+**9. Cheap by construction.** States that are idle compute nothing; repaint
 only what changed. Static geometry is `Spatial3D::fixture` (no arrow, so it
 costs the laws and the frame nothing) - `mesh` is for things that move. Check
 large states' arrows count: laws cost arrows x elements.

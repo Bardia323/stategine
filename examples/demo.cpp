@@ -86,8 +86,8 @@ int main() {
 
     // --- transitions ------------------------------------------------------------
     graph.connect("boot", "start", "world2d");
-    graph.connect("world2d", "toggle", "world3d").functor = "lift";
-    graph.connect("world3d", "toggle", "world2d").functor = "flatten";
+    graph.connect("world2d", "toggle", "world3d", "lift");
+    graph.connect("world3d", "toggle", "world2d", "flatten");
     graph.push("world2d", "pause", "boot");
     graph.pop("boot", "resume");
     graph.set_initial("boot");

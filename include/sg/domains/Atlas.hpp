@@ -148,7 +148,7 @@ private:
 // the camera (portal_carry, both ways). All four functors
 // are rebuilt from the two portals, so call this again whenever a doorway
 // moves; the seam law then checks that both sides still agree.
-inline Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
+inline const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
                           const std::vector<std::pair<Key, Key>>& also = {}) {
     const Element& here = g.state(a).element(pa);
     const Element& there = g.state(b).element(pb);

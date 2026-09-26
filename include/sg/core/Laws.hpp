@@ -35,6 +35,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -183,19 +184,213 @@ struct LawOptions {
 };
 
 namespace laws {
+struct Outcome;
+}
+
+// ---------------------------------------------------------------------------
+// LawCache: what the laws found, kept for as long as it still holds.
+//
+// Checking a law runs arrows and functors on trial copies of the data. An
+// equation's answer depends only on what its paths read: the data of the
+// states they pass through, and the functors they cross. Both carry stamps
+// (see Stamps in Core.hpp), so an answer can be kept with the versions it was
+// found on, and given again while they are the same - an unchanged law then
+// costs a comparison. When only part of an equation changed, one side of it
+// may still stand, and only the other is run again: in a square
+// A -> B -> D = A -> C -> D whose B -> D was replaced, only that side runs.
+//
+// Keeping is not free: the versions are a pass over each state's elements, a
+// side kept is a copy of the state it ended in. So each equation is watched:
+// one that is cheaper to run than to keep, or that never comes out the same
+// twice (its data changes every time), is checked directly for a while, and
+// looked at again later. Direct and Incremental force one or the other - to
+// measure against, and for tests.
+//
+// Nothing here is part of what the laws say. A cache can be cleared at any
+// time; the answers are the same, only slower to find.
+// ---------------------------------------------------------------------------
+class LawCache {
+public:
+    enum class Strategy { Adaptive, Direct, Incremental };
+
+    struct Stats {
+        std::size_t equations = 0;     // equations asked about
+        std::size_t direct = 0;        // run without keeping
+        std::size_t reused = 0;        // answered from what was kept
+        std::size_t recomputed = 0;    // run again, and kept
+        std::size_t sides_reused = 0;  // one side kept, only the other run
+        double run_ns = 0;             // time spent running paths
+        double bookkeeping_ns = 0;     // time spent on versions and keys
+    };
+
+    explicit LawCache(Strategy s = Strategy::Adaptive) : strategy_(s) {}
+
+    Strategy strategy() const { return strategy_; }
+    const Stats& stats() const { return stats_; }
+    void reset_stats() { stats_ = Stats{}; }
+    void clear() {
+        entries_.clear();
+        sides_.clear();
+        side_elements_ = 0;
+    }
+    // How many elements' worth of ended states may be kept, over all sides.
+    void set_side_budget(std::size_t elements) { side_budget_ = elements; }
+    // Roughly what is kept, in bytes.
+    std::size_t memory() const {
+        std::size_t b = 0;
+        for (const auto& kv : entries_)
+            b += sizeof(Entry) + kv.first.size() + kv.second.deps.size() * 8 +
+                 kv.second.result.size() * sizeof(Violation);
+        for (const auto& kv : sides_) b += sizeof(Side) + kv.first.size() + kv.second.deps.size() * 8;
+        return b + side_elements_ * (sizeof(Element) + 64);
+    }
+
+    // --- for the laws -----------------------------------------------------------
+    // A new round of checks: versions are read afresh.
+    void begin(StateGraph& g) {
+        g_ = &g;
+        versions_.clear();
+        functor_versions_.clear();
+        for (const auto& kv : g.functors()) {
+            const uint64_t v = kv.second.stamp();
+            functor_versions_[kv.second.from()] = mix_stamp(functor_versions_[kv.second.from()], v);
+            functor_versions_[kv.second.to()] = mix_stamp(functor_versions_[kv.second.to()], v);
+        }
+        ++round_;
+    }
+
+    // What a path reads, as numbers: each state it passes through (its data,
+    // arrows included), and each functor it crosses - a registered one by its
+    // own stamp, one made on the spot (a composite made to check a law) by
+    // every functor at its two ends, since it was made from those.
+    void deps_of(const Path& p, std::vector<uint64_t>& out) {
+        Key here = p.state();
+        out.push_back(state_version(here));
+        for (const Step& s : p.steps()) {
+            if (s.kind == Step::Kind::Arrow) continue;
+            if (s.kind == Step::Kind::Transition) {
+                const Transition* t = g_->transition(s.name);
+                if (!t) {
+                    out.push_back(0);
+                    continue;
+                }
+                const Functor* f = t->functor.empty() ? nullptr : g_->functor(t->functor);
+                out.push_back(f ? f->stamp() : 0);
+                here = t->to;
+            } else if (s.functor) {
+                out.push_back(functor_version(s.functor->from()));
+                out.push_back(functor_version(s.functor->to()));
+                here = s.functor->to();
+            } else {
+                const Functor* f = g_->functor(s.name);
+                out.push_back(f ? f->stamp() : 0);
+                if (!f) continue;
+                here = f->to();
+            }
+            out.push_back(state_version(here));
+        }
+    }
+
+    struct Entry {
+        std::vector<uint64_t> deps;
+        std::vector<Violation> result;
+        double cost_ns = 0;         // what running it took, last time
+        double keep_ns = 0;         // what keeping it took, last time
+        unsigned misses = 0;        // came out needing a run, in a row
+        uint64_t direct_until = 0;  // checked directly until this round
+        bool kept = false;
+    };
+
+    struct Side {
+        std::vector<uint64_t> deps;
+        std::shared_ptr<const laws::Outcome> outcome;
+        std::size_t elements = 0;
+    };
+
+    Entry& entry(const std::string& key) { return entries_[key]; }
+    bool direct(const Entry& e) const {
+        if (strategy_ == Strategy::Direct) return true;
+        if (strategy_ == Strategy::Incremental) return false;
+        return round_ < e.direct_until;
+    }
+    // After a check: should this equation be checked directly for a while?
+    void judge(Entry& e, bool hit) {
+        if (strategy_ != Strategy::Adaptive) return;
+        e.misses = hit ? 0 : e.misses + 1;
+        // Cheaper to run than to keep, or never the same twice: stop keeping
+        // for a while, then look again - the data may have settled.
+        if (e.cost_ns < e.keep_ns || e.misses >= 4) {
+            e.direct_until = round_ + 16;
+            e.misses = 0;
+            e.kept = false;
+            e.result.clear();
+            e.deps.clear();
+        }
+    }
+
+    const Side* side(const std::string& key, const std::vector<uint64_t>& deps) const {
+        auto it = sides_.find(key);
+        if (it == sides_.end() || it->second.deps != deps) return nullptr;
+        return &it->second;
+    }
+    void keep_side(const std::string& key, std::vector<uint64_t> deps,
+                   std::shared_ptr<const laws::Outcome> o, std::size_t elements) {
+        auto it = sides_.find(key);
+        if (it != sides_.end()) {
+            side_elements_ -= it->second.elements;
+            sides_.erase(it);
+        }
+        if (side_elements_ + elements > side_budget_) return;
+        side_elements_ += elements;
+        sides_.emplace(key, Side{std::move(deps), std::move(o), elements});
+    }
+
+    Stats& tally() { return stats_; }
+
+private:
+    uint64_t state_version(Key id) {
+        const State* s = g_->find(id);
+        if (!s) return 0;
+        auto it = versions_.find(s);
+        if (it != versions_.end()) return it->second;
+        const uint64_t v = s->content_version();
+        versions_.emplace(s, v);
+        return v;
+    }
+    uint64_t functor_version(Key state) {
+        auto it = functor_versions_.find(state);
+        return it == functor_versions_.end() ? 0 : it->second;
+    }
+
+    Strategy strategy_;
+    Stats stats_;
+    StateGraph* g_ = nullptr;
+    uint64_t round_ = 0;
+    std::unordered_map<const State*, uint64_t> versions_;
+    std::unordered_map<Key, uint64_t> functor_versions_;
+    std::unordered_map<std::string, Entry> entries_;
+    std::unordered_map<std::string, Side> sides_;
+    std::size_t side_elements_ = 0, side_budget_ = 1u << 20;
+};
+
+namespace laws {
 
 // --- trial runs --------------------------------------------------------------
 // Takes a snapshot of each state the first time a path touches it and puts
-// every one of them back on destruction.
+// every one of them back on destruction. While it lives the graph's
+// interfaces are sealed (StateGraph::Sealed): data can be undone, a rewritten
+// graph could not, so a path that tries is stopped and reported instead.
 class Trial {
 public:
-    explicit Trial(StateGraph& g) : g_(g) {}
+    explicit Trial(StateGraph& g) : g_(g), sealed_(g) {}
     Trial(const Trial&) = delete;
     Trial& operator=(const Trial&) = delete;
     ~Trial() {
         for (auto& kv : saved_)
             if (State* s = g_.find(kv.first)) s->restore(std::move(kv.second));
     }
+
+    bool touched(Key id) const { return saved_.count(id) != 0; }
 
     State& touch(Key id) {
         State& s = g_.state(id);
@@ -206,6 +401,7 @@ public:
 private:
     StateGraph& g_;
     std::unordered_map<Key, State::Snapshot> saved_;
+    StateGraph::Sealed sealed_;
 };
 
 struct Outcome {
@@ -222,7 +418,7 @@ inline Params args_for(const LawOptions& o, Key trigger) {
 
 // Run `p` on the live data, record where it ended and what it left there,
 // and undo it.
-inline Outcome run(StateGraph& g, const Path& p, const Params& args) {
+inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
     Outcome out;
     Trial trial(g);
     Key here = p.state();
@@ -319,8 +515,29 @@ inline Outcome run(StateGraph& g, const Path& p, const Params& args) {
 
     out.state = here;
     out.element = at;
-    out.data = g.state(here).snapshot();
+    // What the path left, taken rather than copied where the trial is about
+    // to put the state back anyway.
+    State& end = g.state(here);
+    if (trial.touched(here)) {
+        out.data.params = end.params();
+        out.data.queue = end.bus().queued();
+        for (Element& e : end.elements()) out.data.elements.push_back(std::move(e));
+    } else {
+        out.data = end.snapshot();
+    }
     return out;
+}
+
+// The same, and a path that tries to rewrite the graph - add a functor, an
+// embedding - is stopped there, undone, and said not to run.
+inline Outcome run(StateGraph& g, const Path& p, const Params& args) {
+    try {
+        return run_steps(g, p, args);
+    } catch (const RewriteRefused& refused) {
+        Outcome out;
+        out.error = refused.what();
+        return out;
+    }
 }
 
 // Two values agree if they are the same value, where numbers - ints and
@@ -380,6 +597,22 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         return out;
     }
 
+    // Most equations hold, and most of the data neither side touched: when the
+    // two sides left the same elements, in the same order, each with the same
+    // stamp (the same content), and queued the same, they agree - found with
+    // no index built and no value compared.
+    if (l.data.elements.size() == r.data.elements.size() && l.data.queue.size() == r.data.queue.size()) {
+        bool same = true;
+        for (std::size_t i = 0; same && i < l.data.elements.size(); ++i) {
+            const Element& a = l.data.elements[i];
+            const Element& b = r.data.elements[i];
+            same = a.id == b.id && a.alive == b.alive && a.params.stamp() == b.params.stamp();
+        }
+        for (std::size_t i = 0; same && i < l.data.queue.size(); ++i)
+            same = l.data.queue[i].name == r.data.queue[i].name;
+        if (same) return out;
+    }
+
     // Elements by id, looked up rather than searched for: every element of
     // every snapshot is visited, so a scan per lookup would be quadratic.
     const auto index = [](const State::Snapshot& s) {
@@ -425,6 +658,9 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         if (a->alive != b->alive)
             at(id, "<alive>", was ? (was->alive ? "true" : "false") : "absent",
                a->alive ? "true" : "false", b->alive ? "true" : "false");
+        // The same stamp is the same content (see Stamps in Core.hpp): an
+        // element neither side wrote to needs no comparing.
+        if (a->params.stamp() == b->params.stamp()) continue;
         std::vector<Key> keys;
         for (const auto& kv : a->params) keys.push_back(kv.first);
         for (const auto& kv : b->params)
@@ -454,14 +690,97 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
     return out;
 }
 
-// Run both sides of one equation and report where they disagree.
-inline std::vector<Violation> check(StateGraph& g, const Equation& eq) {
+// Where two outcomes disagree. What the data held before is needed only to
+// say so, so it is copied only when there is something to say.
+inline std::vector<Violation> settle(StateGraph& g, const Equation& eq, const Outcome& l,
+                                     const Outcome& r) {
+    static const State::Snapshot nothing;
+    std::vector<Violation> out = diff(eq, l, r, nothing);
+    if (out.empty() || l.state.empty() || !g.find(l.state)) return out;
+    return diff(eq, l, r, g.state(l.state).snapshot());
+}
+
+// Asks the cache first: `deps` are what the answer is found on
+// (LawCache::deps_of), `find` finds it when it must be found.
+template <typename Find>
+std::vector<Violation> kept(LawCache& cache, const std::string& key,
+                            std::chrono::steady_clock::time_point asked,
+                            std::vector<uint64_t> deps, Find&& find) {
+    using clock = std::chrono::steady_clock;
+    const auto ns = [](clock::duration d) { return std::chrono::duration<double, std::nano>(d).count(); };
+    LawCache::Stats& st = cache.tally();
+    LawCache::Entry& e = cache.entry(key);
+    const auto looked = clock::now();
+    if (e.kept && e.deps == deps) {
+        ++st.reused;
+        e.keep_ns = ns(looked - asked);
+        st.bookkeeping_ns += e.keep_ns;
+        cache.judge(e, true);
+        return e.result;
+    }
+    std::vector<Violation> out = find();
+    const auto found = clock::now();
+    ++st.recomputed;
+    e.deps = std::move(deps);
+    e.result = out;
+    e.kept = true;
+    e.cost_ns = ns(found - looked);
+    st.run_ns += e.cost_ns;
+    e.keep_ns = ns(looked - asked) + ns(clock::now() - found);
+    st.bookkeeping_ns += e.keep_ns;
+    cache.judge(e, false);
+    return out;
+}
+
+inline std::vector<Violation> check_direct(StateGraph& g, const Equation& eq) {
     const Outcome l = run(g, eq.lhs, eq.args);
     const Outcome r = run(g, eq.rhs, eq.args);
-    State::Snapshot before;
-    if (!l.state.empty() && g.find(l.state)) before = g.state(l.state).snapshot();
-    return diff(eq, l, r, before);
+    return settle(g, eq, l, r);
 }
+
+// Run both sides of one equation and report where they disagree - or, with a
+// cache, say what was found before, if what it was found on still holds.
+inline std::vector<Violation> check(StateGraph& g, LawCache* cache, const Equation& eq) {
+    if (!cache || cache->strategy() == LawCache::Strategy::Direct) return check_direct(g, eq);
+    using clock = std::chrono::steady_clock;
+    const auto asked = clock::now();
+    LawCache::Stats& st = cache->tally();
+    ++st.equations;
+    const std::string args = args_str(eq.args);
+    const std::string lhs = eq.lhs.str(), rhs = eq.rhs.str();
+    const std::string key = eq.law + "|" + eq.where + "|" + lhs + "|" + rhs + "|" + args;
+    if (cache->direct(cache->entry(key))) {
+        ++st.direct;
+        const auto t = clock::now();
+        std::vector<Violation> out = check_direct(g, eq);
+        st.run_ns += std::chrono::duration<double, std::nano>(clock::now() - t).count();
+        return out;
+    }
+    std::vector<uint64_t> ldeps, rdeps;
+    cache->deps_of(eq.lhs, ldeps);
+    cache->deps_of(eq.rhs, rdeps);
+    std::vector<uint64_t> deps = ldeps;
+    deps.insert(deps.end(), rdeps.begin(), rdeps.end());
+    return kept(*cache, key, asked, std::move(deps), [&] {
+        // One side may be what it was - the same path, on the same data -
+        // even though the equation as a whole is not: run only the other.
+        const auto side = [&](const Path& p, const std::string& text, std::vector<uint64_t>& d) {
+            const std::string k = text + "|" + args;
+            if (const LawCache::Side* s = cache->side(k, d)) {
+                ++st.sides_reused;
+                return s->outcome;
+            }
+            auto o = std::make_shared<const Outcome>(run(g, p, eq.args));
+            cache->keep_side(k, std::move(d), o, o->data.elements.size());
+            return std::shared_ptr<const Outcome>(o);
+        };
+        const std::shared_ptr<const Outcome> l = side(eq.lhs, lhs, ldeps);
+        const std::shared_ptr<const Outcome> r = side(eq.rhs, rhs, rdeps);
+        return settle(g, eq, *l, *r);
+    });
+}
+
+inline std::vector<Violation> check(StateGraph& g, const Equation& eq) { return check_direct(g, eq); }
 
 inline void append(std::vector<Violation>& to, std::vector<Violation> from) {
     for (auto& v : from) to.push_back(std::move(v));
@@ -473,7 +792,9 @@ inline void append(std::vector<Violation>& to, std::vector<Violation> from) {
 // The identities are the engine's own; a unit that fails here means
 // composition with it is broken, which is exactly what used to happen when
 // the identity functor was a snapshot of an object list.
-inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {}) {
+inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {},
+                                    LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     for (Key sid : g.ids()) {
         const State& s = g.state(sid);
@@ -484,11 +805,11 @@ inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {}) 
             const Params args = args_for(o, m.trigger);
             const std::string where = sid.str() + "." + m.name.str();
             const Path f = Path(sid, dom(m)).arrow(m.name);
-            append(out, check(g, {"identity", where,
+            append(out, check(g, cache, {"identity", where,
                                   Path(sid, dom(m)).arrow(State::composite(
                                       Key{m.name.str() + ".id"}, id_dom, m, m.trigger)),
                                   f, args}));
-            append(out, check(g, {"identity", where,
+            append(out, check(g, cache, {"identity", where,
                                   Path(sid, dom(m)).arrow(State::composite(
                                       Key{"id." + m.name.str()}, m, id_cod, m.trigger)),
                                   f, args}));
@@ -498,11 +819,11 @@ inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {}) 
         const Functor& f = kv.second;
         if (!g.find(f.from()) || !g.find(f.to())) continue;
         const Path plain = Path(f.from()).functor(f.name());
-        append(out, check(g, {"identity", "functor " + f.name().str(),
+        append(out, check(g, cache, {"identity", "functor " + f.name().str(),
                               Path(f.from()).functor(Functor::compose(
                                   Functor::identity(f.from()), f, Key{f.name().str() + ".id"})),
                               plain, o.args}));
-        append(out, check(g, {"identity", "functor " + f.name().str(),
+        append(out, check(g, cache, {"identity", "functor " + f.name().str(),
                               Path(f.from()).functor(Functor::compose(
                                   f, Functor::identity(f.to()), Key{"id." + f.name().str()})),
                               plain, o.args}));
@@ -512,7 +833,9 @@ inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {}) 
 
 // (f ; g) ; h == f ; (g ; h) == f ; g ; h, for composable triples of arrows in
 // each state and of registered functors.
-inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o = {}) {
+inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o = {},
+                                    LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     for (Key sid : g.ids()) {
         const State& s = g.state(sid);
@@ -533,9 +856,9 @@ inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o =
             const std::string where =
                 sid.str() + ": " + f.name.str() + ", " + gm.name.str() + ", " + h.name.str();
             const Params args = args_for(o, t);
-            append(out, check(g, {"associativity", where, Path(sid, dom(f)).arrow(left),
+            append(out, check(g, cache, {"associativity", where, Path(sid, dom(f)).arrow(left),
                                   Path(sid, dom(f)).arrow(right), args}));
-            append(out, check(g, {"associativity", where, Path(sid, dom(f)).arrow(left),
+            append(out, check(g, cache, {"associativity", where, Path(sid, dom(f)).arrow(left),
                                   Path(sid, dom(f)).arrow(f.name).arrow(gm.name).arrow(h.name),
                                   args}));
         };
@@ -567,7 +890,7 @@ inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o =
                                                        Key{f.name().str() + ";(" +
                                                            gf.name().str() + ";" + h.name().str() +
                                                            ")"});
-                append(out, check(g, {"associativity",
+                append(out, check(g, cache, {"associativity",
                                       "functors " + f.name().str() + ", " + gf.name().str() +
                                           ", " + h.name().str(),
                                       Path(f.from()).functor(left), Path(f.from()).functor(right),
@@ -580,7 +903,9 @@ inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o =
 // A registered composite is a claim that one arrow does what a chain does.
 // For arrows the chain is recorded by State::compose, for functors by
 // StateGraph::compose_functors; either way the claim is run and checked.
-inline std::vector<Violation> composition(StateGraph& g, const LawOptions& o = {}) {
+inline std::vector<Violation> composition(StateGraph& g, const LawOptions& o = {},
+                                    LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     for (Key sid : g.ids()) {
         const State& s = g.state(sid);
@@ -602,7 +927,7 @@ inline std::vector<Violation> composition(StateGraph& g, const LawOptions& o = {
             }
             Path chain(sid, dom(m));
             for (Key k : flat) chain.arrow(k);
-            append(out, check(g, {"composition", sid.str() + "." + m.name.str(),
+            append(out, check(g, cache, {"composition", sid.str() + "." + m.name.str(),
                                   Path(sid, dom(m)).arrow(m.name), chain,
                                   args_for(o, m.trigger)}));
         }
@@ -612,7 +937,7 @@ inline std::vector<Violation> composition(StateGraph& g, const LawOptions& o = {
         if (!chain) continue;
         Path steps(kv.second.from());
         for (Key k : *chain) steps.functor(k);
-        append(out, check(g, {"composition", "functor " + kv.first.str(),
+        append(out, check(g, cache, {"composition", "functor " + kv.first.str(),
                               Path(kv.second.from()).functor(kv.first), steps, o.args}));
     }
     return out;
@@ -621,7 +946,9 @@ inline std::vector<Violation> composition(StateGraph& g, const LawOptions& o = {
 // f then F == F then F(f): a functor maps an arrow to one that does the same
 // thing on the other side. `check_laws` already holds the endpoints to this;
 // here it is the data.
-inline std::vector<Violation> functoriality(StateGraph& g, const LawOptions& o = {}) {
+inline std::vector<Violation> functoriality(StateGraph& g, const LawOptions& o = {},
+                                    LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     for (const auto& kv : g.functors()) {
         const Functor& F = kv.second;
@@ -635,7 +962,7 @@ inline std::vector<Violation> functoriality(StateGraph& g, const LawOptions& o =
             if (!a->find(dom(*f)) || !a->find(cod(*f))) return;
             if (F.image_object(dom(*f)) != dom(*Ff) || F.image_object(cod(*f)) != cod(*Ff))
                 return;  // so does check_laws
-            append(out, check(g, {"functoriality",
+            append(out, check(g, cache, {"functoriality",
                                   "functor " + F.name().str() + " on " + src.str(),
                                   Path(F.from(), dom(*f)).arrow(src).functor(F.name()),
                                   Path(F.from(), dom(*f)).functor(F.name()).arrow(dst),
@@ -656,7 +983,9 @@ inline std::vector<Violation> functoriality(StateGraph& g, const LawOptions& o =
 //   settles   get ; put, done twice, is done once.
 //   put-put   writing the same view twice is writing it once - no write-back
 //             that adds rather than sets.
-inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {}) {
+inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {},
+                                    LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     for (const Embedding& e : g.embeddings()) {
         if (e.in.empty() || e.out.empty()) continue;
@@ -669,14 +998,14 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {}) {
             continue;  // validate() names it
         const std::string where = "embedding " + e.name.str();
 
-        append(out, check(g, {"put-get", where,
+        append(out, check(g, cache, {"put-get", where,
                               Path(subject).functor(e.in).functor(e.out).functor(e.in),
                               Path(subject).functor(e.in), o.args}));
         if (e.open)
-            append(out, check(g, {"put-get", where + " (live edits)",
+            append(out, check(g, cache, {"put-get", where + " (live edits)",
                                   Path(e.guest).functor(e.out).functor(e.in), Path(e.guest),
                                   o.args}));
-        append(out, check(g, {"settles", where,
+        append(out, check(g, cache, {"settles", where,
                               Path(subject).functor(e.in).functor(e.out).functor(e.in).functor(
                                   e.out),
                               Path(subject).functor(e.in).functor(e.out), o.args}));
@@ -685,7 +1014,9 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {}) {
         // second write starts from the guest again, so it is run by hand.
         Equation eq{"put-put", where, Path(e.guest).functor(e.out).functor(e.out),
                     Path(e.guest).functor(e.out), o.args};
+        const auto put_put = [&] {
         Outcome twice, once;
+        try {
         {
             Trial t(g);
             State& guest = g.state(e.guest);
@@ -702,15 +1033,39 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {}) {
             once.state = subject;
             once.data = subj.snapshot();
         }
-        append(out, diff(eq, twice, once, g.state(subject).snapshot()));
+        } catch (const RewriteRefused& refused) {
+            twice.error = refused.what();
+        }
+        return settle(g, eq, twice, once);
+        };
+        if (!cache) {
+            append(out, put_put());
+            continue;
+        }
+        if (cache->strategy() == LawCache::Strategy::Direct) {
+            append(out, put_put());
+            continue;
+        }
+        const auto asked = std::chrono::steady_clock::now();
+        ++cache->tally().equations;
+        const std::string key = eq.law + "|" + where + "|" + eq.lhs.str();
+        if (cache->direct(cache->entry(key))) {
+            ++cache->tally().direct;
+            append(out, put_put());
+            continue;
+        }
+        std::vector<uint64_t> deps;
+        cache->deps_of(eq.lhs, deps);
+        append(out, kept(*cache, key, asked, std::move(deps), put_put));
     }
     return out;
 }
 
 // Caller-declared diagrams, against the data as it stands.
-inline std::vector<Violation> diagram(StateGraph& g, const Diagram& d) {
+inline std::vector<Violation> diagram(StateGraph& g, const Diagram& d, LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
-    for (const Equation& eq : d.equations()) append(out, check(g, eq));
+    for (const Equation& eq : d.equations()) append(out, check(g, cache, eq));
     return out;
 }
 
@@ -721,7 +1076,8 @@ inline std::vector<Violation> diagram(StateGraph& g, const Diagram& d) {
 // are the same word; this says they do the same thing, which is all a pair
 // of different words can be asked for.
 inline std::vector<Violation> adjunction(StateGraph& g, const Adjunction& adj,
-                                         const LawOptions& o = {}) {
+                                         const LawOptions& o = {}, LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
     std::vector<Violation> out;
     const State* a = g.find(adj.left().from());
     const State* b = g.find(adj.left().to());
@@ -738,7 +1094,7 @@ inline std::vector<Violation> adjunction(StateGraph& g, const Adjunction& adj,
     };
     for (const auto& e : adj.equations(*a, *b)) {
         const Key sid = e.in_a ? a->id() : b->id();
-        append(out, check(g, Equation{"adjunction", adj.name().str() + ", " + e.law,
+        append(out, check(g, cache, Equation{"adjunction", adj.name().str() + ", " + e.law,
                                       path(sid, e.at, e.lhs), path(sid, e.at, e.rhs), o.args}));
     }
     return out;
@@ -968,6 +1324,23 @@ inline LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams = {}
     laws::append(r.violations, laws::lenses(g, o));
     laws::append(r.violations, laws::seams(g));
     for (const Diagram& d : diagrams) laws::append(r.violations, laws::diagram(g, d));
+    return r;
+}
+
+// The same, keeping what it finds in `cache` and answering from it wherever
+// what an answer was found on has not changed: the report is verify's, and a
+// graph checked again unchanged costs next to nothing.
+inline LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagram>& diagrams = {},
+                        const LawOptions& o = {}) {
+    LawReport r;
+    r.structure = g.validate();
+    laws::append(r.violations, laws::identity(g, o, &cache));
+    laws::append(r.violations, laws::associativity(g, o, &cache));
+    laws::append(r.violations, laws::composition(g, o, &cache));
+    laws::append(r.violations, laws::functoriality(g, o, &cache));
+    laws::append(r.violations, laws::lenses(g, o, &cache));
+    laws::append(r.violations, laws::seams(g));
+    for (const Diagram& d : diagrams) laws::append(r.violations, laws::diagram(g, d, &cache));
     return r;
 }
 

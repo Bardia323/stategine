@@ -357,8 +357,8 @@ int main(int argc, char** argv) {
     // are derived rather than declared, moving the doorway cannot leave them
     // saying something the geometry no longer does.
     sg::as_cover(atlas, graph);
-    graph.connect("hall", "step_through", "annex").functor = "doorway.ab";
-    graph.connect("annex", "step_through", "hall").functor = "doorway.ba";
+    graph.connect("hall", "step_through", "annex", "doorway.ab");
+    graph.connect("annex", "step_through", "hall", "doorway.ba");
 
     // --- interface one: the crate map -------------------------------------------------
     auto& crate_map = graph.add<sg::Surface2D>("cratemap", kCols, kRows, 48);
@@ -438,6 +438,58 @@ int main(int argc, char** argv) {
     graph.embed("door_map", "annex", "door_map", "doormap", "door_to_map", "map_to_door",
                 sg::EmbedSync::Live, /*subject=*/"hall");
     graph.set_initial("hall");
+
+    // What the player does is fired as events and done by arrows, so the
+    // loop below only says what was pressed. Walking and looking are the
+    // camera's own arrow in each room: it turns, steps, and keeps out of the
+    // room's walls.
+    for (sg::Spatial3D* room : {&hall, &annex})
+        room->loop("walk", sg::SpatialState::camera_id(), "walk",
+                   [](sg::State& s, sg::Element& cam, sg::Element*, const sg::Event& ev) {
+                       cam.params.set(sg::keys::yaw, cam.params.num(sg::keys::yaw) + ev.args.num("turn"));
+                       cam.params.set(sg::keys::pitch,
+                                      clampd(cam.params.num(sg::keys::pitch) - ev.args.num("tilt"), -1.4, 1.4));
+                       const sg::Vec3d at = sg::position_of(cam);
+                       sg::set_position(cam, {at.x + ev.args.num("dx"), at.y, at.z + ev.args.num("dz")});
+                       sg::resolve_wall_collisions(s, cam, 0.35, 1.9);
+                   });
+    // Each room's lamp slides along the room and dims by its own arrows, and
+    // the hall's alarm is its look changing - one parameter, by an arrow.
+    for (sg::Spatial3D* room : {&hall, &annex}) {
+        room->loop("lamp.slide", "lamp", "lamp.slide",
+                   [](sg::State& s, sg::Element& lamp, sg::Element*, const sg::Event& ev) {
+                       const double w = s.params().num("room_w", 14.0);
+                       lamp.params.set(sg::keys::x, clampd(lamp.params.num(sg::keys::x) + ev.args.num("dx"), 0.8, w - 0.8));
+                   });
+        room->loop("lamp.dim", "lamp", "lamp.dim", [](sg::State&, sg::Element& lamp, sg::Element*, const sg::Event&) {
+            const double i = lamp.params.num(sg::keys::intensity, 1.0);
+            lamp.params.set(sg::keys::intensity, i > 0.6 ? 0.3 : 1.1);
+        });
+    }
+    hall.loop("alarm", sg::look_slot_id(), "alarm", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) {
+        sg::set_look(s, sg::active_look(s) == sg::Key{"hall.calm"} ? "hall.alert" : "hall.calm");
+    });
+
+    // A map's token moves by the map's arrow: the crate map's on its grid,
+    // the door map's round its ring.
+    for (const Crate& c : crates) {
+        const sg::Key tok{c.id.str() + "_tok"};
+        crate_map.loop(sg::Key{"nudge." + tok.str()}, tok, sg::Key{"nudge." + tok.str()},
+                       [](sg::State&, sg::Element& t, sg::Element*, const sg::Event& ev) {
+                           t.params.set(sg::keys::x, clampd(t.params.num(sg::keys::x) + ev.args.num("dx"), 0, kCols - 1));
+                           t.params.set(sg::keys::y, clampd(t.params.num(sg::keys::y) + ev.args.num("dy"), 0, kRows - 1));
+                       });
+    }
+    door_map.loop("ring_step", "door_tok", "ring_step",
+                  [](sg::State&, sg::Element& t, sg::Element*, const sg::Event& ev) {
+                      double st = 0;
+                      if (!cell_station(static_cast<int>(std::lround(t.params.num(sg::keys::x))),
+                                        static_cast<int>(std::lround(t.params.num(sg::keys::y))), st))
+                          return;
+                      const Cell c = station_cell(st + ev.args.num("step"));
+                      t.params.set(sg::keys::x, static_cast<double>(c.x));
+                      t.params.set(sg::keys::y, static_cast<double>(c.y));
+                  });
 
     // Structure, then every law on the data as it stands - checked and undone.
     const sg::LawReport laws = sg::verify(graph);
@@ -546,23 +598,23 @@ int main(int argc, char** argv) {
         const double dt = now - last;
         last = now;
 
-        auto* here = static_cast<sg::Spatial3D*>(engine.current());
+        // Watched, not touched: what the player does goes in as events.
+        const auto* here = static_cast<const sg::Spatial3D*>(engine.current());
         const bool in_hall = here->id() == sg::Key{"hall"};
         const bool crate_open = engine.embed_open("crate_map");
         const bool door_open = engine.embed_open("door_map");
         const bool map_open = crate_open || door_open;
-        sg::Element& cam = here->camera();
+        const sg::Element& cam = here->camera();
 
         // Everything is placed from where the viewer stands. Nothing else has
         // a position to be placed from.
         std::vector<sg::PlacedRoom> rooms = sg::place_rooms(graph, atlas, here->id());
 
+        double turn = 0, tilt = 0;
         if (window.mouse_captured() && !map_open) {
             const double sens = 0.0022;
-            cam.params.set(sg::keys::yaw, cam.params.num(sg::keys::yaw) + window.mouse_dx() * sens);
-            cam.params.set(sg::keys::pitch,
-                           clampd(cam.params.num(sg::keys::pitch) - window.mouse_dy() * sens, -1.4,
-                                  1.4));
+            turn = window.mouse_dx() * sens;
+            tilt = window.mouse_dy() * sens;
         }
 
         if (!map_open) {
@@ -580,7 +632,8 @@ int main(int argc, char** argv) {
 
             const sg::Vec3d from = sg::position_of(cam);
             const sg::Vec3d to{from.x + mx, from.y, from.z + mz};
-            sg::set_position(cam, to);
+            if (mx != 0 || mz != 0 || turn != 0 || tilt != 0)
+                engine.fire(sg::Event{"walk", sg::Params{}.set("dx", mx).set("dz", mz).set("turn", turn).set("tilt", tilt)});
 
             // Crossing the doorway swaps which room is the root. The camera is
             // carried by the same arrow that places the rooms, so the view does
@@ -590,16 +643,14 @@ int main(int argc, char** argv) {
             }
         } else if (crate_open) {
             // The crate map is a floor plan, so its token moves on a grid.
-            sg::Element& tok = crate_map.element(sg::Key{crates[sel].id.str() + "_tok"});
             double dx = 0, dy = 0;
             if (window.pressed(GLFW_KEY_D)) dx += 1;
             if (window.pressed(GLFW_KEY_A)) dx -= 1;
             if (window.pressed(GLFW_KEY_S)) dy += 1;
             if (window.pressed(GLFW_KEY_W)) dy -= 1;
-            if (dx != 0 || dy != 0) {
-                tok.params.set(sg::keys::x, clampd(tok.params.num(sg::keys::x) + dx, 0, kCols - 1));
-                tok.params.set(sg::keys::y, clampd(tok.params.num(sg::keys::y) + dy, 0, kRows - 1));
-            }
+            if (dx != 0 || dy != 0)
+                engine.fire(sg::Event{sg::Key{"nudge." + crates[sel].id.str() + "_tok"},
+                                      sg::Params{}.set("dx", dx).set("dy", dy)});
             if (window.pressed(GLFW_KEY_TAB)) {
                 sel = (sel + 1) % crates.size();
                 crate_map.set_selection(sg::Key{crates[sel].id.str() + "_tok"});
@@ -608,19 +659,10 @@ int main(int argc, char** argv) {
             // The door map is a ring, so its token steps around it. There is
             // nowhere else for a doorway to be, and an interface should not
             // offer moves its subject cannot make.
-            sg::Element& tok = door_map.element("door_tok");
             double step = 0;
             if (window.pressed(GLFW_KEY_D) || window.pressed(GLFW_KEY_S)) step += 1;
             if (window.pressed(GLFW_KEY_A) || window.pressed(GLFW_KEY_W)) step -= 1;
-            if (step != 0) {
-                double st = 0;
-                if (cell_station(static_cast<int>(std::lround(tok.params.num(sg::keys::x))),
-                                 static_cast<int>(std::lround(tok.params.num(sg::keys::y))), st)) {
-                    const Cell c = station_cell(st + step);
-                    tok.params.set(sg::keys::x, static_cast<double>(c.x));
-                    tok.params.set(sg::keys::y, static_cast<double>(c.y));
-                }
-            }
+            if (step != 0) engine.fire(sg::Event{"ring_step", sg::Params{}.set("step", step)});
         }
 
         // The crossing shot walks through at frame 30. At 60 frames a second
@@ -637,12 +679,8 @@ int main(int argc, char** argv) {
         sg::as_cover(atlas, graph);
 
         // Re-root: the active room may have changed, and the doorway may have.
-        here = static_cast<sg::Spatial3D*>(engine.current());
+        here = static_cast<const sg::Spatial3D*>(engine.current());
         rooms = sg::place_rooms(graph, atlas, here->id());
-        if (!map_open) {
-            for (const sg::PlacedRoom& placed : rooms)
-                sg::resolve_wall_collisions(*placed.room, here->camera(), 0.35, 1.9, placed.pose);
-        }
 
         const bool at_crate_map = in_hall && sg::looking_at(*here, "crate_map", 3.2, 0.5);
         const bool at_door_map = !in_hall && sg::looking_at(*here, "door_map", 3.2, 0.5);
@@ -671,22 +709,12 @@ int main(int argc, char** argv) {
             window.capture_mouse(true);
         }
 
-        sg::Element* lamp = here->find("lamp");
-        if (lamp && (window.down(GLFW_KEY_Q) || window.down(GLFW_KEY_R))) {
-            const double step = (window.down(GLFW_KEY_R) ? 3.5 : -3.5) * dt;
-            const double w = here->params().num("room_w", 14.0);
-            lamp->params.set(sg::keys::x,
-                             clampd(lamp->params.num(sg::keys::x) + step, 0.8, w - 0.8));
-        }
-        if (lamp && window.pressed(GLFW_KEY_F)) {
-            const double i = lamp->params.num(sg::keys::intensity, 1.0);
-            lamp->params.set(sg::keys::intensity, i > 0.6 ? 0.3 : 1.1);
-        }
+        if (here->find("lamp") && (window.down(GLFW_KEY_Q) || window.down(GLFW_KEY_R)))
+            engine.fire(sg::Event{"lamp.slide", sg::Params{}.set("dx", (window.down(GLFW_KEY_R) ? 3.5 : -3.5) * dt)});
+        if (here->find("lamp") && window.pressed(GLFW_KEY_F)) engine.fire("lamp.dim");
 
         // The alarm is a change of look: one parameter, faded by the renderer.
-        if (window.pressed(GLFW_KEY_L))
-            sg::set_look(hall, sg::active_look(hall) == sg::Key{"hall.calm"} ? "hall.alert"
-                                                                             : "hall.calm");
+        if (in_hall && window.pressed(GLFW_KEY_L)) engine.fire("alarm");
 
         if (window.pressed(GLFW_KEY_ESCAPE)) {
             if (window.mouse_captured()) {

@@ -191,7 +191,7 @@ void test_functors_carry_the_action_not_just_the_arrow() {
     g.add_functor("post", "shop", "ledger")
         .on_object("shelf", "book", sg::transport::only({"stock"}))
         .on_morphism("restock", "order");
-    g.connect("shop", "close", "ledger").functor = "post";
+    g.connect("shop", "close", "ledger", "post");
 
     check(g.validate().empty(), "the ledger graph is well formed");
     const auto good = sg::laws::functoriality(g);
@@ -221,7 +221,7 @@ void test_composites_cannot_drift() {
     g.add_functor("audit", "ledger", "ledger")
         .on_object("book", "book", sg::transport::swizzle({{"audited", "stock"}}, true));
     g.compose_functors("post_audited", {"post", "audit"});
-    g.connect("shop", "close", "ledger").functor = "post_audited";
+    g.connect("shop", "close", "ledger", "post_audited");
 
     const auto clean = sg::laws::composition(g);
     show(clean);
@@ -362,8 +362,8 @@ void test_transitions_in_paths() {
     ledger.add_element("book", "entry");
     g.add_functor("post", "shop", "ledger").on_object("shelf", "book", sg::transport::only({"stock"}));
     g.add_functor("reopen", "ledger", "shop").on_object("book", "shelf", sg::transport::only({"stock"}));
-    g.connect("shop", "close", "ledger").functor = "post";
-    g.connect("ledger", "open", "shop").functor = "reopen";
+    g.connect("shop", "close", "ledger", "post");
+    g.connect("ledger", "open", "shop", "reopen");
     g.pop("ledger", "back");
 
     sg::Diagram d("close and reopen");

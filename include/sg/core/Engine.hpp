@@ -8,23 +8,33 @@
 #include <string>
 #include <iostream>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "sg/core/StateGraph.hpp"
 
 namespace sg {
 
+// The engine runs the graph it is given: it enters states, routes events to
+// their arrows, carries data through embeddings and transitions. It changes
+// the world only by running what the graph declares. What it shows of the
+// world is const - the state it is in, the graph, the focused guest - so a
+// caller holding the engine watches the world and acts on it by firing
+// events, never by reaching in; whoever built the graph still holds it, and
+// with it the right to rewrite it.
 class Engine {
 public:
     explicit Engine(StateGraph& graph) : graph_(graph) {
         for (Key id : graph_.ids()) graph_.state(id).attach(this);
     }
 
-    StateGraph& graph() { return graph_; }
+    const StateGraph& graph() const { return graph_; }
 
     // --- stack ---------------------------------------------------------------
-    State* current() { return stack_.empty() ? nullptr : stack_.back(); }
-    const std::vector<State*>& stack() const { return stack_; }
+    const State* current() const { return stack_.empty() ? nullptr : stack_.back(); }
+    // The states on the stack, bottom first.
+    std::vector<const State*> stack() const { return {stack_.begin(), stack_.end()}; }
+    std::size_t depth() const { return stack_.size(); }
     bool running() const { return running_; }
 
     void start(Key id = Key{}, Params args = {}) {
@@ -47,7 +57,7 @@ public:
 
     // Direct stack operations. Prefer transitions declared in the graph.
     void switch_to(Key id, Params args = {}) {
-        if (State* c = current()) {
+        if (State* c = top()) {
             c->on_exit();
             stack_.pop_back();
         }
@@ -55,7 +65,7 @@ public:
     }
 
     void push_state(Key id, Params args = {}) {
-        if (State* c = current()) c->on_pause();
+        if (State* c = top()) c->on_pause();
         enter(graph_.state(id), args);
     }
 
@@ -74,7 +84,7 @@ public:
     // Open a portal: run `in` to build the guest's view of the host, enter the
     // guest, and (if the embedding takes focus) route events to it.
     void open_embed(Key name, Params args = {}) {
-        Embedding* e = graph_.embedding(name);
+        Embedding* e = graph_.embedding_rw(name);
         if (!e) throw std::runtime_error("no embedding " + name.str());
         if (e->open) return;
         State& host = graph_.state(e->host);
@@ -99,7 +109,7 @@ public:
     // Close it. commit=true runs `out`, writing the guest's edits into the host;
     // commit=false discards them (a cancelled interface).
     void close_embed(Key name, bool commit = true) {
-        Embedding* e = graph_.embedding(name);
+        Embedding* e = graph_.embedding_rw(name);
         if (!e || !e->open) return;
         State& host = graph_.state(e->host);
         State& guest = graph_.state(e->guest);
@@ -118,6 +128,21 @@ public:
                       << (commit ? " (commit)" : " (discard)") << "\n";
     }
 
+    // Run now what a frame runs for an embedding - a View's `in`, a Live
+    // one's `out` - whatever its propagation: synchronisation asked for.
+    void sync_embed(Key name) {
+        const Embedding* e = graph_.embedding(name);
+        if (!e || !e->open) return;
+        State* guest = graph_.find(e->guest);
+        State* subject = graph_.find(e->subject.empty() ? e->host : e->subject);
+        if (!guest || !subject) return;
+        if (e->sync == EmbedSync::View && !e->in.empty()) {
+            if (const Functor* f = graph_.functor(e->in)) f->apply(*subject, *guest);
+        } else if (e->sync == EmbedSync::Live && !e->out.empty()) {
+            if (const Functor* f = graph_.functor(e->out)) f->apply(*guest, *subject);
+        }
+    }
+
     bool embed_open(Key name) {
         const Embedding* e = graph_.embedding(name);
         return e && e->open;
@@ -126,7 +151,7 @@ public:
     // Give an open embedding focus, or take it away: input goes to its guest
     // (the innermost focused one) or back to whoever had it before.
     void focus_embed(Key name, bool on) {
-        Embedding* e = graph_.embedding(name);
+        Embedding* e = graph_.embedding_rw(name);
         if (!e) return;
         e->focus = on;
         focus_.erase(std::remove(focus_.begin(), focus_.end(), name), focus_.end());
@@ -161,11 +186,10 @@ public:
     }
 
     // The guest currently receiving events, if any.
-    State* focused() {
-        while (!focus_.empty()) {
-            Embedding* e = graph_.embedding(focus_.back());
-            if (e && e->open) return &graph_.state(e->guest);
-            focus_.pop_back();
+    const State* focused() const {
+        for (auto it = focus_.rbegin(); it != focus_.rend(); ++it) {
+            const Embedding* e = graph_.embedding(*it);
+            if (e && e->open) return graph_.find(e->guest);
         }
         return nullptr;
     }
@@ -176,7 +200,7 @@ public:
         const Tick t{dt, elapsed(), frame_++};
         process_transitions();
         if (!running_) return;
-        if (State* c = current()) {
+        if (State* c = top()) {
             // Edits made in an open Live guest since the last frame land in the
             // host before it updates, so the two never disagree within a frame.
             sync_live_out(*c);
@@ -219,45 +243,124 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
+    State* top() { return stack_.empty() ? nullptr : stack_.back(); }
+
+    // The guest receiving events, forgetting embeddings closed since.
+    State* focused_guest() {
+        while (!focus_.empty()) {
+            const Embedding* e = graph_.embedding(focus_.back());
+            if (e && e->open) return graph_.find(e->guest);
+            focus_.pop_back();
+        }
+        return nullptr;
+    }
+
     void enter(State& s, const Params& args) {
         s.attach(this);
         stack_.push_back(&s);
         s.on_enter(args);
     }
 
+    // --- routes: the embeddings of a host, looked up once ------------------------
+    // Which states and functors an embedding joins is resolved when first
+    // needed and kept until the graph's revision moves; then it is thrown
+    // away and found again. A route holds nothing of its own: pointers into
+    // the graph, and the memo of what its functor last carried (see
+    // Functor::Memo) - both derived, both disposable.
+    struct Route {
+        const Embedding* e = nullptr;
+        State* guest = nullptr;
+        State* subject = nullptr;
+        const Functor* in = nullptr;
+        const Functor* out = nullptr;
+        Functor::Memo in_memo, out_memo;
+        // Other places the same guest is shown Live, whose subjects hear of
+        // what it did too.
+        struct Also {
+            const Embedding* e;
+            State* subject;
+            const Functor* out;
+            Functor::Memo memo;
+        };
+        std::vector<Also> also;
+    };
+
+    std::vector<Route>& routes_of(State& host) {
+        if (routes_revision_ != graph_.topology()) {
+            routes_.clear();
+            routes_revision_ = graph_.topology();
+        }
+        auto it = routes_.find(&host);
+        if (it != routes_.end()) return it->second;
+        std::vector<Route>& rs = routes_[&host];
+        const auto& all = graph_.embeddings();
+        for (std::size_t i : graph_.embeddings_hosted_by(host.id())) {
+            const Embedding& e = all[i];
+            Route r;
+            r.e = &e;
+            r.guest = graph_.find(e.guest);
+            r.subject = graph_.find(e.subject.empty() ? e.host : e.subject);
+            if (!r.guest || !r.subject) continue;  // validate() names it
+            r.in = e.in.empty() ? nullptr : graph_.functor(e.in);
+            r.out = e.out.empty() ? nullptr : graph_.functor(e.out);
+            if (e.sync == EmbedSync::Live && r.out)
+                for (std::size_t j : graph_.embeddings_holding(e.guest)) {
+                    const Embedding& o = all[j];
+                    if (&o == &e || o.sync != EmbedSync::Live || o.out.empty()) continue;
+                    State* s = graph_.find(o.subject.empty() ? o.host : o.subject);
+                    const Functor* f = graph_.functor(o.out);
+                    if (s && f) r.also.push_back({&o, s, f, {}});
+                }
+            rs.push_back(std::move(r));
+        }
+        return rs;
+    }
+
+    // One direction of an embedding, run as its propagation says.
+    void carry(const Functor& f, const State& src, State& dst, Functor::Memo& memo, const Embedding& e) {
+        switch (e.propagate) {
+            case Propagation::OnChange:
+                f.apply(src, dst, memo);
+                break;
+            case Propagation::Continuous:
+                f.apply(src, dst);
+                break;
+            case Propagation::OnEvent:
+                if (std::find(due_.begin(), due_.end(), e.name) != due_.end()) f.apply(src, dst);
+                break;
+            case Propagation::Manual:
+                break;
+        }
+    }
+
     void sync_live_out(State& host) {
-        for (Embedding* e : graph_.embeddings_of(host.id())) {
-            if (!e->open || e->sync != EmbedSync::Live || e->out.empty()) continue;
-            State& subject = graph_.state(e->subject.empty() ? e->host : e->subject);
-            if (const Functor* f = graph_.functor(e->out)) f->apply(graph_.state(e->guest), subject);
+        for (Route& r : routes_of(host)) {
+            if (!r.e->open || r.e->sync != EmbedSync::Live || !r.out) continue;
+            carry(*r.out, *r.guest, *r.subject, r.out_memo, *r.e);
         }
     }
 
     // Guests of the active host tick after it. Live embeddings write back every
     // frame, Commit ones wait for close_embed, and View ones are refreshed from
-    // the host instead - nothing they do reaches back.
+    // the host instead - nothing they do reaches back. "Every frame" is as the
+    // embedding's propagation says: by default, whenever there is something
+    // to carry.
     void step_embeddings(State& host, const Tick& t) {
-        for (Embedding* e : graph_.embeddings_of(host.id())) {
-            if (!e->open) continue;
-            State& guest = graph_.state(e->guest);
-            State& subject = graph_.state(e->subject.empty() ? e->host : e->subject);
-            if (e->sync == EmbedSync::View && !e->in.empty())
-                if (const Functor* f = graph_.functor(e->in)) f->apply(subject, guest);
-            guest.step(t);
-            if (e->sync == EmbedSync::Live && !e->out.empty()) {
-                if (const Functor* f = graph_.functor(e->out)) f->apply(guest, subject);
+        std::vector<Route>& rs = routes_of(host);
+        for (Route& r : rs) {
+            if (!r.e->open) continue;
+            if (r.e->sync == EmbedSync::View && r.in) carry(*r.in, *r.subject, *r.guest, r.in_memo, *r.e);
+            r.guest->step(t);
+            if (r.e->sync == EmbedSync::Live && r.out) {
+                carry(*r.out, *r.guest, *r.subject, r.out_memo, *r.e);
                 // One guest open in several places - a door hanging in a
                 // doorway both rooms embed - is one state: what it did this
                 // frame reaches every place it is shown, not only here.
-                for (Embedding& other : graph_.embeddings()) {
-                    if (&other == e || !other.open || other.guest != e->guest ||
-                        other.sync != EmbedSync::Live || other.out.empty())
-                        continue;
-                    if (const Functor* f = graph_.functor(other.out))
-                        f->apply(guest, graph_.state(other.subject.empty() ? other.host : other.subject));
-                }
+                for (Route::Also& o : r.also)
+                    if (o.e->open) carry(*o.out, *r.guest, *o.subject, o.memo, *o.e);
             }
         }
+        due_.clear();
     }
 
     void process_transitions() {
@@ -276,14 +379,15 @@ private:
                 continue;
             }
 
-            State* from = current();
+            State* from = top();
             if (!from) return;
 
             const Transition* t = graph_.resolve(*from, ev);
             if (!t) {
                 // Not a transition trigger: hand it to whoever holds focus.
-                if (State* g = focused()) {
+                if (State* g = focused_guest()) {
                     g->emit(ev);
+                    due_.push_back(focus_.back());  // it crossed that embedding
                 } else {
                     from->emit(ev);
                 }
@@ -356,6 +460,9 @@ private:
     std::vector<Event> inbox_;
     std::vector<Event> carry_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last
+    std::unordered_map<const State*, std::vector<Route>> routes_;
+    uint64_t routes_revision_ = ~uint64_t{0};
+    std::vector<Key> due_;  // OnEvent embeddings an event crossed this frame
     Clock::time_point clock_start_{};
     Clock::time_point last_{};
     uint64_t frame_ = 0;

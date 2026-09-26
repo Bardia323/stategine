@@ -30,6 +30,21 @@ enum class EmbedSync {
     View    // in runs every frame, out never: a read-only window into the guest
 };
 
+// When a direction that runs "every frame" (Live's out, View's in) actually
+// runs. What the guest and the subject hold is the same under every choice
+// but the last two, which say so on purpose:
+//
+//   OnChange    only for the objects whose source or target changed since it
+//               last ran (by their stamps) - with nothing changed it costs a
+//               comparison. The same result as running every frame, for
+//               transports that are functions of the two elements' params.
+//   Continuous  every frame, every object: for a transport that reads
+//               anything else - the time, another element, the outside world.
+//   OnEvent     only in a frame in which an event crossed into the guest
+//               through this embedding (or it was synced by hand).
+//   Manual      only when `Engine::sync_embed` says so.
+enum class Propagation { OnChange, Continuous, OnEvent, Manual };
+
 struct Embedding {
     Key name;
     Key host;    // state that owns the portal
@@ -43,6 +58,7 @@ struct Embedding {
     Key in;      // functor host -> guest (may be empty)
     Key out;     // functor guest -> host (may be empty)
     EmbedSync sync = EmbedSync::Commit;
+    Propagation propagate = Propagation::OnChange;
     // With focus off the guest still ticks, but input keeps going to the host.
     bool focus = true;
     // Runtime flag, owned by the engine.

@@ -63,6 +63,7 @@ public:
         if (index_.count(e.id)) throw std::runtime_error("duplicate element " + e.id.str());
         index_.emplace(e.id, elements_.size());
         elements_.push_back(std::move(e));
+        restructured();
         return elements_.back();
     }
 
@@ -91,9 +92,13 @@ public:
     void remove_element(Key id) {
         auto it = index_.find(id);
         if (it == index_.end()) return;
-        elements_.erase(elements_.begin() + static_cast<std::ptrdiff_t>(it->second));
+        const std::size_t at = it->second;
+        elements_.erase(elements_.begin() + static_cast<std::ptrdiff_t>(at));
         index_.erase(it);
-        reindex();
+        // Only those after it moved: their places are updated, the rest stand.
+        for (std::size_t i = at; i < elements_.size(); ++i) index_[elements_[i].id] = i;
+        restructured();
+        ++removals_;
     }
 
     // Take an element away together with its arrows: an arrow from or to
@@ -106,6 +111,8 @@ public:
             if (morphisms_[i].from == id || morphisms_[i].to == id)
                 morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(i));
         if (morphisms_.size() != had) {
+            restructured();
+            ++removals_;
             by_trigger_.clear();
             for (std::size_t i = 0; i < morphisms_.size(); ++i) by_trigger_[morphisms_[i].trigger].push_back(i);
         }
@@ -115,18 +122,23 @@ public:
     const std::deque<Element>& elements() const { return elements_; }
 
     // --- morphisms (arrows between elements) --------------------------------
-    Morphism& add_morphism(Morphism m) {
+    // An arrow, once added, is what it was declared: its ends and its action
+    // are read, never rewritten in place - to change an arrow is to take it
+    // away and add another, which the structure's stamp (and the graph)
+    // notices.
+    const Morphism& add_morphism(Morphism m) {
         if (m.name.empty()) throw std::runtime_error("morphism needs a name");
         by_trigger_[m.trigger].push_back(morphisms_.size());
         morphisms_.push_back(std::move(m));
+        restructured();
         return morphisms_.back();
     }
 
-    Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn) {
+    const Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn) {
         return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}});
     }
 
-    Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn) {
+    const Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn) {
         return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}});
     }
 
@@ -139,7 +151,7 @@ public:
     }
 
     // Composition: g . f as one arrow, valid only when cod(f) == dom(g).
-    Morphism& compose(Key name, Key f_name, Key g_name, Key trigger) {
+    const Morphism& compose(Key name, Key f_name, Key g_name, Key trigger) {
         const Morphism* f = morphism(f_name);
         const Morphism* g = morphism(g_name);
         if (!f || !g) throw std::runtime_error("compose: unknown morphism");
@@ -184,29 +196,43 @@ public:
         Params params;
         std::vector<Event> queue;
         std::size_t morphisms = 0;
+        uint64_t structure = 0;
+        uint64_t removals = 0;
     };
 
     Snapshot snapshot() const {
-        return Snapshot{elements_, params_, bus_.queued(), morphisms_.size()};
+        return Snapshot{elements_, params_, bus_.queued(), morphisms_.size(), structure_, removals_};
     }
 
     // Restores in place wherever it can: callers hold `Element&` across frames,
     // and checking a law must not leave those pointing at freed memory. Only
     // if a trial removed an element is the list rebuilt.
+    //
+    // Content comes back with its stamps, so whatever was worked out from it
+    // before the trial still stands after. So does the structure's stamp, when
+    // nothing was taken away since the snapshot: what was added is taken off
+    // the end again, and every element left is the very one that was there -
+    // the list, and every pointer into it, as it was.
     void restore(Snapshot s) {
         bool in_place = s.elements.size() <= elements_.size();
         for (std::size_t i = 0; in_place && i < s.elements.size(); ++i)
             in_place = elements_[i].id == s.elements[i].id;
+        const bool same_structure =
+            in_place && removals_ == s.removals && morphisms_.size() >= s.morphisms;
         if (in_place) {
             for (std::size_t i = 0; i < s.elements.size(); ++i)
                 elements_[i] = std::move(s.elements[i]);
-            while (elements_.size() > s.elements.size()) elements_.pop_back();
+            while (elements_.size() > s.elements.size()) {
+                index_.erase(elements_.back().id);
+                elements_.pop_back();
+            }
         } else {
             elements_ = std::move(s.elements);
+            reindex();
+            ++removals_;
         }
         params_ = std::move(s.params);
         bus_.requeue(std::move(s.queue));
-        reindex();
         if (morphisms_.size() > s.morphisms) {
             morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(s.morphisms),
                              morphisms_.end());
@@ -214,12 +240,33 @@ public:
             for (std::size_t i = 0; i < morphisms_.size(); ++i)
                 by_trigger_[morphisms_[i].trigger].push_back(i);
         }
+        if (same_structure) structure_ = s.structure;
+        else restructured();
         on_restored();
     }
 
     // Put back as it was (restore): whatever a state keeps that follows from
     // its data - a picture, a cache - made to follow it again.
     virtual void on_restored() {}
+
+    // --- versions -------------------------------------------------------------
+    // What the state is made of - its elements and arrows, as a list - stamped
+    // like content (see Stamps in Core.hpp): a new stamp whenever an element
+    // or an arrow comes or goes. While it holds, a pointer to one of its
+    // elements found once is the same element.
+    uint64_t structure() const { return structure_; }
+
+    // A version of everything a trial run would read or leave: the structure,
+    // the state's own params, every element's params and whether it is alive,
+    // what is queued. Equal versions, equal data - so a law that held on this
+    // data holds on it still. It costs a pass over the elements (no copy, no
+    // allocation), which is what makes it worth asking before running arrows.
+    uint64_t content_version() const {
+        uint64_t h = mix_stamp(0x9e3779b97f4a7c15ull, structure_);
+        h = mix_stamp(h, params_.stamp());
+        for (const Element& e : elements_) h = mix_stamp(h, (e.params.stamp() << 1) | (e.alive ? 1u : 0u));
+        return mix_stamp(h, bus_.queued().size());
+    }
 
     // --- events -------------------------------------------------------------
     void emit(Event e) {
@@ -273,6 +320,15 @@ public:
     }
 
 private:
+    friend class StateGraph;
+
+    // What the state is made of changed: a new stamp for it, and one more
+    // change counted by the graph that holds it, if any.
+    void restructured() noexcept {
+        structure_ = next_stamp();
+        if (revision_) revision_->element();
+    }
+
     void reindex() {
         index_.clear();
         for (std::size_t i = 0; i < elements_.size(); ++i) index_.emplace(elements_[i].id, i);
@@ -288,6 +344,9 @@ private:
     std::vector<Event> inbox_;
     EventBus bus_;
     Engine* engine_ = nullptr;
+    uint64_t structure_ = next_stamp();
+    uint64_t removals_ = 0;  // how often anything was taken out of the lists
+    detail::Revision* revision_ = nullptr;  // the graph's count, once it holds this state
 };
 
 using StatePtr = std::unique_ptr<State>;

@@ -44,7 +44,7 @@ public:
     // Endomorphism on one body: velocity integrates into position. Registered
     // per element so the arrow really is an arrow of this category, visible in
     // the DOT output and checkable by validate().
-    Morphism& add_integrator(Key id) {
+    const Morphism& add_integrator(Key id) {
         const int dims = dims_;
         return loop(Key{"move." + id.str()}, id, step_event_,
                     [dims](State&, Element& e, Element*, const Event& ev) {
@@ -256,7 +256,7 @@ inline bool looking_at(const SpatialState& s, Key element_id, double max_dist = 
 // it: the wall two rooms both build on the glue plane is split there, so no
 // point of the glued space belongs to - or is drawn by - both.
 struct PlacedRoom {
-    Spatial3D* room = nullptr;
+    const Spatial3D* room = nullptr;
     Pose pose;
     std::vector<Key> doorways;
 };
