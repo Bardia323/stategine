@@ -8,6 +8,10 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Driven bodies, friction by the part, and a doorway's edge lit softly.**
+  - `World::drive(body, x, r)`: moved by the game to where it should be by the end of the next step, at the speed that takes - furniture hauled, a board pulled by its stand, a lift. For that step it is as heavy as the room: what it meets is pushed out of its way, what lies on it goes with it by friction, and what sleeps against it wakes at once. It ends the step still.
+  - `Hull::friction`: a part's own friction, where it differs from its body's (a castor rolls; the tray above it grips).
+  - A thing standing through a doorway - a door ajar - is lit from all round as one thing: near the opening, and only in it, the light from all round is blended halfway to the other side's (`uDoor*`, `around_at` in `scene_fs()`); a shut door lets none of it in. Before, the part of a door swung past the opening was cut off in the other side's light.
 - **Rigid bodies: through nothing, casts, sensors and walkers.**
   - Nothing is let through a thin wall: a body that went far this step for its size is swept along its way, turning as it went, against what does not move, and stopped where it first met it (conservative advancement by `apart`, the widest gap along any axis that could part two hulls). How far ahead pairs are looked for is the step's own length, not a sixtieth of a second.
   - `World::cast`: a hull carried along a line - what it meets first, how far along, and which way that faces.

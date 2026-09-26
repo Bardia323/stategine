@@ -367,6 +367,60 @@ int main() {
         check(through == 0, "thrown hard at a thin wall, it never goes through (" + std::to_string(through) + " of " +
                                 std::to_string(tried) + " did:" + worst + ")");
     }
+    // --- driven -------------------------------------------------------------------------------
+    {
+        // A fixed stand, hauled across the floor a little each step into
+        // books lying there: it pushes them before it, never into them; and
+        // a book lying on it goes with it.
+        World w;
+        w.add(floor_body());
+        Body stand;
+        stand.id = "stand";
+        stand.hulls.push_back(Hull::box({}, {0.4, 0.25, 0.25}));
+        stand.x = {0, 0.25, 0};
+        stand.set_mass(0);
+        w.add(stand);
+        for (int i = 0; i < 3; ++i) w.add(box_body("book" + std::to_string(i), {0.8, 0.02 + 0.041 * i, 0.1 * i - 0.1}, {0.1, 0.02, 0.15}, 0.6));
+        w.add(box_body("on_top", {0.1, 0.52, 0}, {0.1, 0.02, 0.15}, 0.6));
+        run(w, 1.0);
+        double deepest = 0;
+        for (int i = 0; i < 90; ++i) {
+            Body& s = *w.find("stand");
+            // Hauled as a person hauls: getting up to a walk over half a second.
+            w.drive(s, s.x + V3{std::min(1.0, i / 30.0) / 60.0, 0, 0}, s.r);
+            w.step(1.0 / 60.0);
+            for (int k = 0; k < 3; ++k) {
+                const Body& b = *w.find("book" + std::to_string(k));
+                deepest = std::max(deepest, apart(w.find("stand")->hulls[0], w.find("stand")->world[0], b.hulls[0], b.world[0]) * -1.0);
+            }
+        }
+        const double gone = w.find("stand")->x.x;
+        const double ahead = w.find("book0")->x.x - gone;
+        const double rode = w.find("on_top")->x.x - gone;
+        check(deepest < 0.01 && ahead > 0.4, "a stand hauled into books pushes them before it, not through them (in at most " +
+                                                 std::to_string(deepest) + " m)");
+        check(std::fabs(rode - 0.1) < 0.02 && w.find("on_top")->x.y > 0.5, "and a book lying on it goes with it (" + std::to_string(rode) + " m from its middle)");
+    }
+    {
+        // A heavy board on its feet, asleep, with a light block asleep on its
+        // top: driven along by the game, it carries the block - the block
+        // wakes, and is not left in the air where it was.
+        World w;
+        w.add(floor_body());
+        w.add(box_body("board", {0, 0.5, 0}, {0.8, 0.5, 0.1}, 45));
+        w.add(box_body("block", {0, 1.02, 0}, {0.06, 0.02, 0.02}, 0.02));
+        run(w, 3.0);
+        const bool slept = !w.find("board")->awake && !w.find("block")->awake;
+        for (int i = 0; i < 120; ++i) {
+            Body& b = *w.find("board");
+            w.drive(b, b.x + V3{0.8 / 60.0, 0, 0.3 / 60.0}, axis_angle({0, 1, 0}, 0.002) * b.r);
+            w.step(1.0 / 60.0);
+        }
+        const Body& board = *w.find("board");
+        const V3 rel = transpose(board.r) * (w.find("block")->x - board.x);
+        check(slept && std::fabs(rel.x) < 0.1 && std::fabs(rel.z) < 0.1 && rel.y > 0.5,
+              "a board driven along carries what lay asleep on it (" + std::to_string(rel.x) + ", " + std::to_string(rel.z) + " from where it lay)");
+    }
     // --- casts and sensors ---------------------------------------------------------------------
     {
         // A box carried down onto a table stops on its top; carried along

@@ -37,6 +37,12 @@
 // contacts, softly as they are, and join islands: what is joined sleeps and
 // wakes together.
 //
+// A body can be driven (World::drive): moved by the game to where it should
+// be by the end of the next step - furniture hauled, a lift, a board pulled
+// by its stand - at the speed that takes. For that step it is as heavy as
+// the room: what it meets is pushed out of its way, what lies on it goes
+// with it by friction, and what sleeps against it wakes.
+//
 // A sensor is a body nothing bumps into: things pass through it, and the
 // world keeps what is inside each one (World::inside, entered, left) - a
 // doorway that notices who walks through, a pressure plate. A hull can be
@@ -226,6 +232,7 @@ struct Hull {
     std::vector<Edge> e;
     V3 centre;      // of its volume
     double volume = 0;
+    double friction = -1;  // its own, where it differs from its body's (castors roll; a tray grips)
     M3 cov;         // second moment about its centre, per unit density
 
     // A solid of `sides` corners round (`sides` 4 is a box), `half` wide
@@ -340,6 +347,9 @@ struct Body {
     bool grabbed = false;
     double radius = -1;       // how far any of it is from its frame; worked out when first asked
     bool sensor = false;      // nothing bumps into it: what is inside it is only noted
+    bool driven = false;      // this step, moved to `drive_x`, `drive_r` by the game
+    V3 drive_x;
+    M3 drive_r;
     int contacts = 0;         // how many things it touches, this step
 
     // Derived: where its mass is, and how it resists turning.
@@ -845,7 +855,7 @@ public:
     void wake_near(const Body& b) { wake_box(b.lo, b.hi); }
     bool any_awake() const {
         for (const Body& b : bodies)
-            if (b.dynamic() && b.awake) return true;
+            if ((b.dynamic() && b.awake) || b.driven) return true;
         return false;
     }
 
@@ -875,6 +885,23 @@ public:
         const V3 axis = A->r * j.axis_a, ra = A->r * j.ref_a, rb = B ? B->r * j.ref_b : j.ref_b;
         return std::atan2(dot(cross(rb, ra), axis), dot(ra, rb));
     }
+    // --- driving ---------------------------------------------------------------------
+    // `b` moved to `x`, turned `r`, by the end of the next step, at the speed
+    // that takes; what sleeps where it goes wakes. (Called each frame it is
+    // moved: once stepped, it is itself again - fixed, or free.)
+    void drive(Body& b, V3 x, const M3& r) {
+        b.driven = true, b.drive_x = x, b.drive_r = r;
+        const V3 lo = b.lo, hi = b.hi;
+        const V3 was_x = b.x;
+        const M3 was_r = b.r;
+        b.x = x, b.r = r;
+        b.place();
+        wake_box({std::min(lo.x, b.lo.x), std::min(lo.y, b.lo.y), std::min(lo.z, b.lo.z)},
+                 {std::max(hi.x, b.hi.x), std::max(hi.y, b.hi.y), std::max(hi.z, b.hi.z)});
+        b.x = was_x, b.r = was_r;
+        b.place();
+    }
+
     // --- sensors ---------------------------------------------------------------------
     // What is inside a sensor now, as (sensor, thing) - and what came in and
     // went out this step.
@@ -1193,6 +1220,12 @@ public:
         for (Body& b : bodies)
             if (b.dynamic() && b.awake) b.place();
         stepped_ = dt;
+        // The driven: as fast as takes them there this step.
+        for (Body& b : bodies) {
+            if (!b.driven) continue;
+            b.v = ((b.drive_x + b.drive_r * b.com_local) - b.com()) * (1.0 / dt);
+            b.w = log_map(b.drive_r * transpose(b.r)) * (1.0 / dt);
+        }
         from_x_.resize(bodies.size());
         from_r_.resize(bodies.size());
         for (std::size_t i = 0; i < bodies.size(); ++i) from_x_[i] = bodies[i].x, from_r_[i] = bodies[i].r;
@@ -1207,8 +1240,17 @@ public:
             relax(h);
         }
         restitution();
-        for (Body& b : bodies)
+        for (Body& b : bodies) {
+            if (b.driven) {
+                // Where it was sent, exactly; then itself again.
+                b.x = b.drive_x, b.r = b.drive_r;
+                b.place();
+                b.driven = false;
+                b.v = b.w = {};  // stopped where it was taken: a hand hauling it holds it
+                continue;
+            }
             if (b.dynamic() && b.awake) b.place();
+        }
         sweep_fast();
         sleep(dt);
     }
@@ -1554,7 +1596,8 @@ private:
         }
     }
 
-    static bool moving(const Body& b) { return b.dynamic() && b.awake; }
+    // Looked at this step: what moves by itself, and what is driven.
+    static bool moving(const Body& b) { return (b.dynamic() && b.awake) || b.driven; }
     // How far past its box a moving body is looked for: the margin, and as
     // far as it can go this step, so nothing is passed through - a gap is
     // closed no faster than it can be (a contact that may not yet be
@@ -1568,11 +1611,18 @@ private:
     void consider(std::size_t i, std::size_t j) {
         const Body& a = bodies[i];
         Body& b = bodies[j];
+        // Two things neither of which gives: nothing between them to solve.
+        if (!moves(a) && !moves(b) && !a.sensor && !b.sensor && !(b.dynamic() && !b.awake)) return;
         const double r = looked_for(a);
         if (b.hi.x < a.lo.x - r || b.lo.x > a.hi.x + r || b.hi.y < a.lo.y - r || b.lo.y > a.hi.y + r || b.hi.z < a.lo.z - r ||
             b.lo.z > a.hi.z + r)
             return;
-        if (b.dynamic() && !b.awake) b.place();
+        if (b.dynamic() && !b.awake) {
+            b.place();
+            // Something driven into it, or out from under it: it wakes now,
+            // and gives this very step.
+            if (a.driven) wake(b);
+        }
         pair(std::min(i, j), std::max(i, j), r);
     }
 
@@ -1667,7 +1717,9 @@ private:
                 old.swap(m.pts);
                 m.a = ia, m.b = ib, m.ha = static_cast<int>(ha), m.hb = static_cast<int>(hb);
                 m.n = n;
-                m.friction = std::sqrt(a.friction * b.friction);
+                const double fa = a.hulls[ha].friction >= 0 ? a.hulls[ha].friction : a.friction;
+                const double fb = b.hulls[hb].friction >= 0 ? b.hulls[hb].friction : b.friction;
+                m.friction = std::sqrt(fa * fb);
                 m.restitution = std::max(a.restitution, b.restitution);
                 m.live = true;
                 const M3 rat = transpose(a.r);
@@ -1707,8 +1759,8 @@ private:
             Body& a = bodies[m->a];
             Body& b = bodies[m->b];
             const V3 ca = a.com(), cb = b.com();
-            const M3 ia = a.dynamic() && a.awake ? a.inv_inertia() : zero3(), ib = b.dynamic() && b.awake ? b.inv_inertia() : zero3();
-            const double ma = a.dynamic() && a.awake ? a.inv_mass : 0.0, mb = b.dynamic() && b.awake ? b.inv_mass : 0.0;
+            const M3 ia = moves(a) ? a.inv_inertia() : zero3(), ib = moves(b) ? b.inv_inertia() : zero3();
+            const double ma = moves(a) ? a.inv_mass : 0.0, mb = moves(b) ? b.inv_mass : 0.0;
             // Impulses found while one of them slept were found against a
             // thing that could not move - a wall, as far as the other knew:
             // woken, it must not be handed them (a marker on a tray the
@@ -1738,7 +1790,8 @@ private:
         for (Grab& g : grabs_) g.impulse = {}, g.spin = {};
     }
 
-    static bool moves(const Body& b) { return b.dynamic() && b.awake; }
+    // What gives when pushed: free, awake, and not being driven.
+    static bool moves(const Body& b) { return b.dynamic() && b.awake && !b.driven; }
 
     void integrate_velocities(double h) {
         for (Body& b : bodies) {
@@ -1877,7 +1930,7 @@ private:
 
     void integrate_positions(double h) {
         for (Body& b : bodies) {
-            if (!moves(b)) continue;
+            if (!moves(b) && !b.driven) continue;
             const V3 c = b.com() + b.v * h;
             const double wl = length(b.w);
             if (wl > 1e-12) b.r = orthonormal(axis_angle(b.w * (1.0 / wl), wl * h) * b.r);

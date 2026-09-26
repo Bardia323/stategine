@@ -749,6 +749,53 @@ private:
         return out;
     }
 
+    // The doorways of a room, and the light from all round beyond each, for
+    // the scene shader (around_at): a thing through a doorway is lit as one.
+    void doors_to_program(const PlacedRoom& placed) {
+        static const auto name = [](const char* base, int i) {
+            static std::array<std::array<std::string, 4>, 5> names = [] {
+                std::array<std::array<std::string, 4>, 5> n;
+                const char* bases[] = {"uDoorAt", "uDoorAxis", "uDoorIn", "uDoorSky", "uDoorGround"};
+                for (int b = 0; b < 5; ++b)
+                    for (int k = 0; k < 4; ++k) n[static_cast<std::size_t>(b)][static_cast<std::size_t>(k)] = std::string(bases[b]) + "[" + std::to_string(k) + "]";
+                return n;
+            }();
+            const std::string s = base;
+            const int b = s == "uDoorAt" ? 0 : s == "uDoorAxis" ? 1 : s == "uDoorIn" ? 2 : s == "uDoorSky" ? 3 : 4;
+            return names[static_cast<std::size_t>(b)][static_cast<std::size_t>(i)].c_str();
+        };
+        int count = 0;
+        if (placed.room)
+            for (const auto& e : placed.room->elements()) {
+                if (count >= 4) break;
+                if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
+                const auto it = worlds_.find(e.id);
+                if (it == worlds_.end() || !it->second.world) continue;
+                const Pose door = pose_of(*placed.room, e);
+                // A door shut in it: nothing of the other side here.
+                bool shut = false;
+                covered(*placed.room, e, door, static_cast<float>(e.params.num(keys::w, 3.0) * 0.5), static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), shut);
+                if (shut) continue;
+                const gl::Vec3 at = to_vec3(compose_pose(placed.pose, door).position);
+                const Vec3d a = across(door.yaw + placed.pose.yaw), in = heading(door.yaw + placed.pose.yaw);
+                const LookState& look = look_of(*it->second.world);
+                const double amb = value(look, passes::scene, Key{"uAmbient"}, 0.55);
+                const auto v3 = [&](const char* k, double fx, double fy, double fz) {
+                    return gl::Vec3{static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".x"}, fx) * amb),
+                                    static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".y"}, fy) * amb),
+                                    static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".z"}, fz) * amb)};
+                };
+                scene_->set(name("uDoorAt", count), at.x, at.y, at.z, static_cast<float>(e.params.num(keys::w, 3.0) * 0.5));
+                scene_->set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
+                            static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), 0.0f);
+                scene_->set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), 0.0f, 0.0f);
+                scene_->set(name("uDoorSky", count), v3("uSky", 0.10, 0.13, 0.20));
+                scene_->set(name("uDoorGround", count), v3("uGround", 0.14, 0.10, 0.07));
+                ++count;
+            }
+        scene_->set("uDoorCount", count);
+    }
+
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the
     // opening's plane, seen square on to it - the most any one of them does
@@ -1089,6 +1136,7 @@ private:
                             static_cast<float>(h.offset));
             }
             scene_->set("uClipCount", bounds);
+            doors_to_program(placed);
 
             if (room.params().num(Key{"sky"}, 0.0) > 0.5) {
                 // The sky is at no distance a plane can cut: it is the room's

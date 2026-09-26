@@ -176,6 +176,17 @@ uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform vec3  uSky;           // ambient from above
 uniform vec3  uGround;        // ambient bounced from the floor
+// The doorways of the room being drawn, and the light from all round on
+// their other sides: the middle of each opening and half its width; which
+// way is across it (x, z) and half its height; which way is into this room
+// (x, z); the other side's sky and ground light, each times its amount.
+const int MAX_DOORS = 4;
+uniform int  uDoorCount;
+uniform vec4 uDoorAt[MAX_DOORS];
+uniform vec4 uDoorAxis[MAX_DOORS];
+uniform vec4 uDoorIn[MAX_DOORS];
+uniform vec3 uDoorSky[MAX_DOORS];
+uniform vec3 uDoorGround[MAX_DOORS];
 uniform float uAmbient;
 
 // An open world has a sky instead of a ceiling: a gradient, and the sun in it.
@@ -365,6 +376,26 @@ vec3 sky(vec3 dir) {
 // neighbours differ as much as they can, so a pattern turned by it dithers
 // finely instead of showing its shape.
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// The light from all round at `p`: this room's, and near a doorway, halfway
+// to the other side's at the opening itself - so a thing standing through a
+// doorway (a door ajar, half in each room) is lit as one thing, softly,
+// and not cut in two where the rooms meet.
+void around_at(vec3 p, out vec3 sky, out vec3 ground) {
+    sky = uSky * uAmbient;
+    ground = uGround * uAmbient;
+    for (int i = 0; i < MAX_DOORS; ++i) {
+        if (i >= uDoorCount) break;
+        vec3 d = p - uDoorAt[i].xyz;
+        float s = dot(d.xz, uDoorIn[i].xy);
+        float u = abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w, v = abs(d.y) - uDoorAxis[i].z;
+        // Only in the opening itself: its frame and the wall round it are
+        // this room's, all of them.
+        float there = (1.0 - smoothstep(-0.12, -0.02, u)) * (1.0 - smoothstep(-0.12, -0.02, v)) * (1.0 - smoothstep(-0.35, 0.35, s));
+        sky = mix(sky, uDoorSky[i], there);
+        ground = mix(ground, uDoorGround[i], there);
+    }
+}
 
 // How much of light `i` comes through its doorway to `p`: the way to it
 // (towards a lamp, the whole way; towards a sun, a direction) must pass
@@ -722,8 +753,10 @@ void main() {
     vec3 reflected = f0 * ab.x + ab.y;
     vec3 r = reflect(-v, n);
     float up = mix(r.y, n.y, roughness * roughness);
-    vec3 around = mix(uGround, uSky, n.y * 0.5 + 0.5) * uAmbient;
-    vec3 mirrored = mix(uGround, uSky, smoothstep(-0.35, 0.35, up)) * uAmbient;
+    vec3 sky_here, ground_here;
+    around_at(vWorld, sky_here, ground_here);
+    vec3 around = mix(ground_here, sky_here, n.y * 0.5 + 0.5);
+    vec3 mirrored = mix(ground_here, sky_here, smoothstep(-0.35, 0.35, up));
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
     if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
