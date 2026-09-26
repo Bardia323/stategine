@@ -42,6 +42,7 @@ constexpr GLenum GL_CLIP_DISTANCE0 = 0x3000;
 constexpr GLenum GL_CONSTANT_ALPHA = 0x8003;
 constexpr GLenum GL_ONE_MINUS_CONSTANT_ALPHA = 0x8004;
 constexpr GLenum GL_TEXTURE_2D = 0x0DE1;
+constexpr GLenum GL_TEXTURE_2D_ARRAY = 0x8C1A;
 constexpr GLenum GL_UNSIGNED_BYTE = 0x1401;
 constexpr GLenum GL_FLOAT = 0x1406;
 constexpr GLenum GL_HALF_FLOAT = 0x140B;
@@ -142,12 +143,15 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, GenerateMipmap, (GLenum))                                                         \
     X(void, TexImage2D,                                                                       \
       (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))           \
+    X(void, TexImage3D,                                                                       \
+      (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))  \
     X(void, TexSubImage2D,                                                                    \
       (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*))           \
     X(void, GenFramebuffers, (GLsizei, GLuint*))                                              \
     X(void, BindFramebuffer, (GLenum, GLuint))                                                \
     X(void, DeleteFramebuffers, (GLsizei, const GLuint*))                                     \
     X(void, FramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint))                    \
+    X(void, FramebufferTextureLayer, (GLenum, GLenum, GLuint, GLint, GLint))                  \
     X(void, FramebufferRenderbuffer, (GLenum, GLenum, GLenum, GLuint))                        \
     X(GLenum, CheckFramebufferStatus, (GLenum))                                               \
     X(void, GenRenderbuffers, (GLsizei, GLuint*))                                             \

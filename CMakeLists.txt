@@ -84,6 +84,15 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_looks_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_looks_gl COMMAND sg_looks_gl)
+
+    # Light through a doorway: a lamp in one room lights the floor of the
+    # room glued to it, through the opening only.
+    add_executable(sg_doorway_light_gl tests/doorway_light_gl.cpp)
+    target_link_libraries(sg_doorway_light_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_doorway_light_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_doorway_light_gl COMMAND sg_doorway_light_gl)
   endif()
 endif()
 

@@ -513,4 +513,71 @@ private:
     int size_ = 0;
 };
 
+// Depth maps for many lights in one texture, a layer each, so a shader reads
+// any of them through one sampler, by the light's number. It grows when more
+// layers are wanted and never shrinks; grown, every layer starts empty.
+class ShadowArray {
+public:
+    ShadowArray() = default;
+    ShadowArray(const ShadowArray&) = delete;
+    ShadowArray& operator=(const ShadowArray&) = delete;
+    ~ShadowArray() { release(); }
+
+    // At least `layers` maps of `size` square. True if it was made anew.
+    bool ensure(int size, int layers) {
+        layers = std::max(layers, 1);
+        if (depth_ != 0 && size == size_ && layers <= layers_) return false;
+        release();
+        size_ = size;
+        layers_ = layers;
+        glGenTextures(1, &depth_);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, depth_);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, static_cast<GLint>(GL_DEPTH_COMPONENT24), size, size, layers, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        const GLfloat border[4] = {1, 1, 1, 1};
+        glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, border);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, static_cast<GLint>(GL_COMPARE_REF_TO_TEXTURE));
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, static_cast<GLint>(GL_LEQUAL));
+        glGenFramebuffers(1, &fbo_);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depth_, 0, 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            throw std::runtime_error("incomplete shadow framebuffer");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return true;
+    }
+
+    // Draw into one layer.
+    void bind_layer(int layer) const {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, depth_, 0, layer);
+        glViewport(0, 0, size_, size_);
+    }
+
+    void bind_depth(int unit) const {
+        glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+        glBindTexture(GL_TEXTURE_2D_ARRAY, depth_);
+    }
+
+    int size() const { return size_; }
+    int layers() const { return layers_; }
+
+private:
+    void release() {
+        if (fbo_) glDeleteFramebuffers(1, &fbo_);
+        if (depth_) glDeleteTextures(1, &depth_);
+        fbo_ = depth_ = 0;
+        layers_ = 0;
+    }
+    GLuint fbo_ = 0;
+    GLuint depth_ = 0;
+    int size_ = 0, layers_ = 0;
+};
+
 }  // namespace sg::gl

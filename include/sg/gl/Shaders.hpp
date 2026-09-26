@@ -25,10 +25,6 @@ uniform mat4 uModel;
 // tiles fall.
 uniform mat4 uTexModel;
 uniform mat4 uViewProj;
-uniform mat4 uLightViewProj0;
-uniform mat4 uLightViewProj1;
-uniform mat4 uLightViewProj2;
-uniform mat4 uLightViewProj3;
 
 // The half-spaces this room owns: one per doorway, the room's own side of the
 // plane it is glued along. Two rooms both build a wall on that plane; each
@@ -42,10 +38,6 @@ out vec3 vWorld;
 out vec3 vRoom;
 out vec3 vNormal;
 out vec2 vUV;
-out vec4 vLightSpace0;
-out vec4 vLightSpace1;
-out vec4 vLightSpace2;
-out vec4 vLightSpace3;
 out vec3 vLocal;
 out vec3 vObject;
 out vec3 vObjNormal;
@@ -62,10 +54,6 @@ void main() {
     vObjNormal = aNormal;
     vNormal = normalize(mat3(uModel) * aNormal);
     vUV = aUV;
-    vLightSpace0 = uLightViewProj0 * world;
-    vLightSpace1 = uLightViewProj1 * world;
-    vLightSpace2 = uLightViewProj2 * world;
-    vLightSpace3 = uLightViewProj3 * world;
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
@@ -125,10 +113,6 @@ in vec3 vWorld;
 in vec3 vRoom;
 in vec3 vNormal;
 in vec2 vUV;
-in vec4 vLightSpace0;
-in vec4 vLightSpace1;
-in vec4 vLightSpace2;
-in vec4 vLightSpace3;
 in vec3 vLocal;
 in vec3 vObject;
 in vec3 vObjNormal;
@@ -148,11 +132,12 @@ uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv)
 uniform float uGlow;          // extra emission for an active interface
 
-// Up to eight lights; the four strongest carry shadow maps - chosen by how
-// bright they are, not where the viewer is, so shadows do not come and go as
-// you walk. A sun is always first: it lights everything, from one direction,
+// Up to twenty-four lights; the first `uShadowCount` carry shadow maps - a
+// room's four strongest, chosen by how bright they are, not where the viewer
+// is, so shadows do not come and go as you walk; then light from beyond its
+// doorways, whose shadows are what stands in the way of the opening. A sun is always first: it lights everything, from one direction,
 // without falling off.
-const int MAX_LIGHTS = 16;
+const int MAX_LIGHTS = 24;
 uniform int   uLightCount;
 uniform vec3  uLightPos[MAX_LIGHTS];
 uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
@@ -164,6 +149,12 @@ uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
 uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
 uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
+// Light from beyond a doorway, let in only through its opening: its middle
+// and half its width, then which way across it is (x, z), half its height,
+// and whether the light is gated at all.
+uniform vec4  uLightGate[MAX_LIGHTS];
+uniform vec4  uLightGateAxis[MAX_LIGHTS];
+uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -177,13 +168,15 @@ uniform vec3  uSkyHorizon;
 uniform vec3  uSunDir;        // towards the sun
 uniform vec3  uSunColor;
 
-uniform sampler2DShadow uShadowMap0;
-uniform sampler2DShadow uShadowMap1;
-uniform sampler2DShadow uShadowMap2;
-uniform sampler2DShadow uShadowMap3;
+// The first `uShadowCount` lights each have a depth map, a layer each of one
+// array: where it sees from (`uShadowVP`), and how much its depth is let slip
+// (`uShadowBias` - a sun's range is far longer than a lamp's).
+const int MAX_SHADOWS = 8;
+uniform sampler2DArrayShadow uShadowMaps;
+uniform mat4 uShadowVP[MAX_SHADOWS];
+uniform float uShadowBias[MAX_SHADOWS];
 uniform sampler2D uTex;
 uniform vec2 uShadowTexel;
-uniform vec4 uShadowBias;     // per map: a sun's depth range is far longer than a lamp's
 uniform float uShadowSoft;    // how wide the filter is, in texels (1: tight)
 uniform float uShadowFloor;   // how much light is left in a full shadow - bounce, faked
 uniform float uTime;
@@ -349,12 +342,34 @@ vec3 sky(vec3 dir) {
 // finely instead of showing its shape.
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
+// How much of light `i` comes through its doorway to `p`: the way to it
+// (towards a lamp, the whole way; towards a sun, a direction) must pass
+// through the opening. The edge softens with the distance from it, as a
+// penumbra does.
+float through_gate(int i, vec3 p, vec3 way, bool parallel) {
+    vec4 g = uLightGateAxis[i];
+    if (g.w < 0.5) return 1.0;
+    vec4 at = uLightGate[i];
+    vec3 a = vec3(g.x, 0.0, g.y);
+    vec3 n = vec3(-a.z, 0.0, a.x);
+    float dn = dot(way, n);
+    if (abs(dn) < 1e-5) return 0.0;
+    float t = dot(at.xyz - p, n) / dn;
+    if (t < 0.0 || (!parallel && t > 1.0)) return 0.0;
+    vec3 q = p + way * t;
+    float soft = 0.02 + 0.04 * t * length(way);
+    float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
+    return (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v));
+}
+
 // Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
 // hardware's own 2x2, the spiral turned for each pixel so the penumbra is a
 // smooth gradient dithered finely, not the steps of a fixed grid. The disc
 // reaches `uShadowSoft` times two texels, with a slope-scaled bias. What is
 // left in the darkest shadow is `uShadowFloor`.
-float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l, float bias_scale, float floor_) {
+float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
+    vec4 light_space = uShadowVP[layer] * vec4(vWorld, 1.0);
+    float bias_scale = uShadowBias[layer];
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
@@ -366,7 +381,7 @@ float shadow_factor(vec4 light_space, sampler2DShadow shadow_map, vec3 n, vec3 l
     for (int i = 0; i < 16; ++i) {
         float a = float(i) * 2.3999632 + turn;
         vec2 off = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / 16.0) * reach;
-        sum += texture(shadow_map, vec3(proj.xy + off, proj.z - bias));
+        sum += texture(uShadowMaps, vec4(proj.xy + off, float(layer), proj.z - bias));
     }
     // Towards the edge of the map, the shadow fades out rather than stopping
     // on a line: a sun's box round the viewer has an edge a lamp's cone does
@@ -625,7 +640,7 @@ void main() {
         float atten, cone;
         if (uLightSun[i] > 0.5) {
             l = normalize(-uLightDir[i]);
-            atten = uLightPower[i];
+            atten = uLightPower[i] * through_gate(i, vWorld, l, true);
             cone = 1.0;
         } else {
             vec3 toLight = uLightPos[i] - vWorld;
@@ -639,18 +654,16 @@ void main() {
             // finite at the lamp itself.
             float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
             float square = 1.0 / (1.0 + 2.0 * dist * dist);
-            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]);
+            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, vWorld, toLight, false);
         }
+        if (atten <= 0.0) continue;
         vec3 h = normalize(l + v);
 
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
-        if (ndl > 0.0) {
+        if (ndl > 0.0 && i < uShadowCount) {
             float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
-            if (i == 0) shadow = shadow_factor(vLightSpace0, uShadowMap0, n, l, uShadowBias.x, fl);
-            else if (i == 1) shadow = shadow_factor(vLightSpace1, uShadowMap1, n, l, uShadowBias.y, fl);
-            else if (i == 2) shadow = shadow_factor(vLightSpace2, uShadowMap2, n, l, uShadowBias.z, fl);
-            else if (i == 3) shadow = shadow_factor(vLightSpace3, uShadowMap3, n, l, uShadowBias.w, fl);
+            shadow = shadow_factor(i, n, l, fl);
         }
 
         // Cook-Torrance: GGX for the spread of the highlight, Smith's
@@ -713,7 +726,15 @@ inline const char* depth_vs() {
 layout(location=0) in vec3 aPos;
 uniform mat4 uModel;
 uniform mat4 uLightViewProj;
-void main() { gl_Position = uLightViewProj * uModel * vec4(aPos, 1.0); })";
+// For light from beyond a doorway, only what is on this side of the opening
+// stands in its way: a half-space, (normal, offset); all of space when 0.
+uniform vec4 uCasterSide;
+out float gl_ClipDistance[1];
+void main() {
+    vec4 world = uModel * vec4(aPos, 1.0);
+    gl_ClipDistance[0] = dot(uCasterSide.xyz, world.xyz) + uCasterSide.w;
+    gl_Position = uLightViewProj * world;
+})";
 }
 
 inline const char* depth_fs() {

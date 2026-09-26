@@ -41,6 +41,16 @@
 // orthographic shadow that follows the viewer. How far anything is drawn is
 // the state's `far` (120 m unless it says otherwise).
 //
+// Light goes through a doorway as the viewer does. A room is lit by its own
+// lamps and also by those of each world its doorways open onto, carried into
+// its frame by the doorway's own travel - and by that world's sky, as a glow
+// standing just beyond the opening. Such light reaches only what sees it
+// through the opening: the doorway is its aperture, the walls round it keep
+// the rest out, and whatever stands in it (a door shut in its frame) keeps
+// out as much as it covers. Both sides do it, so a lamp by the door lights
+// the terrace beyond, and the terrace's sun falls in across the floor. A
+// portal with `light` = 0 lets none through: its room lights it itself.
+//
 // Frame: for each world portal, render the other room into its own target from
 // that room's own camera (a View embedding aims it); then the shadow pass, the
 // scene into a multisampled HDR target, resolve, ambient occlusion (when the
@@ -144,8 +154,9 @@ inline void standard_look(LookState& l, const GLQuality& q = {}) {
 
 class GLWorldView {
 public:
-    static constexpr std::size_t kMaxLights = 16;   // matches the scene shader
-    static constexpr std::size_t kShadowMaps = 4;  // the strongest four cast
+    static constexpr std::size_t kMaxLights = 24;   // matches the scene shader
+    static constexpr std::size_t kShadowMaps = 8;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kOwnShadows = 4;  // a room's own strongest four cast; the rest are for doorways
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
 
@@ -463,6 +474,13 @@ private:
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
         float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
+        // Light from beyond a doorway comes in only through its opening: the
+        // opening's middle, which way across it is, and half its width and
+        // height. Such a light casts no shadow of its own.
+        bool gated = false;
+        gl::Vec3 gate_at{0, 0, 0}, gate_across{1, 0, 0}, gate_in{0, 0, 1};
+        float gate_w = 0.0f, gate_h = 0.0f;
+        float open = 1.0f;  // how much of the opening is clear, for a gated light with no shadow map
     };
 
     struct BoundSurface {
@@ -611,21 +629,17 @@ private:
             bloom_chain_[bloom_levels_++].create(lw, lh, gl::GL_RGBA16F, 0, false);
     }
 
-    // Every lamp in the state, strongest first: the first four get shadow
-    // maps, the rest light without casting.
-    std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, const Camera&) {
+    // One room's own lamps, placed as the room is.
+    std::vector<Light> own_lights(const Spatial3D& room, const Pose& pose) const {
         std::vector<Light> out;
-        for (const PlacedRoom& placed : rooms) {
-            if (!placed.room) continue;
-            for (const auto& e : placed.room->elements()) {
+        for (const auto& e : room.elements()) {
             if (e.kind != kinds::light || !e.alive) continue;
             Light l;
-            l.pos = to_vec3(compose_pose(placed.pose, pose_of(*placed.room, e)).position);
+            l.pos = to_vec3(compose_pose(pose, pose_of(room, e)).position);
             l.color = color_of(e, l.color);
             l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
-            l.dir = gl::normalize({static_cast<float>(e.params.num(Key{"dx"}, 0.0)),
-                                   static_cast<float>(e.params.num(Key{"dy"}, -1.0)),
-                                   static_cast<float>(e.params.num(Key{"dz"}, 0.0))});
+            l.dir = gl::normalize(to_vec3(rotate_xz(
+                {e.params.num(Key{"dx"}, 0.0), e.params.num(Key{"dy"}, -1.0), e.params.num(Key{"dz"}, 0.0)}, pose.yaw)));
             l.inner = static_cast<float>(e.params.num(Key{"inner"}, 0.55));
             l.outer = static_cast<float>(e.params.num(Key{"outer"}, 1.15));
             l.sun = e.params.num(Key{"sun"}, 0.0) > 0.5;
@@ -635,8 +649,140 @@ private:
             l.falloff = static_cast<float>(std::clamp(e.params.num(Key{"falloff"}, 0.0), 0.0, 1.0));
             if (l.power <= 0.0f) continue;  // switched off
             out.push_back(l);
+        }
+        return out;
+    }
+
+    // What comes in through the doorways of `placed`: the lamps of each world
+    // a doorway opens onto, and a glow of its sky, carried into this room by
+    // the doorway's own travel and let through its opening only. The travel
+    // is read as a turn and a shift, as far_side() reads it: a probe standing
+    // in the doorway, carried across.
+    std::vector<Light> through_doorways(const PlacedRoom& placed) {
+        std::vector<Light> out;
+        if (!placed.room) return out;
+        const Spatial3D& room = *placed.room;
+        for (const auto& e : room.elements()) {
+            if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
+            const auto it = worlds_.find(e.id);
+            if (it == worlds_.end() || !it->second.world || !it->second.carry) continue;
+            const Spatial3D& far = *it->second.world;
+            const Pose door = pose_of(room, e);
+            const float half_w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f;
+            const float half_h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f;
+            if (half_w <= 0.0f || half_h <= 0.0f) continue;
+            Element probe = room.camera(), there = far.camera();
+            probe.params.set(keys::x, door.position.x).set(keys::y, door.position.y).set(keys::z, door.position.z)
+                .set(keys::yaw, 0.0).set(keys::pitch, 0.0);
+            it->second.carry(probe, there);
+            const double turn = there.params.num(keys::yaw);
+            const Vec3d from = position_of(there);
+            // A point of the far world, where this room has it.
+            const auto here = [&](const gl::Vec3& q) {
+                const Vec3d local = rotate_xz({q.x - from.x, q.y - from.y, q.z - from.z}, -turn);
+                const Pose p{{door.position.x + local.x, door.position.y + local.y, door.position.z + local.z}, 0.0};
+                return to_vec3(compose_pose(placed.pose, p).position);
+            };
+            const auto turned = [&](const gl::Vec3& d) {
+                return to_vec3(rotate_xz({d.x, d.y, d.z}, placed.pose.yaw - turn));
+            };
+            const gl::Vec3 at = to_vec3(compose_pose(placed.pose, door).position);
+            const gl::Vec3 across_door = to_vec3(across(door.yaw + placed.pose.yaw));
+            const gl::Vec3 into = to_vec3(heading(door.yaw + placed.pose.yaw));  // a portal faces into its own room
+            // Whatever stands in the opening - a door shut in it - keeps out
+            // as much of what comes through as it covers.
+            const float open = 1.0f - covered(room, e, door, half_w, half_h);
+            if (open <= 0.01f) continue;
+            const auto gate = [&](Light& l) {
+                l.gated = true;
+                l.gate_at = at, l.gate_across = across_door, l.gate_in = into, l.gate_w = half_w, l.gate_h = half_h;
+                // In the shadow of what stands in the way, none of it gets through.
+                l.open = open, l.floor = 0.0f;
+            };
+            // Its lamps, the strongest few. A bounce standing in for light
+            // from all round belongs to its own room, and stays there.
+            std::vector<Light> lamps = own_lights(far, Pose{});
+            lamps.erase(std::remove_if(lamps.begin(), lamps.end(), [](const Light& l) { return l.indirect; }), lamps.end());
+            std::sort(lamps.begin(), lamps.end(), [](const Light& a, const Light& b) {
+                if (a.sun != b.sun) return a.sun;
+                return a.power > b.power;
+            });
+            if (lamps.size() > 3) lamps.resize(3);
+            for (Light l : lamps) {
+                l.pos = here(l.pos);
+                l.dir = gl::normalize(turned(l.dir));
+                gate(l);
+                out.push_back(l);
+            }
+            // Its sky, or whatever light fills it from all round, seen
+            // through the opening: a soft lamp just beyond it, as wide as it.
+            const LookState& look = look_of(far);
+            const double amb = value(look, passes::scene, Key{"uAmbient"}, 0.55);
+            const gl::Vec3 sky{static_cast<float>(value(look, passes::scene, Key{"uSky.x"}, 0.10) * amb),
+                               static_cast<float>(value(look, passes::scene, Key{"uSky.y"}, 0.13) * amb),
+                               static_cast<float>(value(look, passes::scene, Key{"uSky.z"}, 0.20) * amb)};
+            const float bright = std::max({sky.x, sky.y, sky.z});
+            if (bright > 1e-4f) {
+                // A portal faces into its own room; beyond is behind it.
+                const gl::Vec3 beyond = to_vec3(heading(door.yaw + placed.pose.yaw)) * -1.0f;
+                Light glow;
+                glow.pos = at + beyond * 0.35f;
+                glow.dir = beyond * -1.0f;
+                glow.color = sky * (1.0f / bright);
+                glow.power = bright * half_w * half_h * 24.0f;
+                glow.inner = 0.9f;
+                glow.outer = 1.55f;
+                glow.falloff = 1.0f;
+                glow.indirect = true;
+                gate(glow);
+                out.push_back(glow);
             }
         }
+        if (out.size() > 8) out.resize(8);
+        return out;
+    }
+
+    // How much of a doorway's opening (half `half_w` across, `half_h` high)
+    // the things of its room standing in it cover, 0 to 1: each box near the
+    // opening's plane, seen square on to it. A door shut in its frame covers
+    // it all; swung open it is edge on, and covers a sliver.
+    float covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h) const {
+        const Vec3d a = across(door.yaw), n = heading(door.yaw);
+        float sum = 0.0f;
+        for (const auto& e : room.elements()) {
+            if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.id == portal.id) continue;
+            if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+            const Vec3d c = pose_of(room, e).position;  // in the room, not off its anchor
+            const double dx = c.x - door.position.x, dz = c.z - door.position.z;
+            if (dx * dx + dz * dz > (half_w + 1.5) * (half_w + 1.5)) continue;
+            const gl::Mat4& m = box_matrix(room, e).m;
+            float u0 = 1e9f, u1 = -1e9f, v0 = 1e9f, v1 = -1e9f, d0 = 1e9f, d1 = -1e9f;
+            for (int k = 0; k < 8; ++k) {
+                const gl::Vec3 q = m.transform_point({k & 1 ? 0.5f : -0.5f, k & 2 ? 0.5f : -0.5f, k & 4 ? 0.5f : -0.5f});
+                const double rx = q.x - door.position.x, ry = q.y - door.position.y, rz = q.z - door.position.z;
+                const float u = static_cast<float>(rx * a.x + rz * a.z), v = static_cast<float>(ry);
+                const float d = static_cast<float>(rx * n.x + rz * n.z);
+                u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, v), v1 = std::max(v1, v);
+                d0 = std::min(d0, d), d1 = std::max(d1, d);
+            }
+            // Only what is in the opening, not a thing across the room.
+            if (d1 < -0.25f || d0 > 0.25f) continue;
+            const float w = std::max(0.0f, std::min(u1, half_w) - std::max(u0, -half_w));
+            const float h = std::max(0.0f, std::min(v1, half_h) - std::max(v0, -half_h));
+            sum += w * h;
+        }
+        return std::clamp(sum / (4.0f * half_w * half_h), 0.0f, 1.0f);
+    }
+
+    // Every lamp that lights these rooms, strongest first: the first four of
+    // their own get shadow maps (`shadowed` of them), the rest light without
+    // casting. What comes in through their doorways goes after the shadowed,
+    // before their fainter own.
+    std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed) {
+        std::vector<Light> out;
+        for (const PlacedRoom& placed : rooms)
+            if (placed.room)
+                for (const Light& l : own_lights(*placed.room, placed.pose)) out.push_back(l);
         // A sun first - it lights everything, so it has the first shadow -
         // then lamps, brightest first. Not nearest: which lamps cast shadows
         // must not change as the viewer walks about, or shadows pop in and out.
@@ -653,6 +799,18 @@ private:
             if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
             return a.pos.y < b.pos.y;
         });
+        const std::size_t own = std::min(out.size(), kOwnShadows);
+        std::vector<Light> in;
+        for (const PlacedRoom& placed : rooms)
+            for (const Light& l : through_doorways(placed)) in.push_back(l);
+        // What comes through a doorway gets a shadow map of its own, while
+        // there are maps: then what stands in the opening - a door ajar, the
+        // frame - throws its own shadow. Past that, it is let in by how much
+        // of the opening is clear.
+        shadowed = std::min(own + in.size(), kShadowMaps);
+        for (std::size_t k = shadowed - own; k < in.size(); ++k) in[k].power *= in[k].open;
+        out.insert(out.begin() + static_cast<std::ptrdiff_t>(own), in.begin(), in.end());
+        shadowed = std::min(shadowed, out.size());
         if (out.size() > kMaxLights) out.resize(kMaxLights);
         if (out.empty()) {
             Light none;
@@ -690,7 +848,8 @@ private:
     void draw_world(const std::vector<PlacedRoom>& rooms, const Camera& cam, float aspect,
                     gl::RenderTarget& target, int depth, float znear, Key skip_portal = Key{},
                     const std::vector<HalfSpace>& clips = {}) {
-        const std::vector<Light> lights = read_lights(rooms, cam);
+        std::size_t shadowed = 0;
+        const std::vector<Light> lights = read_lights(rooms, shadowed);
         cam_eye_ = cam.eye;
         const float zfar = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
         for (const PlacedRoom& placed : rooms)
@@ -698,7 +857,6 @@ private:
                 for (const auto& e : placed.room->elements())
                     if (e.alive && e.kind == terrain_kind()) ensure_terrain(e, cam);
         // The strongest lamps get a shadow map each.
-        const std::size_t shadowed = std::min<std::size_t>(lights.size(), kShadowMaps);
         gl::Mat4 light_vp[kShadowMaps];
         float bias[kShadowMaps] = {1.0f, 1.0f, 1.0f, 1.0f};
         for (std::size_t i = 0; i < kShadowMaps; ++i) {
@@ -743,6 +901,8 @@ private:
         // turned, or anything that casts has: most frames, nothing has, and
         // the shadows cost nothing.
         ShadowSet& maps = shadows_for(rooms.front().room);
+        if (maps.array.ensure(q_.shadow_size, static_cast<int>(std::max<std::size_t>(shadowed, 1))))
+            for (uint64_t& s : maps.sig) s = 0;
         const uint64_t casters = caster_signature(rooms);
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
@@ -759,9 +919,21 @@ private:
                 apply_uniforms(caster, post_, passes::shadow);
                 caster_ready = true;
             }
-            maps.map[i].bind();
+            maps.array.bind_layer(static_cast<int>(i));
             gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
             caster.set("uLightViewProj", light_vp[i]);
+            // Light from beyond a doorway is kept out only by what stands on
+            // this side of it - the room behind the opening's plane is the
+            // other world's, and the light comes from there. (A hand's
+            // breadth of slack keeps a leaf shut in the plane casting.)
+            const Light& li = lights[std::min(i, lights.size() - 1)];
+            if (li.gated) {
+                gl::glEnable(gl::GL_CLIP_DISTANCE0);
+                caster.set("uCasterSide", li.gate_in.x, li.gate_in.y, li.gate_in.z, 0.08f - gl::dot(li.gate_in, li.gate_at));
+            } else {
+                gl::glDisable(gl::GL_CLIP_DISTANCE0);
+                caster.set("uCasterSide", 0.0f, 0.0f, 0.0f, 1.0f);
+            }
             for (const PlacedRoom& placed : rooms) {
                 if (!placed.room) continue;
                 set_frame(placed.pose);
@@ -785,6 +957,7 @@ private:
                 }
             }
         }
+        gl::glDisable(gl::GL_CLIP_DISTANCE0);
         gl::glCullFace(gl::GL_BACK);
         if (timing_) {
             gl::glFinish();
@@ -806,18 +979,19 @@ private:
         gl::glDisable(gl::GL_CULL_FACE);
         for (int i = 0; i < kMaxBounds; ++i)
             gl::glEnable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
-        for (std::size_t i = 0; i < kShadowMaps; ++i) maps.map[i].bind_depth(static_cast<int>(i) + 1);
+        maps.array.bind_depth(1);
 
         // Everything a scene shader is fed that is not the look's. Set again
         // whenever a room's look brings a different program.
         const auto frame_uniforms = [&](const gl::Program& p) {
             p.set("uViewProj", view_proj);
             p.set("uDim", 0.0f);
-            p.set("uLightViewProj0", light_vp[0]);
-            p.set("uLightViewProj1", light_vp[1]);
-            p.set("uLightViewProj2", light_vp[2]);
-            p.set("uLightViewProj3", light_vp[3]);
+            for (std::size_t i = 0; i < kShadowMaps; ++i) {
+                p.set(shadow_uniform(i, 0), light_vp[i]);
+                p.set(shadow_uniform(i, 1), bias[i]);
+            }
             p.set("uLightCount", static_cast<int>(lights.size()));
+            p.set("uShadowCount", static_cast<int>(shadowed));
             gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
             for (std::size_t i = 0; i < lights.size(); ++i) {
                 p.set(light_uniform(i, 0), lights[i].pos);
@@ -830,22 +1004,22 @@ private:
                 p.set(light_uniform(i, 7), lights[i].floor);
                 p.set(light_uniform(i, 8), lights[i].indirect ? 1.0f : 0.0f);
                 p.set(light_uniform(i, 9), lights[i].falloff);
-                if (lights[i].sun && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
+                const Light& l = lights[i];
+                p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
+                p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? 1.0f : 0.0f);
+                // The sky's sun is this room's own, not one seen through a door.
+                if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
                     sun_dir = gl::normalize(lights[i].dir) * -1.0f;
                     sun_color = lights[i].color;
                 }
             }
             p.set("uSunDir", sun_dir);
             p.set("uSunColor", sun_color);
-            p.set("uShadowBias", bias[0], bias[1], bias[2], bias[3]);
             p.set("uViewPos", cam.eye);
             p.set("uTime", static_cast<float>(time_));
-            p.set("uShadowTexel", 1.0f / static_cast<float>(maps.map[0].size()),
-                  1.0f / static_cast<float>(maps.map[0].size()));
-            p.set("uShadowMap0", 1);
-            p.set("uShadowMap1", 2);
-            p.set("uShadowMap2", 3);
-            p.set("uShadowMap3", 4);
+            p.set("uShadowTexel", 1.0f / static_cast<float>(maps.array.size()),
+                  1.0f / static_cast<float>(maps.array.size()));
+            p.set("uShadowMaps", 1);
             p.set("uTex", 0);
             p.set("uCRT", 0.0f);
             p.set("uScreenUV", 0.0f);
@@ -1947,15 +2121,28 @@ private:
         return names[static_cast<std::size_t>(i)].c_str();
     }
 
+    // Shadow uniform names (where each map sees from, its bias), built once.
+    static const char* shadow_uniform(std::size_t i, int field) {
+        static const auto names = [] {
+            std::array<std::array<std::string, 2>, kShadowMaps> n;
+            for (std::size_t l = 0; l < kShadowMaps; ++l) {
+                n[l][0] = "uShadowVP[" + std::to_string(l) + "]";
+                n[l][1] = "uShadowBias[" + std::to_string(l) + "]";
+            }
+            return n;
+        }();
+        return names[i][static_cast<std::size_t>(field)].c_str();
+    }
+
     // Light uniform names, built once: they are asked for every frame.
     static const char* light_uniform(std::size_t i, int field) {
         static const auto names = [] {
             static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                            "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
-                                           "uLightIndirect", "uLightFalloff"};
-            std::array<std::array<std::string, 10>, kMaxLights> n;
+                                           "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis"};
+            std::array<std::array<std::string, 12>, kMaxLights> n;
             for (std::size_t l = 0; l < kMaxLights; ++l)
-                for (int f = 0; f < 10; ++f)
+                for (int f = 0; f < 12; ++f)
                     n[l][static_cast<std::size_t>(f)] =
                         std::string(fields[f]) + "[" + std::to_string(l) + "]";
             return n;
@@ -2004,16 +2191,13 @@ private:
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.
     struct ShadowSet {
-        gl::ShadowMap map[kShadowMaps];
+        gl::ShadowArray array;  // a layer for each light that casts, made as wanted
         uint64_t sig[kShadowMaps] = {};
     };
     std::unordered_map<const void*, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world) {
         auto& set = shadow_sets_[world];
-        if (!set) {
-            set = std::make_unique<ShadowSet>();
-            for (auto& m : set->map) m.create(q_.shadow_size);
-        }
+        if (!set) set = std::make_unique<ShadowSet>();
         return *set;
     }
     static uint64_t mix_bits(uint64_t h, float f) {
