@@ -415,11 +415,16 @@ declared and then read: nothing rewrites one in place behind the graph's back
 do it, counted). The engine checks the graph again at its next frame after the
 count moved; unchanged, it is not checked.
 
-A law's trial runs arrows on the live graph, then undoes their data. It cannot
-undo a rewritten graph, so while a trial runs the interfaces are sealed: an
-arrow that adds a functor or an embedding throws `RewriteRefused`, the trial is
-undone, and the law reports the path as not running. Elements and arrows added
-inside a state on trial are allowed - the trial takes them away again.
+An element's identity is fixed when it is made: `id` and `kind` read like any
+`Key`, and nothing but the element sets them. A mutable state hands out its
+elements (`elements()`, an `ElementRange`) to act on, never the list itself.
+
+A law's trial runs arrows on the live graph, then puts their data back. It
+does not try to put back structure: while a trial runs, nothing structural is
+let happen at all - no functor, embedding or seam, and no element or arrow
+added to or taken from any state. A path that would do it throws
+`RewriteRefused` before anything changes, and its equation is reported as
+unchecked (`LawReport::unchecked`), apart from the counterexamples.
 
 ## Layout
 

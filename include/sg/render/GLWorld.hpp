@@ -165,7 +165,8 @@ public:
     // for playing with).
     struct FrameTimes {
         double portals = 0, shadows = 0, scene = 0, post = 0, scene_cpu = 0;
-        int portal_views = 0;
+        double feeds = 0;  // screens showing whole worlds, drawn before the rest
+        int portal_views = 0, feed_views = 0;
     };
     void set_timing(bool on) { timing_ = on; }
     // The state the viewer is attending to - an interface they sit at, say.
@@ -317,6 +318,8 @@ public:
         }
         // Feeds first, each whole, into its own picture: a screen showing a
         // world shows it as it is this frame.
+        const auto feeds_from = std::chrono::steady_clock::now();
+        int feed_views = 0;
         for (auto& [id, f] : feeds_) {
             if (!f.world || !f.view || (!f.live && f.drawn)) continue;
             bool here = false;
@@ -330,7 +333,10 @@ public:
             f.view->output_ = &f.out;
             f.view->render(*f.world, f.w, f.h);
             f.view->output_ = nullptr;
+            ++feed_views;
         }
+        const double feeds_ms =
+            timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
         poses_.clear();
         models_.clear();
         ensure_resources();
@@ -365,6 +371,8 @@ public:
             wp.ms.blit_to(wp.target);
         }
         times_ = FrameTimes{};
+        times_.feeds = feeds_ms;
+        times_.feed_views = feed_views;
         const auto mark = [this] {
             if (timing_) gl::glFinish();
             return std::chrono::steady_clock::now();
@@ -404,7 +412,7 @@ public:
             std::vector<HalfSpace> clips;
             if (!screen) clips.push_back(far_side(world, e, eye));
             draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, wp.ms,
-                       /*depth=*/1, kNear, back ? back->id : Key{}, clips);
+                       /*depth=*/1, kNear, back ? back->id.key() : Key{}, clips);
             wp.ms.blit_to(wp.target);
             ++times_.portal_views;
         }
@@ -697,8 +705,13 @@ private:
             const Light& l = lights[std::min(i, lights.size() - 1)];
             if (l.sun) {
                 // A box of shadow round the viewer, a little ahead of them,
-                // moved in whole texels so the edges do not crawl.
-                const gl::Vec3 d = gl::normalize(l.dir);
+                // moved in whole texels so the edges do not crawl. The sun's
+                // way is taken in steps of about a fifth of a degree: it
+                // creeps across the sky, and its map is drawn again when it
+                // has moved that far, not every frame of the day.
+                gl::Vec3 d = gl::normalize(l.dir);
+                d = gl::normalize({std::round(d.x * 300.0f) / 300.0f, std::round(d.y * 300.0f) / 300.0f,
+                                   std::round(d.z * 300.0f) / 300.0f});
                 const float e = l.extent, reach = e * 4.0f;
                 const float texel = 2.0f * e / static_cast<float>(q_.shadow_size);
                 gl::Vec3 c = cam.eye + gl::normalize({cam.forward.x, 0.0f, cam.forward.z}) * (e * 0.4f);
@@ -841,6 +854,7 @@ private:
         };
 
         scene_ = nullptr;
+        const Frustum view = frustum_of(view_proj);
         for (const PlacedRoom& placed : rooms) {
             if (!placed.room) continue;
             set_frame(placed.pose);
@@ -891,9 +905,9 @@ private:
                 if (e.kind == terrain_kind()) {
                     draw_terrain(e);
                 } else if (e.kind == kinds::mesh) {
-                    draw_crate(room, e);
+                    if (sees(view, box_matrix(room, e))) draw_crate(room, e);
                 } else if (e.kind == kinds::wall) {
-                    draw_wall_element(room, e);
+                    if (sees(view, box_matrix(room, e))) draw_wall_element(room, e);
                 } else if (e.kind == kinds::light) {
                     draw_lamp(room, e);
                 }
@@ -1179,6 +1193,43 @@ private:
     // A state that places its own wall elements gets only a floor and a
     // ceiling from its room_* parameters; one that does not gets the whole
     // implicit box, which is all a single-room scene needs.
+    // What the camera can see: the six planes of its view, each as ax + by +
+    // cz + d >= 0 inside (read off the view-projection's rows).
+    struct Frustum {
+        float plane[6][4];
+    };
+    static Frustum frustum_of(const gl::Mat4& vp) {
+        Frustum f{};
+        const auto row = [&](int i, int k) { return vp.m[k * 4 + i]; };
+        for (int p = 0; p < 6; ++p) {
+            const int axis = p / 2;
+            const float sign = p % 2 ? -1.0f : 1.0f;
+            float len = 0;
+            for (int k = 0; k < 4; ++k) {
+                f.plane[p][k] = row(3, k) + sign * row(axis, k);
+                if (k < 3) len += f.plane[p][k] * f.plane[p][k];
+            }
+            len = std::sqrt(len);
+            if (len > 0)
+                for (int k = 0; k < 4; ++k) f.plane[p][k] /= len;
+        }
+        return f;
+    }
+    // Whether anything of a box - the unit cube `local` places, in this
+    // room's frame - can be in view. A ball round it, a little generous, is
+    // tested: what is wholly outside the view is not drawn, which is most of
+    // a room when you lean into a screen.
+    bool sees(const Frustum& f, const RoomMatrix& local) const {
+        const gl::Mat4 w = frame_matrix_ * local.m;
+        const float cx = w.m[12], cy = w.m[13], cz = w.m[14];
+        float r2 = 0;
+        for (int c = 0; c < 3; ++c) r2 += w.m[c * 4] * w.m[c * 4] + w.m[c * 4 + 1] * w.m[c * 4 + 1] + w.m[c * 4 + 2] * w.m[c * 4 + 2];
+        const float r = 0.5f * std::sqrt(r2) * 1.5f + 0.05f;
+        for (const auto& p : f.plane)
+            if (p[0] * cx + p[1] * cy + p[2] * cz + p[3] < -r) return false;
+        return true;
+    }
+
     // The one place a room's placement is applied.
     void set_model(const RoomMatrix& local) {
         scene_->set("uModel", frame_matrix_ * local.m);

@@ -87,7 +87,10 @@ show the world const - act by firing events, never by writing into what
 `engine.current()` returns. Embeddings, transitions, seams and arrows are
 declared, then read; to change one, use the graph (`set_sync`,
 `set_propagation`, `set_carry`, `drop_embedding`, `set_functor`), which counts
-it. Never `const_cast` your way past this. A Live or View functor whose
+it. Never `const_cast` your way past this. An element's `id` and `kind` are
+fixed - another name is another element. An arrow that adds or removes
+elements cannot be checked by the laws (a trial never changes structure): it
+shows as unchecked; keep such arrows few, and their structure in their params. A Live or View functor whose
 transport reads more than its two elements is declared
 `Propagation::Continuous`.
 

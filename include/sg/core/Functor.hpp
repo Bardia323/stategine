@@ -92,8 +92,7 @@ public:
 
     Element& element(const Element& like) {
         Element& e = *pool()[slot_];
-        e.id = like.id;
-        e.kind = like.kind;
+        e.remake(like.id, like.kind);
         e.alive = true;
         e.params.clear();
         return e;

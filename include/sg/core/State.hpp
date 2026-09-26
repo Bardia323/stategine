@@ -17,6 +17,25 @@ namespace sg {
 
 class Engine;
 
+// A state's elements, each to act on - never the list they are kept in:
+// what a state is made of changes only by add_element / remove_element (and
+// their like), which its structure and its graph count.
+class ElementRange {
+public:
+    using iterator = std::deque<Element>::iterator;
+    explicit ElementRange(std::deque<Element>& list) : list_(&list) {}
+    iterator begin() const { return list_->begin(); }
+    iterator end() const { return list_->end(); }
+    std::size_t size() const { return list_->size(); }
+    bool empty() const { return list_->empty(); }
+    Element& operator[](std::size_t i) const { return (*list_)[i]; }
+    Element& front() const { return list_->front(); }
+    Element& back() const { return list_->back(); }
+
+private:
+    std::deque<Element>* list_;
+};
+
 // Per-tick context handed to every state.
 struct Tick {
     double dt = 0.0;    // seconds since the previous frame
@@ -61,9 +80,9 @@ public:
     // --- elements (objects) -------------------------------------------------
     Element& add_element(Element e) {
         if (index_.count(e.id)) throw std::runtime_error("duplicate element " + e.id.str());
+        restructured("add_element");
         index_.emplace(e.id, elements_.size());
         elements_.push_back(std::move(e));
-        restructured();
         return elements_.back();
     }
 
@@ -92,12 +111,12 @@ public:
     void remove_element(Key id) {
         auto it = index_.find(id);
         if (it == index_.end()) return;
+        restructured("remove_element");
         const std::size_t at = it->second;
         elements_.erase(elements_.begin() + static_cast<std::ptrdiff_t>(at));
         index_.erase(it);
         // Only those after it moved: their places are updated, the rest stand.
         for (std::size_t i = at; i < elements_.size(); ++i) index_[elements_[i].id] = i;
-        restructured();
         ++removals_;
     }
 
@@ -106,19 +125,21 @@ public:
     // leaves them dangling, for validate() to name.)
     void remove_with_arrows(Key id) {
         remove_element(id);
+        bool arrows = false;
+        for (const Morphism& m : morphisms_) arrows = arrows || m.from == id || m.to == id;
+        if (arrows) restructured("remove_with_arrows");
         const std::size_t had = morphisms_.size();
         for (std::size_t i = morphisms_.size(); i-- > 0;)
             if (morphisms_[i].from == id || morphisms_[i].to == id)
                 morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(i));
         if (morphisms_.size() != had) {
-            restructured();
             ++removals_;
             by_trigger_.clear();
             for (std::size_t i = 0; i < morphisms_.size(); ++i) by_trigger_[morphisms_[i].trigger].push_back(i);
         }
     }
 
-    std::deque<Element>& elements() { return elements_; }
+    ElementRange elements() { return ElementRange{elements_}; }
     const std::deque<Element>& elements() const { return elements_; }
 
     // --- morphisms (arrows between elements) --------------------------------
@@ -128,9 +149,9 @@ public:
     // notices.
     const Morphism& add_morphism(Morphism m) {
         if (m.name.empty()) throw std::runtime_error("morphism needs a name");
+        restructured("add_morphism");
         by_trigger_[m.trigger].push_back(morphisms_.size());
         morphisms_.push_back(std::move(m));
-        restructured();
         return morphisms_.back();
     }
 
@@ -241,7 +262,7 @@ public:
                 by_trigger_[morphisms_[i].trigger].push_back(i);
         }
         if (same_structure) structure_ = s.structure;
-        else restructured();
+        else restructured("restore");
         on_restored();
     }
 
@@ -322,11 +343,12 @@ public:
 private:
     friend class StateGraph;
 
-    // What the state is made of changed: a new stamp for it, and one more
-    // change counted by the graph that holds it, if any.
-    void restructured() noexcept {
+    // What the state is made of is about to change: counted by the graph
+    // that holds it, if any (which refuses it while a law's trial runs, before
+    // anything is touched), and a new stamp for it.
+    void restructured(const char* what) {
+        if (revision_) revision_->element(what);
         structure_ = next_stamp();
-        if (revision_) revision_->element();
     }
 
     void reindex() {

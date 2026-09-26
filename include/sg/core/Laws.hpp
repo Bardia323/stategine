@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -62,6 +63,9 @@ struct Violation {
     std::string right;
     std::string args;   // the event arguments the arrows were run with
     std::string detail; // the reason, when there is no single value to show
+    // Not a counterexample: the equation could not be checked at all, because
+    // running a side would change what the graph is made of (see Trial).
+    bool refused = false;
 
     std::string str() const {
         std::string s = law + " @ " + where + ": ";
@@ -377,15 +381,19 @@ namespace laws {
 
 // --- trial runs --------------------------------------------------------------
 // Takes a snapshot of each state the first time a path touches it and puts
-// every one of them back on destruction. While it lives the graph's
-// interfaces are sealed (StateGraph::Sealed): data can be undone, a rewritten
-// graph could not, so a path that tries is stopped and reported instead.
+// every one of them back on destruction. While it lives the graph is sealed
+// (StateGraph::Sealed): a trial undoes data, and what the graph is made of -
+// what joins its states, and what is in each, elements and arrows - is not
+// data. A path that would change any of it is stopped there and reported as
+// not running; nothing structural is ever rolled back, because nothing
+// structural is ever let happen.
 class Trial {
 public:
-    explicit Trial(StateGraph& g) : g_(g), sealed_(g) {}
+    explicit Trial(StateGraph& g) : g_(g) { sealed_.emplace(g); }
     Trial(const Trial&) = delete;
     Trial& operator=(const Trial&) = delete;
     ~Trial() {
+        sealed_.reset();
         for (auto& kv : saved_)
             if (State* s = g_.find(kv.first)) s->restore(std::move(kv.second));
     }
@@ -401,11 +409,12 @@ public:
 private:
     StateGraph& g_;
     std::unordered_map<Key, State::Snapshot> saved_;
-    StateGraph::Sealed sealed_;
+    std::optional<StateGraph::Sealed> sealed_;
 };
 
 struct Outcome {
     std::string error;  // non-empty when the path does not type or cannot run
+    bool refused = false;  // it would have changed the graph's structure, so it was not run
     Key state;          // where it ended
     Key element;
     State::Snapshot data;
@@ -536,6 +545,7 @@ inline Outcome run(StateGraph& g, const Path& p, const Params& args) {
     } catch (const RewriteRefused& refused) {
         Outcome out;
         out.error = refused.what();
+        out.refused = true;
         return out;
     }
 }
@@ -584,6 +594,15 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         v.detail = std::move(why);
         out.push_back(std::move(v));
     };
+    // A side that would change the graph's structure was stopped: the
+    // equation is not false, it cannot be checked - said once, as that.
+    if (l.refused || r.refused) {
+        Violation v = base;
+        v.refused = true;
+        v.detail = "cannot be checked on trial: " + (l.refused ? l.error : r.error);
+        out.push_back(std::move(v));
+        return out;
+    }
     if (!l.error.empty()) fail("left side does not run: " + l.error);
     if (!r.error.empty()) fail("right side does not run: " + r.error);
     if (!out.empty()) return out;
@@ -1035,6 +1054,7 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {},
         }
         } catch (const RewriteRefused& refused) {
             twice.error = refused.what();
+            twice.refused = true;
         }
         return settle(g, eq, twice, once);
         };
@@ -1302,28 +1322,41 @@ inline std::vector<Violation> seams(const StateGraph& g) {
 struct LawReport {
     std::vector<std::string> structure;  // StateGraph::validate
     std::vector<Violation> violations;
+    // Equations that could not be checked: a side would have rewritten what
+    // the graph is made of (added an element, a functor...), which a trial
+    // never lets happen. Neither broken nor shown to hold.
+    std::vector<Violation> unchecked;
 
     bool ok() const { return structure.empty() && violations.empty(); }
+    bool all_checked() const { return unchecked.empty(); }
 
     std::string str() const {
         std::string s;
         for (const auto& e : structure) s += "structure: " + e + "\n";
         for (const auto& v : violations) s += v.str() + "\n";
+        for (const auto& v : unchecked) s += "unchecked: " + v.str() + "\n";
         return s;
     }
 };
+
+namespace laws {
+// Counterexamples to one side, equations that could not be checked to the other.
+inline void sort_into(LawReport& r, std::vector<Violation> from) {
+    for (auto& v : from) (v.refused ? r.unchecked : r.violations).push_back(std::move(v));
+}
+}  // namespace laws
 
 inline LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams = {},
                         const LawOptions& o = {}) {
     LawReport r;
     r.structure = g.validate();
-    laws::append(r.violations, laws::identity(g, o));
-    laws::append(r.violations, laws::associativity(g, o));
-    laws::append(r.violations, laws::composition(g, o));
-    laws::append(r.violations, laws::functoriality(g, o));
-    laws::append(r.violations, laws::lenses(g, o));
-    laws::append(r.violations, laws::seams(g));
-    for (const Diagram& d : diagrams) laws::append(r.violations, laws::diagram(g, d));
+    laws::sort_into(r, laws::identity(g, o));
+    laws::sort_into(r, laws::associativity(g, o));
+    laws::sort_into(r, laws::composition(g, o));
+    laws::sort_into(r, laws::functoriality(g, o));
+    laws::sort_into(r, laws::lenses(g, o));
+    laws::sort_into(r, laws::seams(g));
+    for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
     return r;
 }
 
@@ -1334,13 +1367,13 @@ inline LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagra
                         const LawOptions& o = {}) {
     LawReport r;
     r.structure = g.validate();
-    laws::append(r.violations, laws::identity(g, o, &cache));
-    laws::append(r.violations, laws::associativity(g, o, &cache));
-    laws::append(r.violations, laws::composition(g, o, &cache));
-    laws::append(r.violations, laws::functoriality(g, o, &cache));
-    laws::append(r.violations, laws::lenses(g, o, &cache));
-    laws::append(r.violations, laws::seams(g));
-    for (const Diagram& d : diagrams) laws::append(r.violations, laws::diagram(g, d, &cache));
+    laws::sort_into(r, laws::identity(g, o, &cache));
+    laws::sort_into(r, laws::associativity(g, o, &cache));
+    laws::sort_into(r, laws::composition(g, o, &cache));
+    laws::sort_into(r, laws::functoriality(g, o, &cache));
+    laws::sort_into(r, laws::lenses(g, o, &cache));
+    laws::sort_into(r, laws::seams(g));
+    for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
     return r;
 }
 

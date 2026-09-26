@@ -225,13 +225,19 @@ void test_checks_do_not_rewrite() {
         if (!graph->functor("sneaky")) graph->add_functor("sneaky", "s", "s");
     });
     const std::size_t functors = g.functors().size();
+    const std::size_t elements = s.elements().size();
+    const uint64_t revision = g.revision();
     const sg::LawReport r = sg::verify(g);
-    bool named = false;
-    for (const auto& v : r.violations)
-        if (v.detail.find("rewritten while it was being checked") != std::string::npos) named = true;
-    check(named, "an arrow that rewrites the graph during a check is reported, not run");
-    check(g.functors().size() == functors && !g.functor("sneaky"), "and the graph is as it was");
-    check(!s.find("sprout"), "an element an arrow adds on trial is taken away again");
+    bool meddle = false, grow = false;
+    for (const auto& v : r.unchecked) {
+        meddle = meddle || (v.where.find("meddle") != std::string::npos && v.detail.find("add_functor") != std::string::npos);
+        grow = grow || (v.where.find("grow") != std::string::npos && v.detail.find("add_element") != std::string::npos);
+    }
+    check(meddle, "an arrow that would rewrite the graph during a check is stopped, and reported unchecked");
+    check(grow, "and so is one that would add an element to its own state: nothing structural happens on trial");
+    check(g.functors().size() == functors && !g.functor("sneaky") && !s.find("sprout") && s.elements().size() == elements &&
+              g.revision() == revision,
+          "the graph is as it was - nothing to roll back, because nothing was let happen");
 
     // Outside a check, the same arrow may rewrite the graph: the world may
     // change itself.

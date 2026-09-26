@@ -149,18 +149,28 @@ namespace detail {
 // its address to every state and functor it takes in, so a change made
 // through any of them - an element added, an object mapped - is counted where
 // it belongs, with an add. Changing a value is not a change of structure and
-// never comes here.
+// never comes here. While a law's trial runs, no change of structure is let
+// through at all - not of what joins the states, and not of what is in one:
+// a trial undoes data, and structure is not data.
 struct Revision {
     uint64_t all = 0;       // anything structural: elements and arrows too
     uint64_t topology = 0;  // the interfaces: states, functors, embeddings, seams, transitions
     int sealed = 0;         // > 0 while a law's trial runs
 
-    void element() noexcept { ++all; }
+    void element(const char* what) {
+        refuse(what);
+        ++all;
+    }
     void rewired(const char* what) {
-        if (sealed)
-            throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
+        refuse(what);
         ++all;
         ++topology;
+    }
+
+private:
+    void refuse(const char* what) const {
+        if (sealed)
+            throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
     }
 };
 
@@ -262,15 +272,67 @@ private:
 
 // ---------------------------------------------------------------------------
 // Element: an object of a state's category.
+//
+// What an element is - its id, its kind - is fixed when it is made: it is how
+// the state finds it, how its arrows name it, what the renderer takes it for.
+// Renaming one in place would leave the state's index, its arrows and every
+// functor that maps it pointing at something else. So the two read like any
+// Key, and nothing but the element itself can set them; an element with
+// another name is another element (take this one away, add that one). Its
+// params and whether it is alive are its to change.
 // ---------------------------------------------------------------------------
+class Middle;
+struct Element;
+
+class ElementKey {
+public:
+    ElementKey(Key k = Key{}) : k_(k) {}  // NOLINT: made from a Key on purpose
+    ElementKey(const char* s) : k_(s) {}  // NOLINT
+    ElementKey(const ElementKey&) = default;
+    operator Key() const { return k_; }  // NOLINT: reads as the Key it is
+    Key key() const { return k_; }
+    const std::string& str() const { return k_.str(); }
+    const char* c_str() const { return k_.c_str(); }
+    bool empty() const { return k_.empty(); }
+    const void* handle() const { return k_.handle(); }
+    friend bool operator==(const ElementKey& a, const ElementKey& b) { return a.k_ == b.k_; }
+    friend bool operator!=(const ElementKey& a, const ElementKey& b) { return a.k_ != b.k_; }
+    friend bool operator==(const ElementKey& a, const Key& b) { return a.k_ == b; }
+    friend bool operator!=(const ElementKey& a, const Key& b) { return a.k_ != b; }
+    friend bool operator==(const Key& a, const ElementKey& b) { return a == b.k_; }
+    friend bool operator!=(const Key& a, const ElementKey& b) { return a != b.k_; }
+    friend bool operator<(const ElementKey& a, const ElementKey& b) { return a.k_ < b.k_; }
+    friend std::string operator+(const std::string& a, const ElementKey& b) { return a + b.str(); }
+    friend std::string operator+(const ElementKey& a, const std::string& b) { return a.str() + b; }
+    friend std::string operator+(const char* a, const ElementKey& b) { return std::string(a) + b.str(); }
+
+private:
+    friend struct Element;
+    ElementKey& operator=(const ElementKey&) = default;
+    Key k_;
+};
+
 struct Element {
-    Key id;
-    Key kind;  // "sprite", "mesh", "light", "portal", ...
+    ElementKey id;
+    ElementKey kind;  // "sprite", "mesh", "light", "portal", ...
     Params params;
     bool alive = true;
 
     Element() = default;
     Element(Key id_, Key kind_) : id(id_), kind(kind_) {}
+    Element(const Element&) = default;
+    Element(Element&&) noexcept = default;
+    // One element's data put in another's place: a snapshot restored over
+    // the element it was taken of (same id), or a list rebuilt whole.
+    Element& operator=(const Element&) = default;
+    Element& operator=(Element&&) noexcept = default;
+
+private:
+    friend class Middle;  // a composite's scratch element, remade for each object
+    void remake(Key id_, Key kind_) {
+        id.k_ = id_;
+        kind.k_ = kind_;
+    }
 };
 
 // ---------------------------------------------------------------------------

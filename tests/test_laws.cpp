@@ -101,25 +101,36 @@ void test_identity_is_a_law_not_a_table() {
     auto& a = g.add<sg::State>("a");
     g.add<sg::State>("b");
     a.add_element("x", "n").params.set("v", 2.0);
-    g.add_functor("f", "a", "b").on_object("x", "y");  // y does not exist yet: f creates it
+    g.add_functor("f", "a", "b").on_object("x", "y");  // y does not exist yet: f would create it
     g.connect("a", "go", "b");
 
-    const auto clean = sg::laws::identity(g);
-    show(clean);
-    check(clean.empty(), "id ; F == F == F ; id, even when F creates what it maps to");
+    // A trial never changes what the graph is made of, so an equation whose
+    // side would add an element is not checked - and says so, as unchecked,
+    // not as broken - and the graph is as it was.
+    const auto unchecked = sg::laws::identity(g);
+    bool all_refused = !unchecked.empty();
+    for (const auto& v : unchecked) all_refused = all_refused && v.refused && v.detail.find("add_element") != std::string::npos;
+    check(all_refused && !g.state("b").find("y"),
+          "id ; F is not checked while F would create what it maps to - reported as unchecked, nothing added");
+    const sg::LawReport r = sg::verify(g);
+    check(r.ok() && !r.all_checked() && r.unchecked.size() == unchecked.size(), "verify keeps them apart from counterexamples");
 
-    // What the identity used to be: a copy of the object list, taken once.
+    // What the identity used to be: a copy of the object list, taken once -
+    // here while b was still empty.
     sg::Functor snapshot_id("snapshot_id", "b", "b");
     for (const auto& e : g.state("b").elements()) snapshot_id.on_object(e.id, e.id);
+    g.state("b").add_element("y", "n");  // b grows; now f has somewhere to land
+    const auto clean = sg::laws::identity(g);
+    show(clean);
+    check(clean.empty(), "id ; F == F == F ; id, once what F maps to is there");
     sg::Diagram d("the old identity");
     d.commutes(sg::Path("a").functor(sg::Functor::compose(*g.functor("f"), snapshot_id)),
                sg::Path("a").functor("f"));
     const auto broken = sg::laws::diagram(g, d);
     show(broken);
-    check(broken.size() == 1 && broken[0].state == sg::Key{"b"} &&
-              broken[0].element == sg::Key{"y"} && broken[0].key == "<element>" &&
-              broken[0].left == "absent" && broken[0].right == "present",
-          "a snapshot identity is caught: the counterexample is b.y, absent on one side only");
+    check(broken.size() == 1 && broken[0].state == sg::Key{"b"} && broken[0].element == sg::Key{"y"} &&
+              broken[0].key == "v" && broken[0].left == "<unset>" && !broken[0].refused,
+          "a snapshot identity is caught: it knows nothing of b.y, which grew after it was taken");
 
     bool refused = false;
     try {
