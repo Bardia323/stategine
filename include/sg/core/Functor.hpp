@@ -77,20 +77,21 @@ inline Transport then(Transport a, Transport b) {
 
 // The element halfway along a composite transport: made fresh each time, as
 // far as anything can tell - its id and kind, no params, alive - but in a
-// buffer kept for its depth of nesting, so carrying through a composite does
-// not allocate once warm.
+// buffer that is kept, so carrying through a composite does not allocate once
+// warm. A composite made of composites is carrying through several at once,
+// so each one mid-carry has a buffer of its own.
 class Middle {
 public:
-    Middle() : depth_(depth()++) {
+    Middle() : slot_(in_use()++) {
         auto& p = pool();
-        if (p.size() <= depth_) p.emplace_back(new Element());
+        if (p.size() <= slot_) p.emplace_back(new Element());
     }
-    ~Middle() { --depth(); }
+    ~Middle() { --in_use(); }
     Middle(const Middle&) = delete;
     Middle& operator=(const Middle&) = delete;
 
     Element& element(const Element& like) {
-        Element& e = *pool()[depth_];
+        Element& e = *pool()[slot_];
         e.id = like.id;
         e.kind = like.kind;
         e.alive = true;
@@ -99,15 +100,15 @@ public:
     }
 
 private:
-    static std::size_t& depth() {
-        static thread_local std::size_t d = 0;
-        return d;
+    static std::size_t& in_use() {
+        static thread_local std::size_t n = 0;
+        return n;
     }
     static std::vector<std::unique_ptr<Element>>& pool() {
         static thread_local std::vector<std::unique_ptr<Element>> p;
         return p;
     }
-    std::size_t depth_;
+    std::size_t slot_;
 };
 
 class Functor {

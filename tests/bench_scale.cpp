@@ -480,19 +480,19 @@ void many_embeddings() {
 //    registered composite and as D functors applied one after another.
 // ===========================================================================
 void deep_composition() {
-    header("6. functor composition: depth D, N objects (objects carried)");
+    header("6. functor composition: a chain of D functors, N objects (objects carried)");
     const long n = 1000;
-    const int max_depth = 64;
+    const int longest = 64;
     sg::StateGraph graph;
     std::vector<sg::State*> states;
-    for (int s = 0; s <= max_depth; ++s) {
+    for (int s = 0; s <= longest; ++s) {
         auto& st = graph.add<sg::State>(name("S", s));
         for (long i = 0; i < n; ++i) place(st, name("e", i), sg::kinds::sprite, double(i), double(s), 0);
         states.push_back(&st);
     }
     const sg::Transport xy = sg::transport::only({sg::keys::x, sg::keys::y});
     std::vector<sg::Key> chain;
-    for (int s = 0; s < max_depth; ++s) {
+    for (int s = 0; s < longest; ++s) {
         sg::Functor& f = graph.add_functor(name("F", s), name("S", s), name("S", s + 1));
         for (long i = 0; i < n; ++i) f.on_object(name("e", i), name("e", i), xy);
         chain.push_back(f.name());
@@ -502,11 +502,11 @@ void deep_composition() {
         const sg::Functor& comp = graph.compose_functors(name("comp", d), part);
         long reps = 0;
         const Cost one = repeat_for(0.25, 3, 100000, reps, [&] { comp.apply(*states[0], *states[static_cast<std::size_t>(d)]); });
-        row("composite, depth " + std::to_string(d), n, reps * n, one);
+        row("composite of " + std::to_string(d), n, reps * n, one);
         const Cost steps = repeat_for(0.25, 3, 100000, reps, [&] {
             for (int s = 0; s < d; ++s) graph.functor(part[static_cast<std::size_t>(s)])->apply(*states[static_cast<std::size_t>(s)], *states[static_cast<std::size_t>(s) + 1]);
         });
-        row("chain applied, depth " + std::to_string(d), n, reps * n, steps);
+        row("chain of " + std::to_string(d) + ", applied", n, reps * n, steps);
     }
 }
 

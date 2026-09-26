@@ -32,9 +32,8 @@ public:
 
     // --- stack ---------------------------------------------------------------
     const State* current() const { return stack_.empty() ? nullptr : stack_.back(); }
-    // The states on the stack, bottom first.
+    // The states on the stack, in the order they were entered.
     std::vector<const State*> stack() const { return {stack_.begin(), stack_.end()}; }
-    std::size_t depth() const { return stack_.size(); }
     bool running() const { return running_; }
 
     void start(Key id = Key{}, Params args = {}) {
