@@ -180,6 +180,23 @@ public:
         glDrawArrays(GL_TRIANGLES, 0, count_);
     }
 
+    // Drawn `instances` times in one call, each as `buffer` says: per
+    // instance kInstanceFloats floats - a model matrix (column by column, at
+    // attributes 3-6) and two vec4s of material (7, 8).
+    static constexpr int kInstanceFloats = 24;
+    void draw_instanced(GLuint buffer, GLsizei instances) const {
+        glBindVertexArray(vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        const GLsizei stride = kInstanceFloats * sizeof(float);
+        for (GLuint i = 0; i < 6; ++i) {
+            glVertexAttribPointer(3 + i, 4, GL_FLOAT, 0, stride, reinterpret_cast<void*>(i * 4 * sizeof(float)));
+            glEnableVertexAttribArray(3 + i);
+            glVertexAttribDivisor(3 + i, 1);
+        }
+        glDrawArraysInstanced(GL_TRIANGLES, 0, count_, instances);
+        for (GLuint i = 0; i < 6; ++i) glDisableVertexAttribArray(3 + i);
+    }
+
     bool valid() const { return vao_ != 0; }
 
 private:
@@ -511,6 +528,27 @@ private:
     GLuint fbo_ = 0;
     GLuint depth_ = 0;
     int size_ = 0;
+};
+
+// Where each of a batch of instances is, and what it is made of: one buffer,
+// filled anew for each batch drawn.
+class InstanceBuffer {
+public:
+    InstanceBuffer() = default;
+    InstanceBuffer(const InstanceBuffer&) = delete;
+    InstanceBuffer& operator=(const InstanceBuffer&) = delete;
+    ~InstanceBuffer() {
+        if (vbo_) glDeleteBuffers(1, &vbo_);
+    }
+    GLuint upload(const std::vector<float>& data) {
+        if (!vbo_) glGenBuffers(1, &vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
+        return vbo_;
+    }
+
+private:
+    GLuint vbo_ = 0;
 };
 
 // Depth maps for many lights in one texture, a layer each, so a shader reads

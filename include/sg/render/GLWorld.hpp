@@ -74,6 +74,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -112,6 +113,9 @@ struct GLQuality {
     float bloom_threshold = 1.05f;
     float exposure = 1.15f;
     int bloom_passes = 3;  // horizontal+vertical pairs
+    // Things of the same shape drawn in one call, each with its own place and
+    // material, rather than one call each. Off: one call each (to compare).
+    bool instancing = true;
 };
 
 // The standard look: every value the built-in shaders read, and the fallback
@@ -178,6 +182,9 @@ public:
         double portals = 0, shadows = 0, scene = 0, post = 0, scene_cpu = 0;
         double feeds = 0;  // screens showing whole worlds, drawn before the rest
         int portal_views = 0, feed_views = 0;
+        int draws = 0, instanced = 0;  // scene draw calls, and how many things were drawn in batches
+        int shadow_maps = 0;           // shadow layers drawn again (most frames, none)
+        double signature = 0;          // ms spent seeing whether anything that casts has moved
     };
     void set_timing(bool on) { timing_ = on; }
     // The state the viewer is attending to - an interface they sit at, say.
@@ -348,8 +355,6 @@ public:
         }
         const double feeds_ms =
             timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
-        poses_.clear();
-        models_.clear();
         ensure_resources();
         ensure_targets(fb_w, fb_h);
         advance_clock();
@@ -900,10 +905,15 @@ private:
         // maps, and a map is drawn again only when its lamp has moved or
         // turned, or anything that casts has: most frames, nothing has, and
         // the shadows cost nothing.
-        ShadowSet& maps = shadows_for(rooms.front().room);
+        // Each view keeps its own maps: two windows onto one world see it
+        // lit differently (each lets in its own room's light), and would
+        // otherwise draw over each other's maps every frame.
+        ShadowSet& maps = shadows_for(rooms.front().room, &target);
         if (maps.array.ensure(q_.shadow_size, static_cast<int>(std::max<std::size_t>(shadowed, 1))))
             for (uint64_t& s : maps.sig) s = 0;
+        const auto sig_from = std::chrono::steady_clock::now();
         const uint64_t casters = caster_signature(rooms);
+        times_.signature += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sig_from).count();
         gl::glEnable(gl::GL_DEPTH_TEST);
         gl::glEnable(gl::GL_CULL_FACE);
         gl::glCullFace(gl::GL_FRONT);  // front-face culling hides most acne
@@ -914,9 +924,11 @@ private:
             for (float f : light_vp[i].m) sig = mix_bits(sig, f);
             if (maps.sig[i] == sig) continue;
             maps.sig[i] = sig;
+            ++times_.shadow_maps;
             if (!caster_ready) {
                 caster.use();
                 apply_uniforms(caster, post_, passes::shadow);
+                caster.set("uInstanced", 0);
                 caster_ready = true;
             }
             maps.array.bind_layer(static_cast<int>(i));
@@ -942,6 +954,10 @@ private:
                     if (e.kind == kinds::mesh || e.kind == kinds::wall) {
                         // A lamp's own shade does not shadow its lamp.
                         if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+                        if (q_.instancing) {
+                            batch(shape_of(e), box_matrix(*placed.room, e).m, {}, 0, 0, 0, 0, 0);
+                            continue;
+                        }
                         caster.set("uModel", frame_matrix_ * box_matrix(*placed.room, e).m);
                         shape_of(e).draw();
                     } else if (e.kind == terrain_kind()) {
@@ -955,6 +971,7 @@ private:
                         cube_.draw();
                     }
                 }
+                flush_batches(caster, false);
             }
         }
         gl::glDisable(gl::GL_CLIP_DISTANCE0);
@@ -985,6 +1002,7 @@ private:
         // whenever a room's look brings a different program.
         const auto frame_uniforms = [&](const gl::Program& p) {
             p.set("uViewProj", view_proj);
+            p.set("uInstanced", 0);
             p.set("uDim", 0.0f);
             for (std::size_t i = 0; i < kShadowMaps; ++i) {
                 p.set(shadow_uniform(i, 0), light_vp[i]);
@@ -1079,13 +1097,21 @@ private:
                 if (e.kind == terrain_kind()) {
                     draw_terrain(e);
                 } else if (e.kind == kinds::mesh) {
-                    if (sees(view, box_matrix(room, e))) draw_crate(room, e);
+                    if (!sees(view, box_matrix(room, e))) continue;
+                    if (instanceable(e)) batch_crate(room, e);
+                    else draw_crate(room, e);
                 } else if (e.kind == kinds::wall) {
-                    if (sees(view, box_matrix(room, e))) draw_wall_element(room, e);
+                    if (!sees(view, box_matrix(room, e))) continue;
+                    if (q_.instancing && e.id != highlight_)
+                        batch(cube_, box_matrix(room, e).m, color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f,
+                              static_cast<float>(e.params.num(Key{"surface"}, 2.0)), 0, 0, 0);
+                    else
+                        draw_wall_element(room, e);
                 } else if (e.kind == kinds::light) {
                     draw_lamp(room, e);
                 }
             }
+            flush_batches(*scene_, true);
             for (const auto& e : room.elements()) {
                 if (e.kind != kinds::portal || !e.alive) continue;
                 // The doorway being looked through keeps its frame; only its
@@ -1099,23 +1125,51 @@ private:
         set_frame(Pose{});
     }
 
-    // Where each element is, and each box's matrix, worked out once a frame:
-    // the shadow passes, the scene and any view through a portal all ask.
-    // (Nothing moves while a frame is drawn.)
-    Pose pose_of(const State& st, const Element& e) const {
-        const auto it = poses_.find(&e);
-        if (it != poses_.end()) return it->second;
-        const Pose p = world_pose(st, e);
-        poses_.emplace(&e, p);
+    // Where each element is, and each box's matrix: the shadow passes, the
+    // scene and any view through a portal all ask, every frame. Kept from
+    // frame to frame, and worked out again only when the element's
+    // parameters, or those of what it hangs off, have changed - each change
+    // is a new stamp, so their stamps together say whether it could have.
+    struct Placed {
+        uint64_t stamp = 0;
+        bool posed = false, boxed = false, recorded = false, hashed = false;
+        uint64_t where = 0;  // its box and its shape, as a shadow map sees it
+        Pose pose;
+        RoomMatrix box;
+        std::array<float, gl::Mesh::kInstanceFloats> record{};  // as a batch carries it
+    };
+    static uint64_t chain_stamp(const State& st, const Element& e) {
+        uint64_t h = e.params.stamp();
+        const Element* cur = &e;
+        for (int i = 0; i < 8; ++i) {
+            if (!cur->params.has(keys::parent)) break;
+            const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+            if (!parent_id || parent_id->empty()) break;
+            const Element* parent = st.find(Key{*parent_id});
+            if (!parent) break;
+            h = (h * 1099511628211ULL) ^ parent->params.stamp();
+            cur = parent;
+        }
+        return h;
+    }
+    Placed& placed_of(const State& st, const Element& e) const {
+        Placed& p = placed_[&e];
+        const uint64_t stamp = chain_stamp(st, e);
+        if (p.stamp != stamp) p = Placed{stamp};
         return p;
     }
-    const RoomMatrix& box_matrix(const State& st, const Element& e) const {
-        const auto it = models_.find(&e);
-        if (it != models_.end()) return it->second;
-        return models_.emplace(&e, box_model(st, e)).first->second;
+    Pose pose_of(const State& st, const Element& e) const {
+        Placed& p = placed_of(st, e);
+        if (!p.posed) p.pose = world_pose(st, e), p.posed = true;
+        return p.pose;
     }
-    mutable std::unordered_map<const Element*, Pose> poses_;
-    mutable std::unordered_map<const Element*, RoomMatrix> models_;
+    const RoomMatrix& box_matrix(const State& st, const Element& e) const {
+        Placed& p = placed_of(st, e);
+        if (!p.boxed) p.box = box_model(st, e), p.boxed = true;
+        return p.box;
+    }
+    mutable std::unordered_map<const Element*, Placed> placed_;
+    mutable std::unordered_map<const Element*, std::pair<uint64_t, const gl::Mesh*>> shape_memo_;  // each thing's mesh, by its stamp
 
     static Key terrain_kind() {
         static const Key k{"terrain"};
@@ -1263,8 +1317,17 @@ private:
     // have `taper`: the top that fraction of the bottom's width (a lamp's
     // shade, the back of a tube). Those are made once for each size and kept.
     const gl::Mesh& shape_of(const Element& e) const {
-        static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"};
         if (e.kind != kinds::mesh) return cube_;
+        // Asked every frame, in every pass, of every thing: remembered until
+        // the thing's parameters change.
+        auto& memo = shape_memo_[&e];
+        if (memo.first == e.params.stamp() && memo.second) return *memo.second;
+        const gl::Mesh& m = find_shape(e);
+        memo = {e.params.stamp(), &m};
+        return m;
+    }
+    const gl::Mesh& find_shape(const Element& e) const {
+        static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"};
         const std::string s = e.params.get_or<std::string>(shape, "");
         const double tp = e.params.num(taper, 1.0);
         if (s == "sphere") return sphere_;
@@ -1347,6 +1410,7 @@ private:
     // procedural surfaces stay put when the viewer changes rooms.
     void draw_solid(const RoomMatrix& local, const gl::Vec3& albedo, float roughness,
                     float surface, float emissive = 0.0f, float highlight = 0.0f) {
+        ++times_.draws;
         set_model(local);
         scene_->set("uAlbedo", albedo);
         scene_->set("uRoughness", roughness);
@@ -1481,7 +1545,73 @@ private:
 
     // `surface` picks the material: 3 (the default) crate planks, 4 wood,
     // 5 brushed metal, 6 moulded plastic, 7 fabric, 0 plain.
+    // --- batches: things of one shape, drawn in one call --------------------------------
+    struct Batch {
+        const gl::Mesh* mesh;
+        std::vector<float> data;  // gl::Mesh::kInstanceFloats a thing
+    };
+    // A thing is drawn with the others of its shape unless it wears a skin (a
+    // surface bound to it) or is being pointed at.
+    bool instanceable(const Element& e) const {
+        if (!q_.instancing || e.id == highlight_) return false;
+        const auto skin = surfaces_.find(e.id);
+        return skin == surfaces_.end() || !skin->second.surface;
+    }
+    void batch_crate(const State& st, const Element& e) {
+        Placed& p = placed_of(st, e);
+        if (!p.recorded) {
+            const gl::Mat4& m = box_matrix(st, e).m;
+            const gl::Vec3 c = color_of(e, {0.8f, 0.5f, 0.25f});
+            std::copy(m.m, m.m + 16, p.record.begin());
+            const float mat[8] = {c.x, c.y, c.z, static_cast<float>(e.params.num(Key{"roughness"}, 0.6)),
+                                  static_cast<float>(e.params.num(Key{"surface"}, 3.0)),
+                                  static_cast<float>(e.params.num(Key{"emissive"}, 0.0)), 0.0f,
+                                  static_cast<float>(e.params.num(Key{"mirror"}, 0.0))};
+            std::copy(mat, mat + 8, p.record.begin() + 16);
+            p.recorded = true;
+        }
+        Batch& b = batch_for(shape_of(e));
+        b.data.insert(b.data.end(), p.record.begin(), p.record.end());
+    }
+    Batch& batch_for(const gl::Mesh& mesh) {
+        for (Batch& x : batches_)
+            if (x.mesh == &mesh) return x;
+        return batches_.emplace_back(Batch{&mesh, {}});
+    }
+    // One more of `mesh` to draw, at `local` in the room being drawn.
+    void batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::Vec3& albedo, float roughness, float surface,
+               float emissive, float highlight, float mirror) {
+        Batch& b = batch_for(mesh);
+        b.data.insert(b.data.end(), local.m, local.m + 16);
+        b.data.insert(b.data.end(), {albedo.x, albedo.y, albedo.z, roughness, surface, emissive, highlight, mirror});
+    }
+    // Everything batched, drawn: a call for each shape, in the room's frame.
+    void flush_batches(const gl::Program& p, bool scene) {
+        bool any = false;
+        for (Batch& b : batches_) {
+            if (b.data.empty()) continue;
+            if (!any) {
+                p.set("uInstanced", 1);
+                p.set("uFrame", frame_matrix_);
+                if (scene) {
+                    p.set("uTexMix", 0.0f);
+                    p.set("uGlow", 0.0f);
+                    p.set("uSkin", 0.0f);
+                    p.set("uScreenUV", 0.0f);
+                    p.set("uCRT", 0.0f);
+                }
+                any = true;
+            }
+            const auto n = static_cast<gl::GLsizei>(b.data.size() / gl::Mesh::kInstanceFloats);
+            b.mesh->draw_instanced(instances_.upload(b.data), n);
+            if (scene) ++times_.draws, times_.instanced += n;
+            b.data.clear();
+        }
+        if (any) p.set("uInstanced", 0);
+    }
+
     void draw_crate(const State& st, const Element& e) {
+        ++times_.draws;
         set_model(box_matrix(st, e));
         scene_->set("uAlbedo", color_of(e, {0.8f, 0.5f, 0.25f}));
         scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.6)));
@@ -2190,13 +2320,16 @@ private:
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.
+    std::vector<Batch> batches_;  // kept from frame to frame, emptied as drawn
+    gl::InstanceBuffer instances_;
+
     struct ShadowSet {
         gl::ShadowArray array;  // a layer for each light that casts, made as wanted
         uint64_t sig[kShadowMaps] = {};
     };
-    std::unordered_map<const void*, std::unique_ptr<ShadowSet>> shadow_sets_;
-    ShadowSet& shadows_for(const void* world) {
-        auto& set = shadow_sets_[world];
+    std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
+    ShadowSet& shadows_for(const void* world, const void* view) {
+        auto& set = shadow_sets_[{world, view}];
         if (!set) set = std::make_unique<ShadowSet>();
         return *set;
     }
@@ -2217,10 +2350,20 @@ private:
             for (const auto& e : placed.room->elements()) {
                 if (!e.alive) continue;
                 if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                    if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+                    // Where it is and what shape: worked out once each time
+                    // its parameters (or its anchor's) change - a change of
+                    // colour or glow is no change to a shadow.
+                    Placed& p = placed_of(*placed.room, e);
+                    if (!p.hashed) {
+                        // To the tenth of a millimetre: a cord settling by less
+                        // than that draws no shadow again.
+                        uint64_t w = 1469598103934665603ULL;
+                        for (float f : box_matrix(*placed.room, e).m.m) w = mix_bits(w, std::round(f * 1e4f));
+                        w = (w ^ reinterpret_cast<std::uintptr_t>(&shape_of(e))) * 1099511628211ULL;
+                        p.where = w, p.hashed = true;
+                    }
                     h = (h ^ reinterpret_cast<std::uintptr_t>(&e)) * 1099511628211ULL;
-                    for (float f : box_matrix(*placed.room, e).m.m) h = mix_bits(h, f);
-                    h = mix_bits(h, static_cast<float>(shape_hash(e)));
+                    h = (h ^ p.where) * 1099511628211ULL;
                 } else if (e.kind == terrain_kind()) {
                     auto t = terrains_.find(e.id);
                     if (t == terrains_.end()) continue;
@@ -2235,10 +2378,6 @@ private:
         return h;
     }
     // Which mesh a box is drawn with (its shape, rounding and taper).
-    static double shape_hash(const Element& e) {
-        return e.params.num(Key{"bevel"}, 0.0) * 131.0 + e.params.num(Key{"taper"}, 1.0) * 17.0 +
-               static_cast<double>(std::hash<std::string>{}(e.params.get_or<std::string>(Key{"shape"}, "")) % 9973);
-    }
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;

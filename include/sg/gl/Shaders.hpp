@@ -17,6 +17,17 @@ inline const char* scene_vs() {
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aUV;
+// Drawn as one of many at once: where this one is in its room (its frame is
+// uFrame), and what it is made of - albedo and roughness; surface, emissive,
+// highlight and mirror. Otherwise uModel and the material uniforms say.
+layout(location=3) in mat4 iLocal;
+layout(location=7) in vec4 iMat0;
+layout(location=8) in vec4 iMat1;
+uniform int uInstanced;
+uniform mat4 uFrame;
+flat out vec4 vMat0;
+flat out vec4 vMat1;
+flat out float vInstanced;
 
 uniform mat4 uModel;
 // The same placement *without* the room's own, so surface detail is a property
@@ -43,16 +54,21 @@ out vec3 vObject;
 out vec3 vObjNormal;
 
 void main() {
-    vec4 world = uModel * vec4(aPos, 1.0);
+    mat4 model = uInstanced == 1 ? uFrame * iLocal : uModel;
+    mat4 texModel = uInstanced == 1 ? iLocal : uTexModel;
+    vMat0 = iMat0;
+    vMat1 = iMat1;
+    vInstanced = float(uInstanced);
+    vec4 world = model * vec4(aPos, 1.0);
     vWorld = world.xyz;
-    vRoom = (uTexModel * vec4(aPos, 1.0)).xyz;
+    vRoom = (texModel * vec4(aPos, 1.0)).xyz;
     vLocal = aPos;
     // The mesh's own frame at its own size: materials that belong to a thing
     // (grain, brushing, weave) ride along with it however it is moved.
-    vec3 scale = vec3(length(uModel[0].xyz), length(uModel[1].xyz), length(uModel[2].xyz));
+    vec3 scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
     vObject = aPos * scale;
     vObjNormal = aNormal;
-    vNormal = normalize(mat3(uModel) * aNormal);
+    vNormal = normalize(mat3(model) * aNormal);
     vUV = aUV;
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
@@ -186,6 +202,14 @@ uniform float uClouds;        // how much of the sky is cloud, 0 for none
 uniform vec3  uCloudColor;    // a cloud's lit side
 uniform vec3  uCloudShade;    // and its shaded underside
 uniform float uMirror;        // how much of the real sky a surface reflects
+
+// The material this fragment is of: the uniforms, or - drawn as one of many
+// at once - what its instance carries.
+flat in vec4 vMat0;
+flat in vec4 vMat1;
+flat in float vInstanced;
+vec3 mAlbedo;
+float mRoughness, mSurface, mEmissive, mHighlight, mMirror;
 uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
 uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
 
@@ -411,7 +435,7 @@ vec2 room_plane() {
 vec3 room_material(out float rough_mod) {
     vec2 p = room_plane();
     rough_mod = 0.0;
-    if (uSurface < 10.5) {
+    if (mSurface < 10.5) {
         // Planks: long boards, staggered, each its own shade, with grain.
         vec2 q = p * vec2(0.6, 6.0);
         float row = floor(q.y);
@@ -421,22 +445,22 @@ vec3 room_material(out float rough_mod) {
         float shade = 0.78 + 0.3 * hash(floor(q));
         float grain = noise(vec2(q.x * 30.0, q.y * 3.0));
         rough_mod = -0.1;
-        return uAlbedo * shade * (0.85 + 0.2 * grain) * mix(0.5, 1.0, seam);
+        return mAlbedo * shade * (0.85 + 0.2 * grain) * mix(0.5, 1.0, seam);
     }
-    if (uSurface < 11.5) {
+    if (mSurface < 11.5) {
         // Concrete: mottled, with pour lines.
         float m = noise(p * 1.3) * 0.6 + noise(p * 7.0) * 0.3 + noise(p * 40.0) * 0.1;
         float lines = smoothstep(0.0, 0.02, abs(fract(p.y * 0.8) - 0.5) - 0.48);
         rough_mod = 0.15;
-        return uAlbedo * (0.8 + 0.3 * m) * (1.0 - 0.08 * lines);
+        return mAlbedo * (0.8 + 0.3 * m) * (1.0 - 0.08 * lines);
     }
-    if (uSurface < 12.5) {
+    if (mSurface < 12.5) {
         // Checker: squares of half a metre, two tones.
         vec2 c = floor(p * 2.0);
         float k = mod(c.x + c.y, 2.0);
-        return uAlbedo * mix(0.35, 1.0, k) * (0.96 + 0.06 * noise(p * 9.0));
+        return mAlbedo * mix(0.35, 1.0, k) * (0.96 + 0.06 * noise(p * 9.0));
     }
-    if (uSurface < 13.5) {
+    if (mSurface < 13.5) {
         // Brick: running bond, mortar between.
         vec2 q = p * vec2(4.0, 12.0);
         q.x += mod(floor(q.y), 2.0) * 0.5;
@@ -444,24 +468,24 @@ vec3 room_material(out float rough_mod) {
         float mortar = smoothstep(0.0, 0.06, min(cell.y, 1.0 - cell.y)) * smoothstep(0.0, 0.03, min(cell.x, 1.0 - cell.x));
         float shade = 0.75 + 0.35 * hash(floor(q));
         rough_mod = 0.1;
-        return mix(vec3(0.62, 0.6, 0.56), uAlbedo * shade * (0.9 + 0.15 * noise(p * 20.0)), mortar);
+        return mix(vec3(0.62, 0.6, 0.56), mAlbedo * shade * (0.9 + 0.15 * noise(p * 20.0)), mortar);
     }
-    if (uSurface < 14.5) {
+    if (mSurface < 14.5) {
         // Carpet: a dense short pile.
         float pile = noise(p * 90.0) * 0.5 + noise(p * 23.0) * 0.5;
         rough_mod = 0.3;
-        return uAlbedo * (0.82 + 0.3 * pile);
+        return mAlbedo * (0.82 + 0.3 * pile);
     }
-    if (uSurface < 15.5) {
+    if (mSurface < 15.5) {
         // Metal plate: panels with seams and a diamond tread.
         vec2 cell = fract(p * 0.8);
         float seam = smoothstep(0.0, 0.015, min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y)));
         vec2 d = fract(vec2(p.x + p.y, p.x - p.y) * 12.0);
         float tread = smoothstep(0.35, 0.5, 1.0 - abs(d.x - 0.5) * 2.0) * 0.12;
         rough_mod = -0.25;
-        return uAlbedo * (0.85 + tread + 0.08 * noise(vec2(p.x * 300.0, p.y * 4.0))) * mix(0.45, 1.0, seam);
+        return mAlbedo * (0.85 + tread + 0.08 * noise(vec2(p.x * 300.0, p.y * 4.0))) * mix(0.45, 1.0, seam);
     }
-    if (uSurface > 16.5 && uSurface < 17.5) {
+    if (mSurface > 16.5 && mSurface < 17.5) {
         // Marble: large slabs, faintly different, with soft veins that
         // wander across them in a darker, warmer tint of the stone.
         vec2 q = p * 0.9;
@@ -472,44 +496,44 @@ vec3 room_material(out float rough_mod) {
         float vein = 1.0 - smoothstep(0.0, 0.12, abs(sin((q.x + q.y * 0.6) * 2.2 + warp)));
         float fine = 1.0 - smoothstep(0.0, 0.06, abs(sin((q.x * 0.4 - q.y) * 5.0 + warp * 1.7)));
         rough_mod = -0.1;
-        vec3 veins = uAlbedo * vec3(0.78, 0.58, 0.70);
-        vec3 stone = uAlbedo * (0.96 + 0.05 * hash(slab));
-        return mix(mix(stone, veins, vein * 0.55 + fine * 0.25), uAlbedo * 0.8, 1.0 - seam);
+        vec3 veins = mAlbedo * vec3(0.78, 0.58, 0.70);
+        vec3 stone = mAlbedo * (0.96 + 0.05 * hash(slab));
+        return mix(mix(stone, veins, vein * 0.55 + fine * 0.25), mAlbedo * 0.8, 1.0 - seam);
     }
-    if (uSurface > 17.5 && uSurface < 18.5) {
+    if (mSurface > 17.5 && mSurface < 18.5) {
         // Water: its colour; the waves are in its normal (main).
         rough_mod = -0.2;
-        return uAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05));
+        return mAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05));
     }
     // Grass: clumps of green and dry.
     float c = noise(p * 3.0) * 0.5 + noise(p * 17.0) * 0.3 + noise(p * 80.0) * 0.2;
     rough_mod = 0.3;
-    return uAlbedo * mix(vec3(0.75, 0.8, 0.5), vec3(1.1, 1.15, 0.9), c);
+    return mAlbedo * mix(vec3(0.75, 0.8, 0.5), vec3(1.1, 1.15, 0.9), c);
 }
 
 vec3 surface_albedo(out float rough_mod) {
     rough_mod = 0.0;
-    if (uSurface < 0.5) return uAlbedo;
-    if (uSurface > 9.5) return room_material(rough_mod);
+    if (mSurface < 0.5) return mAlbedo;
+    if (mSurface > 9.5) return room_material(rough_mod);
 
-    if (uSurface < 1.5) {
+    if (mSurface < 1.5) {
         // Floor: large tiles with grout and a little grain.
         vec2 t = vRoom.xz * 0.5;
         vec2 cell = fract(t);
         float grout = smoothstep(0.0, 0.035, min(cell.x, cell.y)) *
                       smoothstep(0.0, 0.035, min(1.0 - cell.x, 1.0 - cell.y));
         float shade = mix(0.55, 1.0, hash(floor(t)) * 0.35 + 0.65);
-        vec3 tile = uAlbedo * shade * mix(0.45, 1.0, grout);
+        vec3 tile = mAlbedo * shade * mix(0.45, 1.0, grout);
         rough_mod = mix(-0.25, 0.05, grout);          // grout is rougher than tile
         return tile * (0.94 + 0.12 * noise(vRoom.xz * 8.0));
     }
-    if (uSurface < 2.5) {
+    if (mSurface < 2.5) {
         // Walls: plaster, with a subtle vertical gradient.
         float grain = 0.92 + 0.16 * noise(vRoom.xz * 6.0 + vRoom.y * 3.0);
         float height = clamp(vRoom.y / 4.0, 0.0, 1.0);
-        return uAlbedo * grain * mix(0.82, 1.06, height);
+        return mAlbedo * grain * mix(0.82, 1.06, height);
     }
-    if (uSurface > 7.5) {
+    if (mSurface > 7.5) {
         // Sand, rippled by the wind, giving way to banded rock where the
         // ground is steep. The ripples fade out before they would alias.
         vec3 n = normalize(vNormal);
@@ -518,54 +542,61 @@ vec3 surface_albedo(out float rough_mod) {
         float fade = clamp(1.5 - fwidth(arg) * 0.6, 0.0, 1.0);
         float ripple = 0.5 + 0.5 * sin(arg);
         float grain = noise(p * 37.0);
-        vec3 sand = uAlbedo * (0.93 + 0.09 * (ripple - 0.5) * fade + 0.07 * (grain - 0.5) * fade)
+        vec3 sand = mAlbedo * (0.93 + 0.09 * (ripple - 0.5) * fade + 0.07 * (grain - 0.5) * fade)
                   * (0.9 + 0.2 * noise(p * 0.04));
         float strata = 0.5 + 0.5 * sin(vRoom.y * 2.6 + noise(p * 0.15) * 2.5);
         vec3 rock = vec3(0.50, 0.30, 0.20) * (0.72 + 0.32 * strata) * (0.85 + 0.2 * noise(p * 2.0 + vRoom.y));
         // Wind: pale veils of sand streaming over the ground, downwind.
         vec2 w = p * vec2(0.35, 1.2) + vec2(uTime * 1.7, uTime * 0.3);
         float drift = smoothstep(0.55, 0.9, noise(w) * 0.7 + noise(w * 3.1 + 7.0) * 0.3) * uWind;
-        sand = mix(sand, uAlbedo * 1.12 + 0.02, drift * 0.35 * fade);
+        sand = mix(sand, mAlbedo * 1.12 + 0.02, drift * 0.35 * fade);
         float steep = smoothstep(0.3, 0.5, 1.0 - n.y);
         rough_mod = 0.25;
         return mix(sand, rock, steep);
     }
     vec3 a = abs(vLocal);
     float edge = max(max(a.x, a.y), a.z);
-    if (uSurface > 3.5 && uSurface < 4.5) {
+    if (mSurface > 3.5 && mSurface < 4.5) {
         // Wood: long grain along the thing's own x and z, rings, a softened edge.
         float along = abs(dot(normalize(vObjNormal), vec3(0.0, 1.0, 0.0))) > 0.5 ? vObject.z : vObject.y;
         float grain = noise(vec2(vObject.x * 2.0 + vObject.z * 2.0, along * 55.0));
         float rings = 0.5 + 0.5 * sin((vObject.x + vObject.z) * 9.0 + grain * 6.0);
         rough_mod = -0.05 * rings;
-        return uAlbedo * (0.82 + 0.14 * rings + 0.1 * grain) * mix(1.0, 0.8, smoothstep(0.46, 0.5, edge));
+        return mAlbedo * (0.82 + 0.14 * rings + 0.1 * grain) * mix(1.0, 0.8, smoothstep(0.46, 0.5, edge));
     }
-    if (uSurface > 4.5 && uSurface < 5.5) {
+    if (mSurface > 4.5 && mSurface < 5.5) {
         // Brushed metal: fine streaks, and smoother than its roughness says.
         float brush = noise(vec2(vObject.x * 400.0, vObject.y * 6.0 + vObject.z * 6.0));
         rough_mod = -0.2 + 0.1 * brush;
-        return uAlbedo * (0.9 + 0.12 * brush);
+        return mAlbedo * (0.9 + 0.12 * brush);
     }
-    if (uSurface > 5.5 && uSurface < 6.5) {
+    if (mSurface > 5.5 && mSurface < 6.5) {
         // Moulded plastic: a faint speckle and rounded, darker edges.
         float speck = noise(vObject.xz * 180.0 + vObject.y * 90.0);
-        return uAlbedo * (0.96 + 0.06 * speck) * mix(1.0, 0.78, smoothstep(0.45, 0.5, edge));
+        return mAlbedo * (0.96 + 0.06 * speck) * mix(1.0, 0.78, smoothstep(0.45, 0.5, edge));
     }
-    if (uSurface > 6.5) {
+    if (mSurface > 6.5) {
         // Fabric: a weave, matte.
         vec2 p = (vObject.xz + vObject.yy) * 260.0;
         float weave = 0.5 + 0.25 * (sin(p.x) + sin(p.y));
         rough_mod = 0.2;
-        return uAlbedo * (0.85 + 0.2 * weave) * mix(1.0, 0.85, smoothstep(0.46, 0.5, edge));
+        return mAlbedo * (0.85 + 0.2 * weave) * mix(1.0, 0.85, smoothstep(0.46, 0.5, edge));
     }
     // Crates: planks plus a darker bevel near the edges of the cube.
     float bevel = smoothstep(0.42, 0.5, edge);
     float planks = 0.88 + 0.12 * sin(vLocal.y * 42.0 + hash(vLocal.xz) * 3.0);
-    return uAlbedo * planks * mix(1.0, 0.55, bevel);
+    return mAlbedo * planks * mix(1.0, 0.55, bevel);
 }
 
 void main() {
-    if (uSurface > 8.5 && uSurface < 9.5) {
+    if (vInstanced > 0.5) {
+        mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
+        mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w;
+    } else {
+        mAlbedo = uAlbedo, mRoughness = uRoughness;
+        mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror;
+    }
+    if (mSurface > 8.5 && mSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
         FragColor = vec4(sky(normalize(vWorld - uViewPos)) * (1.0 - uDim), 0.0);
         return;
@@ -594,18 +625,18 @@ void main() {
         FragColor = vec4(albedo * (1.0 - uDim), 0.0);
         return;
     }
-    float roughness = clamp(uRoughness + rough_mod, 0.05, 1.0);
+    float roughness = clamp(mRoughness + rough_mod, 0.05, 1.0);
     // Metal (the brushed surface) reflects in its own colour and scatters
     // less. Only partly: most of what wears it is painted, and a bare metal
     // with only the sky and the floor to reflect would go dark. Everything
     // else reflects 4% head on, white.
-    float metal = (uSurface > 4.5 && uSurface < 5.5) ? 0.35 : 0.0;
+    float metal = (mSurface > 4.5 && mSurface < 5.5) ? 0.35 : 0.0;
     vec3 f0 = mix(vec3(0.04), albedo, metal);
     vec3 diffuse = albedo * (1.0 - metal);
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
-    if (uSurface > 17.5 && uSurface < 18.5 && n.y > 0.5) {
+    if (mSurface > 17.5 && mSurface < 18.5 && n.y > 0.5) {
         // Waves: the slope of a few long swells and shorter chop, each a
         // travelling sine, crossing; the short ones fade with distance
         // before they would shimmer.
@@ -695,15 +726,15 @@ void main() {
     vec3 mirrored = mix(uGround, uSky, smoothstep(-0.35, 0.35, up)) * uAmbient;
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
-    if (uMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), uMirror * (1.0 - roughness));
+    if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
     vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected + bounced;
 
-    vec3 color = ambient + direct + albedo * (uEmissive + uGlow);
+    vec3 color = ambient + direct + albedo * (mEmissive + uGlow);
     // How much of what is seen here is light from all round - the only part
     // occlusion takes away (ao_apply_fs): a corner in lamplight stays lit.
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
     float indirect = clamp(dot(ambient, lum) / max(dot(color, lum), 1e-5), 0.0, 1.0);
-    color = mix(color, vec3(1.0, 0.86, 0.45) * (0.3 + 0.7 * length(color)), uHighlight * 0.35);
+    color = mix(color, vec3(1.0, 0.86, 0.45) * (0.3 + 0.7 * length(color)), mHighlight * 0.35);
 
     // Fog, brighter where it is looked at towards the sun: light scattered
     // on its way through the air.
@@ -726,12 +757,16 @@ inline const char* depth_vs() {
 layout(location=0) in vec3 aPos;
 uniform mat4 uModel;
 uniform mat4 uLightViewProj;
+// Drawn as one of many at once: where this one is in its room, whose frame is uFrame.
+layout(location=3) in mat4 iLocal;
+uniform int uInstanced;
+uniform mat4 uFrame;
 // For light from beyond a doorway, only what is on this side of the opening
 // stands in its way: a half-space, (normal, offset); all of space when 0.
 uniform vec4 uCasterSide;
 out float gl_ClipDistance[1];
 void main() {
-    vec4 world = uModel * vec4(aPos, 1.0);
+    vec4 world = (uInstanced == 1 ? uFrame * iLocal : uModel) * vec4(aPos, 1.0);
     gl_ClipDistance[0] = dot(uCasterSide.xyz, world.xyz) + uCasterSide.w;
     gl_Position = uLightViewProj * world;
 })";

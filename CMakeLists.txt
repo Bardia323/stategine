@@ -93,6 +93,14 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_doorway_light_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_doorway_light_gl COMMAND sg_doorway_light_gl)
+
+    # Things of one shape drawn in one call: the same picture, far fewer calls.
+    add_executable(sg_instancing_gl tests/instancing_gl.cpp)
+    target_link_libraries(sg_instancing_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_instancing_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_instancing_gl COMMAND sg_instancing_gl)
   endif()
 endif()
 

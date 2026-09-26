@@ -104,6 +104,9 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, PolygonOffset, (GLfloat, GLfloat))                                                \
     X(GLenum, GetError, ())                                                                   \
     X(void, DrawArrays, (GLenum, GLint, GLsizei))                                             \
+    X(void, DrawArraysInstanced, (GLenum, GLint, GLsizei, GLsizei))                           \
+    X(void, VertexAttribDivisor, (GLuint, GLuint))                                            \
+    X(void, DisableVertexAttribArray, (GLuint))                                               \
     X(GLuint, CreateShader, (GLenum))                                                         \
     X(void, ShaderSource, (GLuint, GLsizei, const GLchar* const*, const GLint*))              \
     X(void, CompileShader, (GLuint))                                                          \
