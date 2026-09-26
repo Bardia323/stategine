@@ -21,6 +21,11 @@
 //             to undo what has sunk in; the bodies moved; the same impulses
 //             again without the springs, so undoing a sink adds no energy
 //             (a soft step, as Box2D v3 takes it); bounces last.
+//   sweep     something that went far this step for its size - a stone
+//             thrown, a pebble flicked spinning - is swept along its way,
+//             turning as it went, against what does not move, and stopped
+//             where it first met it: never let through a thin wall
+//             (conservative advancement, by the gap between the hulls).
 //   sleep     bodies touching each other are an island; an island that has
 //             lain still a moment sleeps, costs nothing, and wakes when
 //             something moving touches it.
@@ -31,6 +36,17 @@
 // two points drawn to a length by a spring. They are solved with the
 // contacts, softly as they are, and join islands: what is joined sleeps and
 // wakes together.
+//
+// A sensor is a body nothing bumps into: things pass through it, and the
+// world keeps what is inside each one (World::inside, entered, left) - a
+// doorway that notices who walks through, a pressure plate. A hull can be
+// cast along a line (World::cast): what it would meet first, and how far.
+//
+// A walker (World::walk) is someone on their feet among it all: an upright
+// body that is not a rigid one - it slides along what it walks into, steps
+// up a stair and down again, stands on what is gentle enough and not on
+// what is too steep, falls off an edge, rides what it stands on (a moving
+// platform, a lift, a boat) and shoves what is light enough aside.
 //
 // A hand holds a body by a soft spring at a point of it, as strong as the
 // arm: a mug comes up whole and is held square to the eye; a table taken by
@@ -46,6 +62,7 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -321,6 +338,8 @@ struct Body {
     double idle = 0;          // how long it has been still
     double hit = 0;           // the hardest knock since it was last asked
     bool grabbed = false;
+    double radius = -1;       // how far any of it is from its frame; worked out when first asked
+    bool sensor = false;      // nothing bumps into it: what is inside it is only noted
     int contacts = 0;         // how many things it touches, this step
 
     // Derived: where its mass is, and how it resists turning.
@@ -581,6 +600,29 @@ inline int touch(const Hull& ha, const Body::Placed& pa, const Hull& hb, const B
     return static_cast<int>(pts.size());
 }
 
+// How far apart two hulls are at least: the widest gap along any axis that
+// could part them - a face of either, or across an edge of each. Never more
+// than they truly are apart; below 0, they may touch.
+inline double apart(const Hull& ha, const Body::Placed& pa, const Hull& hb, const Body::Placed& pb) {
+    const auto gap = [&](V3 n) {
+        double a0 = 1e18, a1 = -1e18, b0 = 1e18, b1 = -1e18;
+        for (const V3& q : pa.v) a0 = std::min(a0, dot(n, q)), a1 = std::max(a1, dot(n, q));
+        for (const V3& q : pb.v) b0 = std::min(b0, dot(n, q)), b1 = std::max(b1, dot(n, q));
+        return std::max(b0 - a1, a0 - b1);
+    };
+    double best = -1e18;
+    for (const V3& n : pa.n) best = std::max(best, gap(n));
+    for (const V3& n : pb.n) best = std::max(best, gap(n));
+    for (const Hull::Edge& ea : ha.e)
+        for (const Hull::Edge& eb : hb.e) {
+            const V3 n = cross(pa.v[static_cast<std::size_t>(ea.b)] - pa.v[static_cast<std::size_t>(ea.a)],
+                               pb.v[static_cast<std::size_t>(eb.b)] - pb.v[static_cast<std::size_t>(eb.a)]);
+            const double l = length(n);
+            if (l > 1e-9) best = std::max(best, gap(n * (1.0 / l)));
+        }
+    return best;
+}
+
 // Where a ray first meets a hull, or -1; and the face it meets there.
 // Which of a thing's parts make its shape. A thing made of many parts (a
 // chair: seat, back, legs, five castors, a knob) is too many hulls to collide
@@ -694,6 +736,24 @@ struct Joint {
     V3 point;
     double tilt1 = 0, tilt2 = 0, drive = 0, pull = 0, low = 0, high = 0;
     int moving = -1;
+};
+
+// --- walkers --------------------------------------------------------------------------
+// Someone on their feet: where they stand, how big they are, how high a
+// stair they take in their stride and how steep a slope they stand on.
+struct Walker {
+    V3 at;                 // where their feet are
+    double radius = 0.3, height = 1.8;
+    double step = 0.3;     // the highest stair taken in a stride
+    double slope = 0.8;    // the steepest ground stood on, radians from level
+    double mass = 70;      // what they shove with
+    double vy = 0;         // falling
+    bool grounded = false;
+    V3 ground{0, 1, 0};    // which way the ground under them faces
+    std::string on;        // what they stand on
+    V3 on_x;               // and where that was, and how turned, last step
+    M3 on_r;
+    double turned = 0;     // how far what they stand on turned them this step (about y)
 };
 
 // A direction across `n`, and another across both.
@@ -815,6 +875,155 @@ public:
         const V3 axis = A->r * j.axis_a, ra = A->r * j.ref_a, rb = B ? B->r * j.ref_b : j.ref_b;
         return std::atan2(dot(cross(rb, ra), axis), dot(ra, rb));
     }
+    // --- sensors ---------------------------------------------------------------------
+    // What is inside a sensor now, as (sensor, thing) - and what came in and
+    // went out this step.
+    using Inside = std::pair<std::string, std::string>;
+    const std::set<Inside>& inside() const { return inside_; }
+    const std::vector<Inside>& entered() const { return entered_; }
+    const std::vector<Inside>& left() const { return left_; }
+
+    // --- casts -----------------------------------------------------------------------
+    // The hull `shape`, turned `turn`, carried from `from` to `to` without
+    // turning: the first thing it would meet (not `skip`, not a sensor), how
+    // far along the way (0..1, in `at`) and which way that thing faces there
+    // (towards the shape, in `normal`); none if it meets nothing.
+    const Body* cast(const Hull& shape, const M3& turn, V3 from, V3 to, double* at = nullptr, V3* normal = nullptr,
+                     const std::string& skip = {}) const {
+        Body probe;
+        probe.hulls.push_back(shape);
+        probe.r = turn;
+        const V3 way = to - from;
+        const double length_of_way = length(way);
+        const auto pose_at = [&](double t) {
+            probe.x = from + way * t;
+            probe.place();
+        };
+        pose_at(0.0);
+        V3 lo = probe.lo, hi = probe.hi;
+        pose_at(1.0);
+        lo = {std::min(lo.x, probe.lo.x), std::min(lo.y, probe.lo.y), std::min(lo.z, probe.lo.z)};
+        hi = {std::max(hi.x, probe.hi.x), std::max(hi.y, probe.hi.y), std::max(hi.z, probe.hi.z)};
+        const double near = 1e-4;
+        const Body* best = nullptr;
+        double first = 1.0;
+        for (const Body& o : bodies) {
+            if (o.sensor || (!skip.empty() && o.id == skip)) continue;
+            if (o.hi.x < lo.x || o.lo.x > hi.x || o.hi.y < lo.y || o.lo.y > hi.y || o.hi.z < lo.z || o.lo.z > hi.z) continue;
+            const auto gap = [&] {
+                double least = 1e18;
+                for (std::size_t hb = 0; hb < o.hulls.size(); ++hb) least = std::min(least, apart(probe.hulls[0], probe.world[0], o.hulls[hb], o.world[hb]));
+                return least;
+            };
+            double t = 0;
+            for (int k = 0; k < 48 && t < first; ++k) {
+                pose_at(t);
+                const double g = gap();
+                if (g < near) {
+                    first = t, best = &o;
+                    break;
+                }
+                if (length_of_way < 1e-12) break;
+                t += std::max(g / length_of_way, 1e-6);
+            }
+        }
+        if (at) *at = first;
+        if (best && normal) {
+            // Which way it faces there: the axis it would be met along.
+            pose_at(first);
+            V3 n{0, 1, 0};
+            double least = 1e18;
+            for (std::size_t hb = 0; hb < best->hulls.size(); ++hb) {
+                std::array<Touch, 4> t;
+                V3 nn;
+                if (touch(probe.hulls[0], probe.world[0], best->hulls[hb], best->world[hb], 0.05, nn, t) > 0 && t[0].sep < least)
+                    least = t[0].sep, n = nn * -1.0;
+            }
+            *normal = n;
+        }
+        return best;
+    }
+
+    // --- walkers ---------------------------------------------------------------------
+    // One step of a walker wanting to go `move` (across the ground; its
+    // height is the ground's): carried by what they stand on, then across -
+    // sliding along what they meet, the bottom `step` of them passing over
+    // what is lower (a stair) - then down onto the ground, if it is within
+    // a stride below and not too steep, or falling.
+    void walk(Walker& w, V3 move, double dt) {
+        const double skin = 0.002;
+        w.turned = 0;
+        // Carried by what they stand on: however it moved and turned since.
+        if (!w.on.empty()) {
+            if (const Body* p = find(w.on)) {
+                const M3 dr = p->r * transpose(w.on_r);
+                w.at = p->x + dr * (w.at - w.on_x);
+                w.turned = std::atan2(dr(0, 2), dr(0, 0)) * -1.0;
+            }
+        }
+        const double body_h = w.height - w.step;
+        const Hull body = Hull::prism({}, {w.radius, body_h * 0.5, w.radius}, 8);
+        const auto body_at = [&](V3 feet) { return feet + V3{0, w.step + body_h * 0.5, 0}; };
+        // On a slope too steep to stand on, not up it.
+        V3 left{move.x, 0, move.z};
+        if (!w.grounded && w.ground.y < std::cos(w.slope) && w.ground.y > 0.05) {
+            const V3 away = normalize(V3{w.ground.x, 0, w.ground.z});
+            const double into = dot(left, away);
+            if (into < 0) left = left - away * into;
+        }
+        for (int k = 0; k < 4 && length(left) > 1e-7; ++k) {
+            const V3 from = body_at(w.at);
+            double t = 1;
+            V3 n;
+            const Body* hit = cast(body, M3{}, from, from + left, &t, &n);
+            const double len = length(left);
+            if (!hit) {
+                w.at += left;
+                break;
+            }
+            const double go = std::max(0.0, t * len - skin);
+            w.at += left * (go / len);
+            left = left * (1.0 - go / len);
+            // Something loose in the way is shoved, as much as it is light.
+            if (Body* b = find(hit->id); b && b->dynamic() && dt > 0) {
+                wake(*b);
+                const V3 dir = left * (1.0 / std::max(length(left), 1e-9));
+                b->v += dir * (len / dt) * std::clamp(w.mass / (w.mass + b->mass), 0.05, 0.9) * 0.5;
+            }
+            // Along what stopped them.
+            V3 nh{n.x, 0, n.z};
+            const double l = length(nh);
+            if (l < 1e-6) break;
+            nh = nh * (1.0 / l);
+            left = left - nh * dot(left, nh);
+        }
+        // Down: the ground within a stride below, or a fall.
+        if (w.grounded) w.vy = 0;
+        w.vy += gravity.y * dt;
+        const double fall = std::max(0.0, -w.vy * dt);
+        const Hull sole = Hull::prism({}, {w.radius * 0.9, 0.01, w.radius * 0.9}, 8);
+        const V3 top = w.at + V3{0, w.step, 0};
+        const double reach = w.step + fall + (w.grounded ? w.step : 0.0);  // kept to the ground going down a stair
+        double t = 1;
+        V3 n{0, 1, 0};
+        const Body* under = cast(sole, M3{}, top, top - V3{0, reach, 0}, &t, &n);
+        if (under) {
+            // Met within the stride: stood on, if it is gentle enough; on
+            // what is too steep, held to it but not standing.
+            w.at.y = top.y - reach * t - 0.01;
+            w.ground = n;
+            w.vy = 0;
+            w.grounded = n.y >= std::cos(w.slope);
+            if (w.grounded) w.on = under->id, w.on_x = under->x, w.on_r = under->r;
+            else w.on.clear();
+        } else {
+            w.at.y -= fall;
+            w.grounded = false;
+            w.on.clear();
+            w.ground = {0, 1, 0};
+        }
+    }
+
     // Whatever holds `id` to anything, let go.
     void unjoin(const std::string& id) {
         joints.erase(std::remove_if(joints.begin(), joints.end(), [&](const Joint& j) { return j.a == id || j.b == id; }), joints.end());
@@ -859,7 +1068,7 @@ public:
         const Body* best = nullptr;
         double bt = reach;
         for (const Body& b : bodies) {
-            if (dynamic_only && !b.dynamic()) continue;
+            if ((dynamic_only && !b.dynamic()) || b.sensor) continue;
             if (!skip.empty() && b.id == skip) continue;
             for (const Body::Placed& p : b.world) {
                 V3 n;
@@ -908,8 +1117,9 @@ public:
     V3 walk_into(V3 p, double radius, double y0, double y1, V3 moved, double dt, std::vector<std::string>* shoved = nullptr) {
         const double step_up = 0.3;
         for (Body& b : bodies) {
-            // (What is in their hands does not push them about.)
-            if (!b.dynamic() || b.grabbed) continue;
+            // (What is in their hands does not push them about; a sensor
+            // is walked through.)
+            if (!b.dynamic() || b.grabbed || b.sensor) continue;
             if (b.hi.x < p.x - radius || b.lo.x > p.x + radius || b.hi.z < p.z - radius || b.lo.z > p.z + radius) continue;
             if (b.hi.y < y0 + step_up || b.lo.y > y1) continue;
             for (const Body::Placed& h : b.world) {
@@ -982,6 +1192,10 @@ public:
         if (!any_awake()) return;
         for (Body& b : bodies)
             if (b.dynamic() && b.awake) b.place();
+        stepped_ = dt;
+        from_x_.resize(bodies.size());
+        from_r_.resize(bodies.size());
+        for (std::size_t i = 0; i < bodies.size(); ++i) from_x_[i] = bodies[i].x, from_r_[i] = bodies[i].r;
         collide();
         const double h = dt / substeps;
         prepare(h);
@@ -995,6 +1209,7 @@ public:
         restitution();
         for (Body& b : bodies)
             if (b.dynamic() && b.awake) b.place();
+        sweep_fast();
         sleep(dt);
     }
 
@@ -1049,8 +1264,22 @@ private:
         for (auto& [k, m] : manifolds_) m.live = false;
         live_.clear();
         for (Body& b : bodies) b.contacts = 0;
+        // What is inside a sensor is found again for whatever moves; what
+        // lies still in one stays in it.
+        const std::set<Inside> was = inside_;
+        for (auto it = inside_.begin(); it != inside_.end();) {
+            const Body* s = find(it->first);
+            const Body* o = find(it->second);
+            it = !s || !o || moves(*s) || moves(*o) ? inside_.erase(it) : std::next(it);
+        }
         if (sweep) sweep_pairs();
         else every_pair();
+        entered_.clear();
+        left_.clear();
+        for (const Inside& i : inside_)
+            if (!was.count(i)) entered_.push_back(i);
+        for (const Inside& i : was)
+            if (!inside_.count(i)) left_.push_back(i);
         for (auto it = manifolds_.begin(); it != manifolds_.end();)
             it = it->second.live ? std::next(it) : manifolds_.erase(it);
         for (auto& [k, m] : manifolds_) {
@@ -1250,10 +1479,88 @@ private:
         }
     }
 
+    std::set<Inside> inside_;
+    std::vector<Inside> entered_, left_;
+
+    // --- through nothing ---------------------------------------------------------------
+    // Where each body was when the step began.
+    std::vector<V3> from_x_;
+    std::vector<M3> from_r_;
+    // Each moving body that went far this step for its size - further than
+    // half its narrowest - swept from where it was to where it is, turning
+    // as it went, against what does not move near its way; stopped where it
+    // first comes within touching of one (conservative advancement: each
+    // stride no longer than the gap left, at the fastest any of it moves).
+    // What it was already touching at the start does not stop it.
+    void sweep_fast() {
+        for (std::size_t i = 0; i < bodies.size(); ++i) {
+            Body& b = bodies[i];
+            if (!moves(b) || b.sensor || i >= from_x_.size()) continue;
+            if (b.radius < 0) {
+                b.radius = 0;
+                for (const Hull& h : b.hulls)
+                    for (const V3& v : h.v) b.radius = std::max(b.radius, length(v));
+            }
+            const double radius = b.radius;
+            const double narrow = std::min({b.hi.x - b.lo.x, b.hi.y - b.lo.y, b.hi.z - b.lo.z});
+            const V3 x0 = from_x_[i], x1 = b.x;
+            // Most things move a little: known at once, from where it went
+            // and how fast it spins (a bound: at most as far as that).
+            if (length(x1 - x0) + (length(b.w) + 1.0) * stepped_ * radius < 0.5 * narrow) continue;
+            const M3 r0 = from_r_[i], r1 = b.r;
+            const V3 dx = x1 - x0, turn = log_map(r1 * transpose(r0));
+            const double angle = length(turn);
+            const double reach = length(dx) + angle * radius;
+            if (reach < 0.5 * narrow) continue;
+            const V3 axis = angle > 1e-12 ? turn * (1.0 / angle) : V3{0, 1, 0};
+            const auto pose_at = [&](double t) {
+                b.x = x0 + dx * t;
+                b.r = angle > 1e-12 ? orthonormal(axis_angle(axis, angle * t) * r0) : r0;
+                b.place();
+            };
+            // Its way, as a box: where it was, where it is, and what its
+            // turning sweeps out.
+            V3 lo = b.lo, hi = b.hi;
+            pose_at(0.0);
+            lo = {std::min(lo.x, b.lo.x) - angle * radius, std::min(lo.y, b.lo.y) - angle * radius, std::min(lo.z, b.lo.z) - angle * radius};
+            hi = {std::max(hi.x, b.hi.x) + angle * radius, std::max(hi.y, b.hi.y) + angle * radius, std::max(hi.z, b.hi.z) + angle * radius};
+            const auto gap_to = [&](const Body& o) {
+                double least = 1e18;
+                for (std::size_t ha = 0; ha < b.hulls.size(); ++ha)
+                    for (std::size_t hb = 0; hb < o.hulls.size(); ++hb)
+                        least = std::min(least, apart(b.hulls[ha], b.world[ha], o.hulls[hb], o.world[hb]));
+                return least;
+            };
+            const double near = margin * 0.5;
+            double first = 1.0;
+            for (const Body& o : bodies) {
+                if (&o == &b || moves(o) || o.sensor) continue;
+                if (o.hi.x < lo.x || o.lo.x > hi.x || o.hi.y < lo.y || o.lo.y > hi.y || o.hi.z < lo.z || o.lo.z > hi.z) continue;
+                double t = 0;
+                pose_at(0.0);
+                if (gap_to(o) < near) continue;  // touching it already: not a thing it flies into
+                for (int k = 0; k < 32 && t < first; ++k) {
+                    pose_at(t);
+                    const double gap = gap_to(o);
+                    if (gap < near) {
+                        first = t;
+                        break;
+                    }
+                    t += std::max((gap - near * 0.5) / reach, 1e-4);
+                }
+            }
+            pose_at(first);
+            if (first >= 1.0) b.x = x1, b.r = r1, b.place();
+        }
+    }
+
     static bool moving(const Body& b) { return b.dynamic() && b.awake; }
     // How far past its box a moving body is looked for: the margin, and as
-    // far as it can go this step, so nothing is passed through.
-    double looked_for(const Body& b) const { return margin + length(b.v) * (1.0 / 60.0); }
+    // far as it can go this step, so nothing is passed through - a gap is
+    // closed no faster than it can be (a contact that may not yet be
+    // touching), however long the step.
+    double stepped_ = 1.0 / 60.0;
+    double looked_for(const Body& b) const { return margin + length(b.v) * stepped_; }
 
     // A moving body `i` and any other `j`: if `i`'s box, grown by its reach,
     // meets `j`'s, they are a pair. (Of two moving bodies, the one met first
@@ -1331,6 +1638,17 @@ private:
     void pair(std::size_t ia, std::size_t ib, double reach) {
         Body& a = bodies[ia];
         Body& b = bodies[ib];
+        if (a.sensor || b.sensor) {
+            // Inside it, if no axis parts them at all; nothing is pushed.
+            if (a.sensor && b.sensor) return;
+            for (std::size_t ha = 0; ha < a.hulls.size(); ++ha)
+                for (std::size_t hb = 0; hb < b.hulls.size(); ++hb)
+                    if (apart(a.hulls[ha], a.world[ha], b.hulls[hb], b.world[hb]) < 0) {
+                        inside_.insert(a.sensor ? Inside{a.id, b.id} : Inside{b.id, a.id});
+                        return;
+                    }
+            return;
+        }
         for (std::size_t ha = 0; ha < a.hulls.size(); ++ha)
             for (std::size_t hb = 0; hb < b.hulls.size(); ++hb) {
                 const Body::Placed& pa = a.world[ha];

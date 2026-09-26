@@ -332,6 +332,191 @@ int main() {
 #endif
         check(ms < most, "a step of forty-one bodies takes under " + std::to_string(static_cast<int>(most)) + " ms");
     }
+    // --- fast things and thin walls ---------------------------------------------------------
+    {
+        // A small thing thrown hard at a thin wall - straight at it, at a
+        // slant, spinning - at a step of a sixtieth and of a twentieth of a
+        // second: it stops at the wall, whatever the speed, never through.
+        struct Throw {
+            double speed, slant, spin, dt;
+        };
+        int through = 0, tried = 0;
+        std::string worst;
+        for (const Throw t : {Throw{10, 0, 0, 1 / 60.0}, Throw{30, 0, 0, 1 / 60.0}, Throw{60, 0, 0, 1 / 60.0}, Throw{30, 0.6, 0, 1 / 60.0},
+                              Throw{30, 0, 40, 1 / 60.0}, Throw{15, 0, 0, 1 / 20.0}, Throw{40, 0.4, 20, 1 / 20.0}}) {
+            World w;
+            w.gravity = {0, 0, 0};
+            Body wall;
+            wall.id = "wall";
+            wall.hulls.push_back(Hull::box({}, {0.01, 1.0, 1.0}));  // two centimetres thick
+            wall.x = {1.0, 1.0, 0};
+            wall.set_mass(0);
+            w.add(wall);
+            w.add(box_body("pebble", {0, 1.0, 0}, {0.015, 0.015, 0.015}, 0.05));
+            Body& p = *w.find("pebble");
+            p.v = V3{std::cos(t.slant), 0, std::sin(t.slant)} * t.speed;
+            p.w = {t.spin, t.spin * 0.7, 0};
+            for (int i = 0; i < static_cast<int>(1.0 / t.dt); ++i) w.step(t.dt);
+            ++tried;
+            if (w.find("pebble")->x.x > 1.0) {
+                ++through;
+                worst += " " + std::to_string(static_cast<int>(t.speed)) + " m/s at " + std::to_string(t.slant) + " rad, step " +
+                         std::to_string(t.dt) + ";";
+            }
+        }
+        check(through == 0, "thrown hard at a thin wall, it never goes through (" + std::to_string(through) + " of " +
+                                std::to_string(tried) + " did:" + worst + ")");
+    }
+    // --- casts and sensors ---------------------------------------------------------------------
+    {
+        // A box carried down onto a table stops on its top; carried along
+        // above it, it meets nothing.
+        World w;
+        w.add(floor_body());
+        w.add(table_body({0, 0, 0}));
+        const Hull box = Hull::box({}, {0.1, 0.1, 0.1});
+        double at = 0;
+        V3 n;
+        const Body* hit = w.cast(box, M3{}, {0.2, 2.0, 0.1}, {0.2, 0.0, 0.1}, &at, &n);
+        const double bottom = 2.0 - 2.0 * at - 0.1;
+        check(hit && hit->id == "table" && std::fabs(bottom - 0.75) < 0.005 && n.y > 0.99,
+              "a box cast down onto a table meets its top (its bottom at " + std::to_string(bottom) + ", facing up " + std::to_string(n.y) + ")");
+        check(!w.cast(box, M3{}, {-3, 2.0, 0}, {3, 2.0, 0}, &at), "cast along above it, it meets nothing");
+    }
+    {
+        // A sensor in the air, and another on the floor: a box dropped
+        // through the first falls on through it, noted coming in and going
+        // out; it comes to rest in the second, and is still in it asleep.
+        World w;
+        w.add(floor_body());
+        Body gate;
+        gate.id = "gate";
+        gate.hulls.push_back(Hull::box({}, {0.5, 0.2, 0.5}));
+        gate.x = {0, 1.2, 0};
+        gate.set_mass(0);
+        gate.sensor = true;
+        w.add(gate);
+        Body plate = gate;
+        plate.id = "plate";
+        plate.x = {0, 0.1, 0};
+        w.add(plate);
+        w.add(box_body("crate", {0, 2.0, 0}, {0.1, 0.1, 0.1}, 2));
+        bool came = false, went = false;
+        for (int i = 0; i < 240; ++i) {
+            w.step(1.0 / 60.0);
+            for (const auto& e : w.entered()) came |= e == World::Inside{"gate", "crate"};
+            for (const auto& e : w.left()) went |= e == World::Inside{"gate", "crate"};
+        }
+        const bool resting = !w.find("crate")->awake && std::fabs(w.find("crate")->x.y - 0.1) < 0.01;
+        check(came && went, "a box falling through a sensor is noted coming in and going out, and falls on through");
+        check(resting && w.inside().count({"plate", "crate"}) && !w.inside().count({"gate", "crate"}),
+              "come to rest in a sensor on the floor, it is still inside it, asleep");
+    }
+    // --- walkers ----------------------------------------------------------------------------
+    {
+        const auto fixed = [](World& w, const std::string& id, V3 at, V3 half, const M3& turn = M3{}) {
+            Body b;
+            b.id = id;
+            b.hulls.push_back(Hull::box({}, half, turn));
+            b.x = at;
+            b.set_mass(0);
+            w.add(b);
+        };
+        const auto stroll = [](World& w, Walker& p, V3 velocity, double seconds) {
+            for (int i = 0; i < static_cast<int>(seconds * 60); ++i) w.walk(p, velocity * (1.0 / 60.0), 1.0 / 60.0);
+        };
+        {
+            // Into a wall: stopped at it; walking at it aslant: along it.
+            World w;
+            w.add(floor_body());
+            fixed(w, "wall", {3.0, 1.5, 0}, {0.1, 1.5, 5.0});
+            Walker p;
+            p.at = {0, 0, 0};
+            stroll(w, p, {1.5, 0, 0}, 3.0);
+            const bool stopped = std::fabs(p.at.x - (2.9 - p.radius)) < 0.02 && std::fabs(p.at.z) < 1e-6 && p.grounded;
+            stroll(w, p, {1.0, 0, 1.0}, 1.0);
+            check(stopped && std::fabs(p.at.x - (2.9 - p.radius)) < 0.02 && p.at.z > 0.9,
+                  "a walker walks up to a wall and stops; aslant, slides along it (at " + std::to_string(p.at.x) + ", " + std::to_string(p.at.z) + ")");
+        }
+        {
+            // Up a flight of eight stairs 0.15 high and 0.3 deep, and back down.
+            World w;
+            w.add(floor_body());
+            for (int i = 0; i < 8; ++i) fixed(w, "stair" + std::to_string(i), {1.0 + 0.3 * i + 0.15, 0.075 * (i + 1), 0}, {0.15, 0.075 * (i + 1), 1.0});
+            Walker p;
+            stroll(w, p, {1.0, 0, 0}, 3.2);  // to the top stair
+            const double up = p.at.y;
+            stroll(w, p, {-1.0, 0, 0}, 4.0);
+            check(std::fabs(up - 1.2) < 0.02 && std::fabs(p.at.y) < 0.02 && p.grounded,
+                  "a walker climbs a flight of stairs to the top (" + std::to_string(up) + " m) and comes back down");
+        }
+        {
+            // A ramp at 20 degrees is walked up; one at 60 is not.
+            const auto ramp = [&](double degrees) {
+                World w;
+                w.add(floor_body());
+                const double a = degrees * 3.14159265358979 / 180.0;
+                // Four metres long, its foot on the floor at x = 2.
+                fixed(w, "ramp", {2.0 + 2.0 * std::cos(a), 2.0 * std::sin(a) - 0.05 * std::cos(a), 0}, {2.0, 0.05, 1.0},
+                      axis_angle({0, 0, 1}, a));
+                Walker p;
+                stroll(w, p, {1.2, 0, 0}, 4.0);
+                return p.at.y;
+            };
+            const double gentle = ramp(20), steep = ramp(60);
+            check(gentle > 0.8 && steep < 0.45, "a walker goes up a gentle ramp (" + std::to_string(gentle) + " m) but not a steep one (" +
+                                                   std::to_string(steep) + " m)");
+        }
+        {
+            // Off the edge of a table-high ledge: falls, and lands on the floor.
+            World w;
+            w.add(floor_body());
+            fixed(w, "ledge", {0, 0.4, 0}, {1.0, 0.4, 1.0});
+            Walker p;
+            p.at = {0, 0.8, 0};
+            stroll(w, p, {0, 0, 0}, 0.2);
+            const double on_ledge = p.at.y;
+            stroll(w, p, {1.5, 0, 0}, 1.5);
+            check(std::fabs(on_ledge - 0.8) < 0.01 && std::fabs(p.at.y) < 0.01 && p.at.x > 1.5 && p.grounded,
+                  "off the edge of a ledge, a walker falls and lands on the floor");
+        }
+        {
+            // On a platform that moves and turns: carried with it.
+            World w;
+            fixed(w, "raft", {0, -0.1, 0}, {2.0, 0.1, 2.0});
+            Walker p;
+            p.at = {1.0, 0, 0};
+            stroll(w, p, {0, 0, 0}, 0.1);
+            Body& raft = *w.find("raft");
+            for (int i = 0; i < 120; ++i) {
+                w.moved(raft, raft.x + V3{0.02, 0, 0}, axis_angle({0, 1, 0}, 0.005) * raft.r);
+                w.walk(p, {}, 1.0 / 60.0);
+            }
+            // Where the point it stood on went.
+            const V3 expect = raft.x + axis_angle({0, 1, 0}, 0.6) * V3{1.0, 0, 0};
+            check(length(V3{p.at.x - expect.x, 0, p.at.z - expect.z}) < 0.02 && p.grounded,
+                  "a walker on a raft that moves and turns goes with it (off by " +
+                      std::to_string(length(V3{p.at.x - expect.x, 0, p.at.z - expect.z})) + " m)");
+        }
+        {
+            // A light crate in the way is shoved; a heavy chest is not.
+            World w;
+            w.add(floor_body());
+            w.add(box_body("crate", {1.5, 0.2, 0}, {0.2, 0.2, 0.2}, 5));
+            w.add(box_body("chest", {1.5, 0.4, 3.0}, {0.4, 0.4, 0.4}, 400));
+            run(w, 1.0);
+            Walker p, q;
+            q.at = {0, 0, 3.0};
+            for (int i = 0; i < 120; ++i) {
+                w.walk(p, {1.2 / 60.0, 0, 0}, 1.0 / 60.0);
+                w.walk(q, {1.2 / 60.0, 0, 0}, 1.0 / 60.0);
+                w.step(1.0 / 60.0);
+            }
+            const double crate = w.find("crate")->x.x, chest = w.find("chest")->x.x;
+            check(crate > 2.0 && chest < 1.6, "a walker shoves a light crate aside (" + std::to_string(crate) + ") but not a heavy chest (" +
+                                                   std::to_string(chest) + ")");
+        }
+    }
     // Pairs by sweeping along x are the pairs every-against-every finds: a
     // jumble of three hundred things falling onto a table and each other,
     // stepped both ways, touches the same hulls and moves the same, step by step.

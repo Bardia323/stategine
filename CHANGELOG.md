@@ -8,6 +8,11 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Rigid bodies: through nothing, casts, sensors and walkers.**
+  - Nothing is let through a thin wall: a body that went far this step for its size is swept along its way, turning as it went, against what does not move, and stopped where it first met it (conservative advancement by `apart`, the widest gap along any axis that could part two hulls). How far ahead pairs are looked for is the step's own length, not a sixtieth of a second.
+  - `World::cast`: a hull carried along a line - what it meets first, how far along, and which way that faces.
+  - Sensors (`Body::sensor`): nothing bumps into them; `World::inside`, `entered`, `left` say what is in each, and what came and went this step (what lies still in one stays in it).
+  - Walkers (`sg::rigid::Walker`, `World::walk`): someone on their feet - sliding along walls, up and down stairs up to `step` high, standing on slopes up to `slope`, falling off edges, carried by what they stand on as it moves and turns, and shoving what is light aside.
 - **Rigid bodies: pairs by sweeping, joints, and nothing flung on waking.**
   - Pairs are found by sweep and prune along x (the order kept from step to step, put back by insertion; a thing at rest never compared with another at rest) - the same pairs as every-against-every, and the same motion to the last bit; 2002 bodies: 119 ms a step to 28 (unoptimised). `World::sweep` (on) compares with the old way; `World::touching()` lists the pairs touching.
   - The solver meets contacts in one order, by pair and hull, whatever found them - before, the order a hash table grew in decided it, and two runs from the same start could part.
