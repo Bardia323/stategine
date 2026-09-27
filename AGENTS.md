@@ -104,6 +104,15 @@ only what changed. Static geometry is `Spatial3D::fixture` (no arrow, so it
 costs the laws and the frame nothing) - `mesh` is for things that move. Check
 large states' arrows count: laws cost arrows x elements.
 
+The engine keeps to one rule for this: **strictness in the model, checking in
+the tools, dispatch compiled.** What is true of the model is refused when it is
+declared (a duplicate name, a functor renamed under its graph) - once, and in
+constant time, by an index. What costs to find out - the laws, watching hooks,
+validating the graph - runs in tests, `verify`, and the engine's watch, never
+in a frame's path. What the frame runs is the declared model looked up by
+index: arrows by trigger, transitions by trigger and by name, drives and
+routes by state, rebuilt only when the graph's revision moves.
+
 ## Adding a state, a room, an interface - checklist
 
 1. Its own header (and module). Includes: the engine, modules under it. Nothing above.

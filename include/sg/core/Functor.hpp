@@ -305,6 +305,16 @@ public:
         return carried;
     }
 
+    // Same, plus one event - the one that took a transition - relabelled into
+    // the target's queue.
+    void apply(const State& src, State& dst, const Event& carried) const {
+        apply(src, dst);
+        Event out = carried;
+        out.name = image_event(carried.name);
+        out.source = Key{src.id().str() + "/" + name_.str()};
+        dst.emit(std::move(out));
+    }
+
     // Same, plus relabelled events forwarded into the target's queue.
     void apply(const State& src, State& dst, const std::vector<Event>& carry) const {
         apply(src, dst);

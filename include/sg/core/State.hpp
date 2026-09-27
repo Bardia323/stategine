@@ -156,8 +156,7 @@ public:
                 morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(i));
         if (morphisms_.size() != had) {
             ++removals_;
-            by_trigger_.clear();
-            for (std::size_t i = 0; i < morphisms_.size(); ++i) by_trigger_[morphisms_[i].trigger].push_back(i);
+            index_arrows();
         }
     }
 
@@ -173,10 +172,11 @@ public:
         if (m.name.empty()) throw std::runtime_error("morphism needs a name");
         // A name is what a law, a functor and a path call the arrow by: two
         // arrows under one name would be one arrow to them, two to dispatch.
-        if (morphism(m.name))
+        if (by_name_.count(m.name))
             throw std::runtime_error("duplicate arrow " + m.name.str() + " in state " + id_.str());
         restructured("add_morphism");
         by_trigger_[m.trigger].push_back(morphisms_.size());
+        by_name_.emplace(m.name, morphisms_.size());
         morphisms_.push_back(std::move(m));
         return morphisms_.back();
     }
@@ -192,9 +192,8 @@ public:
     const std::deque<Morphism>& morphisms() const { return morphisms_; }
 
     const Morphism* morphism(Key name) const {
-        for (const auto& m : morphisms_)
-            if (m.name == name) return &m;
-        return nullptr;
+        auto it = by_name_.find(name);
+        return it == by_name_.end() ? nullptr : &morphisms_[it->second];
     }
 
     // Composition: g . f as one arrow, valid only when cod(f) == dom(g).
@@ -285,9 +284,7 @@ public:
         if (morphisms_.size() > s.morphisms) {
             morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(s.morphisms),
                              morphisms_.end());
-            by_trigger_.clear();
-            for (std::size_t i = 0; i < morphisms_.size(); ++i)
-                by_trigger_[morphisms_[i].trigger].push_back(i);
+            index_arrows();
         }
         if (same_structure) structure_ = s.structure;
         else restructured("restore");
@@ -442,6 +439,17 @@ private:
         structure_ = next_stamp();
     }
 
+    // Arrows by trigger (for dispatch) and by name (for everything that names
+    // one), found again when the list changes other than at its end.
+    void index_arrows() {
+        by_trigger_.clear();
+        by_name_.clear();
+        for (std::size_t i = 0; i < morphisms_.size(); ++i) {
+            by_trigger_[morphisms_[i].trigger].push_back(i);
+            by_name_.emplace(morphisms_[i].name, i);
+        }
+    }
+
     void reindex() {
         index_.clear();
         for (std::size_t i = 0; i < elements_.size(); ++i) index_.emplace(elements_[i].id, i);
@@ -456,6 +464,7 @@ private:
     std::unordered_map<Key, std::size_t> index_;
     std::deque<Morphism> morphisms_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
+    std::unordered_map<Key, std::size_t> by_name_;
     std::vector<std::size_t> scratch_;
     std::vector<Event> inbox_;
     EventBus bus_;

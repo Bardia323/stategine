@@ -163,14 +163,15 @@ public:
         if (t.name.empty()) {
             const std::string base = t.from.str() + "-" + t.trigger.str() + "->" + t.to.str();
             t.name = Key{base};
-            for (int n = 2; transition(t.name); ++n) t.name = Key{base + "#" + std::to_string(n)};
-        } else if (transition(t.name)) {
+            for (int n = 2; transition_by_name_.count(t.name); ++n) t.name = Key{base + "#" + std::to_string(n)};
+        } else if (transition_by_name_.count(t.name)) {
             throw std::runtime_error("duplicate transition " + t.name.str());
         }
         rev_.rewired("connect");
         transitions_.push_back(std::move(t));
         const Transition& ref = transitions_.back();
         by_trigger_[ref.trigger].push_back(transitions_.size() - 1);
+        transition_by_name_.emplace(ref.name, transitions_.size() - 1);
         return ref;
     }
 
@@ -230,9 +231,8 @@ public:
     }
 
     const Transition* transition(Key name) const {
-        for (const auto& t : transitions_)
-            if (t.name == name) return &t;
-        return nullptr;
+        auto it = transition_by_name_.find(name);
+        return it == transition_by_name_.end() ? nullptr : &transitions_[it->second];
     }
 
     // First transition out of `from` for this event whose guard passes.
@@ -262,7 +262,7 @@ public:
         if (t.functor.empty() || !target) return;
         const Functor* f = functor(t.functor);
         if (!f) throw std::runtime_error("transition " + t.name.str() + ": no functor " + t.functor.str());
-        f->apply(from, *target, std::vector<Event>{ev});
+        f->apply(from, *target, ev);
     }
 
     // --- functors -------------------------------------------------------------
@@ -854,6 +854,7 @@ private:
     std::map<Key, StatePtr> states_;  // ordered: deterministic dot output
     std::deque<Transition> transitions_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
+    std::unordered_map<Key, std::size_t> transition_by_name_;
     std::map<Key, Functor> functors_;
     std::map<Key, std::vector<Key>> composites_;
     std::deque<Embedding> embeddings_;

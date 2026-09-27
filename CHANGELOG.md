@@ -18,6 +18,7 @@ While the major version is 0, a minor bump may break the API.
   - **Breaking:** an arrow's name is unique in its state (`add_morphism` refuses a second); a transition's in its graph (`connect` refuses a name given twice, and numbers a made-up one, `from-trigger->to#2`, for a guarded alternative on the same event).
   - **Breaking:** a functor a graph holds keeps its name: `rename` to another name throws, and assigning one under another name throws (use `set_functor`); assigning one under its own name is counted as a rewiring.
 - **A transition means one thing.** `StateGraph::cross` - action, then the functor carrying the event - is how the engine and a law's `Path::transition` both take a transition. In a law, the step is taken only if the engine would take it (its guard passes and nothing it prefers does - the error names what it would take instead), and runs the lifecycle as the engine does; a pop returns to where the path last pushed from.
+- Names are indexed: `State::morphism(name)`, `StateGraph::transition(name)` and the refusal of a duplicate are constant time (declaring 20k arrows and 5k transitions: 1.5 s -> 26 ms). A transition carries its event without allocating.
 - `Functor::compose` maps every event: one the first functor leaves as itself is mapped by the second (`(G . F)(x) = G(x)`), and an identity's own event map is kept.
 - README: the battle `says("victory")` instead of a listener that fires the engine; the functor example uses `connect(from, trigger, to, functor)`.
 
