@@ -312,6 +312,25 @@ public:
         return it->second;
     }
 
+    // Take a functor away, and whatever declares it a lens with another. One
+    // an embedding or a transition still uses is refused: take those first.
+    bool drop_functor(Key name) {
+        auto it = functors_.find(name);
+        if (it == functors_.end()) return false;
+        for (const Embedding& e : embeddings_)
+            if (e.in == name || e.out == name)
+                throw std::runtime_error("functor " + name.str() + " is embedding " + e.name.str() + "'s: drop that first");
+        for (const Transition& t : transitions_)
+            if (t.functor == name)
+                throw std::runtime_error("functor " + name.str() + " is carried by transition " + t.name.str() + ": unglue it first");
+        rev_.rewired("drop_functor");
+        functors_.erase(it);
+        composites_.erase(name);
+        lenses_.erase(std::remove_if(lenses_.begin(), lenses_.end(), [&](const LensPair& l) { return l.get == name || l.put == name; }),
+                      lenses_.end());
+        return true;
+    }
+
     const Functor* functor(Key name) const {
         auto it = functors_.find(name);
         return it == functors_.end() ? nullptr : &it->second;
