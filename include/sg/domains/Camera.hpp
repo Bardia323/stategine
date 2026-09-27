@@ -10,6 +10,7 @@
 //                  what is embedded in it is seen *from* it.
 // Arrows:   lens --aim-->  lens   stand and look somewhere else  {x, y, z, yaw, pitch, roll, fov}
 //           lens --zoom--> lens   a wider or narrower view       {fov}
+//           lens --roll--> lens   running, or not                {on}
 //
 // It sees a world by filming it (sg::film): the world embedded in the lens.
 // The renderer draws an open embedding in an `eye` portal from the portal's
@@ -48,13 +49,18 @@ public:
         // A portal that shows no panel of its own (w = h = 0): its picture is
         // for a screen elsewhere to show.
         lens.params.set(keys::w, 0.0).set(keys::h, 0.0);
-        lens.params.set("feed", 1.0).set("eye", 1.0).set("live", 1.0);
+        lens.params.set("feed", 1.0).set("eye", 1.0).set("live", 1.0).set(keys::open, true);
         lens.params.set("feed_w", static_cast<double>(w)).set("feed_h", static_cast<double>(h));
 
         // lens --aim--> lens: whatever of its pose the event names.
         loop(Key{"aim"}, lens_id(), aim_event(), [](State&, Element& e, Element*, const Event& ev) {
             for (Key k : {keys::x, keys::y, keys::z, keys::yaw, keys::pitch, keys::roll, keys::fov})
                 if (ev.args.has(k)) e.params.set(k, ev.args.num(k));
+        });
+        // lens --roll--> lens: running or not - what it films is seen while
+        // it runs (its filming follows the lens: sg::film).
+        loop(Key{"roll"}, lens_id(), Key{"camera.roll"}, [](State&, Element& e, Element*, const Event& ev) {
+            if (ev.args.has(Key{"on"})) e.params.set(keys::open, ev.args.get_or<bool>("on", true));
         });
         // lens --zoom--> lens: a field of view, kept to what a lens can be.
         loop(Key{"zoom"}, lens_id(), zoom_event(), [](State&, Element& e, Element*, const Event& ev) {
@@ -64,6 +70,7 @@ public:
     }
 
     Key kind() const override { return Key{"camera"}; }
+    static Key roll_event() { return Key{"camera.roll"}; }
 
     const Element& lens() const { return element(lens_id()); }
 };
@@ -76,8 +83,8 @@ inline Key film_name(Key camera, Key world) { return Key{camera.str() + ".film."
 // rig's, from the world onto the lens (Live, so it runs every frame). With a `rig`,
 // the world's element whose pose the camera takes - carried onto the lens by
 // the embedding's `out` functor (`<camera>.rig`), every frame the rig or what
-// it stands on moves. Open the embedding (Engine::open_embed) to roll; a
-// screen shows the picture with `shows` = the returned name.
+// it stands on moves. It is open while the camera runs (the lens's `open`,
+// `camera.roll`); a screen shows the picture with `shows` = the returned name.
 inline Key film(StateGraph& g, Key camera, Key world, Key rig = Key{}) {
     const Key name = film_name(camera, world);
     Key out;
@@ -95,7 +102,8 @@ inline Key film(StateGraph& g, Key camera, Key world, Key rig = Key{}) {
         });
         g.set_functor(std::move(f));
     }
-    g.set_focus(g.embed(name, camera, Camera::lens_id(), world, Key{}, out, EmbedSync::Live).name, false);
+    // Open while the camera runs (the lens's `open`, its own arrow's).
+    g.set_follows(g.set_focus(g.embed(name, camera, Camera::lens_id(), world, Key{}, out, EmbedSync::Live).name, false), true);
     if (!rig.empty()) g.set_propagation(name, Propagation::Continuous);
     return name;
 }

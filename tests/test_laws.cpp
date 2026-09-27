@@ -1321,6 +1321,30 @@ void test_depth_has_no_limit_and_cycles_end() {
     check(true, "and a frame of it ends");
 }
 
+// An embedding that follows its portal is open exactly while the portal says:
+// the host's own arrow decides, the engine only does it.
+void test_an_embedding_follows_its_portal() {
+    sg::StateGraph g;
+    auto& set = g.add<sg::State>("set");
+    set.add_element("glass", sg::kinds::portal);
+    set.loop("power", "glass", "power", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set(sg::keys::open, ev.args.get_or<bool>("on", false));
+    });
+    g.add<sg::State>("show").add_element("picture", "picture");
+    g.set_follows(g.set_focus(g.embed("on", "set", "glass", "show", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false), true);
+    g.set_initial("set");
+    check(sg::verify(g).ok(), "a set that shows while it is on keeps every law");
+    sg::Engine e(g);
+    e.start();
+    check(!e.embed_open("on"), "off, it shows nothing");
+    set.emit(sg::Event{"power", sg::Params{}.set("on", true)});
+    e.tick(1.0 / 60.0);
+    check(e.embed_open("on"), "switched on by its own arrow, it shows - by the end of the frame");
+    set.emit(sg::Event{"power", sg::Params{}.set("on", false)});
+    e.tick(1.0 / 60.0);
+    check(!e.embed_open("on"), "and off again, not");
+}
+
 }  // namespace
 
 int main() {
@@ -1356,6 +1380,7 @@ int main() {
     test_ports_are_declared();
     test_shown_focused_and_portals();
     test_depth_has_no_limit_and_cycles_end();
+    test_an_embedding_follows_its_portal();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

@@ -47,6 +47,7 @@ public:
         clock_start_ = Clock::now();
         last_ = clock_start_;
         enter(graph_.state(target), args);
+        follow_portals();
     }
 
     void stop() { running_ = false; }
@@ -121,7 +122,9 @@ public:
                                              e->in.str());
             f->apply(subject, guest);
         }
-        if (Element* portal = host.find(e->portal)) portal->params.set(keys::open, true);
+        // The portal says it is open - unless it is the portal that decides
+        // (a following embedding), and has.
+        if (Element* portal = host.find(e->portal); portal && !e->follows) portal->params.set(keys::open, true);
         e->open = true;
         hook(guest, "on_enter", [&] { guest.on_enter(args); });
         if (e->focus) focus_.push_back(e->name);
@@ -146,7 +149,7 @@ public:
         }
         hook(guest, "on_exit", [&] { guest.on_exit(); });
         e->open = false;
-        if (Element* portal = host.find(e->portal)) portal->params.set(keys::open, false);
+        if (Element* portal = host.find(e->portal); portal && !e->follows) portal->params.set(keys::open, false);
         focus_.erase(std::remove(focus_.begin(), focus_.end(), e->name), focus_.end());
         if (trace_)
             std::cout << "[sg] close " << e->host.str() << "." << e->portal.str()
@@ -274,6 +277,7 @@ public:
         graph_.each_state([this](State& s) {
             if (!s.said_out().empty()) heard_from(s);
         });
+        follow_portals();
         if (stack_.empty()) running_ = false;
         if (graph_.revision() != watched_ && elapsed() - last_watch_ >= watch_interval_) check_graph();
     }
@@ -387,6 +391,28 @@ private:
             step(*s, t);
             step_embeddings_in(*s, t);  // and what is open in it, as anywhere
             carry_to_hosts(*s);
+        }
+    }
+
+    // Each embedding that follows its portal, opened or closed as the portal
+    // now says (its `open`): what its host's arrows decided this frame, done
+    // by the end of it. Found by index, remade when the graph is rewired.
+    void follow_portals() {
+        if (follow_revision_ != graph_.topology() || !followed_) {
+            following_.clear();
+            for (const Embedding& e : graph_.embeddings())
+                if (e.follows) following_.push_back(e.name);
+            follow_revision_ = graph_.topology();
+            followed_ = true;
+        }
+        for (Key name : following_) {
+            const Embedding* e = graph_.embedding(name);
+            const State* host = e ? graph_.find(e->host) : nullptr;
+            const Element* portal = host ? host->find(e->portal) : nullptr;
+            if (!portal) continue;
+            const bool want = portal->params.get_or<bool>(keys::open, false);
+            if (want == e->open) continue;
+            want ? open_embed(name) : close_embed(name, false);
         }
     }
 
@@ -860,6 +886,9 @@ private:
     std::vector<const Drive*> always_;  // one per state that keeps its time always
     std::unordered_map<Key, Functor::Memo> kept_memos_;
     std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
+    std::vector<Key> following_;  // the embeddings that follow their portals (follow_portals)
+    uint64_t follow_revision_ = 0;
+    bool followed_ = false;
     uint64_t drive_revision_ = ~uint64_t{0};
     bool trace_ = false;
     bool strict_ = false;

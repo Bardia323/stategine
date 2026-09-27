@@ -458,6 +458,15 @@ public:
 
     // Whether it takes input when it is opened. Returns the embedding's name,
     // so a declaration can say it in one line.
+    // Whether it is open exactly while its portal's `open` says (see
+    // Embedding::follows). Returns the embedding's name.
+    Key set_follows(Key name, bool on) {
+        if (Embedding* e = embedding_rw(name)) {
+            rev_.rewired("set_follows");
+            e->follows = on;
+        }
+        return name;
+    }
     Key set_focus(Key name, bool on) {
         if (Embedding* e = embedding_rw(name)) e->focus = on;
         return name;
