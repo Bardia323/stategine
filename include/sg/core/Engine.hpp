@@ -413,11 +413,13 @@ private:
                     if ((c.e && !c.e->open) || !c.f->maps_event(e.name)) continue;
                     State* to = graph_.find(c.to);
                     if (!to) continue;
-                    // A functor of its own carries its objects with the event,
-                    // as a transition's does; an embedding's objects cross as
-                    // its sync says, so only the event goes.
-                    if (c.e) to->hear(c.f->carried(e, s));
-                    else c.f->apply(s, *to, e);
+                    // A functor carries its objects with the event, as a
+                    // transition's does - what moved, and that it moved,
+                    // arrive together. (An embedding's `in` carrying what its
+                    // host says, not its subject, has nothing of the host's
+                    // to carry: only the event goes.)
+                    if (c.f->from() == s.id()) c.f->apply(s, *to, e);
+                    else to->hear(c.f->carried(e, s));
                     to->dispatch_pending();
                     heard_from(*to, depth + 1);
                 }
