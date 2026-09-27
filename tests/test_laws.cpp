@@ -1123,6 +1123,54 @@ void test_listeners_only_observe() {
     check(heard.size() == 1 && d.bus().queued().size() == 2, "under Report it is said once, and let through");
 }
 
+
+// --- the world rewrites itself only by a declared edit ------------------------------------------------
+void test_edits_are_declared() {
+    sg::StateGraph g;
+    auto& ed = g.add<sg::State>("editor");
+    ed.add_element("line", "text");
+    ed.says("cmd");
+    ed.loop("enter", "line", "type", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event& ev) {
+        s.emit(sg::Event{"cmd", ev.args});
+    });
+    ed.loop("answered", "line", "cmd.done", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("answer", ev.args.get_or<std::string>("text", ""));
+    });
+    int applied = 0;
+    g.edit("editor", "cmd", [&applied](sg::StateGraph& graph, const sg::Event& asked) {
+        ++applied;
+        const std::string name = asked.args.get_or<std::string>("name", "");
+        graph.add<sg::State>(sg::Key{name}).add_element("floor", "floor");
+        graph.push("editor", sg::Key{"visit." + name}, sg::Key{name});
+        return sg::Params{}.set("text", std::string("made ") + name);
+    });
+    g.set_initial("editor");
+    check(g.validate().empty(), "an edit asked for by what the editor says is a lawful interface");
+
+    // Checking the laws runs the arrow that asks, and applies nothing.
+    sg::Diagram d("ask");
+    d.commutes(sg::Path("editor").event("type", sg::Params{}.set("name", std::string("den"))),
+               sg::Path("editor").event("type", sg::Params{}.set("name", std::string("den"))));
+    sg::laws::diagram(g, d);
+    check(applied == 0 && !g.find("den"), "a law's trial asks for nothing");
+
+    sg::Engine e(g);
+    e.start();
+    e.fire(sg::Event{"type", sg::Params{}.set("name", std::string("den"))});
+    e.run_fixed(0.1, 3);
+    check(applied == 1 && g.find("den") && g.transition("editor-visit.den->den"),
+          "said, the edit is applied once, at the start of the next frame, by the engine");
+    check(ed.find("line")->params.get_or<std::string>("answer", "") == "made den",
+          "and its answer is heard back by the editor's own arrow");
+
+    sg::StateGraph h;
+    h.add<sg::State>("mute").add_element("x", "n");
+    h.edit("mute", "cmd", [](sg::StateGraph&, const sg::Event&) { return sg::Params{}; });
+    bool named = false;
+    for (const auto& p : h.validate()) named = named || p.find("does not say cmd") != std::string::npos;
+    check(named, "an edit no state asks for is refused");
+}
+
 }  // namespace
 
 int main() {
@@ -1152,6 +1200,7 @@ int main() {
     test_composition_keeps_unmapped_events();
     test_a_transition_in_a_law_is_the_one_the_engine_takes();
     test_listeners_only_observe();
+    test_edits_are_declared();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

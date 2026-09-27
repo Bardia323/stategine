@@ -88,6 +88,24 @@ struct Drive {
     Keeps keeps = Keeps::WhileActive;
 };
 
+class StateGraph;
+
+// An edit: what a state says - an editor's request, a command line - that
+// rewrites the graph. The one way the world changes what the world is made
+// of while it runs: the state says it (State::says), the graph declares
+// here that it is an edit and what it does, and the engine applies it at the
+// start of the next frame, before anything else moves - never inside an
+// arrow, a listener or a law's trial. What the edit answers is heard back by
+// the state that asked, as `reply` (its own arrows show it).
+struct Edit {
+    using Apply = std::function<Params(StateGraph& g, const Event& asked)>;
+    Key name;
+    Key state;  // who asks
+    Key event;  // what it says to ask
+    Apply apply;
+    Key reply;  // what it hears back; `<event>.done` when empty
+};
+
 // Who may change what. Whoever holds the graph itself - the code that builds
 // the world, and whatever rewrites it while it runs - may change anything in
 // it, through the states, functors and graph operations it hands back.
@@ -467,6 +485,30 @@ public:
     }
     const std::deque<Drive>& drives() const { return drives_; }
 
+    // --- edits ------------------------------------------------------------------
+    // Registered by name (`state:event` when empty); again, it is replaced.
+    const Edit& edit(Edit e) {
+        rev_.rewired("edit");
+        if (e.name.empty()) e.name = Key{e.state.str() + ":" + e.event.str()};
+        if (e.reply.empty()) e.reply = Key{e.event.str() + ".done"};
+        for (Edit& have : edits_)
+            if (have.name == e.name) return have = std::move(e);
+        edits_.push_back(std::move(e));
+        return edits_.back();
+    }
+    const Edit& edit(Key state, Key event, Edit::Apply apply) {
+        return edit(Edit{Key{}, state, event, std::move(apply), Key{}});
+    }
+    void drop_edit(Key name) {
+        rev_.rewired("drop_edit");
+        for (auto it = edits_.begin(); it != edits_.end(); ++it)
+            if (it->name == name) {
+                edits_.erase(it);
+                return;
+            }
+    }
+    const std::deque<Edit>& edits() const { return edits_; }
+
     // --- seams ------------------------------------------------------------------
     // Registered by name; registering the same name again replaces it (a seam
     // is rebuilt whenever its doorways move).
@@ -692,6 +734,19 @@ public:
                                  " is fired by " + d.trigger.str());
         }
 
+        for (const Edit& e : edits_) {
+            const State* s = find(e.state);
+            if (!s) {
+                errors.push_back("edit " + e.name.str() + ": unknown state " + e.state.str());
+                continue;
+            }
+            const auto& said = s->said();
+            if (std::find(said.begin(), said.end(), e.event) == said.end())
+                errors.push_back("edit " + e.name.str() + ": " + e.state.str() + " does not say " + e.event.str() +
+                                 " - an edit is asked for by what a state says (State::says)");
+            if (!e.apply) errors.push_back("edit " + e.name.str() + ": does nothing");
+        }
+
         if (!initial_.empty()) {
             if (!contains(initial_)) {
                 errors.push_back("initial state " + initial_.str() + " does not exist");
@@ -862,6 +917,7 @@ private:
     std::unordered_map<Key, State::Snapshot> defaults_;
     std::deque<Seam> seams_;
     std::deque<Drive> drives_;
+    std::deque<Edit> edits_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;

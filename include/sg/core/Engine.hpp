@@ -217,6 +217,7 @@ public:
         if (!running_) return;
         time_ += dt;
         const Tick t{dt, time_, frame_++};
+        apply_edits();
         process_transitions();
         if (!running_) return;
         if (State* c = top()) {
@@ -381,30 +382,42 @@ private:
     void heard_from(State& s) {
         if (s.said_out().empty()) return;
         std::vector<Event> said = s.take_said();
+        if (!graph_.edits().empty())
+            for (const Event& e : said)
+                for (const Edit& ed : graph_.edits())
+                    if (ed.state == s.id() && ed.event == e.name) asked_.push_back({ed.name, e});
         if (carriers_revision_ != graph_.topology()) index_carriers();
         auto it = carriers_.find(s.id());
         if (it != carriers_.end())
             for (const Event& e : said)
                 for (const Carrier& c : it->second) {
                     if (!c.e->open || !c.f->maps_event(e.name)) continue;
-                    if (State* to = graph_.find(c.f->to())) to->hear(c.f->carried(e, s));
+                    if (State* to = graph_.find(c.to)) to->hear(c.f->carried(e, s));
                 }
         for (Event& e : said) said_.push_back(std::move(e));
     }
 
     // The embeddings that carry events, by the state they carry them from:
-    // each functor of an embedding (`in`, `out`) that maps any event.
+    // an embedding joins its host (and subject) to its guest, and its `in`
+    // functor's event map says what of theirs reaches the guest; its `out`
+    // functor's, what of the guest's reaches the subject.
     struct Carrier {
         const Embedding* e;
         const Functor* f;
+        Key to;
     };
     void index_carriers() {
         carriers_.clear();
-        for (const Embedding& e : graph_.embeddings())
-            for (Key name : {e.in, e.out}) {
-                const Functor* f = name.empty() ? nullptr : graph_.functor(name);
-                if (f && f->maps_events()) carriers_[f->from()].push_back({&e, f});
+        for (const Embedding& e : graph_.embeddings()) {
+            const Key subject = e.subject.empty() ? e.host : e.subject;
+            const Functor* in = e.in.empty() ? nullptr : graph_.functor(e.in);
+            const Functor* out = e.out.empty() ? nullptr : graph_.functor(e.out);
+            if (in && in->maps_events()) {
+                carriers_[e.host].push_back({&e, in, e.guest});
+                if (subject != e.host) carriers_[subject].push_back({&e, in, e.guest});
             }
+            if (out && out->maps_events()) carriers_[e.guest].push_back({&e, out, subject});
+        }
         carriers_revision_ = graph_.topology();
     }
 
@@ -546,6 +559,24 @@ private:
         for (State* g : inner) step_embeddings_in(*g, t);
     }
 
+    // The edits asked for since the last frame, applied now, in the order
+    // asked, before anything else moves this frame: the one place the world
+    // rewrites itself. Each answer is heard by the state that asked.
+    void apply_edits() {
+        if (asked_.empty()) return;
+        std::vector<Asked> asked;
+        asked.swap(asked_);
+        for (const Asked& a : asked) {
+            const Edit* ed = nullptr;
+            for (const Edit& e : graph_.edits())
+                if (e.name == a.edit) ed = &e;
+            if (!ed || !ed->apply) continue;  // dropped since it was asked
+            const Key who = ed->state, reply = ed->reply;
+            Params answer = ed->apply(graph_, a.event);  // may rewrite the graph, and `ed` with it
+            if (State* s = graph_.find(who)) s->hear(Event{reply, std::move(answer)});
+        }
+    }
+
     void process_transitions() {
         // What states said since the last frame: to transitions only.
         if (!said_.empty()) {
@@ -644,6 +675,11 @@ private:
     std::vector<Event> pending_;
     std::vector<Event> said_;  // said by states (State::says), for the transitions
     std::unordered_map<Key, std::vector<Carrier>> carriers_;
+    struct Asked {
+        Key edit;
+        Event event;
+    };
+    std::vector<Asked> asked_;  // edits said since the last frame
     uint64_t carriers_revision_ = ~uint64_t{0};
     std::vector<Event> inbox_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last

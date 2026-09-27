@@ -313,6 +313,19 @@ says each once and lets it through, for a project moving its listeners into the
 graph). No listener runs during a law's trial. An observer that must change the
 world is part of it: a state, whose causes are arrows, functors, transitions.
 
+What a state says may also be an **edit**: a request that rewrites the graph -
+a room added, a doorway glued. The graph declares it, and the engine applies it
+at the start of the next frame, before anything else moves; the answer comes
+back to the state as `<event>.done`, for its own arrows to show:
+
+```cpp
+editor.says("cmd");
+graph.edit("editor", "cmd", [&](sg::StateGraph& g, const sg::Event& asked) {
+    g.add<sg::State>(sg::Key{asked.args.get_or<std::string>("name", "")});
+    return sg::Params{}.set("text", std::string("made"));
+});
+```
+
 What a state says also crosses an open embedding whose functor names the event
 (`Functor::on_event`), to the state on the other side, at once and relabelled -
 the same event map a transition's functor carries:
