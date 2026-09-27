@@ -18,7 +18,10 @@
 // And without being told: a portal with `feed` = 1 that the graph embeds a 3D
 // state in, while that embedding is open, shows it as a feed (`feed_w` x
 // `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture). What is
-// shown is what the graph declares, and only that.
+// shown is what the graph declares, and only that. The portal may belong to
+// a state that is not drawn - a deck, whose output is what it plays - and a
+// panel in a room shows it by `shows` = that embedding's name: a set cabled
+// to the deck.
 //
 // A feed is that world drawn from its own camera in its own look - every
 // pass, its composite too - at w x h, and laid on the panel as a surface is:
@@ -343,8 +346,8 @@ public:
             bool here = false;
             for (const PlacedRoom& placed : rooms)
                 if (placed.room)
-                    if (const Element* e = placed.room->find(id); e && e->alive && in_view(*placed.room, *e, camera_of(*rooms.front().room)))
-                        here = true;
+                    for (const Element* e : {placed.room->find(id), shown_in(*placed.room, id)})
+                        if (e && e->alive && in_view(*placed.room, *e, camera_of(*rooms.front().room))) here = true;
             if (!here) continue;
             f.drawn = true;
             f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
@@ -362,8 +365,13 @@ public:
         const Spatial3D& world = *rooms.front().room;
         // The post passes belong to the viewer, so they wear the look of the
         // room the viewer is in, and fade when that room changes.
+        if (&world != last_world_ && std::find(own_shown_.begin(), own_shown_.end(), &world) != own_shown_.end())
+            fader_.settle(view_key(), look_of(world));
+        last_world_ = &world;
+        own_shown_ = own_shown_now_;
+        own_shown_now_.clear();
         post_ = mix(view_key(), look_of(world));
-        const Camera eye_cam = camera_of(world);
+        const Camera eye_cam = eye_override_ ? camera_of(*eye_override_) : camera_of(world);
         const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
 
         // --- portal views, one pass per window --------------------------------
@@ -421,6 +429,29 @@ public:
                     if (drawn->world == wp.world && same_eye(at, eye)) wp.shared = drawn;
                 if (wp.shared) continue;
                 screens.emplace_back(&wp, eye);
+            }
+            wp.own_drawn = false;
+            if (e.params.num(Key{"own_look"}, 0.0) > 0.5) {
+                // Drawn as the far room's own view draws it - every pass, its
+                // composite too - from the carried eye, at the size of the
+                // screen: what is seen through the doorway is what will be
+                // seen once through it, pixel for pixel.
+                if (!wp.own) {
+                    wp.own = std::make_unique<GLWorldView>(q_);
+                    wp.own->set_fixed_step(fixed_step_);
+                }
+                if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
+                    wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
+                wp.own->graph_ = graph_;
+                wp.own->output_ = &wp.own_out;
+                wp.own->eye_override_ = &eye;
+                wp.own->render(*wp.world, fb_w, fb_h);
+                wp.own->output_ = nullptr;
+                wp.own->eye_override_ = nullptr;
+                wp.own_drawn = true;
+                own_shown_now_.push_back(wp.world);
+                ++times_.portal_views;
+                continue;
             }
             const Camera guest_cam = camera_of(eye);
             const Element* back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
@@ -502,6 +533,12 @@ private:
         gl::RenderTarget ms;      // drawn into, multisampled
         gl::RenderTarget target;  // resolved, and sampled by the portal's quad
         int width = 0, height = 0;
+        // `own_look`: the far side drawn whole, in its own look, from the
+        // carried eye - as it will be seen once through (its picture, and
+        // the view that draws it).
+        std::unique_ptr<GLWorldView> own;
+        gl::RenderTarget own_out;
+        bool own_drawn = false;
     };
 
     struct TerrainMesh {
@@ -559,8 +596,24 @@ private:
     bool has_surface(const Element& e) const {
         auto it = surfaces_.find(e.id);
         if (it != surfaces_.end() && it->second.surface != nullptr) return true;
-        auto f = feeds_.find(e.id);
+        auto f = feeds_.find(signal_of(e));
         return f != feeds_.end() && f->second.world != nullptr;
+    }
+    // The portal whose feed a panel shows: its own, or - `shows` = an
+    // embedding's name - that embedding's, wherever it is hosted.
+    Key signal_of(const Element& e) const {
+        static const Key shows{"shows"};
+        if (!graph_ || !e.params.has(shows)) return Key{e.id.str()};
+        const Embedding* em = graph_->embedding(Key{e.params.get_or<std::string>(shows, "")});
+        return em ? Key{em->portal.str()} : Key{e.id.str()};
+    }
+    // The panel of `room` that shows the feed of portal `id`, if one does.
+    const Element* shown_in(const State& room, Key id) const {
+        static const Key shows{"shows"};
+        if (!graph_) return nullptr;
+        for (const Element& e : room.elements())
+            if (e.kind == kinds::portal && e.params.has(shows) && signal_of(e) == id && e.id != id) return &e;
+        return nullptr;
     }
 
     static Camera camera_of(const Spatial3D& world) { return camera_of(world.camera()); }
@@ -909,7 +962,7 @@ private:
                     const std::vector<HalfSpace>& clips = {}) {
         std::size_t shadowed = 0;
         const std::vector<Light> lights = read_lights(rooms, shadowed);
-        cam_eye_ = cam.eye;
+        cam_eye_ = cam.eye, cam_forward_ = cam.forward, cam_up_ = cam.up;
         const float zfar = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
         for (const PlacedRoom& placed : rooms)
             if (placed.room)
@@ -1006,14 +1059,15 @@ private:
                 for (const auto& e : placed.room->elements()) {
                     if (!e.alive) continue;
                     if (e.kind == kinds::mesh || e.kind == kinds::wall) {
-                        // A lamp's own shade does not shadow its lamp.
-                        if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+                        // A lamp's own shade does not shadow its lamp; a sprite,
+                        // a picture turned to the eye, has no shape to cast.
+                        if (e.params.num(Key{"cast"}, 1.0) < 0.5 || is_sprite(e)) continue;
                         if (q_.instancing) {
-                            batch(shape_of(e), box_matrix(*placed.room, e).m, {}, 0, 0, 0, 0, 0);
+                            batch(shape_of(*placed.room, e), box_matrix(*placed.room, e).m, {}, 0, 0, 0, 0, 0);
                             continue;
                         }
                         caster.set("uModel", frame_matrix_ * box_matrix(*placed.room, e).m);
-                        shape_of(e).draw();
+                        shape_of(*placed.room, e).draw();
                     } else if (e.kind == terrain_kind()) {
                         auto t = terrains_.find(e.id);
                         if (t == terrains_.end() || !t->second.mesh.valid()) continue;
@@ -1153,7 +1207,8 @@ private:
                     draw_terrain(e);
                 } else if (e.kind == kinds::mesh) {
                     if (!sees(view, box_matrix(room, e))) continue;
-                    if (instanceable(e)) batch_crate(room, e);
+                    if (is_sprite(e)) draw_sprite(room, e);
+                    else if (instanceable(e)) batch_crate(room, e);
                     else draw_crate(room, e);
                 } else if (e.kind == kinds::wall) {
                     if (!sees(view, box_matrix(room, e))) continue;
@@ -1371,19 +1426,29 @@ private:
     // things' edges are, so they catch the light. A box or a cylinder may
     // have `taper`: the top that fraction of the bottom's width (a lamp's
     // shade, the back of a tube). Those are made once for each size and kept.
-    const gl::Mesh& shape_of(const Element& e) const {
+    const gl::Mesh& shape_of(const State& st, const Element& e) const {
         if (e.kind != kinds::mesh) return cube_;
         // Asked every frame, in every pass, of every thing: remembered until
         // the thing's parameters change.
         auto& memo = shape_memo_[&e];
         if (memo.first == e.params.stamp() && memo.second) return *memo.second;
-        const gl::Mesh& m = find_shape(e);
+        const gl::Mesh& m = find_shape(st, e);
         memo = {e.params.stamp(), &m};
         return m;
     }
-    const gl::Mesh& find_shape(const Element& e) const {
-        static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"};
+    const gl::Mesh& find_shape(const State& st, const Element& e) const {
+        static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"}, model{"model"};
         const std::string s = e.params.get_or<std::string>(shape, "");
+        // One of its state's own models (sg/domains/Shapes.hpp): made into a
+        // mesh the first time it is drawn, kept after.
+        if (s == "model") {
+            const auto* space = dynamic_cast<const Spatial3D*>(&st);
+            const std::vector<float>* corners = space ? space->model(Key{e.params.get_or<std::string>(model, "")}) : nullptr;
+            if (!corners || corners->empty()) return cube_;
+            gl::Mesh& m = model_meshes_[corners];
+            if (!m.valid()) m.create(*corners);
+            return m;
+        }
         const double tp = e.params.num(taper, 1.0);
         if (s == "sphere") return sphere_;
         if (s == "cylinder") {
@@ -1608,7 +1673,8 @@ private:
     // A thing is drawn with the others of its shape unless it wears a skin (a
     // surface bound to it) or is being pointed at.
     bool instanceable(const Element& e) const {
-        if (!q_.instancing || e.id == highlight_) return false;
+        static const Key worn{"skin"};
+        if (!q_.instancing || e.id == highlight_ || e.params.has(worn)) return false;
         const auto skin = surfaces_.find(e.id);
         return skin == surfaces_.end() || !skin->second.surface;
     }
@@ -1625,7 +1691,7 @@ private:
             std::copy(mat, mat + 8, p.record.begin() + 16);
             p.recorded = true;
         }
-        Batch& b = batch_for(shape_of(e));
+        Batch& b = batch_for(shape_of(st, e));
         b.data.insert(b.data.end(), p.record.begin(), p.record.end());
     }
     Batch& batch_for(const gl::Mesh& mesh) {
@@ -1665,6 +1731,77 @@ private:
         if (any) p.set("uInstanced", 0);
     }
 
+    static bool is_sprite(const Element& e) {
+        static const Key shape{"shape"};
+        return e.params.has(shape) && e.params.get_or<std::string>(shape, "") == "sprite";
+    }
+    // One of its state's pictures, made current on unit 0 - false if it keeps
+    // none by that name.
+    bool bind_picture(const State& st, const std::string& name) {
+        const auto* space = dynamic_cast<const Spatial3D*>(&st);
+        const Spatial3D::Picture* pic = space ? space->picture(Key{name}) : nullptr;
+        if (!pic || pic->w <= 0 || pic->h <= 0) return false;
+        PictureTexture& t = picture_textures_[pic];
+        if (!t.texture.valid() || t.texture.width() != pic->w || t.texture.height() != pic->h) {
+            t.texture.create(pic->w, pic->h, /*mipmaps=*/false, /*srgb=*/true, /*pixel=*/true);
+            t.revision = ~uint64_t{0};
+        }
+        if (t.revision != pic->revision) {
+            t.texture.upload(pic->rgba);
+            t.revision = pic->revision;
+        }
+        t.texture.bind(0);
+        return true;
+    }
+    // A sprite: its picture on a flat card at its place, turned to the eye -
+    // round about the upright, or (`face`) wholly, to lie square to the view.
+    void draw_sprite(const State& st, const Element& e) {
+        if (!bind_picture(st, e.params.get_or<std::string>(Key{"picture"}, ""))) return;
+        ++times_.draws;
+        const gl::Vec3 c = (frame_matrix_ * box_matrix(st, e).m).transform_point({0, 0, 0});
+        gl::Vec3 n, up;
+        if (e.params.num(Key{"face"}, 0.0) > 0.5) {
+            n = gl::normalize(cam_forward_ * -1.0f);
+            up = gl::normalize(cam_up_ - n * gl::dot(cam_up_, n));
+        } else {
+            n = cam_eye_ - c;
+            n.y = 0;
+            n = gl::dot(n, n) > 1e-8f ? gl::normalize(n) : gl::Vec3{1, 0, 0};
+            up = {0, 1, 0};
+        }
+        const gl::Vec3 side = gl::cross(n, up);  // the card's +z: to the eye's left
+        const float w = static_cast<float>(e.params.num(keys::sx, 1.0)), h = static_cast<float>(e.params.num(keys::sy, 1.0));
+        gl::Mat4 m;
+        m.m[0] = n.x, m.m[1] = n.y, m.m[2] = n.z;
+        m.m[4] = up.x * h, m.m[5] = up.y * h, m.m[6] = up.z * h;
+        m.m[8] = side.x * w, m.m[9] = side.y * w, m.m[10] = side.z * w;
+        m.m[12] = c.x, m.m[13] = c.y, m.m[14] = c.z;
+        scene_->set("uModel", m);
+        scene_->set("uTexModel", m);
+        const float frames = static_cast<float>(std::max(1.0, e.params.num(Key{"frames"}, 1.0)));
+        const float frame = std::fmod(std::max(0.0f, std::floor(static_cast<float>(e.params.num(Key{"frame"}, 0.0)))), frames);
+        scene_->set("uUVRect", frame / frames, 0.0f, 1.0f / frames, 1.0f);
+        scene_->set("uCutout", 1.0f);
+        scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
+        scene_->set("uRoughness", 1.0f);
+        scene_->set("uSurface", 0.0f);
+        scene_->set("uEmissive", 0.0f);
+        scene_->set("uHighlight", 0.0f);
+        scene_->set("uMirror", 0.0f);
+        scene_->set("uTexMix", 1.0f);
+        scene_->set("uSkin", 0.0f);
+        scene_->set("uScreenUV", 0.0f);
+        scene_->set("uCRT", 0.0f);
+        // `glow`: how much it lights itself - a lit thing, or one held up to
+        // the eye, whatever the light where it is.
+        scene_->set("uGlow", static_cast<float>(e.params.num(Key{"glow"}, 0.0)));
+        quad_.draw();
+        scene_->set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
+        scene_->set("uCutout", 0.0f);
+        scene_->set("uTexMix", 0.0f);
+        scene_->set("uGlow", 0.0f);
+    }
+
     void draw_crate(const State& st, const Element& e) {
         ++times_.draws;
         set_model(box_matrix(st, e));
@@ -1678,6 +1815,19 @@ private:
         // light from all round - glossy stone, still water, under a sky.
         const float mirror = static_cast<float>(e.params.num(Key{"mirror"}, 0.0));
         scene_->set("uMirror", mirror);
+        // A picture of its state's, tiled over the world.
+        if (e.params.has(Key{"skin"}) && bind_picture(st, e.params.get_or<std::string>(Key{"skin"}, ""))) {
+            scene_->set("uTexMix", 1.0f);
+            scene_->set("uSkin", 2.0f);
+            scene_->set("uTile", static_cast<float>(e.params.num(Key{"tile"}, 1.0)));
+            scene_->set("uScreenUV", 0.0f);
+            scene_->set("uCRT", 0.0f);
+            shape_of(st, e).draw();
+            scene_->set("uSkin", 0.0f);
+            scene_->set("uTexMix", 0.0f);
+            if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
+            return;
+        }
         // A surface bound to a mesh is its skin: an atlas, a cell a face.
         auto skin = surfaces_.find(e.id);
         if (skin != surfaces_.end() && skin->second.surface) {
@@ -1697,14 +1847,14 @@ private:
             scene_->set("uSkin", 1.0f);
             scene_->set("uScreenUV", 0.0f);
             scene_->set("uCRT", 0.0f);
-            shape_of(e).draw();
+            shape_of(st, e).draw();
             scene_->set("uSkin", 0.0f);
             scene_->set("uTexMix", 0.0f);
             if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
             return;
         }
         scene_->set("uTexMix", 0.0f);
-        shape_of(e).draw();
+        shape_of(st, e).draw();
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
     }
 
@@ -1819,10 +1969,22 @@ private:
                 quad_.draw();
                 return;
             }
-            // The far room, sampled in screen space: a hole in the wall.
-            wp.target.bind_color(0);
-            set_model(room_local(gl::Mat4::translate(pos + n * inset) * gl::Mat4::rotate_y(yaw) *
-                      gl::Mat4::scale({1.0f, h, w})));
+            // The far room, sampled in screen space: a hole in the wall - all
+            // of it, or (`crop_a0..a1` along it, `crop_b0..b1` up it, each 0
+            // to 1) only that part of it open: the rest of the doorway is
+            // there, glued and carrying, but not yet a hole.
+            const bool own = wp.own_drawn && wp.own_out.valid();
+            if (own) wp.own_out.bind_color(0);
+            else wp.target.bind_color(0);
+            // A picture already developed in its own look is taken back
+            // through the tone curve, to come out as it went in.
+            if (own) scene_->set("uUntone", 1.0f);
+            const float a0 = static_cast<float>(e.params.num(Key{"crop_a0"}, 0.0)), a1 = static_cast<float>(e.params.num(Key{"crop_a1"}, 1.0));
+            const float b0 = static_cast<float>(e.params.num(Key{"crop_b0"}, 0.0)), b1 = static_cast<float>(e.params.num(Key{"crop_b1"}, 1.0));
+            if (a1 <= a0 || b1 <= b0) return;
+            const gl::Vec3 open_at = pos + n * inset + to_vec3(across(yaw)) * (((a0 + a1) * 0.5f - 0.5f) * w) +
+                                     gl::Vec3{0, 1, 0} * (((b0 + b1) * 0.5f - 0.5f) * h);
+            set_model(room_local(gl::Mat4::translate(open_at) * gl::Mat4::rotate_y(yaw) * gl::Mat4::scale({1.0f, h * (b1 - b0), w * (a1 - a0)})));
             scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
             scene_->set("uRoughness", 1.0f);
             scene_->set("uSurface", 0.0f);
@@ -1833,7 +1995,13 @@ private:
             scene_->set("uScreenUV", 1.0f);
             scene_->set("uViewport", static_cast<float>(target.width()),
                        static_cast<float>(target.height()));
+            // `undim`: a doorway that is part of a screen the room dims round
+            // (leaned in to it) is not dimmed with the room.
+            const bool undim = e.params.num(Key{"undim"}, 0.0) > 0.5;
+            if (undim) scene_->set("uUndim", 1.0f);
             quad_.draw();
+            if (undim) scene_->set("uUndim", 0.0f);
+            if (own) scene_->set("uUntone", 0.0f);
             // Stepping through, the eye comes nearer the doorway than the near
             // plane and the quad is cut away. For those last few centimetres
             // (`tunnel` > 0) the same view is drawn again just past the near
@@ -1857,7 +2025,7 @@ private:
 
         // The picture: a world's feed, or a 2D state's pixels.
         int tex_w = 0, tex_h = 0;
-        if (auto f = feeds_.find(e.id); f != feeds_.end() && f->second.world && f->second.out.valid()) {
+        if (auto f = feeds_.find(signal_of(e)); f != feeds_.end() && f->second.world && f->second.out.valid()) {
             f->second.out.bind_color(0);
             tex_w = f->second.w, tex_h = f->second.h;
             scene_->set("uTexFlip", 1.0f);
@@ -2130,6 +2298,11 @@ private:
 
     const LookState& look_of(const State& s) const { return fader_.look_of(graph_, s); }
     Mix mix(Key who, const LookState& target) { return fader_.mix(who, target); }
+    // Worlds shown last frame through a doorway in their own look, and the
+    // world the viewer was in: come into one of them, its look is already on
+    // the screen, and is taken at once.
+    std::vector<const Spatial3D*> own_shown_, own_shown_now_;
+    const Spatial3D* last_world_ = nullptr;
 
     double value(const LookState& l, Key pass, Key k, double fallback) const {
         return fader_.value(l, pass, k, fallback);
@@ -2373,6 +2546,15 @@ private:
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
+    mutable std::unordered_map<const std::vector<float>*, gl::Mesh> model_meshes_;  // each model a state keeps, as a mesh
+    // Each picture a state keeps, as a texture - painted again when the
+    // picture is.
+    struct PictureTexture {
+        gl::Texture texture;
+        uint64_t revision = ~uint64_t{0};
+    };
+    std::unordered_map<const Spatial3D::Picture*, PictureTexture> picture_textures_;
+    gl::Vec3 cam_forward_{0, 0, -1}, cam_up_{0, 1, 0};  // and which way it looks
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.
     std::vector<Batch> batches_;  // kept from frame to frame, emptied as drawn
@@ -2404,7 +2586,7 @@ private:
             h = mix_bits(h, static_cast<float>(placed.pose.yaw));
             for (const auto& e : placed.room->elements()) {
                 if (!e.alive) continue;
-                if (e.kind == kinds::mesh || e.kind == kinds::wall) {
+                if ((e.kind == kinds::mesh || e.kind == kinds::wall) && !is_sprite(e)) {
                     // Where it is and what shape: worked out once each time
                     // its parameters (or its anchor's) change - a change of
                     // colour or glow is no change to a shadow.
@@ -2414,7 +2596,7 @@ private:
                         // than that draws no shadow again.
                         uint64_t w = 1469598103934665603ULL;
                         for (float f : box_matrix(*placed.room, e).m.m) w = mix_bits(w, std::round(f * 1e4f));
-                        w = (w ^ reinterpret_cast<std::uintptr_t>(&shape_of(e))) * 1099511628211ULL;
+                        w = (w ^ reinterpret_cast<std::uintptr_t>(&shape_of(*placed.room, e))) * 1099511628211ULL;
                         p.where = w, p.hashed = true;
                     }
                     h = (h ^ reinterpret_cast<std::uintptr_t>(&e)) * 1099511628211ULL;
@@ -2436,6 +2618,7 @@ private:
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
+    const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
     struct Feed {
         const Spatial3D* world = nullptr;
         int w = 0, h = 0;

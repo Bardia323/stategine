@@ -236,6 +236,14 @@ public:
         return f.mix;
     }
 
+    // `who` is at `target` now, no blend on the way: arrived where it was
+    // already being shown in that look (through a doorway drawn in it).
+    void settle(Key who, const LookState& target) {
+        Fade& f = fades_[who];
+        f.mix.parts.assign(1, LookMix::Part{&target, 1.0f});
+        f.frame = frame_;
+    }
+
     // A value of a pass, from a look, else the standard look, else `fallback`.
     double value(const LookState& l, Key pass, Key k, double fallback) const {
         if (const Element* e = l.find(pass))

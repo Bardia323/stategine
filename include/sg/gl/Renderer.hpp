@@ -97,7 +97,8 @@ class Texture {
 public:
     // With mipmaps, a detailed texture seen small or at a grazing angle - print
     // on a sheet across the room - averages out instead of shimmering.
-    void create(int w, int h, bool mipmaps = false, bool srgb = false) {
+    // `pixel`: pixel art - each texel a hard square, nearest, repeating.
+    void create(int w, int h, bool mipmaps = false, bool srgb = false, bool pixel = false) {
         if (id_) glDeleteTextures(1, &id_);  // made again, at a new size
         w_ = w;
         h_ = h;
@@ -111,7 +112,13 @@ public:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        if (mipmaps) {
+        if (pixel) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, mipmaps ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        }
+        if (mipmaps && !pixel) {
             glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0f);
             glGetError();  // anisotropy is core only from 4.6; without it, plain trilinear
         }

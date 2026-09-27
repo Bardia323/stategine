@@ -9,7 +9,10 @@
 
 #include <cmath>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "sg/core/State.hpp"
 
@@ -157,6 +160,53 @@ public:
         e.params.set(keys::open, false);
         return e;
     }
+
+    // --- models ------------------------------------------------------------------
+    // What its things may be drawn as beyond boxes, cylinders and spheres
+    // (sg/domains/Shapes.hpp): triangles in the unit box a mesh is sized
+    // from, kept by name. An element is drawn as one with `shape` = "model"
+    // and `model` = its name, sized by sx, sy, sz as a box is. Made as the
+    // state is built, as its fixtures are - what it looks like, not what it
+    // is doing.
+    void model(Key name, std::vector<float> corners) {
+        models_[name.str()] = std::make_shared<const std::vector<float>>(std::move(corners));
+    }
+    const std::vector<float>* model(Key name) const {
+        const auto it = models_.find(name.str());
+        return it == models_.end() ? nullptr : it->second.get();
+    }
+
+    // --- pictures -----------------------------------------------------------------
+    // What its things may wear: RGBA pixels, row 0 at the top, kept by name.
+    // A box with `skin` = a picture's name wears it tiled across its faces,
+    // one picture every `tile` metres of the world (pixel art: sampled
+    // nearest, not smoothed). A thing with `shape` = "sprite" and `picture`
+    // = its name is a flat picture turned to whoever looks at it, `sx` wide
+    // and `sy` tall - a Doom thing - showing cell `frame` of `frames` laid
+    // side by side; clear pixels (alpha under a half) are not drawn. With
+    // `face` it turns wholly to the eye, tilting as it does (a thing held
+    // before the eye); without, it stands upright and only turns round.
+    // Painted again, a picture keeps its name and is shown anew.
+    struct Picture {
+        int w = 0, h = 0;
+        std::vector<unsigned char> rgba;  // w * h * 4
+        uint64_t revision = 0;
+    };
+    void picture(Key name, int w, int h, std::vector<unsigned char> rgba) {
+        auto& p = pictures_[name.str()];
+        if (!p) p = std::make_shared<Picture>();
+        p->w = w, p->h = h, p->rgba = std::move(rgba);
+        p->revision = ++picture_revisions_;
+    }
+    const Picture* picture(Key name) const {
+        const auto it = pictures_.find(name.str());
+        return it == pictures_.end() ? nullptr : it->second.get();
+    }
+
+private:
+    std::map<std::string, std::shared_ptr<const std::vector<float>>> models_;
+    std::map<std::string, std::shared_ptr<Picture>> pictures_;
+    uint64_t picture_revisions_ = 0;
 };
 
 // --- camera queries ----------------------------------------------------------

@@ -145,7 +145,10 @@ uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate
                               // walls and ceilings of any size: 10 planks, 11 concrete,
                               // 12 checker, 13 brick, 14 carpet, 15 metal plate, 16 grass
 uniform float uTexMix;        // 0 albedo only, 1 texture only
-uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv)
+uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv); 2: a picture tiled over the world (world_uv)
+uniform float uTile;          // with uSkin 2: the metres of the world one picture covers
+uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
+uniform float uCutout;        // 1: clear pixels are not drawn (a sprite)
 uniform float uGlow;          // extra emission for an active interface
 
 // Up to twenty-four lights; the first `uShadowCount` carry shadow maps - a
@@ -240,6 +243,7 @@ uniform float uHalo;
 // The eye's adjustment: how much everything but a screen's picture is
 // dimmed (0: not at all - what an unset uniform says).
 uniform float uDim;
+uniform float uUndim;         // 1: this is part of the screen the room dims round, not dimmed with it
 // How flat the tube is seen (crt_shape): 0 as it is, 1 face up to the glass.
 uniform float uFlat;
 )") + crt_glsl_constants() + R"(
@@ -333,6 +337,16 @@ vec2 skin_uv() {
     v = clamp(v, 0.002, 0.998);
     float col = mod(cell, 3.0), row = floor(cell / 3.0);
     return vec2((col + u) / 3.0, (row + 1.0 - v) / 2.0);
+}
+
+// A picture tiled over the world, as a wall or a floor wears it: laid on
+// the plane the surface most faces, upright on walls.
+vec2 world_uv() {
+    // In the room's own frame, so it stays put seen through a doorway too.
+    vec3 a = abs(cross(dFdx(vRoom), dFdy(vRoom))), w = vRoom / max(uTile, 1e-3);
+    if (a.y >= a.x && a.y >= a.z) return vec2(w.x, w.z);
+    if (a.x >= a.z) return vec2(w.z, -w.y);
+    return vec2(w.x, -w.y);
 }
 
 vec3 sky(vec3 dir) {
@@ -635,9 +649,12 @@ void main() {
     float rough_mod;
     vec3 albedo = surface_albedo(rough_mod);
     if (uTexMix > 0.0) {
-        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : uSkin > 0.5 ? skin_uv() : vUV;
+        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
-        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texture(uTex, uv).rgb;
+        if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
+        vec4 texel = texture(uTex, uv);
+        if (uCutout > 0.5 && texel.a < 0.5) discard;
+        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texel.rgb;
         if (uUntone > 0.5) {
             // A picture already developed - a world drawn in its own look -
             // is taken back through the tone curve (ACES, solved for its
@@ -653,7 +670,7 @@ void main() {
     // by that room's own light and air: it is shown as it is, not lit or
     // fogged a second time by the room it is seen from.
     if (uScreenUV > 0.5 && uTexMix > 0.99) {
-        FragColor = vec4(albedo * (1.0 - uDim), 0.0);
+        FragColor = vec4(albedo * (1.0 - uDim * (1.0 - uUndim)), 0.0);
         return;
     }
     float roughness = clamp(mRoughness + rough_mod, 0.05, 1.0);
@@ -1198,6 +1215,65 @@ void main() {
     vec2 d = vUV - 0.5;
     color *= 1.0 - dot(d, d) * uVignette;
     FragColor = vec4(film(color, uGrain, uTime), 1.0);
+})";
+    return source.c_str();
+}
+
+// A composite for pixel art: the picture taken down to `uPixels` rows of
+// big square pixels, each coloured once from the scene at its centre; the
+// colours pushed - saturated, contrast raised - and cut to `uLevels` steps a
+// channel through an ordered dither, as a small palette draws; a hair of
+// colour fringe at the edges of the frame. A look wears it as its
+// composite shader (LookState::shader), setting the uniforms it reads.
+inline const char* pixel_composite_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+uniform float uExposure;
+uniform vec2  uTexel;
+uniform vec3  uTint;
+uniform float uSaturation;
+uniform float uVignette;
+uniform float uTime;
+uniform float uPixels;    // rows of pixels in the picture (0: as many as the screen has)
+uniform float uLevels;    // steps of each colour channel (0: as many as the screen has)
+uniform float uDither;    // how much the ordered dither mixes the steps, 0..1
+uniform float uContrast;  // 1 as it is
+uniform float uFringe;    // pixels of colour fringe at the frame's edge
+)") + film_glsl() + R"(
+float bayer(vec2 p) {
+    const float m[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    ivec2 i = ivec2(mod(p, 4.0));
+    return (m[i.y * 4 + i.x] + 0.5) / 16.0;
+}
+
+vec3 seen(vec2 uv) {
+    return texture(uScene, uv).rgb + texture(uBloom, uv).rgb * uBloomStrength;
+}
+
+void main() {
+    vec2 res = 1.0 / uTexel;
+    float size = uPixels > 0.0 ? max(1.0, res.y / uPixels) : 1.0;
+    vec2 cell = floor(vUV * res / size);
+    vec2 uv = (cell + 0.5) * size / res;
+    vec2 d = uv - 0.5;
+    vec2 off = d * dot(d, d) * uFringe * size * uTexel * 4.0;
+    vec3 hdr = vec3(seen(uv + off).r, seen(uv).g, seen(uv - off).b);
+    vec3 c = tonemap(hdr * uExposure);
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    c = mix(vec3(l), c, uSaturation) * uTint;
+    c = clamp((c - 0.5) * uContrast + 0.5, 0.0, 1.0);
+    c *= 1.0 - dot(d, d) * uVignette;
+    c = film(c, 0.0, uTime);
+    if (uLevels > 0.0) {
+        float steps = uLevels - 1.0;
+        c = floor(c * steps + mix(0.5, bayer(cell), uDither)) / steps;
+    }
+    FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 })";
     return source.c_str();
 }
