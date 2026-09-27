@@ -14,12 +14,14 @@ none of the others. States are connected **only** by the graph:
 
 | Interface | Declared with | What it is |
 | --- | --- | --- |
-| Transition | `graph.connect` / `push` / `pop` | the active state changes |
+| Transition | `graph.connect` / `push` / `pop`, on what a state `says` | the active state changes |
 | Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow |
 | Embedding | `graph.embed` | a state lives in a portal of another (with `in`/`out` functors, a `subject`, a sync, focus) |
 | Seam | `add_seam`, `glue_doorway` | two states glued along a boundary - a doorway, a door hanging in it |
 | Drive | `graph.drive` | a state changes with the time a clock (`Temporal`) keeps: its arrows on a trigger fire with `{dt, time, frame}` |
 | Adjunction | `Adjunction` | a pair of functors with unit and counit, checked |
+| Port | `graph.port(state, event)` | the world outside (a program, a device) speaks to a state: `engine.send`, next frame |
+| Edit | `graph.edit(state, event, fn)` | what a state says rewrites the graph: applied by the engine at the start of the next frame, answered back to the state |
 
 Anything else that moves data or control between two states is a bug, however
 convenient.
@@ -42,6 +44,14 @@ into a state to change it or to show it.
   an open embedding of a 3D state in a `feed` portal as a picture; a surface
   bound to a portal as a panel), a seam for a doorway. What the renderer draws
   is what the graph declares.
+- To *tell the world* something, a state `says` it (`State::says`) and emits
+  it; the graph's transitions take it, and so does an open embedding whose
+  functor names the event (`on_event`). A state sees its engine const.
+- **Subscribers may observe the world; only the world may change it.** A bus
+  listener draws, prints, sounds, logs. One that fires the engine, sends a
+  state an event or rewrites the graph is refused (`sg::ObserverError`). If
+  an observer must change the world, make it a state and its causes arrows,
+  functors, transitions.
 - To *carry data*, a functor or lens. Where it runs is decided by the
   embedding's sync (`Live`, `Commit`, `View`).
 
@@ -99,6 +109,15 @@ transport reads more than its two elements is declared
 only what changed. Static geometry is `Spatial3D::fixture` (no arrow, so it
 costs the laws and the frame nothing) - `mesh` is for things that move. Check
 large states' arrows count: laws cost arrows x elements.
+
+The engine keeps to one rule for this: **strictness in the model, checking in
+the tools, dispatch compiled.** What is true of the model is refused when it is
+declared (a duplicate name, a functor renamed under its graph) - once, and in
+constant time, by an index. What costs to find out - the laws, watching hooks,
+validating the graph - runs in tests, `verify`, and the engine's watch, never
+in a frame's path. What the frame runs is the declared model looked up by
+index: arrows by trigger, transitions by trigger and by name, drives and
+routes by state, rebuilt only when the graph's revision moves.
 
 ## Adding a state, a room, an interface - checklist
 

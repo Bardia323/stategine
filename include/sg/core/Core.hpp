@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -143,6 +144,70 @@ struct RewriteRefused : std::logic_error {
     using std::logic_error::logic_error;
 };
 
+// ---------------------------------------------------------------------------
+// Observers. A listener on a state's bus (EventBus::subscribe) observes: it
+// reads the event and does what is outside the world - draws, prints, plays a
+// sound, logs. Only the world causes changes to the world: a listener that
+// fires the engine, sends a state an event, or rewrites the graph is a way
+// between states the graph does not declare. If an observer must change the
+// world, it is part of the world - a state, and what it does arrows, functors
+// and transitions.
+//
+// So while a listener runs, those are refused: with an ObserverError
+// (Observers::Strict, the default), or reported once each and let through
+// (Observers::Report - for a project still moving its listeners into the
+// graph). What a listener writes into a state's params directly is not seen
+// here (it would cost every write); the engine's watch (set_watch_hooks) and
+// the laws see what arrows do.
+// ---------------------------------------------------------------------------
+struct ObserverError : std::logic_error {
+    using std::logic_error::logic_error;
+};
+
+enum class Observers { Strict, Report };
+
+namespace detail {
+
+// How many listeners are running on this thread, one inside another.
+inline int& observing() {
+    static thread_local int n = 0;
+    return n;
+}
+
+struct ObserverRules {
+    Observers policy = Observers::Strict;
+    std::function<void(const std::string&)> report;
+    std::unordered_set<std::string> said;
+};
+inline ObserverRules& observer_rules() {
+    static ObserverRules r;
+    return r;
+}
+
+inline void refused_to_observer(const std::string& what) {
+    const std::string p = "a listener " + what +
+                          ": listeners observe; only the world changes the world - declare it in the graph "
+                          "(a state says it, and a transition or an embedding's functor carries it)";
+    ObserverRules& r = observer_rules();
+    if (r.policy == Observers::Strict) throw ObserverError(p);
+    if (!r.said.insert(p).second) return;
+    if (r.report) r.report(p);
+    else std::fprintf(stderr, "[sg] %s\n", p.c_str());
+}
+
+// Where the world is changed from outside an arrow, each asks
+// `observing() > 0` first: free unless a listener is running.
+
+}  // namespace detail
+
+// How listeners that try to cause something are met, process-wide; `report`
+// hears each once under Observers::Report (stderr if unset).
+inline void set_observers(Observers policy, std::function<void(const std::string&)> report = nullptr) {
+    detail::ObserverRules& r = detail::observer_rules();
+    r.policy = policy;
+    r.report = std::move(report);
+}
+
 namespace detail {
 
 // Where a graph counts changes to its structure. The graph owns one and hands
@@ -159,10 +224,12 @@ struct Revision {
 
     void element(const char* what) {
         refuse(what);
+        if (observing() > 0) refused_to_observer(std::string("changed what a state is made of: ") + what);
         ++all;
     }
     void rewired(const char* what) {
         refuse(what);
+        if (observing() > 0) refused_to_observer(std::string("rewrote the graph: ") + what);
         ++all;
         ++topology;
     }
@@ -377,6 +444,15 @@ inline Key cod(const Morphism& m) { return m.to.empty() ? m.from : m.to; }
 // EventBus: a double-buffered queue plus direct subscriptions. The buffers are
 // reused frame to frame, so steady-state dispatch does not allocate.
 // ---------------------------------------------------------------------------
+namespace detail {
+// How many law trials are running on this thread (Laws.hpp's Trial): while
+// any is, nothing outside the graph hears what a state does.
+inline int& trials() {
+    static thread_local int n = 0;
+    return n;
+}
+}  // namespace detail
+
 class EventBus {
 public:
     using Listener = std::function<void(const Event&)>;
@@ -388,16 +464,26 @@ public:
     const std::vector<Event>& queued() const { return queue_; }
     void requeue(std::vector<Event> q) { queue_ = std::move(q); }
 
+    // A listener watches a state from outside the graph - a test, a tool, a
+    // log. It is not a way between states: what a state has to tell another
+    // it says (State::says), and the graph's transitions carry it. A law's
+    // trial runs arrows to see what they do and then un-runs them; a
+    // listener could not be un-run, so while a trial runs none is called.
     void subscribe(Key name, Listener fn) { listeners_[name].push_back(std::move(fn)); }
 
     // Swaps the pending queue into `out` so handlers may emit freely.
     void drain_into(std::vector<Event>& out) {
         out.clear();
         out.swap(queue_);
-        if (listeners_.empty()) return;
+        if (listeners_.empty() || detail::trials() > 0) return;
+        struct Observing {
+            Observing() { ++detail::observing(); }
+            ~Observing() { --detail::observing(); }
+        };
         for (const auto& e : out) {
             auto it = listeners_.find(e.name);
             if (it == listeners_.end()) continue;
+            Observing watching;
             for (const auto& fn : it->second) fn(e);
         }
     }

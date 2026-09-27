@@ -307,18 +307,25 @@ public:
     // every functor at its two ends, since it was made from those.
     void deps_of(const Path& p, std::vector<uint64_t>& out) {
         Key here = p.state();
+        std::vector<Key> stack;
         out.push_back(state_version(here));
         for (const Step& s : p.steps()) {
             if (s.kind == Step::Kind::Arrow || s.kind == Step::Kind::Event) continue;
             if (s.kind == Step::Kind::Transition) {
                 const Transition* t = g_->transition(s.name);
-                if (!t) {
+                if (!t || (t->kind == TransitionKind::Pop && stack.empty())) {
                     out.push_back(0);
                     continue;
                 }
                 const Functor* f = t->functor.empty() ? nullptr : g_->functor(t->functor);
                 out.push_back(f ? f->stamp() : 0);
-                here = t->to;
+                if (t->kind == TransitionKind::Push) stack.push_back(here);
+                if (t->kind == TransitionKind::Pop) {
+                    here = stack.back();
+                    stack.pop_back();
+                } else {
+                    here = t->to;
+                }
             } else if (s.functor) {
                 out.push_back(functor_version(s.functor->from()));
                 out.push_back(functor_version(s.functor->to()));
@@ -427,10 +434,14 @@ namespace laws {
 // structural is ever let happen.
 class Trial {
 public:
-    explicit Trial(StateGraph& g) : g_(g) { sealed_.emplace(g); }
+    explicit Trial(StateGraph& g) : g_(g) {
+        sealed_.emplace(g);
+        ++detail::trials();
+    }
     Trial(const Trial&) = delete;
     Trial& operator=(const Trial&) = delete;
     ~Trial() {
+        --detail::trials();
         sealed_.reset();
         for (auto& kv : saved_)
             if (State* s = g_.find(kv.first)) s->restore(std::move(kv.second));
@@ -470,6 +481,7 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
     Trial trial(g);
     Key here = p.state();
     Key at = p.element();
+    std::vector<Key> stack;  // where the path's pushes came from, for its pops
     if (!g.find(here)) {
         out.error = "starts in unknown state " + here.str();
         return out;
@@ -520,22 +532,40 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
         }
 
         const Functor* f = nullptr;
+        const Transition* t = nullptr;
         Key target;
+        Event crossing;
         if (step.kind == Step::Kind::Transition) {
-            const Transition* t = g.transition(step.name);
+            // Taken as the engine takes it: by the event that triggers it, only
+            // if the engine would choose this one on that event here (its
+            // guard passes, and nothing it would prefer does), running its
+            // action, carrying the event, and entering where it goes.
+            t = g.transition(step.name);
             if (!t) {
                 out.error = tag + "no such transition";
-                return out;
-            }
-            if (t->kind == TransitionKind::Pop) {
-                out.error = tag + "a pop has no fixed target, so it cannot be a step";
                 return out;
             }
             if (t->from != StateGraph::any() && t->from != here) {
                 out.error = tag + "leaves " + t->from.str() + ", but the path is in " + here.str();
                 return out;
             }
-            target = t->to;
+            crossing = Event{t->trigger, step.args ? *step.args : args};
+            crossing.source = step.source;
+            const Transition* taken = g.resolve(trial.touch(here), crossing);
+            if (taken != t) {
+                out.error = tag + (taken ? "on " + t->trigger.str() + " here the engine takes " + taken->name.str()
+                                         : "its guard refuses it here");
+                return out;
+            }
+            if (t->kind == TransitionKind::Pop) {
+                if (stack.empty()) {
+                    out.error = tag + "a pop goes back where the path came from, and this path was pushed from nowhere";
+                    return out;
+                }
+                target = stack.back();
+            } else {
+                target = t->to;
+            }
             if (!t->functor.empty()) {
                 f = g.functor(t->functor);
                 if (!f) {
@@ -569,7 +599,30 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
                 return out;
             }
         }
-        if (f) f->apply(g.state(here), trial.touch(target));
+        if (t) {
+            State& from = trial.touch(here);
+            State& to = trial.touch(target);
+            Params entered;
+            g.cross(*t, from, &to, crossing, entered);
+            switch (t->kind) {
+                case TransitionKind::Switch:
+                    from.on_exit();
+                    to.on_enter(entered);
+                    break;
+                case TransitionKind::Push:
+                    stack.push_back(here);
+                    from.on_pause();
+                    to.on_enter(entered);
+                    break;
+                case TransitionKind::Pop:
+                    stack.pop_back();
+                    from.on_exit();
+                    to.on_resume();
+                    break;
+            }
+        } else if (f) {
+            f->apply(g.state(here), trial.touch(target));
+        }
         here = target;
         at = image;
     }
@@ -582,6 +635,7 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
     if (trial.touched(here)) {
         out.data.params = end.params();
         out.data.queue = end.bus().queued();
+        out.data.said = end.said_out();
         for (Element& e : end.elements()) out.data.elements.push_back(std::move(e));
     } else {
         out.data = end.snapshot();
@@ -691,7 +745,8 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
     // two sides left the same elements, in the same order, each with the same
     // stamp (the same content), and queued the same, they agree - found with
     // no index built and no value compared.
-    if (l.data.elements.size() == r.data.elements.size() && l.data.queue.size() == r.data.queue.size()) {
+    if (l.data.elements.size() == r.data.elements.size() && l.data.queue.size() == r.data.queue.size() &&
+        l.data.said.size() == r.data.said.size()) {
         bool same = true;
         for (std::size_t i = 0; same && i < l.data.elements.size(); ++i) {
             const Element& a = l.data.elements[i];
@@ -700,6 +755,8 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         }
         for (std::size_t i = 0; same && i < l.data.queue.size(); ++i)
             same = same_event(l.data.queue[i], r.data.queue[i]);
+        for (std::size_t i = 0; same && i < l.data.said.size(); ++i)
+            same = same_event(l.data.said[i], r.data.said[i]);
         if (same) return out;
     }
 
@@ -765,9 +822,9 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
     // What the paths set in motion is part of what they did: each event, name,
     // arguments and sender, in the order queued - the queue is dispatched in
     // that order, so A then B is not B then A.
-    const auto names = [](const State::Snapshot& s) {
+    const auto names = [](const std::vector<Event>& q) {
         std::vector<std::string> n;
-        for (const auto& e : s.queue) n.push_back(event_str(e));
+        for (const auto& e : q) n.push_back(event_str(e));
         return n;
     };
     const auto same_queues = [](const std::vector<Event>& a, const std::vector<Event>& b) {
@@ -782,8 +839,12 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         return "{" + s + "}";
     };
     if (!same_queues(l.data.queue, r.data.queue))
-        at(Key{}, "<emitted>", joined(names(before)), joined(names(l.data)),
-           joined(names(r.data)));
+        at(Key{}, "<emitted>", joined(names(before.queue)), joined(names(l.data.queue)),
+           joined(names(r.data.queue)));
+    // And what they said outward, which the graph's transitions will hear.
+    if (!same_queues(l.data.said, r.data.said))
+        at(Key{}, "<said>", joined(names(before.said)), joined(names(l.data.said)),
+           joined(names(r.data.said)));
     return out;
 }
 
@@ -1140,7 +1201,21 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {},
                                     LawCache* cache = nullptr) {
     if (cache) cache->begin(g);
     std::vector<Violation> out;
-    for (const Embedding& e : g.embeddings()) {
+    // Every embedding with both ways, and every pair declared a lens on its
+    // own (StateGraph::lens) - as a closed embedding of the one in the other.
+    std::deque<Embedding> pairs(g.embeddings().begin(), g.embeddings().end());
+    for (const auto& l : g.lenses()) {
+        const Functor* get = g.functor(l.get);
+        if (!get) continue;
+        Embedding e;
+        e.name = Key{"lens " + l.get.str() + "/" + l.put.str()};
+        e.host = get->from();
+        e.guest = get->to();
+        e.in = l.get;
+        e.out = l.put;
+        pairs.push_back(e);
+    }
+    for (const Embedding& e : pairs) {
         if (e.in.empty() || e.out.empty()) continue;
         const Functor* in = g.functor(e.in);
         const Functor* put = g.functor(e.out);

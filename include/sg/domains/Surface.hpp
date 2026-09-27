@@ -55,6 +55,7 @@ public:
     const std::vector<unsigned char>& raster() {
         // layout_changed() also refreshes the signature, so it runs either way.
         const bool moved = layout_changed();
+        if (stale()) dirty_ = true;
         if (dirty_ || moved) redraw();
         return pixels_;
     }
@@ -89,6 +90,11 @@ protected:
     // invalidate() whenever what it shows changes. Sprites and tiles moving
     // still trigger a repaint on their own.
     virtual void paint() { paint_board(); }
+
+    // Whether what the picture shows has changed since it was painted, as the
+    // surface's own data says - a copy of something it shows, carried in by a
+    // functor, stamped anew. A picture is memoised on its data, never told.
+    virtual bool stale() { return false; }
 
     // The whole buffer, RGBA rows top to bottom, for painters that write it
     // directly (blending, blitting an image).

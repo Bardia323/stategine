@@ -415,9 +415,12 @@ void test_transitions_in_paths() {
     sg::Diagram d("close and reopen");
     d.commutes(sg::Path("shop", "shelf").transition("shop-close->ledger").transition("ledger-open->shop"),
                sg::Path("shop", "shelf"));
+    // A transition carries the event that took it into where it goes, as the
+    // engine does: the shelf comes back as it was, with the reopening queued.
     const auto vs = sg::laws::diagram(g, d);
-    show(vs);
-    check(vs.empty(), "closing and reopening the shop is the identity on the shelf");
+    bool only_carried = !vs.empty();
+    for (const auto& v : vs) only_carried = only_carried && v.key == "<emitted>" && v.left.find("open@ledger/reopen") != std::string::npos;
+    check(only_carried, "closing and reopening leaves the shelf as it was, and the event that reopened it carried in");
 
     sg::Diagram pop("pop");
     pop.commutes(sg::Path("ledger").transition("ledger-back->"), sg::Path("ledger"));
@@ -821,6 +824,527 @@ void test_updates_are_watched() {
     }
 }
 
+
+// --- what a state says, and nothing else ----------------------------------------------------------
+// A state declares what it says outward (State::says); the engine hands that
+// to the graph's transitions, and nothing else carries control between states.
+void test_what_a_state_says_moves_the_graph() {
+    sg::StateGraph g;
+    auto& battle = g.add<sg::State>("battle");
+    battle.add_element("foe", "foe").params.set("hp", int64_t{8});
+    battle.says("victory");
+    battle.loop("hit", "foe", "attack", [](sg::State& s, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("hp", e.params.num("hp") - 8);
+        if (e.params.num("hp") <= 0) s.emit("victory");
+    });
+    g.add<sg::State>("town").add_element("gate", "gate");
+    g.connect("battle", "victory", "town");
+    g.set_initial("battle");
+    sg::Engine e(g);
+    e.start();
+    e.fire("attack");
+    e.run_fixed(0.1, 3);
+    check(e.current() && e.current()->id() == sg::Key{"town"},
+          "a state that says victory takes the transition on it, with no listener in between");
+
+    // Something it does not say stays its own.
+    sg::StateGraph h;
+    auto& quiet = h.add<sg::State>("battle");
+    quiet.add_element("foe", "foe");
+    quiet.loop("hit", "foe", "attack", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("victory"); });
+    h.add<sg::State>("town").add_element("gate", "gate");
+    h.connect("battle", "victory", "town");
+    h.set_initial("battle");
+    sg::Engine q(h);
+    q.start();
+    q.fire("attack");
+    q.run_fixed(0.1, 3);
+    check(q.current() && q.current()->id() == sg::Key{"battle"}, "what a state does not say does not leave it");
+
+    // What an arrow says is part of what it does, as the laws see it.
+    sg::StateGraph l;
+    auto& a = l.add<sg::State>("a");
+    a.add_element("x", "n");
+    a.says("done");
+    a.loop("f", "x", "go", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("done"); });
+    a.loop("g", "x", "go", [](sg::State&, sg::Element&, sg::Element*, const sg::Event&) {});
+    sg::Diagram d("says");
+    d.commutes(sg::Path("a", "x").arrow("f"), sg::Path("a", "x").arrow("g"));
+    check(!sg::laws::diagram(l, d).empty(), "an arrow that says something is not one that says nothing");
+    check(a.said_out().empty(), "and a trial says nothing to the world");
+}
+
+// A listener on a bus is outside the graph: a law's trial never runs it.
+void test_trials_do_not_reach_listeners() {
+    sg::StateGraph g;
+    auto& s = g.add<sg::State>("s");
+    s.add_element("x", "n");
+    s.loop("f", "x", "go", [](sg::State& st, sg::Element&, sg::Element*, const sg::Event&) { st.emit("rang"); });
+    int rang = 0;
+    s.bus().subscribe("rang", [&rang](const sg::Event&) { ++rang; });
+    sg::Diagram d("bell");
+    d.commutes(sg::Path("s").event("go"), sg::Path("s").event("go"));
+    sg::laws::diagram(g, d);
+    check(rang == 0, "checking a law rings no bell outside the graph");
+    s.emit("rang");
+    s.dispatch_pending();
+    check(rang == 1, "outside a trial, the listener hears");
+}
+
+// --- the callbacks, watched ---------------------------------------------------------------------
+struct Sly : sg::State {
+    using sg::State::State;
+    bool on_event(const sg::Event& e) override {
+        if (e.name == sg::Key{"hurt"}) {
+            params().set("hp", int64_t{0});
+            return true;
+        }
+        return false;
+    }
+};
+struct Painter : sg::State {
+    using sg::State::State;
+    void on_render(const sg::Tick& t) override { params().set("drawn", t.time); }
+};
+struct Greeter : sg::State {
+    using sg::State::State;
+    void on_enter(const sg::Params&) override { params().set("hello", true); }
+};
+
+void test_every_hook_is_watched() {
+    const auto heard_of = [](sg::StateGraph& g, const char* hook, bool fire) {
+        g.set_initial("s");
+        sg::Engine e(g);
+        std::vector<std::string> heard;
+        e.on_problem = [&](const std::string& p) { heard.push_back(p); };
+        e.set_watch_updates(true);
+        e.start();
+        if (fire) e.fire("hurt");
+        e.run_fixed(0.5, 2);
+        return heard.size() == 1 && heard[0].find(hook) != std::string::npos;
+    };
+    {
+        sg::StateGraph g;
+        g.add<Sly>("s").add_element("x", "n");
+        check(heard_of(g, "on_event", true), "an on_event that writes, bypassing every arrow, is reported");
+    }
+    {
+        sg::StateGraph g;
+        g.add<Painter>("s").add_element("x", "n");
+        check(heard_of(g, "on_render", false), "so is an on_render that writes");
+    }
+    {
+        sg::StateGraph g;
+        g.add<Greeter>("s").add_element("x", "n");
+        check(heard_of(g, "on_enter", false), "and an on_enter");
+    }
+}
+
+// --- names are identities -------------------------------------------------------------------------
+void test_names_are_identities() {
+    sg::StateGraph g;
+    auto& s = g.add<sg::State>("s");
+    s.add_element("x", "n");
+    s.loop("f", "x", "go", nullptr);
+    bool threw = false;
+    try {
+        s.loop("f", "x", "stop", nullptr);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw && s.morphisms().size() == 1, "two arrows cannot share a name");
+
+    g.add<sg::State>("t").add_element("y", "n");
+    const sg::Key first = g.connect("s", "go", "t").name;
+    sg::Transition alt;
+    alt.from = "s";
+    alt.trigger = "go";
+    alt.to = "t";
+    alt.guard = [](const sg::State&, const sg::Event&) { return false; };
+    const sg::Key second = g.connect(alt).name;
+    check(first != second && g.transition(second)->guard, "two guarded alternatives get names of their own");
+    threw = false;
+    try {
+        sg::Transition dup;
+        dup.name = first;
+        dup.from = "t";
+        dup.trigger = "back";
+        dup.to = "s";
+        g.connect(dup);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "a name given twice is refused");
+
+    g.add_functor("F", "s", "t").on_object("x", "y");
+    threw = false;
+    try {
+        g.functor(sg::Key{"F"})->rename("G");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw && g.functor(sg::Key{"F"})->name() == sg::Key{"F"}, "a functor the graph holds keeps its name");
+    const uint64_t rev = g.revision();
+    threw = false;
+    try {
+        *g.functor(sg::Key{"F"}) = sg::Functor("G", "s", "t");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "nor is it put in place under another name");
+    *g.functor(sg::Key{"F"}) = sg::Functor("F", "s", "t");
+    check(g.revision() != rev, "and put in place under its own, the graph counts it");
+}
+
+// --- composition keeps what an identity leaves -------------------------------------------------
+void test_composition_keeps_unmapped_events() {
+    sg::Functor f("F", "a", "b");  // F(x) = x: not in its table
+    sg::Functor g("G", "b", "c");
+    g.on_event("x", "y");
+    const sg::Functor h = sg::Functor::compose(f, g);
+    check(h.image_event("x") == sg::Key{"y"}, "(G . F)(x) = G(F(x)) = G(x) = y");
+    sg::Functor id = sg::Functor::identity(sg::Key{"b"}, sg::Key{"I"});
+    id.on_event("p", "q");
+    sg::Functor k("K", "b", "c");
+    k.on_event("q", "r");
+    check(sg::Functor::compose(id, k).image_event("p") == sg::Key{"r"}, "an identity's own events are kept too");
+}
+
+// --- a transition means one thing -----------------------------------------------------------------
+void test_a_transition_in_a_law_is_the_one_the_engine_takes() {
+    sg::StateGraph g;
+    auto& shop = g.add<sg::State>("shop");
+    shop.add_element("shelf", "shelf").params.set("stock", int64_t{3});
+    g.add<sg::State>("ledger").add_element("book", "entry");
+    g.add<sg::State>("closed").add_element("sign", "sign");
+    g.add_functor("post", "shop", "ledger").on_object("shelf", "book", sg::transport::only({"stock"}));
+    sg::Transition t;
+    t.name = "count";
+    t.from = "shop";
+    t.trigger = "close";
+    t.to = "ledger";
+    t.functor = "post";
+    t.guard = [](const sg::State& s, const sg::Event&) { return s.find("shelf")->params.num("stock") > 0; };
+    t.action = [](sg::State& s, const sg::Event&, sg::Params&) { s.params().set("counted", true); };
+    g.connect(t);
+    sg::Transition shut;
+    shut.name = "shut";
+    shut.from = "shop";
+    shut.trigger = "close";
+    shut.to = "closed";
+    g.connect(shut);
+    g.push("ledger", "peek", "shop");
+
+    // The action runs in a law, as it does in the engine.
+    sg::Diagram d("count");
+    d.commutes(sg::Path("shop").transition("count"), sg::Path("shop").transition("count"));
+    check(sg::laws::diagram(g, d).empty(), "a transition is a path");
+    const sg::laws::Outcome o = sg::laws::run(g, sg::Path("shop").transition("count").transition("ledger-peek->shop"), {});
+    check(o.error.empty() && o.data.params.get_or<bool>("counted", false), "its action runs in a law, as in the engine");
+
+    // With no stock the guard refuses it, and the engine would take `shut`.
+    shop.find("shelf")->params.set("stock", int64_t{0});
+    const sg::laws::Outcome r = sg::laws::run(g, sg::Path("shop").transition("count"), {});
+    check(!r.error.empty() && r.error.find("shut") != std::string::npos,
+          "a transition its guard refuses is not a step: the engine would take another");
+
+    // A pop goes back where the path came from.
+    shop.find("shelf")->params.set("stock", int64_t{3});
+    g.pop("shop", "back");
+    const sg::laws::Outcome p =
+        sg::laws::run(g, sg::Path("ledger").transition("ledger-peek->shop").transition("shop-back->"), {});
+    check(p.error.empty() && p.state == sg::Key{"ledger"}, "a pop after a push in the same path goes back");
+}
+
+
+// --- listeners observe; only the world changes the world -------------------------------------------
+void test_listeners_only_observe() {
+    sg::StateGraph g;
+    auto& a = g.add<sg::State>("a");
+    a.add_element("x", "n");
+    a.says("rang");
+    a.loop("ring", "x", "go", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("rang"); });
+    auto& b = g.add<sg::State>("b");
+    b.add_element("y", "n").params.set("heard", 0.0);
+    b.loop("hear", "y", "rung", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("heard", e.params.num("heard") + 1);
+    });
+    a.add_element("port", sg::kinds::portal);
+    g.add_functor("a.to.b", "a", "b").on_event("rang", "rung");
+    g.set_focus(g.embed("bell", "a", "port", "b", "a.to.b", sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("a");
+    sg::Engine e(g);
+    e.start();
+    e.open_embed("bell");
+
+    // An observer: reads, and keeps what it saw outside the world.
+    int seen = 0;
+    a.bus().subscribe("rang", [&seen](const sg::Event&) { ++seen; });
+    e.fire("go");
+    e.run_fixed(0.1, 2);
+    check(seen == 1, "a listener that only looks is let be");
+    check(b.find("y")->params.num("heard") == 1.0,
+          "what a says reaches b across the embedding whose functor names it - declared, not forwarded");
+
+    // A cause: refused.
+    bool refused = false;
+    a.bus().subscribe("rang", [&e](const sg::Event&) { e.fire("go"); });
+    try {
+        e.fire("go");
+        e.run_fixed(0.1, 2);
+    } catch (const sg::ObserverError&) {
+        refused = true;
+    }
+    check(refused, "a listener that fires the engine is refused");
+
+    sg::StateGraph h;
+    auto& c = h.add<sg::State>("c");
+    c.add_element("x", "n");
+    auto& d = h.add<sg::State>("d");
+    d.add_element("y", "n");
+    c.bus().subscribe("poke", [&d](const sg::Event& ev) { d.emit(ev); });
+    refused = false;
+    try {
+        c.emit("poke");
+        c.dispatch_pending();
+    } catch (const sg::ObserverError&) {
+        refused = true;
+    }
+    check(refused && d.bus().queued().empty(), "one that sends another state an event is refused");
+
+    // Report, for a project moving its listeners into the graph: said once, let through.
+    std::vector<std::string> heard;
+    sg::set_observers(sg::Observers::Report, [&heard](const std::string& p) { heard.push_back(p); });
+    c.emit("poke");
+    c.dispatch_pending();
+    c.emit("poke");
+    c.dispatch_pending();
+    sg::set_observers(sg::Observers::Strict);
+    check(heard.size() == 1 && d.bus().queued().size() == 2, "under Report it is said once, and let through");
+}
+
+
+// --- the world rewrites itself only by a declared edit ------------------------------------------------
+void test_edits_are_declared() {
+    sg::StateGraph g;
+    auto& ed = g.add<sg::State>("editor");
+    ed.add_element("line", "text");
+    ed.says("cmd");
+    ed.loop("enter", "line", "type", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event& ev) {
+        s.emit(sg::Event{"cmd", ev.args});
+    });
+    ed.loop("answered", "line", "cmd.done", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("answer", ev.args.get_or<std::string>("text", ""));
+    });
+    int applied = 0;
+    g.edit("editor", "cmd", [&applied](sg::StateGraph& graph, const sg::Event& asked) {
+        ++applied;
+        const std::string name = asked.args.get_or<std::string>("name", "");
+        graph.add<sg::State>(sg::Key{name}).add_element("floor", "floor");
+        graph.push("editor", sg::Key{"visit." + name}, sg::Key{name});
+        return sg::Params{}.set("text", std::string("made ") + name);
+    });
+    g.set_initial("editor");
+    check(g.validate().empty(), "an edit asked for by what the editor says is a lawful interface");
+
+    // Checking the laws runs the arrow that asks, and applies nothing.
+    sg::Diagram d("ask");
+    d.commutes(sg::Path("editor").event("type", sg::Params{}.set("name", std::string("den"))),
+               sg::Path("editor").event("type", sg::Params{}.set("name", std::string("den"))));
+    sg::laws::diagram(g, d);
+    check(applied == 0 && !g.find("den"), "a law's trial asks for nothing");
+
+    sg::Engine e(g);
+    e.start();
+    e.fire(sg::Event{"type", sg::Params{}.set("name", std::string("den"))});
+    e.run_fixed(0.1, 3);
+    check(applied == 1 && g.find("den") && g.transition("editor-visit.den->den"),
+          "said, the edit is applied once, at the start of the next frame, by the engine");
+    check(ed.find("line")->params.get_or<std::string>("answer", "") == "made den",
+          "and its answer is heard back by the editor's own arrow");
+
+    sg::StateGraph h;
+    h.add<sg::State>("mute").add_element("x", "n");
+    h.edit("mute", "cmd", [](sg::StateGraph&, const sg::Event&) { return sg::Params{}; });
+    bool named = false;
+    for (const auto& p : h.validate()) named = named || p.find("does not say cmd") != std::string::npos;
+    check(named, "an edit no state asks for is refused");
+}
+
+
+// A functor maps events too: what a state says crosses each functor out of it that names it.
+void test_functors_carry_what_is_said() {
+    sg::StateGraph g;
+    auto& desk = g.add<sg::State>("desk");
+    desk.add_element("pen", "pen");
+    desk.says("chalk");
+    desk.loop("write", "pen", "press", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("chalk"); });
+    auto& board = g.add<sg::State>("board");
+    board.add_element("slate", "slate").params.set("lines", 0.0);
+    board.loop("write", "slate", "write", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("lines", e.params.num("lines") + 1);
+    });
+    g.add_functor("desk.board", "desk", "board").on_event("chalk", "write");
+    g.set_initial("desk");
+    sg::Engine e(g);
+    e.start();
+    e.fire("press");
+    e.run_fixed(0.1, 1);
+    check(board.find("slate")->params.num("lines") == 1.0,
+          "the board, stepped by no one, writes at once what the desk says - carried by the functor between them");
+}
+
+
+// Two functors declared a lens on their own - a window onto a board - are held to the lens laws.
+void test_a_declared_lens_is_checked() {
+    for (bool honest : {true, false}) {
+        sg::StateGraph g;
+        g.add<sg::State>("board").add_element("ink", "ink").params.set("n", 3.0);
+        g.add<sg::State>("window").add_element("copy", "copy").params.set("n", 3.0);
+        g.add_functor("get", "board", "window").on_object("ink", "copy", sg::transport::only({"n"}));
+        g.add_functor("put", "window", "board").on_object("copy", "ink", [honest](const sg::Element& s, sg::Element& d) {
+            d.params.set("n", s.params.num("n") * (honest ? 1.0 : 2.0));
+        });
+        g.lens("get", "put");
+        bool named = false;
+        const auto vs = sg::laws::lenses(g);
+        for (const auto& v : vs) named = named || v.where.find("lens get/put") != std::string::npos;
+        check(honest ? vs.empty() : named, honest ? "a declared lens that keeps the laws passes"
+                                                  : "one whose put doubles is named, with no embedding in sight");
+    }
+}
+
+
+// The world outside reaches a state only through a port the graph declares.
+void test_ports_are_declared() {
+    sg::StateGraph g;
+    auto& gauge = g.add<sg::State>("gauge");
+    gauge.add_element("needle", "needle").params.set("v", 0.0);
+    gauge.loop("read", "needle", "reading", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("v", ev.args.num("v"));
+    });
+    g.set_initial("gauge");
+    sg::Engine e(g);
+    e.start();
+    bool refused = false;
+    try {
+        e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    check(refused, "nothing comes in through a port the graph does not declare");
+    g.port("gauge", "reading");
+    e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
+    e.run_fixed(0.1, 1);
+    check(gauge.find("needle")->params.num("v") == 3.0, "through a declared one, it reaches the state's arrow");
+}
+
+
+// A game on a set runs while it is shown; one on a computer only while it is played; a host opens its own portal.
+void test_shown_focused_and_portals() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::State>("room");
+    room.add_element("desk", "desk");
+    room.add_element("set", sg::kinds::portal);
+    room.add_element("pc_port", sg::kinds::portal);
+    auto& pc = g.add<sg::State>("pc");
+    pc.add_element("win", sg::kinds::portal);
+    pc.says("portal.open");
+    pc.says("portal.focus");
+    pc.loop("launch", "win", "launch", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) {
+        s.emit(sg::Event{"portal.open", sg::Params{}.set("portal", std::string("win"))});
+        s.emit(sg::Event{"portal.focus", sg::Params{}.set("portal", std::string("win")).set("on", true)});
+    });
+    const auto game = [&](const char* id) -> sg::State& {
+        auto& s = g.add<sg::State>(id);
+        s.add_element("hero", "hero").params.set("t", 0.0);
+        s.loop("run", "hero", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+            e.params.set("t", e.params.num("t") + ev.args.num("dt"));
+        });
+        return s;
+    };
+    auto& on_set = game("on_set");
+    auto& on_pc = game("on_pc");
+    auto& clock = g.add<sg::Temporal>("clock");
+    sg::drive(g, clock, on_set.id(), "tick", false, sg::Keeps::WhileShown);
+    sg::drive(g, clock, on_pc.id(), "tick", false, sg::Keeps::WhileFocused);
+    g.set_focus(g.embed("set", "room", "set", "on_set", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_focus(g.embed("pc", "room", "pc_port", "pc", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_focus(g.embed("app", "pc", "win", "on_pc", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("room");
+    sg::Engine e(g);
+    e.start();
+    e.run_fixed(0.5, 2);
+    check(on_set.find("hero")->params.num("t") == 0.0, "a game on a set that is not on keeps no time");
+    e.open_embed("set");
+    e.run_fixed(0.5, 2);
+    check(on_set.find("hero")->params.num("t") == 1.0, "shown, it keeps its time");
+
+    e.open_embed("pc");
+    pc.emit("launch");
+    pc.dispatch_pending();
+    e.run_fixed(0.5, 1);  // said now, opened and focused at the start of the next frame
+    e.run_fixed(0.5, 2);
+    check(e.embed_open("app") && e.focused() == &on_pc, "the computer opens and focuses its own window by saying so");
+    check(on_pc.find("hero")->params.num("t") > 0.0, "played, the game on it keeps its time");
+    const double t = on_pc.find("hero")->params.num("t");
+    e.close_embed("pc");
+    e.run_fixed(0.5, 2);
+    check(e.focused() == nullptr && on_pc.find("hero")->params.num("t") == t,
+          "with nobody at the computer, its game has no input and waits");
+}
+
+// How deep a state is open is counted, not guessed at: a chain of any length
+// is followed to its end, and embeddings that go round come to an end too.
+void test_depth_has_no_limit_and_cycles_end() {
+    sg::StateGraph g;
+    const int n = 12;
+    for (int i = 0; i <= n; ++i) g.add<sg::State>("s" + std::to_string(i)).add_element("in", sg::kinds::portal);
+    for (int i = 0; i < n; ++i)
+        g.set_focus(g.embed(sg::Key{"e" + std::to_string(i)}, sg::Key{"s" + std::to_string(i)}, "in",
+                            sg::Key{"s" + std::to_string(i + 1)}, sg::Key{}, sg::Key{}, sg::EmbedSync::Commit)
+                        .name,
+                    false);
+    // And the last holds the first again: round and round.
+    g.set_focus(g.embed("back", sg::Key{"s" + std::to_string(n)}, "in", "s0", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("s0");
+    sg::Engine e(g);
+    e.start();
+    for (int i = 0; i < n; ++i) e.open_embed(sg::Key{"e" + std::to_string(i)});
+    check(e.depth(sg::Key{"s" + std::to_string(n)}) == n && e.live(sg::Key{"s" + std::to_string(n)}),
+          "a state twelve embeddings deep is live, and twelve deep");
+    e.open_embed("back");
+    check(e.depth("s0") == 0 && e.depth("s5") == 5, "an embedding that goes round changes no one's depth, and the count ends");
+    e.close_embed("e3", false);
+    check(!e.live("s4") && e.depth("s4") == -1, "and one closed on the way cuts off all beyond it, round or not");
+    e.tick(1.0 / 60.0);
+    check(true, "and a frame of it ends");
+}
+
+// An embedding that follows its portal is open exactly while the portal says:
+// the host's own arrow decides, the engine only does it.
+void test_an_embedding_follows_its_portal() {
+    sg::StateGraph g;
+    auto& set = g.add<sg::State>("set");
+    set.add_element("glass", sg::kinds::portal);
+    set.loop("power", "glass", "power", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set(sg::keys::open, ev.args.get_or<bool>("on", false));
+    });
+    g.add<sg::State>("show").add_element("picture", "picture");
+    g.set_follows(g.set_focus(g.embed("on", "set", "glass", "show", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false), true);
+    g.set_initial("set");
+    check(sg::verify(g).ok(), "a set that shows while it is on keeps every law");
+    sg::Engine e(g);
+    e.start();
+    check(!e.embed_open("on"), "off, it shows nothing");
+    set.emit(sg::Event{"power", sg::Params{}.set("on", true)});
+    e.tick(1.0 / 60.0);
+    check(e.embed_open("on"), "switched on by its own arrow, it shows - by the end of the frame");
+    set.emit(sg::Event{"power", sg::Params{}.set("on", false)});
+    e.tick(1.0 / 60.0);
+    check(!e.embed_open("on"), "and off again, not");
+}
+
 }  // namespace
 
 int main() {
@@ -843,6 +1367,20 @@ int main() {
     test_time_kept_always();
     test_updates_are_watched();
     test_cache_sees_what_is_queued();
+    test_what_a_state_says_moves_the_graph();
+    test_trials_do_not_reach_listeners();
+    test_every_hook_is_watched();
+    test_names_are_identities();
+    test_composition_keeps_unmapped_events();
+    test_a_transition_in_a_law_is_the_one_the_engine_takes();
+    test_listeners_only_observe();
+    test_edits_are_declared();
+    test_functors_carry_what_is_said();
+    test_a_declared_lens_is_checked();
+    test_ports_are_declared();
+    test_shown_focused_and_portals();
+    test_depth_has_no_limit_and_cycles_end();
+    test_an_embedding_follows_its_portal();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

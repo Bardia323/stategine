@@ -1409,6 +1409,83 @@ void test_surface_and_views() {
     check(sheet.paints == 2 && sheet.pixel(3, 2)[1] == 90, "and again once it is invalidated");
 }
 
+// A camera is a state of its own: it stands alone, keeps the laws alone, and
+// sees a world only by filming it - the world embedded in its lens, the rig
+// it stands on carried onto the lens. A screen in the same room can show it.
+void test_a_camera_is_a_state() {
+    {
+        sg::StateGraph g;
+        auto& cam = g.add<sg::Camera>("cam");
+        g.set_initial("cam");
+        check(g.validate().empty() && sg::verify(g).ok(), "a camera alone is a whole state, and keeps every law");
+        cam.emit(sg::Event{sg::Camera::aim_event(), sg::Params{}.set(sg::keys::x, 1.0).set(sg::keys::yaw, 0.5)});
+        cam.emit(sg::Event{sg::Camera::zoom_event(), sg::Params{}.set(sg::keys::fov, 500.0)});
+        cam.dispatch_pending();
+        check(near(cam.lens().params.num(sg::keys::x), 1.0) && near(cam.lens().params.num(sg::keys::yaw), 0.5) &&
+                  near(cam.lens().params.num(sg::keys::fov), 150.0),
+              "it is aimed and zoomed by its own arrows, and no lens is wider than a lens can be");
+    }
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    sg::Element& shelf = room.add_element("shelf", sg::kinds::anchor);
+    shelf.params.set(sg::keys::x, 2.0).set(sg::keys::y, 1.0).set(sg::keys::z, 0.0).set(sg::keys::yaw, 0.0);
+    sg::Element& rig = room.add_element("rig", sg::kinds::anchor);
+    rig.params.set("parent", std::string("shelf")).set(sg::keys::x, 0.5).set(sg::keys::y, 0.2).set(sg::keys::z, 0.0).set(sg::keys::pitch, -0.1);
+    sg::Element& screen = room.portal("screen", {0, 1, 3}, 0.4, 0.3, 0.0);
+    auto& cam = g.add<sg::Camera>("cam");
+    const sg::Key film = sg::film(g, cam.id(), room.id(), "rig");
+    screen.params.set("feed", 1.0).set("shows", film.str());
+    g.set_initial("room");
+    check(g.validate().empty(), "filming reaches the camera: a camera that films a room is part of the graph");
+    const sg::LawReport r = sg::verify(g);
+    if (!r.ok()) std::printf("%s", r.str().c_str());
+    check(r.ok(), "and the room, the camera and the filming keep every law");
+    const sg::Embedding* em = g.embedding(film);
+    check(em && em->host == cam.id() && em->guest == room.id() && !em->focus,
+          "the room is embedded in the lens, and takes no input through it");
+    sg::Engine e(g);
+    e.set_strict(true);
+    e.start();
+    e.open_embed(film);
+    e.tick(1.0 / 60.0);
+    const sg::Pose at = sg::world_pose(room, room.element("rig"));
+    check(near(cam.lens().params.num(sg::keys::x), at.position.x) && near(cam.lens().params.num(sg::keys::y), 1.2) &&
+              near(cam.lens().params.num(sg::keys::pitch), -0.1),
+          "rolling, the camera stands where its rig is, through what the rig stands on");
+    shelf.params.set(sg::keys::x, 3.0);
+    e.tick(1.0 / 60.0);
+    check(near(cam.lens().params.num(sg::keys::x), 3.5), "and moves with it");
+    check(room.find("rig") && !cam.find("rig") && !room.find(sg::Camera::lens_id()),
+          "neither knows the other's things: the room has no lens, the camera no rig");
+}
+
+// A room is seen into from where it is seen: the engine carries the viewer's
+// eye across each seam of the room it is in, by the seam's own travel.
+void test_the_view_crosses_seams() {
+    sg::StateGraph g;
+    auto& hall = g.add<sg::Spatial3D>("hall");
+    auto& annex = g.add<sg::Spatial3D>("annex");
+    hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265358979);
+    annex.portal("door", {4.5, 1.5, 0.0}, 2.8, 3.0, 1.5707963267949);
+    g.set_initial("hall");
+    sg::glue_doorway(g, "doorway", "hall", "door", "annex", "door");
+    sg::Engine e(g);
+    e.set_strict(true);
+    e.start();
+    hall.camera().params.set(sg::keys::x, 10.0).set(sg::keys::z, 7.5).set(sg::keys::yaw, 0.3);
+    e.tick(1.0 / 60.0);
+    sg::Element want = annex.camera();
+    sg::portal_carry(hall.element("door"), annex.element("door"))(hall.camera(), want);
+    check(roughly(annex.camera().params.num(sg::keys::x), want.params.num(sg::keys::x)) &&
+              roughly(annex.camera().params.num(sg::keys::z), want.params.num(sg::keys::z)) &&
+              roughly(annex.camera().params.num(sg::keys::yaw), want.params.num(sg::keys::yaw)),
+          "the room beyond the door is seen from the eye carried through it");
+    const double was = hall.camera().params.num(sg::keys::x);
+    annex.camera().params.set(sg::keys::x, 99.0);
+    e.tick(1.0 / 60.0);
+    check(near(hall.camera().params.num(sg::keys::x), was), "and only from the room the engine is in: the far room's eye moves no one");
+}
+
 }  // namespace
 
 void test_adjunction_is_not_an_isomorphism() {
@@ -1496,6 +1573,8 @@ int main() {
     test_the_graph_is_watched();
     test_text_and_store();
     test_rooms_are_adjacent();
+    test_a_camera_is_a_state();
+    test_the_view_crosses_seams();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }

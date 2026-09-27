@@ -86,6 +86,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
@@ -226,6 +227,30 @@ public:
         surfaces_[portal_element].surface = surface;
     }
 
+    // A lamp that takes its colour and its strength from a picture: the light
+    // `light` (an element's id, in whatever room is drawn) glows as `from`
+    // looks - eased a quarter of the way there each frame, up to `most` - and
+    // not at all while it is not `on`. How a screen lights the room it is in
+    // is how it is drawn: the renderer's to work out, frame by frame, never
+    // written into the world.
+    void spill(Key light, const Surface2D* from, double most, bool on = true) {
+        Spill& sp = spills_[light];
+        sp.from = from;
+        sp.most = most;
+        sp.on = on;
+    }
+
+    // Shafts of daylight in `room`: toward `at` (a point in the room, where
+    // the light comes in), as strong as `strength`, of `colour` - aimed from
+    // whatever camera the room is drawn with. Strength 0, or another room
+    // drawn first, and there are none.
+    void rays(const Spatial3D* room, Vec3d at, double strength, Rgb colour) {
+        rays_room_ = room;
+        rays_at_ = at;
+        rays_strength_ = strength;
+        rays_colour_ = colour;
+    }
+
     // How the viewer's camera crosses a portal into the room it shows: the
     // near room's camera in, the far room's eye out.
     using Carry = std::function<void(const Element& from, Element& to)>;
@@ -257,11 +282,13 @@ public:
         if (f.world != world) f.drawn = false;
         f.world = world;
         f.live = live;
-        if (f.w != w || f.h != h || !f.out.valid()) {
+        if (f.w != w || f.h != h || !f.out[0].valid()) {
             f.w = std::max(1, w), f.h = std::max(1, h);
             // Written as the composite writes the screen, encoded; read back
-            // as the panel reads any picture, decoded.
-            f.out.create(f.w, f.h, gl::GL_SRGB8_ALPHA8, 0, false);
+            // as the panel reads any picture, decoded. Two: one drawn while
+            // the other is shown, so a feed that sees its own screen sees the
+            // picture it made the frame before.
+            for (gl::RenderTarget& o : f.out) o.create(f.w, f.h, gl::GL_SRGB8_ALPHA8, 0, false);
             f.drawn = false;
         }
         if (!f.view) {
@@ -317,9 +344,13 @@ public:
     // different root and the same geometry is drawn from the other side.
     void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+        ease_spills(rooms);
+        aim_rays(*rooms.front().room);
         // Feeds the graph declares: an open embedding of a 3D state in a
-        // `feed` portal. Those it no longer declares go.
-        if (graph_) {
+        // `feed` portal. Those it no longer declares go. Only the view on
+        // the screen keeps them; the views it draws feeds and far rooms with
+        // show the same pictures (root_).
+        if (graph_ && !root_) {
             for (auto& [id, f] : feeds_) f.seen = false;
             for (const Embedding& em : graph_->embeddings()) {
                 if (!em.open) continue;
@@ -333,28 +364,58 @@ public:
                 Feed& f = feeds_[em.portal];
                 f.seen = true;
                 f.from_graph = true;
+                // An `eye` portal - a camera's lens - is where the world is
+                // seen from; any other shows the world from its own camera.
+                f.eye = panel->params.num(Key{"eye"}, 0.0) > 0.5 ? panel : nullptr;
             }
             for (auto it = feeds_.begin(); it != feeds_.end();)
                 it = it->second.from_graph && !it->second.seen ? feeds_.erase(it) : std::next(it);
         }
         // Feeds first, each whole, into its own picture: a screen showing a
-        // world shows it as it is this frame.
+        // world shows it as it is this frame. A feed is drawn if its screen
+        // is in view here - or stands in a world another feed drawn shows.
         const auto feeds_from = std::chrono::steady_clock::now();
         int feed_views = 0;
-        for (auto& [id, f] : feeds_) {
-            if (!f.world || !f.view || (!f.live && f.drawn)) continue;
-            bool here = false;
-            for (const PlacedRoom& placed : rooms)
-                if (placed.room)
-                    for (const Element* e : {placed.room->find(id), shown_in(*placed.room, id)})
-                        if (e && e->alive && in_view(*placed.room, *e, camera_of(*rooms.front().room))) here = true;
-            if (!here) continue;
-            f.drawn = true;
-            f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
-            f.view->output_ = &f.out;
-            f.view->render(*f.world, f.w, f.h);
-            f.view->output_ = nullptr;
-            ++feed_views;
+        if (!root_) {
+            std::vector<Feed*> due;
+            std::vector<const Spatial3D*> shown;
+            const auto seen_in = [&](const Spatial3D& room, Key id, bool look) {
+                for (const Element* e : {room.find(id), shown_in(room, id)})
+                    if (e && e->alive && (!look || in_view(room, *e, camera_of(*rooms.front().room)))) return true;
+                return false;
+            };
+            for (bool more = true; more;) {
+                more = false;
+                for (auto& [id, f] : feeds_) {
+                    if (!f.world || !f.view || (!f.live && f.drawn)) continue;
+                    if (std::find(due.begin(), due.end(), &f) != due.end()) continue;
+                    bool here = false;
+                    for (const PlacedRoom& placed : rooms)
+                        if (placed.room && seen_in(*placed.room, id, true)) here = true;
+                    for (const Spatial3D* w : shown)
+                        if (!here && seen_in(*w, id, false)) here = true;
+                    if (!here) continue;
+                    due.push_back(&f);
+                    shown.push_back(f.world);
+                    more = true;
+                }
+            }
+            // The deepest first, so what a feed shows of another is this
+            // frame's picture - but its own, or one that shows it back, the
+            // last frame's.
+            for (auto it = due.rbegin(); it != due.rend(); ++it) {
+                Feed& f = **it;
+                f.drawn = true;
+                f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
+                f.view->root_ = this;
+                f.view->output_ = &f.out[1 - f.front];
+                f.view->eye_override_ = f.eye;
+                f.view->render(*f.world, f.w, f.h);
+                f.view->output_ = nullptr;
+                f.view->eye_override_ = nullptr;
+                f.front = 1 - f.front;
+                ++feed_views;
+            }
         }
         const double feeds_ms =
             timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
@@ -378,6 +439,19 @@ public:
         // Rendered first, at framebuffer resolution, because the portal quad
         // samples them in screen space. The guest's camera was already carried
         // through the doorway by the embedding's functor.
+        // A view drawing a feed or a far room sees through the same doorways
+        // as the view on the screen: its worlds are that one's, each seen
+        // from this view's own eye (its targets its own).
+        if (root_) {
+            for (auto it = worlds_.begin(); it != worlds_.end();)
+                it = root_->worlds_.count(it->first) ? std::next(it) : worlds_.erase(it);
+            for (const auto& [id, rw] : root_->worlds_) {
+                WorldPortal& wp = worlds_[id];
+                wp.world = rw.world;
+                wp.carry = rw.carry;
+                wp.back = rw.back;
+            }
+        }
         // Every portal's targets, whichever world they are in, made now: the
         // first frame through a doorway must not stop to allocate.
         for (auto& [id, wp] : worlds_) {
@@ -422,7 +496,7 @@ public:
             // window beside a door shows the far side beside it, and nothing
             // standing behind the far doorway gets in the way.
             Element eye = wp.world->camera();
-            if (wp.carry) wp.carry(world.camera(), eye);
+            if (wp.carry) wp.carry(eye_of(world), eye);
             const bool screen = is_screen(e);
             if (screen) {
                 for (const auto& [drawn, at] : screens)
@@ -431,7 +505,9 @@ public:
                 screens.emplace_back(&wp, eye);
             }
             wp.own_drawn = false;
-            if (e.params.num(Key{"own_look"}, 0.0) > 0.5) {
+            // (Once only: a view that is itself drawn for another draws its
+            // own-look doorways as any other, so views never nest for ever.)
+            if (e.params.num(Key{"own_look"}, 0.0) > 0.5 && !root_) {
                 // Drawn as the far room's own view draws it - every pass, its
                 // composite too - from the carried eye, at the size of the
                 // screen: what is seen through the doorway is what will be
@@ -443,6 +519,7 @@ public:
                 if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
                     wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
                 wp.own->graph_ = graph_;
+                wp.own->root_ = root_ ? root_ : this;
                 wp.own->output_ = &wp.own_out;
                 wp.own->eye_override_ = &eye;
                 wp.own->render(*wp.world, fb_w, fb_h);
@@ -571,12 +648,12 @@ private:
     // from it: the far side is drawn only beyond it. The turn and shift are
     // read off the two cameras - the guest's was carried from the host's by
     // the portal's own functor, so the pair of them is that functor.
-    static HalfSpace far_side(const Spatial3D& host, const Element& portal, const Element& gc) {
+    HalfSpace far_side(const Spatial3D& host, const Element& portal, const Element& gc) const {
         const Pose p = world_pose(host, portal);
         const Vec3d n = heading(p.yaw);
         const double inset = portal.params.num(Key{"inset"}, 0.06);
         const Vec3d at{p.position.x + n.x * inset, p.position.y, p.position.z + n.z * inset};
-        const Element& hc = host.camera();
+        const Element& hc = eye_of(host);
         const double turn = gc.params.num(keys::yaw) - hc.params.num(keys::yaw);
         const Vec3d he = position_of(hc), ge = position_of(gc);
         const Vec3d off = rotate_xz({at.x - he.x, at.y - he.y, at.z - he.z}, turn);
@@ -596,8 +673,9 @@ private:
     bool has_surface(const Element& e) const {
         auto it = surfaces_.find(e.id);
         if (it != surfaces_.end() && it->second.surface != nullptr) return true;
-        auto f = feeds_.find(signal_of(e));
-        return f != feeds_.end() && f->second.world != nullptr;
+        const auto& feeds = shared_feeds();
+        auto f = feeds.find(signal_of(e));
+        return f != feeds.end() && f->second.world != nullptr;
     }
     // The portal whose feed a panel shows: its own, or - `shows` = an
     // embedding's name - that embedding's, wherever it is hosted.
@@ -617,6 +695,9 @@ private:
     }
 
     static Camera camera_of(const Spatial3D& world) { return camera_of(world.camera()); }
+    // Where this view sees `world` from: the eye it was handed (a camera's
+    // lens, a doorway's carried eye), or the world's own camera.
+    const Element& eye_of(const Spatial3D& world) const { return eye_override_ ? *eye_override_ : world.camera(); }
 
     static Camera camera_of(const Element& cam) {
         Camera c;
@@ -687,6 +768,53 @@ private:
             bloom_chain_[bloom_levels_++].create(lw, lh, gl::GL_RGBA16F, 0, false);
     }
 
+    // Each spilling lamp, a frame further towards what its picture shows.
+    struct Spill {
+        const Surface2D* from = nullptr;
+        double most = 0.0;
+        bool on = true;
+        bool begun = false;
+        double r = 0, g = 0, b = 0, intensity = 0;
+    };
+    void ease_spills(const std::vector<PlacedRoom>& rooms) {
+        for (auto& [id, sp] : spills_) {
+            if (!sp.from) continue;
+            if (!sp.begun)
+                for (const PlacedRoom& placed : rooms)
+                    if (const Element* e = placed.room ? placed.room->find(id) : nullptr) {
+                        sp.r = e->params.num(keys::r), sp.g = e->params.num(keys::g), sp.b = e->params.num(keys::b);
+                        sp.intensity = e->params.num(keys::intensity);
+                        sp.begun = true;
+                        break;
+                    }
+            if (!sp.begun) continue;
+            // As sg::spill: toward the picture's colour, and its brightness.
+            const Rgb c = average_colour(*sp.from);
+            const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+            const double m = std::max({c.r, c.g, c.b, 1e-4});
+            const auto toward = [](double& v, double to) { v += (to - v) * 0.25; };
+            toward(sp.r, 0.35 + 0.65 * c.r / m);
+            toward(sp.g, 0.35 + 0.65 * c.g / m);
+            toward(sp.b, 0.35 + 0.65 * c.b / m);
+            toward(sp.intensity, sp.most * std::min(1.0, 0.12 + 1.5 * lum));
+            if (!sp.on) sp.intensity = 0.0;
+        }
+    }
+
+    // The shafts' aim, from the camera of the room drawn first - if it is the
+    // room they are in.
+    void aim_rays(const Spatial3D& first) {
+        rays_on_ = rays_room_ == &first;
+        if (!rays_on_) return;
+        const Element& cam = first.camera();
+        const Vec3d to = rays_at_ - position_of(cam);
+        const Vec3d f = forward_of(cam);
+        const double half = cam.params.num(keys::fov, 70.0) * 3.14159265358979323846 / 360.0;
+        rays_dir_ = to;
+        rays_fwd_ = f;
+        rays_tan_ = std::tan(half);
+    }
+
     // One room's own lamps, placed as the room is.
     std::vector<Light> own_lights(const Spatial3D& room, const Pose& pose) const {
         std::vector<Light> out;
@@ -696,6 +824,10 @@ private:
             l.pos = to_vec3(compose_pose(pose, pose_of(room, e)).position);
             l.color = color_of(e, l.color);
             l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
+            if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
+                l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
+                l.power = static_cast<float>(sp->second.intensity) * 26.0f;
+            }
             l.dir = gl::normalize(to_vec3(rotate_xz(
                 {e.params.num(Key{"dx"}, 0.0), e.params.num(Key{"dy"}, -1.0), e.params.num(Key{"dz"}, 0.0)}, pose.yaw)));
             l.inner = static_cast<float>(e.params.num(Key{"inner"}, 0.55));
@@ -2025,8 +2157,9 @@ private:
 
         // The picture: a world's feed, or a 2D state's pixels.
         int tex_w = 0, tex_h = 0;
-        if (auto f = feeds_.find(signal_of(e)); f != feeds_.end() && f->second.world && f->second.out.valid()) {
-            f->second.out.bind_color(0);
+        const auto& feeds = shared_feeds();
+        if (auto f = feeds.find(signal_of(e)); f != feeds.end() && f->second.world && f->second.shown().valid()) {
+            f->second.shown().bind_color(0);
             tex_w = f->second.w, tex_h = f->second.h;
             scene_->set("uTexFlip", 1.0f);
             scene_->set("uUntone", 1.0f);
@@ -2237,6 +2370,13 @@ private:
             p.use();
             apply_uniforms(p, post_, passes::composite);
             apply_attended(p, passes::composite);
+            if (rays_on_) {
+                p.set("uRayDir", to_vec3(rays_dir_));
+                p.set("uCamFwd", to_vec3(rays_fwd_));
+                p.set("uTanHalf", static_cast<float>(rays_tan_));
+                p.set("uRays", static_cast<float>(std::max(0.0, rays_strength_)));
+                p.set("uRayColor", gl::Vec3{static_cast<float>(rays_colour_.r), static_cast<float>(rays_colour_.g), static_cast<float>(rays_colour_.b)});
+            }
             p.set("uScene", 0);
             p.set("uBloom", 1);
             p.set("uTime", static_cast<float>(time_));
@@ -2621,13 +2761,20 @@ private:
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
     struct Feed {
         const Spatial3D* world = nullptr;
+        const Element* eye = nullptr;  // seen from this (a camera's lens), not the world's camera
         int w = 0, h = 0;
         bool live = true, drawn = false;
         bool from_graph = false, seen = false;
-        gl::RenderTarget out;
+        gl::RenderTarget out[2];
+        int front = 0;  // the one shown; the other is drawn into
+        const gl::RenderTarget& shown() const { return out[front]; }
         std::unique_ptr<GLWorldView> view;
     };
     std::unordered_map<Key, Feed> feeds_;
+    // The view on the screen, for a view it draws a feed or a far room with:
+    // the feeds are that one's, and every view shows the same pictures.
+    GLWorldView* root_ = nullptr;
+    const std::unordered_map<Key, Feed>& shared_feeds() const { return root_ ? root_->feeds_ : feeds_; }
     static constexpr int kBloomLevels = 5;
     gl::RenderTarget bloom_chain_[kBloomLevels];
     int bloom_levels_ = 0;
@@ -2644,6 +2791,12 @@ private:
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
     std::unordered_map<Key, BoundSurface> surfaces_;
+    std::unordered_map<Key, Spill> spills_;
+    const Spatial3D* rays_room_ = nullptr;
+    Vec3d rays_at_{}, rays_dir_{}, rays_fwd_{};
+    double rays_strength_ = 0, rays_tan_ = 0.7;
+    Rgb rays_colour_{1, 1, 1};
+    bool rays_on_ = false;
     std::unordered_map<Key, WorldPortal> worlds_;
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn

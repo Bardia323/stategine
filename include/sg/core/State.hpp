@@ -57,7 +57,10 @@ public:
     Params& params() { return params_; }
     const Params& params() const { return params_; }
 
-    Engine* engine() const { return engine_; }
+    // The engine running it, seen as everyone outside it sees it: const. A
+    // state acts on nothing but itself; what it has to tell the world it
+    // says (says, emit), and the graph's transitions take it from there.
+    const Engine* engine() const { return engine_; }
     void attach(Engine* e) { engine_ = e; }
 
     // --- lifecycle ----------------------------------------------------------
@@ -75,17 +78,26 @@ public:
     // emitting an event for an arrow to act on - is noted (wrote_in_update):
     // behaviour is arrows, and time reaches a state through a drive.
     void step(const Tick& t, bool watch = false) {
-        if (watch) {
-            const uint64_t before = data_version();
-            on_update(t);
-            if (data_version() != before) wrote_in_update_ = true;
-        } else {
-            on_update(t);
-        }
+        watching_ = watch;
+        watched("on_update", [&] { on_update(t); });
         dispatch_pending();
-        on_render(t);
+        watched("on_render", [&] { on_render(t); });
+        watching_ = false;
     }
-    bool wrote_in_update() const { return wrote_in_update_; }
+    // Every hook - on_update, on_event, on_render, and the lifecycle the
+    // engine runs (on_enter, on_exit, on_pause, on_resume) - may look, and
+    // emit; one that changes the state's data is behaviour outside any arrow.
+    // While watched, the first hook to do so is named here.
+    bool wrote_in_update() const { return !wrote_in_.empty(); }
+    const std::string& wrote_in() const { return wrote_in_; }
+    // Run a hook, watching it if asked (the engine does, for the lifecycle).
+    template <typename F>
+    void watched(const char* hook, F&& run, bool watch) {
+        const bool was = watching_;
+        watching_ = watch;
+        watched(hook, std::forward<F>(run));
+        watching_ = was;
+    }
 
     // --- elements (objects) -------------------------------------------------
     Element& add_element(Element e) {
@@ -144,8 +156,7 @@ public:
                 morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(i));
         if (morphisms_.size() != had) {
             ++removals_;
-            by_trigger_.clear();
-            for (std::size_t i = 0; i < morphisms_.size(); ++i) by_trigger_[morphisms_[i].trigger].push_back(i);
+            index_arrows();
         }
     }
 
@@ -159,8 +170,13 @@ public:
     // notices.
     const Morphism& add_morphism(Morphism m) {
         if (m.name.empty()) throw std::runtime_error("morphism needs a name");
+        // A name is what a law, a functor and a path call the arrow by: two
+        // arrows under one name would be one arrow to them, two to dispatch.
+        if (by_name_.count(m.name))
+            throw std::runtime_error("duplicate arrow " + m.name.str() + " in state " + id_.str());
         restructured("add_morphism");
         by_trigger_[m.trigger].push_back(morphisms_.size());
+        by_name_.emplace(m.name, morphisms_.size());
         morphisms_.push_back(std::move(m));
         return morphisms_.back();
     }
@@ -176,9 +192,8 @@ public:
     const std::deque<Morphism>& morphisms() const { return morphisms_; }
 
     const Morphism* morphism(Key name) const {
-        for (const auto& m : morphisms_)
-            if (m.name == name) return &m;
-        return nullptr;
+        auto it = by_name_.find(name);
+        return it == by_name_.end() ? nullptr : &morphisms_[it->second];
     }
 
     // Composition: g . f as one arrow, valid only when cod(f) == dom(g).
@@ -226,13 +241,14 @@ public:
         std::deque<Element> elements;
         Params params;
         std::vector<Event> queue;
+        std::vector<Event> said;  // said outward, not yet taken
         std::size_t morphisms = 0;
         uint64_t structure = 0;
         uint64_t removals = 0;
     };
 
     Snapshot snapshot() const {
-        return Snapshot{elements_, params_, bus_.queued(), morphisms_.size(), structure_, removals_};
+        return Snapshot{elements_, params_, bus_.queued(), said_out_, morphisms_.size(), structure_, removals_};
     }
 
     // Restores in place wherever it can: callers hold `Element&` across frames,
@@ -264,12 +280,11 @@ public:
         }
         params_ = std::move(s.params);
         bus_.requeue(std::move(s.queue));
+        said_out_ = std::move(s.said);
         if (morphisms_.size() > s.morphisms) {
             morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(s.morphisms),
                              morphisms_.end());
-            by_trigger_.clear();
-            for (std::size_t i = 0; i < morphisms_.size(); ++i)
-                by_trigger_[morphisms_[i].trigger].push_back(i);
+            index_arrows();
         }
         if (same_structure) structure_ = s.structure;
         else restructured("restore");
@@ -302,6 +317,11 @@ public:
             h = mix_stamp(h, std::hash<Key>{}(e.source));
             h = mix_stamp(h, e.args.stamp());
         }
+        h = mix_stamp(h, said_out_.size());
+        for (const Event& e : said_out_) {
+            h = mix_stamp(h, std::hash<Key>{}(e.name));
+            h = mix_stamp(h, e.args.stamp());
+        }
         return h;
     }
 
@@ -315,12 +335,27 @@ public:
     }
 
     // --- events -------------------------------------------------------------
+    // An event the state sends itself - from an arrow or a hook. If it is
+    // one the state says outward (says), it is also put out for the engine
+    // to hand to the graph's transitions.
     void emit(Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + id_.str());
         if (e.source.empty()) e.source = id_;
+        if (e.source == id_ && !said_.empty() && std::find(said_.begin(), said_.end(), e.name) != said_.end())
+            said_out_.push_back(e);
         bus_.emit(std::move(e));
     }
 
     void emit(Key name) { emit(Event{name}); }
+
+    // An event from outside - routed by the engine, carried by a drive: for
+    // the state's arrows, never taken for something the state said.
+    // Sent by no one in particular, it is sent to the state, as before.
+    void hear(Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + id_.str());
+        if (e.source.empty()) e.source = id_;
+        bus_.emit(std::move(e));
+    }
 
     EventBus& bus() { return bus_; }
 
@@ -332,13 +367,23 @@ public:
         if (std::find(said_.begin(), said_.end(), event) == said_.end()) said_.push_back(event);
     }
     const std::vector<Key>& said() const { return said_; }
+    // What it has said and the engine has not yet taken: part of its data,
+    // so a law's trial that says something says it only to the trial.
+    const std::vector<Event>& said_out() const { return said_out_; }
+    std::vector<Event> take_said() {
+        std::vector<Event> out;
+        out.swap(said_out_);
+        return out;
+    }
 
     // Drains the queue, cascading up to `max_rounds` times so a handler may emit.
     void dispatch_pending(int max_rounds = 16) {
         for (int round = 0; round < max_rounds && !bus_.empty(); ++round) {
             bus_.drain_into(inbox_);
             for (const Event& ev : inbox_) {
-                if (on_event(ev)) continue;
+                bool consumed = false;
+                watched("on_event", [&] { consumed = on_event(ev); });
+                if (consumed) continue;
                 apply_morphisms(ev);
             }
         }
@@ -377,6 +422,17 @@ public:
 private:
     friend class StateGraph;
 
+    template <typename F>
+    void watched(const char* hook, F&& run) {
+        if (!watching_) {
+            run();
+            return;
+        }
+        const uint64_t before = data_version();
+        run();
+        if (wrote_in_.empty() && data_version() != before) wrote_in_ = hook;
+    }
+
     // What the state is made of is about to change: counted by the graph
     // that holds it, if any (which refuses it while a law's trial runs, before
     // anything is touched), and a new stamp for it.
@@ -385,18 +441,32 @@ private:
         structure_ = next_stamp();
     }
 
+    // Arrows by trigger (for dispatch) and by name (for everything that names
+    // one), found again when the list changes other than at its end.
+    void index_arrows() {
+        by_trigger_.clear();
+        by_name_.clear();
+        for (std::size_t i = 0; i < morphisms_.size(); ++i) {
+            by_trigger_[morphisms_[i].trigger].push_back(i);
+            by_name_.emplace(morphisms_[i].name, i);
+        }
+    }
+
     void reindex() {
         index_.clear();
         for (std::size_t i = 0; i < elements_.size(); ++i) index_.emplace(elements_[i].id, i);
     }
 
     Key id_;
-    bool wrote_in_update_ = false;  // see step(t, watch)
+    std::string wrote_in_;  // the first hook seen writing (step, watched)
+    bool watching_ = false;
+    std::vector<Event> said_out_;
     Params params_;
     std::deque<Element> elements_;
     std::unordered_map<Key, std::size_t> index_;
     std::deque<Morphism> morphisms_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
+    std::unordered_map<Key, std::size_t> by_name_;
     std::vector<std::size_t> scratch_;
     std::vector<Event> inbox_;
     EventBus bus_;

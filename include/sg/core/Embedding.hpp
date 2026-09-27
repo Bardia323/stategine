@@ -61,6 +61,10 @@ struct Embedding {
     Propagation propagate = Propagation::OnChange;
     // With focus off the guest still ticks, but input keeps going to the host.
     bool focus = true;
+    // Open exactly while its portal says so (the portal's `open`): the host
+    // opens and closes it by its own arrows, as a set shows a picture while
+    // it is on - the engine only follows (StateGraph::set_follows).
+    bool follows = false;
     // Runtime flag, owned by the engine.
     bool open = false;
 };

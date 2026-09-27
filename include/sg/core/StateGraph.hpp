@@ -70,7 +70,15 @@ struct Seam {
 // Whether a driven state's time goes on only while it is active - the room
 // you are in, and what is open in it - or always: what goes on in a room you
 // stepped out of (a door still swinging, a record still turning).
-enum class Keeps { WhileActive, Always };
+// When a driven state's time goes on:
+//   WhileActive   when it steps - the active state, and what is open in it
+//   Always        every frame, wherever it is (a record still turning)
+//   WhileShown    every frame some embedding shows it open - wherever that
+//                 is, the active state or not (a game on a set, played by
+//                 no one)
+//   WhileFocused  only while it has the input (a game on a computer, which
+//                 waits while another window is in front)
+enum class Keeps { WhileActive, Always, WhileShown, WhileFocused };
 
 // A drive: `state` changes with the time `clock` keeps. Each frame the state
 // steps, its line on the clock advances by dt and the state's arrows on
@@ -86,6 +94,24 @@ struct Drive {
     bool additive = false;
     Key line;  // the clock's timeline this state's time is kept on; the state's name when empty
     Keeps keeps = Keeps::WhileActive;
+};
+
+class StateGraph;
+
+// An edit: what a state says - an editor's request, a command line - that
+// rewrites the graph. The one way the world changes what the world is made
+// of while it runs: the state says it (State::says), the graph declares
+// here that it is an edit and what it does, and the engine applies it at the
+// start of the next frame, before anything else moves - never inside an
+// arrow, a listener or a law's trial. What the edit answers is heard back by
+// the state that asked, as `reply` (its own arrows show it).
+struct Edit {
+    using Apply = std::function<Params(StateGraph& g, const Event& asked)>;
+    Key name;
+    Key state;  // who asks
+    Key event;  // what it says to ask
+    Apply apply;
+    Key reply;  // what it hears back; `<event>.done` when empty
 };
 
 // Who may change what. Whoever holds the graph itself - the code that builds
@@ -145,6 +171,13 @@ public:
     bool contains(Key id) const { return states_.count(id) != 0; }
     std::size_t size() const { return states_.size(); }
 
+    // Every state, in place: for whoever holds the graph (the engine, once a
+    // frame) - no list made.
+    template <typename F>
+    void each_state(F&& f) {
+        for (auto& kv : states_) f(*kv.second);
+    }
+
     std::vector<Key> ids() const {
         std::vector<Key> out;
         out.reserve(states_.size());
@@ -155,13 +188,23 @@ public:
     // --- transitions ---------------------------------------------------------
     // A transition is declared whole - fill in a Transition, guard and all, and
     // connect it - and is read, not rewritten, once it is in the graph.
+    // Its name is its identity - a law's path takes it by name - so no two
+    // share one: a name given twice is refused, and one made up for it
+    // (from-trigger->to) is told apart from an alternative on the same
+    // event, guarded otherwise, by a number (#2, #3, ...).
     const Transition& connect(Transition t) {
+        if (t.name.empty()) {
+            const std::string base = t.from.str() + "-" + t.trigger.str() + "->" + t.to.str();
+            t.name = Key{base};
+            for (int n = 2; transition_by_name_.count(t.name); ++n) t.name = Key{base + "#" + std::to_string(n)};
+        } else if (transition_by_name_.count(t.name)) {
+            throw std::runtime_error("duplicate transition " + t.name.str());
+        }
         rev_.rewired("connect");
-        if (t.name.empty())
-            t.name = Key{t.from.str() + "-" + t.trigger.str() + "->" + t.to.str()};
         transitions_.push_back(std::move(t));
         const Transition& ref = transitions_.back();
         by_trigger_[ref.trigger].push_back(transitions_.size() - 1);
+        transition_by_name_.emplace(ref.name, transitions_.size() - 1);
         return ref;
     }
 
@@ -221,9 +264,8 @@ public:
     }
 
     const Transition* transition(Key name) const {
-        for (const auto& t : transitions_)
-            if (t.name == name) return &t;
-        return nullptr;
+        auto it = transition_by_name_.find(name);
+        return it == transition_by_name_.end() ? nullptr : &transitions_[it->second];
     }
 
     // First transition out of `from` for this event whose guard passes.
@@ -242,6 +284,19 @@ public:
     }
 
     static Key any() { return Key{"*"}; }
+
+    // Taking a transition, as far as what it does to data: its action on the
+    // state it leaves (filling the arguments the target is entered with), then
+    // its functor, carrying the event that took it along. The engine takes a
+    // transition by this, and so does a law's path: one transition, one
+    // meaning.
+    void cross(const Transition& t, State& from, State* target, const Event& ev, Params& args) const {
+        if (t.action) t.action(from, ev, args);
+        if (t.functor.empty() || !target) return;
+        const Functor* f = functor(t.functor);
+        if (!f) throw std::runtime_error("transition " + t.name.str() + ": no functor " + t.functor.str());
+        f->apply(from, *target, ev);
+    }
 
     // --- functors -------------------------------------------------------------
     Functor& add_functor(Functor f) {
@@ -270,6 +325,25 @@ public:
         else it->second = std::move(f);
         it->second.revision_ = &rev_;
         return it->second;
+    }
+
+    // Take a functor away, and whatever declares it a lens with another. One
+    // an embedding or a transition still uses is refused: take those first.
+    bool drop_functor(Key name) {
+        auto it = functors_.find(name);
+        if (it == functors_.end()) return false;
+        for (const Embedding& e : embeddings_)
+            if (e.in == name || e.out == name)
+                throw std::runtime_error("functor " + name.str() + " is embedding " + e.name.str() + "'s: drop that first");
+        for (const Transition& t : transitions_)
+            if (t.functor == name)
+                throw std::runtime_error("functor " + name.str() + " is carried by transition " + t.name.str() + ": unglue it first");
+        rev_.rewired("drop_functor");
+        functors_.erase(it);
+        composites_.erase(name);
+        lenses_.erase(std::remove_if(lenses_.begin(), lenses_.end(), [&](const LensPair& l) { return l.get == name || l.put == name; }),
+                      lenses_.end());
+        return true;
     }
 
     const Functor* functor(Key name) const {
@@ -317,6 +391,22 @@ public:
         Functor& in;   // host -> guest
         Functor& out;  // guest -> host
     };
+
+    // Two functors held to be a lens on their own, with no embedding: `get`
+    // shows one state in another, `put` writes the other back - a window
+    // showing a board it can also draw on. `sg::verify` holds the pair to the
+    // lens laws as it does an embedding's.
+    struct LensPair {
+        Key get;
+        Key put;
+    };
+    void lens(Key get, Key put) {
+        for (const LensPair& l : lenses_)
+            if (l.get == get && l.put == put) return;  // declared already: nothing changed
+        rev_.rewired("lens");
+        lenses_.push_back({get, put});
+    }
+    const std::vector<LensPair>& lenses() const { return lenses_; }
 
     Lens add_lens(Key in_name, Key out_name, Key host, Key guest,
                   const std::vector<std::pair<Key, Key>>& objects,  // {host id, guest id}
@@ -368,6 +458,15 @@ public:
 
     // Whether it takes input when it is opened. Returns the embedding's name,
     // so a declaration can say it in one line.
+    // Whether it is open exactly while its portal's `open` says (see
+    // Embedding::follows). Returns the embedding's name.
+    Key set_follows(Key name, bool on) {
+        if (Embedding* e = embedding_rw(name)) {
+            rev_.rewired("set_follows");
+            e->follows = on;
+        }
+        return name;
+    }
     Key set_focus(Key name, bool on) {
         if (Embedding* e = embedding_rw(name)) e->focus = on;
         return name;
@@ -444,6 +543,45 @@ public:
             }
     }
     const std::deque<Drive>& drives() const { return drives_; }
+
+    // --- ports ------------------------------------------------------------------
+    // Where the world outside may speak to a state directly: a program's
+    // output reaching the shell that shows it, a sensor its gauge. Declared,
+    // so `Engine::send` delivers only what the graph says may come in.
+    void port(Key state, Key event) {
+        rev_.rewired("port");
+        if (!has_port(state, event)) ports_.push_back({state, event});
+    }
+    bool has_port(Key state, Key event) const {
+        for (const auto& p : ports_)
+            if (p.first == state && p.second == event) return true;
+        return false;
+    }
+    const std::vector<std::pair<Key, Key>>& ports() const { return ports_; }
+
+    // --- edits ------------------------------------------------------------------
+    // Registered by name (`state:event` when empty); again, it is replaced.
+    const Edit& edit(Edit e) {
+        rev_.rewired("edit");
+        if (e.name.empty()) e.name = Key{e.state.str() + ":" + e.event.str()};
+        if (e.reply.empty()) e.reply = Key{e.event.str() + ".done"};
+        for (Edit& have : edits_)
+            if (have.name == e.name) return have = std::move(e);
+        edits_.push_back(std::move(e));
+        return edits_.back();
+    }
+    const Edit& edit(Key state, Key event, Edit::Apply apply) {
+        return edit(Edit{Key{}, state, event, std::move(apply), Key{}});
+    }
+    void drop_edit(Key name) {
+        rev_.rewired("drop_edit");
+        for (auto it = edits_.begin(); it != edits_.end(); ++it)
+            if (it->name == name) {
+                edits_.erase(it);
+                return;
+            }
+    }
+    const std::deque<Edit>& edits() const { return edits_; }
 
     // --- seams ------------------------------------------------------------------
     // Registered by name; registering the same name again replaces it (a seam
@@ -670,6 +808,22 @@ public:
                                  " is fired by " + d.trigger.str());
         }
 
+        for (const auto& p : ports_)
+            if (!find(p.first)) errors.push_back("port " + p.second.str() + ": unknown state " + p.first.str());
+
+        for (const Edit& e : edits_) {
+            const State* s = find(e.state);
+            if (!s) {
+                errors.push_back("edit " + e.name.str() + ": unknown state " + e.state.str());
+                continue;
+            }
+            const auto& said = s->said();
+            if (std::find(said.begin(), said.end(), e.event) == said.end())
+                errors.push_back("edit " + e.name.str() + ": " + e.state.str() + " does not say " + e.event.str() +
+                                 " - an edit is asked for by what a state says (State::says)");
+            if (!e.apply) errors.push_back("edit " + e.name.str() + ": does nothing");
+        }
+
         if (!initial_.empty()) {
             if (!contains(initial_)) {
                 errors.push_back("initial state " + initial_.str() + " does not exist");
@@ -783,11 +937,20 @@ private:
             if (t.from == any()) from_anywhere.push_back(t.to);
             else next[t.from].push_back(t.to);
         }
-        for (const auto& e : embeddings_) next[e.host].push_back(e.guest);
+        // An embedding joins the two states it is between, as a seam does:
+        // a camera that films a room is reached from the room as much as the
+        // room from the camera.
+        for (const auto& e : embeddings_) {
+            next[e.host].push_back(e.guest);
+            next[e.guest].push_back(e.host);
+        }
         for (const auto& sm : seams_) {
             next[sm.a].push_back(sm.b);
             next[sm.b].push_back(sm.a);
         }
+        // A functor that carries what a state says reaches where it goes.
+        for (const auto& kv : functors_)
+            if (kv.second.maps_events()) next[kv.second.from()].push_back(kv.second.to());
         // A driven state brings its clock with it; a clock alone reaches
         // nothing - being driven is not being reachable.
         for (const auto& d : drives_) next[d.state].push_back(d.clock);
@@ -832,6 +995,7 @@ private:
     std::map<Key, StatePtr> states_;  // ordered: deterministic dot output
     std::deque<Transition> transitions_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
+    std::unordered_map<Key, std::size_t> transition_by_name_;
     std::map<Key, Functor> functors_;
     std::map<Key, std::vector<Key>> composites_;
     std::deque<Embedding> embeddings_;
@@ -839,6 +1003,9 @@ private:
     std::unordered_map<Key, State::Snapshot> defaults_;
     std::deque<Seam> seams_;
     std::deque<Drive> drives_;
+    std::deque<Edit> edits_;
+    std::vector<LensPair> lenses_;
+    std::vector<std::pair<Key, Key>> ports_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;
