@@ -1194,6 +1194,26 @@ void test_functors_carry_what_is_said() {
           "the board, stepped by no one, writes at once what the desk says - carried by the functor between them");
 }
 
+
+// Two functors declared a lens on their own - a window onto a board - are held to the lens laws.
+void test_a_declared_lens_is_checked() {
+    for (bool honest : {true, false}) {
+        sg::StateGraph g;
+        g.add<sg::State>("board").add_element("ink", "ink").params.set("n", 3.0);
+        g.add<sg::State>("window").add_element("copy", "copy").params.set("n", 3.0);
+        g.add_functor("get", "board", "window").on_object("ink", "copy", sg::transport::only({"n"}));
+        g.add_functor("put", "window", "board").on_object("copy", "ink", [honest](const sg::Element& s, sg::Element& d) {
+            d.params.set("n", s.params.num("n") * (honest ? 1.0 : 2.0));
+        });
+        g.lens("get", "put");
+        bool named = false;
+        const auto vs = sg::laws::lenses(g);
+        for (const auto& v : vs) named = named || v.where.find("lens get/put") != std::string::npos;
+        check(honest ? vs.empty() : named, honest ? "a declared lens that keeps the laws passes"
+                                                  : "one whose put doubles is named, with no embedding in sight");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1225,6 +1245,7 @@ int main() {
     test_listeners_only_observe();
     test_edits_are_declared();
     test_functors_carry_what_is_said();
+    test_a_declared_lens_is_checked();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

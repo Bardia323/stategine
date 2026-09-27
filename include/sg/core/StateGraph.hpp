@@ -358,6 +358,22 @@ public:
         Functor& out;  // guest -> host
     };
 
+    // Two functors held to be a lens on their own, with no embedding: `get`
+    // shows one state in another, `put` writes the other back - a window
+    // showing a board it can also draw on. `sg::verify` holds the pair to the
+    // lens laws as it does an embedding's.
+    struct LensPair {
+        Key get;
+        Key put;
+    };
+    void lens(Key get, Key put) {
+        rev_.rewired("lens");
+        for (const LensPair& l : lenses_)
+            if (l.get == get && l.put == put) return;
+        lenses_.push_back({get, put});
+    }
+    const std::vector<LensPair>& lenses() const { return lenses_; }
+
     Lens add_lens(Key in_name, Key out_name, Key host, Key guest,
                   const std::vector<std::pair<Key, Key>>& objects,  // {host id, guest id}
                   Transport to_guest, Transport to_host) {
@@ -921,6 +937,7 @@ private:
     std::deque<Seam> seams_;
     std::deque<Drive> drives_;
     std::deque<Edit> edits_;
+    std::vector<LensPair> lenses_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;

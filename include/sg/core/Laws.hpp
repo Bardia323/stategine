@@ -1201,7 +1201,21 @@ inline std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {},
                                     LawCache* cache = nullptr) {
     if (cache) cache->begin(g);
     std::vector<Violation> out;
-    for (const Embedding& e : g.embeddings()) {
+    // Every embedding with both ways, and every pair declared a lens on its
+    // own (StateGraph::lens) - as a closed embedding of the one in the other.
+    std::deque<Embedding> pairs(g.embeddings().begin(), g.embeddings().end());
+    for (const auto& l : g.lenses()) {
+        const Functor* get = g.functor(l.get);
+        if (!get) continue;
+        Embedding e;
+        e.name = Key{"lens " + l.get.str() + "/" + l.put.str()};
+        e.host = get->from();
+        e.guest = get->to();
+        e.in = l.get;
+        e.out = l.put;
+        pairs.push_back(e);
+    }
+    for (const Embedding& e : pairs) {
         if (e.in.empty() || e.out.empty()) continue;
         const Functor* in = g.functor(e.in);
         const Functor* put = g.functor(e.out);
