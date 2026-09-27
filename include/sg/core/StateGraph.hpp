@@ -401,9 +401,9 @@ public:
         Key put;
     };
     void lens(Key get, Key put) {
-        rev_.rewired("lens");
         for (const LensPair& l : lenses_)
-            if (l.get == get && l.put == put) return;
+            if (l.get == get && l.put == put) return;  // declared already: nothing changed
+        rev_.rewired("lens");
         lenses_.push_back({get, put});
     }
     const std::vector<LensPair>& lenses() const { return lenses_; }
