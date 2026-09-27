@@ -8,12 +8,21 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Time is a state.** `sg::Temporal` (`sg/core/Temporal.hpp`): an element `now` with `time` and `frame`, moved by its own `advance` arrow. `graph.drive(name, clock, state, trigger, additive)` declares that a state changes with a clock's time. Each frame a driven state steps, the engine advances its clock by `dt` and fires `trigger {dt, time, frame}` from the clock. A clock keeps one state's time (a shared clock is refused) and moves only when that state steps, so time and motion agree after a pause. An additive drive is handed no `frame`. The engine and the laws build the event the same way (`sg::drive_event`). A driven state reaches its clock; a clock alone reaches nothing.
+  - New law, `drive` (in `sg::verify`): `step(0) == id`, and for an `additive` drive `step(a) ; step(b) == step(a + b)` (`LawOptions::drive_dt`).
+  - Paths gain `event(trigger, args)` - fire an event at a state as a frame does, with what it sets in motion - and `arrow(name, args)`, a step with arguments of its own.
+  - `Engine::set_watch_updates(true)` reports a state whose `on_update` changes its data rather than emitting for an arrow. Off by default; `on_update` is unchanged.
+
 - **The laws see all of what they compare.**
   - Queued events are compared whole - name, sender and arguments - when two paths are checked against each other; before, only names were, so `damage(5)` and `damage(500)` passed as the same result. A counterexample names the arguments.
   - `State::content_version()` versions each queued event (name, sender, arguments), not only how many there are, so a `LawCache` no longer answers from a queue that has changed under the same count.
   - `sg::is_lossless` counts an object or a parameter the round trip drops as lost; before, only changed values were. `identity_defects` takes `whole = true` for the same.
   - **Breaking:** `Cover::sections` checks descent first and glues nothing for a cover that fails it; an optional `std::vector<std::string>* seams` says why.
-  - Docs say what is so: `sg::verify` runs the laws the graph owns, not descent or adjunctions; a `Functor` is partial; functoriality is the per-arrow square; `add_lens` declares, `verify` checks.
+  - Queued events are compared in the order queued, as they are dispatched: `a, b` is not `b, a`.
+  - **Breaking:** `sg::enforce` throws when an equation could not be checked (`LawReport::holds()`), not only on a counterexample. `LawReport::bounded` / `complete()` report a search stopped at its `LawOptions` budget (associativity's `max_triples`), which before was silent.
+  - **Breaking:** descent is checked on every loop of a cover (one per overlap outside a spanning tree), not loops up to four; `Cover::descent_defects`, `cocycle_defects` and `sg::descent_defects(atlas, g)` lose `max_cycle`. `Cover::sections(g, root, seams)` loses `max_depth` and reaches every piece joined to the root.
+  - `Tick::time` is simulated time, the sum of every `dt` (`Engine::simulated_time()`), not the wall clock: a `run_fixed` run is the same every run.
+  - Docs say what is so: a law trial refuses structural change inside a state as well (a `StateGraph` comment said otherwise); `sg::verify` runs the laws the graph owns, not descent or adjunctions; a `Functor` is partial; functoriality is the per-arrow square; `add_lens` declares, `verify` checks.
 
 - **Driven bodies, friction by the part, and a doorway's edge lit softly.**
   - `World::drive(body, x, r)`: moved by the game to where it should be by the end of the next step, at the speed that takes - furniture hauled, a board pulled by its stand, a lift. For that step it is as heavy as the room: what it meets is pushed out of its way, what lies on it goes with it by friction, and what sleeps against it wakes at once. It ends the step still.

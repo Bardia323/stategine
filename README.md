@@ -66,6 +66,40 @@ graph.embed("door_map", "annex", "door_map", "doormap",     // mounted in the an
             "door_to_map", "map_to_door", sg::EmbedSync::Live, /*subject=*/"hall");
 ```
 
+## Time
+
+Time is a state too. A `sg::Temporal` holds `now` (its `time` and `frame`) and
+one arrow, `advance`; the engine fires it once a frame. A state that changes
+with time says so with a drive, and its arrows do the changing:
+
+```cpp
+graph.add<sg::Temporal>("clock");
+pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+    e.params.set("r", e.params.num("r") + 2.0 * ev.args.num("dt"));
+});
+graph.drive("pond_time", "clock", "pond", "tick", /*additive=*/true);
+```
+
+Each frame the pond steps, its clock advances by `dt` and the pond's `tick`
+arrows run with `{dt, time, frame}`, sent by the clock. A clock keeps one
+state's time and moves only when that state steps, so `time` is always the sum
+of the steps the state has taken: paused under a menu and resumed, it finds no
+time missing and no jump (`validate` refuses a clock shared by two drives).
+Within a frame, states step in the order the graph declares: the active state,
+then its open embeddings' guests, in the order they were embedded - so which of
+two driven states moves first is never left to chance. Time is a monoid of durations and a drive is its
+action, so the laws hold it to one: `step(0)` is the identity, and a drive that
+claims `additive` keeps `step(a) ; step(b) == step(a + b)` - which an exact
+flow does and a compounding or Euler step does not. An additive drive is not
+handed `frame` - a step count cannot keep that claim, so there is none to read:
+
+```
+drive @ drive pond_time: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
+```
+
+`on_update` still runs. `engine.set_watch_updates(true)` reports any state
+whose `on_update` writes its data instead of emitting an event for an arrow.
+
 ## Gluing
 
 Rooms glued by doorways are one case of local pieces glued into a whole.
@@ -76,9 +110,11 @@ Rooms glued by doorways are one case of local pieces glued into a whole.
 * **descent** lets them glue: across an overlap and back is the identity
   (*separatedness*), and around every loop the composite is the identity
   (*cocycle*). A loop that does not close is a seam;
-* **`sections(root)`** is the glued result, every piece in one chosen chart. It
-  asks descent first: a cover with a seam glues to nothing (pass a
-  `std::vector<std::string>*` to hear why).
+* **`sections(root)`** is the glued result, every piece joined to the root in
+  one chosen chart, however far. It asks descent first: a cover with a seam
+  glues to nothing (pass a `std::vector<std::string>*` to hear why). Descent
+  is checked on every loop, not up to a length: a tree over the cover leaves
+  one closing overlap per independent loop, and those are checked.
 
 ```cpp
 for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: " << seam << "\n";
@@ -142,8 +178,14 @@ result*:
 | Descent | separatedness and cocycle on a `Cover` (`descent_defects`; not part of `verify`) |
 
 "The same result" means every element's parameters and whether it is alive,
-and every queued event - name, sender and arguments, in any order. Two paths
-that queue `damage(5)` and `damage(500)` do not agree.
+and every queued event - name, sender and arguments, in the order queued (the
+queue is dispatched in that order). Two paths that queue `damage(5)` and
+`damage(500)` do not agree, nor do `a, b` and `b, a`.
+
+A report keeps apart what it found, what it could not check and where it
+stopped looking: `ok()` is no counterexample; `holds()` is that and every
+equation run (`unchecked` empty); `complete()` is no search cut short by a
+`LawOptions` budget (`bounded` empty). `sg::enforce` throws unless `holds()`.
 
 Functoriality here is the square `f ; F == F ; F(f)` for each arrow `F` maps:
 what the functor does to data agrees with what the arrows do. It is not by
