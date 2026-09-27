@@ -339,6 +339,7 @@ public:
     // one the state says outward (says), it is also put out for the engine
     // to hand to the graph's transitions.
     void emit(Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + id_.str());
         if (e.source.empty()) e.source = id_;
         if (e.source == id_ && !said_.empty() && std::find(said_.begin(), said_.end(), e.name) != said_.end())
             said_out_.push_back(e);
@@ -351,6 +352,7 @@ public:
     // the state's arrows, never taken for something the state said.
     // Sent by no one in particular, it is sent to the state, as before.
     void hear(Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + id_.str());
         if (e.source.empty()) e.source = id_;
         bus_.emit(std::move(e));
     }

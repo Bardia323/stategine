@@ -304,8 +304,24 @@ those to the graph's transitions (and to nothing else - one no transition takes
 is dropped). Nothing in between: no listener, no `engine.fire` from inside an
 arrow. A state sees its engine const, so it cannot move the stack itself; what
 it said is part of what an arrow did, and a law's trial keeps it to itself.
-`bus().subscribe` is for watching from outside - a test, a log - and never runs
-during a law's trial.
+**Subscribers may observe the world; only the world may change it.** A
+listener (`bus().subscribe`) reads the event and does what is outside the
+world - draws, prints, plays a sound, logs. While it runs, firing the engine,
+moving the stack or an embedding, sending a state an event and rewriting the
+graph are refused with `sg::ObserverError` (`sg::set_observers(Observers::Report)`
+says each once and lets it through, for a project moving its listeners into the
+graph). No listener runs during a law's trial. An observer that must change the
+world is part of it: a state, whose causes are arrows, functors, transitions.
+
+What a state says also crosses an open embedding whose functor names the event
+(`Functor::on_event`), to the state on the other side, at once and relabelled -
+the same event map a transition's functor carries:
+
+```cpp
+graph.add_functor("desk.to.board", "desk", "board").on_event("chalk", "write");
+graph.embed("board", "desk", "board_portal", "board", "desk.to.board", {}, sg::EmbedSync::Commit);
+desk.says("chalk");   // an arrow of the desk emits chalk; the board's arrows on write run
+```
 
 Transitions take an optional `guard`, an `action` (fills the `Params` handed to
 `on_enter`) and a `functor`. `"*"` as the source matches any state. A

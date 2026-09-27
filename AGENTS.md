@@ -43,9 +43,13 @@ into a state to change it or to show it.
   bound to a portal as a panel), a seam for a doorway. What the renderer draws
   is what the graph declares.
 - To *tell the world* something, a state `says` it (`State::says`) and emits
-  it; the graph's transitions take it. Never a bus listener that fires the
-  engine: listeners are for watching from outside, and a state sees its
-  engine const.
+  it; the graph's transitions take it, and so does an open embedding whose
+  functor names the event (`on_event`). A state sees its engine const.
+- **Subscribers may observe the world; only the world may change it.** A bus
+  listener draws, prints, sounds, logs. One that fires the engine, sends a
+  state an event or rewrites the graph is refused (`sg::ObserverError`). If
+  an observer must change the world, make it a state and its causes arrows,
+  functors, transitions.
 - To *carry data*, a functor or lens. Where it runs is decided by the
   embedding's sync (`Live`, `Commit`, `View`).
 

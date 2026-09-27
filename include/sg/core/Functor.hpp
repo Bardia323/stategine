@@ -210,6 +210,20 @@ public:
         for (const auto& kv : mor_) fn(kv.first, kv.second);
     }
 
+    // Whether it names this event - declares where it goes - rather than
+    // letting it pass as itself.
+    bool maps_event(Key name) const { return evt_.count(name) != 0; }
+    bool maps_events() const { return !evt_.empty(); }
+
+    // An event, carried across: relabelled, and sent by the functor from its
+    // source (the sender a transition's carried event has too).
+    Event carried(const Event& e, const State& src) const {
+        Event out = e;
+        out.name = image_event(e.name);
+        out.source = Key{src.id().str() + "/" + name_.str()};
+        return out;
+    }
+
     Key image_event(Key name) const {
         auto it = evt_.find(name);
         return it == evt_.end() ? name : it->second;

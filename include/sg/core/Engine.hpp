@@ -53,7 +53,10 @@ public:
 
     // --- events ---------------------------------------------------------------
     // Engine events drive transitions; state events drive morphisms.
-    void fire(Event e) { pending_.push_back(std::move(e)); }
+    void fire(Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("fired the engine: ") + e.name.str());
+        pending_.push_back(std::move(e));
+    }
     void fire(Key name) { fire(Event{name}); }
 
     // The stack moved by hand. Within the world, what moves the stack is a
@@ -62,6 +65,7 @@ public:
     // engine - the program that built the graph, with the same right it has
     // to rewrite the graph: a debug teleport, a menu outside the world.
     void switch_to(Key id, Params args = {}) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "switch_to " + id.str());
         if (State* c = top()) {
             hook(*c, "on_exit", [&] { c->on_exit(); });
             stack_.pop_back();
@@ -70,11 +74,13 @@ public:
     }
 
     void push_state(Key id, Params args = {}) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "push_state " + id.str());
         if (State* c = top()) hook(*c, "on_pause", [&] { c->on_pause(); });
         enter(graph_.state(id), args);
     }
 
     void pop_state() {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "pop_state");
         if (stack_.empty()) return;
         State* c = stack_.back();
         hook(*c, "on_exit", [&] { c->on_exit(); });
@@ -91,6 +97,7 @@ public:
     // Open a portal: run `in` to build the guest's view of the host, enter the
     // guest, and (if the embedding takes focus) route events to it.
     void open_embed(Key name, Params args = {}) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("opened an embedding: ") + name.str());
         Embedding* e = graph_.embedding_rw(name);
         if (!e) throw std::runtime_error("no embedding " + name.str());
         if (e->open) return;
@@ -116,6 +123,7 @@ public:
     // Close it. commit=true runs `out`, writing the guest's edits into the host;
     // commit=false discards them (a cancelled interface).
     void close_embed(Key name, bool commit = true) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("closed an embedding: ") + name.str());
         Embedding* e = graph_.embedding_rw(name);
         if (!e || !e->open) return;
         State& host = graph_.state(e->host);
@@ -138,6 +146,7 @@ public:
     // Run now what a frame runs for an embedding - a View's `in`, a Live
     // one's `out` - whatever its propagation: synchronisation asked for.
     void sync_embed(Key name) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("synchronised an embedding: ") + name.str());
         const Embedding* e = graph_.embedding(name);
         if (!e || !e->open) return;
         State* guest = graph_.find(e->guest);
@@ -158,6 +167,7 @@ public:
     // Give an open embedding focus, or take it away: input goes to its guest
     // (the innermost focused one) or back to whoever had it before.
     void focus_embed(Key name, bool on) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("moved focus: ") + name.str());
         Embedding* e = graph_.embedding_rw(name);
         if (!e) return;
         e->focus = on;
@@ -362,12 +372,40 @@ private:
         if (strict_) throw std::runtime_error("stategine: " + p);
     }
 
-    // What a state said outward (State::says) goes to the graph's
-    // transitions - and nowhere else: one no transition takes is not handed
-    // to any state, since states meet only through what the graph declares.
+    // What a state said outward (State::says) goes where the graph says it
+    // goes, and nowhere else: to the graph's transitions (next frame, with
+    // what was fired), and across each open embedding whose functor from the
+    // state names that event (Functor::on_event) - to the state on its other
+    // side, at once, relabelled. One nothing declares is not handed to any
+    // state: states meet only through what the graph declares.
     void heard_from(State& s) {
         if (s.said_out().empty()) return;
-        for (Event& e : s.take_said()) said_.push_back(std::move(e));
+        std::vector<Event> said = s.take_said();
+        if (carriers_revision_ != graph_.topology()) index_carriers();
+        auto it = carriers_.find(s.id());
+        if (it != carriers_.end())
+            for (const Event& e : said)
+                for (const Carrier& c : it->second) {
+                    if (!c.e->open || !c.f->maps_event(e.name)) continue;
+                    if (State* to = graph_.find(c.f->to())) to->hear(c.f->carried(e, s));
+                }
+        for (Event& e : said) said_.push_back(std::move(e));
+    }
+
+    // The embeddings that carry events, by the state they carry them from:
+    // each functor of an embedding (`in`, `out`) that maps any event.
+    struct Carrier {
+        const Embedding* e;
+        const Functor* f;
+    };
+    void index_carriers() {
+        carriers_.clear();
+        for (const Embedding& e : graph_.embeddings())
+            for (Key name : {e.in, e.out}) {
+                const Functor* f = name.empty() ? nullptr : graph_.functor(name);
+                if (f && f->maps_events()) carriers_[f->from()].push_back({&e, f});
+            }
+        carriers_revision_ = graph_.topology();
     }
 
     void enter(State& s, const Params& args) {
@@ -605,6 +643,8 @@ private:
     std::vector<State*> stack_;
     std::vector<Event> pending_;
     std::vector<Event> said_;  // said by states (State::says), for the transitions
+    std::unordered_map<Key, std::vector<Carrier>> carriers_;
+    uint64_t carriers_revision_ = ~uint64_t{0};
     std::vector<Event> inbox_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last
     std::unordered_set<const State*> stepped_;  // this frame's, so each has its moment once

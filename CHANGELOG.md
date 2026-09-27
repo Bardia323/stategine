@@ -14,6 +14,9 @@ While the major version is 0, a minor bump may break the API.
   - **Breaking:** `State::engine()` is `const Engine*`: a state cannot fire, switch or push; it says. `switch_to` / `push_state` / `pop_state` stay for whoever holds the engine.
   - `EventBus::subscribe` is for watching from outside; while a law's trial runs, no listener is called (a listener cannot be undone).
   - `Engine::set_watch_hooks(true)` (`set_watch_updates` is the same switch) watches every hook - `on_update`, `on_event`, `on_render`, and `on_enter`, `on_exit`, `on_pause`, `on_resume` as the engine runs them - and reports one that writes the state's data; `State::wrote_in()` names it.
+- **Subscribers may observe the world; only the world may change it.**
+  - **Breaking:** while a bus listener runs, `Engine::fire`, `switch_to`, `push_state`, `pop_state`, `open_embed`, `close_embed`, `sync_embed`, `focus_embed`, `State::emit` / `hear` and any change to the graph or to what a state is made of throw `sg::ObserverError`. `sg::set_observers(Observers::Report, fn)` says each once and lets it through instead, for a project moving its listeners into the graph. The check is one thread-local read where it is made.
+  - A said event crosses an open embedding whose `in` or `out` functor names it (`Functor::on_event`), relabelled, to the state on the other side (`Functor::maps_event`, `carried`); the engine indexes these by state when the graph changes.
 - **One name, one thing.**
   - **Breaking:** an arrow's name is unique in its state (`add_morphism` refuses a second); a transition's in its graph (`connect` refuses a name given twice, and numbers a made-up one, `from-trigger->to#2`, for a guarded alternative on the same event).
   - **Breaking:** a functor a graph holds keeps its name: `rename` to another name throws, and assigning one under another name throws (use `set_functor`); assigning one under its own name is counted as a rewiring.

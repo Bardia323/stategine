@@ -1056,6 +1056,73 @@ void test_a_transition_in_a_law_is_the_one_the_engine_takes() {
     check(p.error.empty() && p.state == sg::Key{"ledger"}, "a pop after a push in the same path goes back");
 }
 
+
+// --- listeners observe; only the world changes the world -------------------------------------------
+void test_listeners_only_observe() {
+    sg::StateGraph g;
+    auto& a = g.add<sg::State>("a");
+    a.add_element("x", "n");
+    a.says("rang");
+    a.loop("ring", "x", "go", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("rang"); });
+    auto& b = g.add<sg::State>("b");
+    b.add_element("y", "n").params.set("heard", 0.0);
+    b.loop("hear", "y", "rung", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("heard", e.params.num("heard") + 1);
+    });
+    a.add_element("port", sg::kinds::portal);
+    g.add_functor("a.to.b", "a", "b").on_event("rang", "rung");
+    g.set_focus(g.embed("bell", "a", "port", "b", "a.to.b", sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("a");
+    sg::Engine e(g);
+    e.start();
+    e.open_embed("bell");
+
+    // An observer: reads, and keeps what it saw outside the world.
+    int seen = 0;
+    a.bus().subscribe("rang", [&seen](const sg::Event&) { ++seen; });
+    e.fire("go");
+    e.run_fixed(0.1, 2);
+    check(seen == 1, "a listener that only looks is let be");
+    check(b.find("y")->params.num("heard") == 1.0,
+          "what a says reaches b across the embedding whose functor names it - declared, not forwarded");
+
+    // A cause: refused.
+    bool refused = false;
+    a.bus().subscribe("rang", [&e](const sg::Event&) { e.fire("go"); });
+    try {
+        e.fire("go");
+        e.run_fixed(0.1, 2);
+    } catch (const sg::ObserverError&) {
+        refused = true;
+    }
+    check(refused, "a listener that fires the engine is refused");
+
+    sg::StateGraph h;
+    auto& c = h.add<sg::State>("c");
+    c.add_element("x", "n");
+    auto& d = h.add<sg::State>("d");
+    d.add_element("y", "n");
+    c.bus().subscribe("poke", [&d](const sg::Event& ev) { d.emit(ev); });
+    refused = false;
+    try {
+        c.emit("poke");
+        c.dispatch_pending();
+    } catch (const sg::ObserverError&) {
+        refused = true;
+    }
+    check(refused && d.bus().queued().empty(), "one that sends another state an event is refused");
+
+    // Report, for a project moving its listeners into the graph: said once, let through.
+    std::vector<std::string> heard;
+    sg::set_observers(sg::Observers::Report, [&heard](const std::string& p) { heard.push_back(p); });
+    c.emit("poke");
+    c.dispatch_pending();
+    c.emit("poke");
+    c.dispatch_pending();
+    sg::set_observers(sg::Observers::Strict);
+    check(heard.size() == 1 && d.bus().queued().size() == 2, "under Report it is said once, and let through");
+}
+
 }  // namespace
 
 int main() {
@@ -1084,6 +1151,7 @@ int main() {
     test_names_are_identities();
     test_composition_keeps_unmapped_events();
     test_a_transition_in_a_law_is_the_one_the_engine_takes();
+    test_listeners_only_observe();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;
