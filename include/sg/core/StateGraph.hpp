@@ -66,11 +66,12 @@ struct Seam {
     std::vector<Key> boundary_a, boundary_b;
 };
 
-// A drive: `state` changes with the time `clock` keeps. Each time the clock
-// advances, the state's arrows on `trigger` are fired with {dt, time, frame} -
-// while the state is active, as everything is (an idle state computes
-// nothing). `additive` claims step(a) ; step(b) == step(a + b), and the laws
-// hold it to that (see Temporal.hpp).
+// A drive: `state` changes with the time `clock` keeps. Each frame the state
+// steps, the clock advances by dt and the state's arrows on `trigger` are
+// fired with {dt, time, frame}. The clock keeps this one state's time and
+// moves only when it steps (an idle state computes nothing, and loses no
+// time). `additive` claims step(a) ; step(b) == step(a + b), and the laws hold
+// it to that (see Temporal.hpp).
 struct Drive {
     Key name;
     Key clock;
@@ -629,6 +630,13 @@ public:
                 errors.push_back("drive " + d.name.str() + ": unknown state " + d.state.str());
                 continue;
             }
+            for (const Drive& other : drives_)
+                if (&other != &d && other.clock == d.clock) {
+                    errors.push_back("drive " + d.name.str() + ": clock " + d.clock.str() +
+                                     " also keeps time for drive " + other.name.str() +
+                                     " - a clock keeps one state's time; give each its own");
+                    break;
+                }
             bool moved = false;
             for (const Morphism& m : s->morphisms()) moved = moved || m.trigger == d.trigger;
             if (!moved)

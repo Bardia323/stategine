@@ -23,6 +23,7 @@
 #pragma once
 
 #include "sg/core/State.hpp"
+#include "sg/core/StateGraph.hpp"
 
 namespace sg {
 
@@ -51,7 +52,28 @@ public:
     }
 
     double time() const { return element(now_id()).params.num(keys::time); }
+    // The frame count is how many steps were taken, which is not a matter of
+    // time: an additive drive does not hand it on (see drive_event).
     int64_t frame() const { return element(now_id()).params.get_or<int64_t>(keys::frame, 0); }
 };
+
+// What a drive hands its state's arrows, the clock having moved: dt, the
+// time the clock now says, and - unless the drive is additive - the frame.
+// A claim that two steps are one step cannot be kept by an arrow that counts
+// steps, so an additive drive gives it nothing to count. The engine and the
+// laws both build the event here, so what is checked is what runs.
+inline Event drive_event(const Drive& d, double dt, double time, int64_t frame) {
+    Params p;
+    p.set(keys::dt, dt).set(keys::time, time);
+    if (!d.additive) p.set(keys::frame, frame);
+    Event ev{d.trigger, std::move(p)};
+    ev.source = d.clock;
+    return ev;
+}
+
+inline Event drive_event(const Drive& d, const State& clock, double dt) {
+    const Element& now = clock.element(Temporal::now_id());
+    return drive_event(d, dt, now.params.num(keys::time), now.params.get_or<int64_t>(keys::frame, 0));
+}
 
 }  // namespace sg

@@ -80,14 +80,21 @@ pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element
 graph.drive("pond_time", "clock", "pond", "tick", /*additive=*/true);
 ```
 
-Each frame, while the pond is active, its `tick` arrows run with `{dt, time,
-frame}` from the clock. Time is a monoid of durations and a drive is its
+Each frame the pond steps, its clock advances by `dt` and the pond's `tick`
+arrows run with `{dt, time, frame}`, sent by the clock. A clock keeps one
+state's time and moves only when that state steps, so `time` is always the sum
+of the steps the state has taken: paused under a menu and resumed, it finds no
+time missing and no jump (`validate` refuses a clock shared by two drives).
+Within a frame, states step in the order the graph declares: the active state,
+then its open embeddings' guests, in the order they were embedded - so which of
+two driven states moves first is never left to chance. Time is a monoid of durations and a drive is its
 action, so the laws hold it to one: `step(0)` is the identity, and a drive that
 claims `additive` keeps `step(a) ; step(b) == step(a + b)` - which an exact
-flow does and a compounding or Euler step does not:
+flow does and a compounding or Euler step does not. An additive drive is not
+handed `frame` - a step count cannot keep that claim, so there is none to read:
 
 ```
-drive @ drive pond_time: pond.money.v was 100; pond [!tick(dt=0.5) ; !tick(dt=0.5)] leaves 225, pond [!tick(dt=1)] leaves 200
+drive @ drive pond_time: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
 ```
 
 `on_update` still runs. `engine.set_watch_updates(true)` reports any state

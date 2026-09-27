@@ -199,7 +199,6 @@ public:
         const Tick t{dt, time_, frame_++};
         process_transitions();
         if (!running_) return;
-        advance_clocks(dt);
         if (State* c = top()) {
             // Edits made in an open Live guest since the last frame land in the
             // host before it updates, so the two never disagree within a frame.
@@ -268,33 +267,20 @@ private:
     }
 
     // --- time -------------------------------------------------------------------------
-    // Every clock that drives something moves on by dt - through its own
-    // arrow, like any change to any state.
-    void advance_clocks(double dt) {
-        clocks_.clear();
-        for (const Drive& d : graph_.drives())
-            if (std::find(clocks_.begin(), clocks_.end(), d.clock) == clocks_.end()) clocks_.push_back(d.clock);
-        for (Key k : clocks_) {
-            State* c = graph_.find(k);
-            if (!c) continue;  // validate() names it
-            c->emit(Event{Temporal::advance_event(), Params{}.set(keys::dt, dt)});
-            c->dispatch_pending();
-        }
-    }
-
-    // What the clocks driving `s` say, handed to its arrows as an event.
+    // A state about to step is driven: each clock that keeps its time moves on
+    // by dt - through its own arrow, like any change to any state - and what it
+    // then says is handed to the state's arrows. A clock keeps one state's
+    // time and moves only when that state steps, so its time is always the
+    // sum of the steps the state has taken: a state set aside and come back to
+    // finds no time missing, and no jump.
     void drive(State& s, double dt) {
         for (const Drive& d : graph_.drives()) {
             if (d.state != s.id()) continue;
-            const State* c = graph_.find(d.clock);
-            const Element* now = c ? c->find(Temporal::now_id()) : nullptr;
-            if (!now) continue;
-            Event ev{d.trigger, Params{}
-                                    .set(keys::dt, dt)
-                                    .set(keys::time, now->params.num(keys::time))
-                                    .set(keys::frame, now->params.get_or<int64_t>(keys::frame, 0))};
-            ev.source = d.clock;
-            s.emit(std::move(ev));
+            State* c = graph_.find(d.clock);
+            if (!c || !c->find(Temporal::now_id())) continue;  // validate() names it
+            c->emit(Event{Temporal::advance_event(), Params{}.set(keys::dt, dt)});
+            c->dispatch_pending();
+            s.emit(drive_event(d, *c, dt));
         }
     }
 
@@ -395,7 +381,8 @@ private:
         }
     }
 
-    // Guests of the active host tick after it. Live embeddings write back every
+    // Guests of the active host tick after it, in the order they were
+    // embedded: the frame's order is the graph's, never chance. Live embeddings write back every
     // frame, Commit ones wait for close_embed, and View ones are refreshed from
     // the host instead - nothing they do reaches back. "Every frame" is as the
     // embedding's propagation says: by default, whenever there is something
@@ -525,7 +512,6 @@ private:
     double time_ = 0.0;  // simulated: the sum of every dt ticked
     bool running_ = false;
     bool watch_updates_ = false;
-    std::vector<Key> clocks_;  // this frame's, reused
     bool trace_ = false;
     bool strict_ = false;
     uint64_t watched_ = ~uint64_t{0};

@@ -106,6 +106,7 @@ struct Step {
     std::shared_ptr<const Morphism> arrow;
     std::shared_ptr<const Functor> functor;
     std::optional<Params> args;
+    Key source;  // who sends an event step; the state itself when empty
 };
 
 // A path starts at an object - an element of a state, or the state as a
@@ -139,6 +140,10 @@ public:
     Path& event(Key trigger, Params args = {}) {
         return push(Step{Step::Kind::Event, trigger, nullptr, nullptr, std::move(args)});
     }
+    // The same event, as the engine sends it: its sender and its arguments.
+    Path& event(const Event& ev) {
+        return push(Step{Step::Kind::Event, ev.name, nullptr, nullptr, ev.args, ev.source});
+    }
 
     // Concatenation; the seam is checked when the path runs.
     Path& then(const Path& p) {
@@ -164,6 +169,7 @@ public:
                     a += (a.empty() ? "" : ", ") + kv.first.str() + "=" + to_string(kv.second);
                 s += "(" + a + ")";
             }
+            if (!steps_[i].source.empty()) s += "@" + steps_[i].source.str();
         }
         return s + "]";
     }
@@ -504,7 +510,7 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
             State& s = trial.touch(here);
             std::vector<Event> queued = s.bus().queued();
             Event ev{step.name, step.args ? *step.args : args};
-            ev.source = here;
+            ev.source = step.source.empty() ? here : step.source;
             s.bus().requeue({std::move(ev)});
             s.dispatch_pending();
             for (const Event& left : s.bus().queued()) queued.push_back(left);
@@ -1096,23 +1102,25 @@ inline std::vector<Violation> drives(StateGraph& g, const LawOptions& o = {},
         if (!now || !g.find(d.state)) continue;  // validate() names it
         const double t0 = now->params.num(keys::time);
         const int64_t f0 = now->params.get_or<int64_t>(keys::frame, 0);
+        // Built as the engine builds it (drive_event), with any probe
+        // arguments the caller gives the trigger beneath.
         const auto when = [&](double dt, double t, int64_t f) {
+            Event ev = drive_event(d, dt, t, f);
             Params p = args_for(o, d.trigger);
-            p.set(keys::dt, dt).set(keys::time, t).set(keys::frame, f);
-            return p;
+            for (const auto& kv : ev.args) p.set(kv.first, kv.second);
+            ev.args = std::move(p);
+            return ev;
         };
         const std::string where = "drive " + d.name.str();
-        append(out, check(g, cache, {"drive", where,
-                                     Path(d.state).event(d.trigger, when(0.0, t0, f0 + 1)),
+        append(out, check(g, cache, {"drive", where, Path(d.state).event(when(0.0, t0, f0 + 1)),
                                      Path(d.state), {}}));
         if (!d.additive) continue;
         const double a = o.drive_dt;
         append(out, check(g, cache, {"drive", where,
                                      Path(d.state)
-                                         .event(d.trigger, when(a, t0 + a, f0 + 1))
-                                         .event(d.trigger, when(a, t0 + 2 * a, f0 + 2)),
-                                     Path(d.state).event(d.trigger, when(2 * a, t0 + 2 * a, f0 + 1)),
-                                     {}}));
+                                         .event(when(a, t0 + a, f0 + 1))
+                                         .event(when(a, t0 + 2 * a, f0 + 2)),
+                                     Path(d.state).event(when(2 * a, t0 + 2 * a, f0 + 1)), {}}));
     }
     return out;
 }

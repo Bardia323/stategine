@@ -707,6 +707,46 @@ void test_time_acts_as_time() {
     check(zero.size() == 1 && zero[0].key == "ticks", "step(0) that changes something is not the identity");
 }
 
+// A clock keeps one state's time, moved only when that state steps: set the
+// state aside and come back, and its time and its motion still agree.
+void test_time_is_kept_by_its_state() {
+    sg::StateGraph g;
+    make_pond(g, true);
+    auto& pond = g.state("pond");
+    pond.loop("note", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        if (ev.args.num("dt") == 0.0) return;  // no time, no change
+        e.params.set("seen", ev.args.num("time"));
+        e.params.set("has_frame", ev.args.has("frame"));
+        e.params.set("from", ev.source.str());
+    });
+    g.add<sg::State>("menu").add_element("m", "n");
+    g.push("pond", "pause", "menu");
+    g.pop("menu", "back");
+    check(sg::verify(g).holds(), "a pond with a menu over it is lawful");
+
+    sg::Engine e(g);
+    e.run_fixed(0.25, 2);  // pond steps twice
+    e.fire("pause");
+    e.run_fixed(0.25, 3);  // the menu is on top: the pond is idle
+    e.fire("back");
+    e.run_fixed(0.25, 2);  // the first of these is taken by the pop, then the pond steps
+    const auto& clock = static_cast<const sg::Temporal&>(g.state("clock"));
+    const auto& r = pond.element("ripple").params;
+    check(near(clock.time(), 0.25 * clock.frame()) && near(r.num("r"), 2.0 * clock.time()) &&
+              near(r.num("seen"), clock.time()),
+          "the clock moved only with the pond: time, steps and motion agree after a pause");
+    check(!r.get_or<bool>("has_frame", true) && r.get_or<std::string>("from", "") == "clock",
+          "an additive drive hands on no frame to count, and the event comes from the clock");
+
+    // One clock, one state's time.
+    g.add<sg::State>("brook").add_element("b", "n");
+    g.state("brook").loop("flow", "b", "tick", nullptr);
+    g.drive("brook_time", "clock", "brook", "tick");
+    bool refused = false;
+    for (const auto& p : g.validate()) refused = refused || p.find("a clock keeps one state's time") != std::string::npos;
+    check(refused, "a clock shared by two drives is refused");
+}
+
 // on_update that writes, rather than emits, is behaviour outside the arrows.
 struct Sneaky : sg::State {
     using sg::State::State;
@@ -756,6 +796,7 @@ int main() {
     test_budgets_are_visible();
     test_time_is_a_state();
     test_time_acts_as_time();
+    test_time_is_kept_by_its_state();
     test_updates_are_watched();
     test_cache_sees_what_is_queued();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"

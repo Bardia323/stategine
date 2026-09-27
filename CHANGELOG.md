@@ -8,7 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
-- **Time is a state.** `sg::Temporal` (`sg/core/Temporal.hpp`): an element `now` with `time` and `frame`, moved by its own `advance` arrow. `graph.drive(name, clock, state, trigger, additive)` declares that a state changes with a clock's time; the engine advances every clock that drives something and fires `trigger {dt, time, frame}` into driven states while they are active. A driven state reaches its clock; a clock alone reaches nothing.
+- **Time is a state.** `sg::Temporal` (`sg/core/Temporal.hpp`): an element `now` with `time` and `frame`, moved by its own `advance` arrow. `graph.drive(name, clock, state, trigger, additive)` declares that a state changes with a clock's time. Each frame a driven state steps, the engine advances its clock by `dt` and fires `trigger {dt, time, frame}` from the clock. A clock keeps one state's time (a shared clock is refused) and moves only when that state steps, so time and motion agree after a pause. An additive drive is handed no `frame`. The engine and the laws build the event the same way (`sg::drive_event`). A driven state reaches its clock; a clock alone reaches nothing.
   - New law, `drive` (in `sg::verify`): `step(0) == id`, and for an `additive` drive `step(a) ; step(b) == step(a + b)` (`LawOptions::drive_dt`).
   - Paths gain `event(trigger, args)` - fire an event at a state as a frame does, with what it sets in motion - and `arrow(name, args)`, a step with arguments of its own.
   - `Engine::set_watch_updates(true)` reports a state whose `on_update` changes its data rather than emitting for an arrow. Off by default; `on_update` is unchanged.
