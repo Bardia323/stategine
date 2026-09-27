@@ -1214,6 +1214,31 @@ void test_a_declared_lens_is_checked() {
     }
 }
 
+
+// The world outside reaches a state only through a port the graph declares.
+void test_ports_are_declared() {
+    sg::StateGraph g;
+    auto& gauge = g.add<sg::State>("gauge");
+    gauge.add_element("needle", "needle").params.set("v", 0.0);
+    gauge.loop("read", "needle", "reading", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("v", ev.args.num("v"));
+    });
+    g.set_initial("gauge");
+    sg::Engine e(g);
+    e.start();
+    bool refused = false;
+    try {
+        e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    check(refused, "nothing comes in through a port the graph does not declare");
+    g.port("gauge", "reading");
+    e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
+    e.run_fixed(0.1, 1);
+    check(gauge.find("needle")->params.num("v") == 3.0, "through a declared one, it reaches the state's arrow");
+}
+
 }  // namespace
 
 int main() {
@@ -1246,6 +1271,7 @@ int main() {
     test_edits_are_declared();
     test_functors_carry_what_is_said();
     test_a_declared_lens_is_checked();
+    test_ports_are_declared();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

@@ -59,6 +59,16 @@ public:
     }
     void fire(Key name) { fire(Event{name}); }
 
+    // From the world outside, straight to a state, through a port the graph
+    // declares (StateGraph::port): delivered at the start of the next frame,
+    // and the state's arrows run on it then. An undeclared one is refused.
+    void send(Key state, Event e) {
+        if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + state.str());
+        if (!graph_.has_port(state, e.name))
+            throw std::runtime_error("no port " + e.name.str() + " on " + state.str() + " - declare it (StateGraph::port)");
+        inputs_.push_back({state, std::move(e)});
+    }
+
     // The stack moved by hand. Within the world, what moves the stack is a
     // transition the graph declares, taken on an event: no state can call
     // these (a state sees its engine const). They are for whoever holds the
@@ -218,6 +228,7 @@ public:
         time_ += dt;
         const Tick t{dt, time_, frame_++};
         apply_edits();
+        take_inputs();
         process_transitions();
         if (!running_) return;
         if (State* c = top()) {
@@ -600,6 +611,19 @@ private:
         }
     }
 
+    // What came in through the ports since the last frame.
+    void take_inputs() {
+        if (inputs_.empty()) return;
+        std::vector<std::pair<Key, Event>> in;
+        in.swap(inputs_);
+        for (auto& kv : in)
+            if (State* s = graph_.find(kv.first)) {
+                s->hear(std::move(kv.second));
+                s->dispatch_pending();
+                heard_from(*s);
+            }
+    }
+
     void process_transitions() {
         // What states said since the last frame: to transitions only.
         if (!said_.empty()) {
@@ -703,6 +727,7 @@ private:
         Event event;
     };
     std::vector<Asked> asked_;  // edits said since the last frame
+    std::vector<std::pair<Key, Event>> inputs_;  // sent in through ports
     uint64_t carriers_revision_ = ~uint64_t{0};
     std::vector<Event> inbox_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last

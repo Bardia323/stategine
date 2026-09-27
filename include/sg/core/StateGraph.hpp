@@ -501,6 +501,21 @@ public:
     }
     const std::deque<Drive>& drives() const { return drives_; }
 
+    // --- ports ------------------------------------------------------------------
+    // Where the world outside may speak to a state directly: a program's
+    // output reaching the shell that shows it, a sensor its gauge. Declared,
+    // so `Engine::send` delivers only what the graph says may come in.
+    void port(Key state, Key event) {
+        rev_.rewired("port");
+        if (!has_port(state, event)) ports_.push_back({state, event});
+    }
+    bool has_port(Key state, Key event) const {
+        for (const auto& p : ports_)
+            if (p.first == state && p.second == event) return true;
+        return false;
+    }
+    const std::vector<std::pair<Key, Key>>& ports() const { return ports_; }
+
     // --- edits ------------------------------------------------------------------
     // Registered by name (`state:event` when empty); again, it is replaced.
     const Edit& edit(Edit e) {
@@ -750,6 +765,9 @@ public:
                                  " is fired by " + d.trigger.str());
         }
 
+        for (const auto& p : ports_)
+            if (!find(p.first)) errors.push_back("port " + p.second.str() + ": unknown state " + p.first.str());
+
         for (const Edit& e : edits_) {
             const State* s = find(e.state);
             if (!s) {
@@ -938,6 +956,7 @@ private:
     std::deque<Drive> drives_;
     std::deque<Edit> edits_;
     std::vector<LensPair> lenses_;
+    std::vector<std::pair<Key, Key>> ports_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;
