@@ -131,7 +131,13 @@ public:
         if (this != &o) *this = Functor(o);
         return *this;
     }
-    Functor& operator=(Functor&& o) noexcept {
+    // One put in place of a functor a graph holds keeps its name - the graph
+    // finds it by that name - and the graph counts it, like any rewiring.
+    Functor& operator=(Functor&& o) {
+        if (revision_ && o.name_ != name_)
+            throw std::runtime_error("functor " + name_.str() + " is held by a graph under that name; " +
+                                     "put " + o.name_.str() + " in with StateGraph::set_functor");
+        if (revision_) revision_->rewired("assign");
         name_ = o.name_;
         from_ = o.from_;
         to_ = o.to_;
@@ -144,7 +150,11 @@ public:
     }
 
     Key name() const { return name_; }
+    // A functor's name is its identity in the graph that holds it, which
+    // finds it by that name: only one no graph holds yet is renamed.
     void rename(Key n) {
+        if (revision_ && n != name_)
+            throw std::runtime_error("functor " + name_.str() + " is held by a graph, which knows it by that name");
         name_ = n;
         remapped("rename");
     }
@@ -318,6 +328,7 @@ public:
         if (f.identity_ || g.identity_) {
             Functor h = f.identity_ ? g : f;
             h.name_ = name;
+            h.evt_ = compose_events(f, g);
             return h;
         }
         Functor h(name, f.from_, g.to_);
@@ -346,8 +357,20 @@ public:
             auto mid = g.mor_.find(kv.second);
             if (mid != g.mor_.end()) h.mor_[kv.first] = mid->second;
         }
-        for (const auto& kv : f.evt_) h.evt_[kv.first] = g.image_event(kv.second);
+        h.evt_ = compose_events(f, g);
         return h;
+    }
+
+    // (G . F)(e) = G(F(e)), for every event - and an event F does not name it
+    // passes as itself, so what G makes of that is the composite's too.
+    static std::unordered_map<Key, Key> compose_events(const Functor& f, const Functor& g) {
+        std::unordered_map<Key, Key> out;
+        for (const auto& kv : f.evt_) out[kv.first] = g.image_event(kv.second);
+        for (const auto& kv : g.evt_)
+            if (!f.evt_.count(kv.first)) out[kv.first] = kv.second;
+        for (auto it = out.begin(); it != out.end();)
+            it = it->first == it->second ? out.erase(it) : std::next(it);
+        return out;
     }
 
     // g * f reads "g after f".

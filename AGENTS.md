@@ -14,7 +14,7 @@ none of the others. States are connected **only** by the graph:
 
 | Interface | Declared with | What it is |
 | --- | --- | --- |
-| Transition | `graph.connect` / `push` / `pop` | the active state changes |
+| Transition | `graph.connect` / `push` / `pop`, on what a state `says` | the active state changes |
 | Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow |
 | Embedding | `graph.embed` | a state lives in a portal of another (with `in`/`out` functors, a `subject`, a sync, focus) |
 | Seam | `add_seam`, `glue_doorway` | two states glued along a boundary - a doorway, a door hanging in it |
@@ -42,6 +42,10 @@ into a state to change it or to show it.
   an open embedding of a 3D state in a `feed` portal as a picture; a surface
   bound to a portal as a panel), a seam for a doorway. What the renderer draws
   is what the graph declares.
+- To *tell the world* something, a state `says` it (`State::says`) and emits
+  it; the graph's transitions take it. Never a bus listener that fires the
+  engine: listeners are for watching from outside, and a state sees its
+  engine const.
 - To *carry data*, a functor or lens. Where it runs is decided by the
   embedding's sync (`Live`, `Commit`, `View`).
 

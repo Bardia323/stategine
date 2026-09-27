@@ -56,29 +56,35 @@ public:
     void fire(Event e) { pending_.push_back(std::move(e)); }
     void fire(Key name) { fire(Event{name}); }
 
-    // Direct stack operations. Prefer transitions declared in the graph.
+    // The stack moved by hand. Within the world, what moves the stack is a
+    // transition the graph declares, taken on an event: no state can call
+    // these (a state sees its engine const). They are for whoever holds the
+    // engine - the program that built the graph, with the same right it has
+    // to rewrite the graph: a debug teleport, a menu outside the world.
     void switch_to(Key id, Params args = {}) {
         if (State* c = top()) {
-            c->on_exit();
+            hook(*c, "on_exit", [&] { c->on_exit(); });
             stack_.pop_back();
         }
         enter(graph_.state(id), args);
     }
 
     void push_state(Key id, Params args = {}) {
-        if (State* c = top()) c->on_pause();
+        if (State* c = top()) hook(*c, "on_pause", [&] { c->on_pause(); });
         enter(graph_.state(id), args);
     }
 
     void pop_state() {
         if (stack_.empty()) return;
-        stack_.back()->on_exit();
+        State* c = stack_.back();
+        hook(*c, "on_exit", [&] { c->on_exit(); });
         stack_.pop_back();
         if (stack_.empty()) {
             running_ = false;
             return;
         }
-        stack_.back()->on_resume();
+        State* under = stack_.back();
+        hook(*under, "on_resume", [&] { under->on_resume(); });
     }
 
     // --- embeddings -------------------------------------------------------------
@@ -100,7 +106,7 @@ public:
         }
         if (Element* portal = host.find(e->portal)) portal->params.set(keys::open, true);
         e->open = true;
-        guest.on_enter(args);
+        hook(guest, "on_enter", [&] { guest.on_enter(args); });
         if (e->focus) focus_.push_back(e->name);
         if (trace_)
             std::cout << "[sg] open  " << e->host.str() << "." << e->portal.str() << " <= "
@@ -120,7 +126,7 @@ public:
                                              e->out.str());
             f->apply(guest, graph_.state(e->subject.empty() ? e->host : e->subject));
         }
-        guest.on_exit();
+        hook(guest, "on_exit", [&] { guest.on_exit(); });
         e->open = false;
         if (Element* portal = host.find(e->portal)) portal->params.set(keys::open, false);
         focus_.erase(std::remove(focus_.begin(), focus_.end(), e->name), focus_.end());
@@ -169,9 +175,12 @@ public:
     // `on_problem` if set, else to stderr; with `strict`, it throws.
     std::function<void(const std::string&)> on_problem;
     void set_strict(bool on) { strict_ = on; }
-    // Watch every state's on_update: one that changes its data, rather than
-    // emitting for an arrow to act on, is reported once, as a problem.
+    // Watch every hook a state has - on_update, on_event, on_render, and
+    // on_enter, on_exit, on_pause, on_resume as the engine runs them: one that
+    // changes the state's data, rather than emitting for an arrow to act on,
+    // is behaviour outside any arrow, and is reported once, as a problem.
     void set_watch_updates(bool on) { watch_updates_ = on; }
+    void set_watch_hooks(bool on) { watch_updates_ = on; }
     void set_watch_interval(double seconds) { watch_interval_ = seconds; }
     const std::vector<std::string>& problems() const { return problems_; }
     // Check now, whatever changed: what is wrong, all of it.
@@ -285,9 +294,9 @@ private:
             State* c = graph_.find(d.clock);
             const Key line = timeline_of(d);
             if (!c || !c->find(line)) continue;  // validate() names it
-            c->emit(Event{Temporal::advance_event(line), Params{}.set(keys::dt, dt)});
+            c->hear(Event{Temporal::advance_event(line), Params{}.set(keys::dt, dt)});
             c->dispatch_pending();
-            s.emit(drive_event(d, *c, dt));
+            s.hear(drive_event(d, *c, dt));
         }
     }
 
@@ -329,19 +338,42 @@ private:
     void step(State& s, const Tick& t) {
         const bool had = s.wrote_in_update();
         s.step(t, watch_updates_);
-        if (!had && s.wrote_in_update()) {
-            const std::string p = "state " + s.id().str() +
-                                  " changes its data in on_update, outside any arrow: "
-                                  "drive it from a clock (graph.drive)";
-            report(p);
-            if (strict_) throw std::runtime_error("stategine: " + p);
-        }
+        noticed(s, had);
+        heard_from(s);
+    }
+
+    // A lifecycle hook, run as the engine runs it: watched, if hooks are,
+    // and what the state says in it heard.
+    template <typename F>
+    void hook(State& s, const char* name, F&& run) {
+        const bool had = s.wrote_in_update();
+        s.watched(name, std::forward<F>(run), watch_updates_);
+        noticed(s, had);
+        heard_from(s);
+    }
+
+    void noticed(State& s, bool had) {
+        if (had || !s.wrote_in_update()) return;
+        const std::string p = "state " + s.id().str() + " changes its data in " + s.wrote_in() +
+                              ", outside any arrow: " +
+                              (s.wrote_in() == "on_update" ? "drive it from a clock (graph.drive)"
+                                                           : "let an arrow on an event do it");
+        report(p);
+        if (strict_) throw std::runtime_error("stategine: " + p);
+    }
+
+    // What a state said outward (State::says) goes to the graph's
+    // transitions - and nowhere else: one no transition takes is not handed
+    // to any state, since states meet only through what the graph declares.
+    void heard_from(State& s) {
+        if (s.said_out().empty()) return;
+        for (Event& e : s.take_said()) said_.push_back(std::move(e));
     }
 
     void enter(State& s, const Params& args) {
         s.attach(this);
         stack_.push_back(&s);
-        s.on_enter(args);
+        hook(s, "on_enter", [&] { s.on_enter(args); });
     }
 
     // --- routes: the embeddings of a host, looked up once ------------------------
@@ -477,6 +509,17 @@ private:
     }
 
     void process_transitions() {
+        // What states said since the last frame: to transitions only.
+        if (!said_.empty()) {
+            std::vector<Event> said;
+            said.swap(said_);
+            for (const Event& ev : said) {
+                State* from = top();
+                if (!from) return;
+                if (const Transition* t = graph_.resolve(*from, ev)) take(*t, *from, ev);
+                if (!running_) return;
+            }
+        }
         inbox_.clear();
         inbox_.swap(pending_);
         for (const Event& ev : inbox_) {
@@ -499,10 +542,10 @@ private:
             if (!t) {
                 // Not a transition trigger: hand it to whoever holds focus.
                 if (State* g = focused_guest()) {
-                    g->emit(ev);
+                    g->hear(ev);
                     due_.push_back(focus_.back());  // it crossed that embedding
                 } else {
-                    from->emit(ev);
+                    from->hear(ev);
                 }
                 continue;
             }
@@ -523,7 +566,6 @@ private:
 
     void take(const Transition& t, State& from, const Event& ev) {
         Params args;
-        if (t.action) t.action(from, ev, args);
 
         if (trace_)
             std::cout << "[sg] " << from.id().str() << " --" << ev.name.str() << "--> "
@@ -539,26 +581,18 @@ private:
                 throw std::runtime_error("transition " + t.name.str() + ": no state " + t.to.str());
         }
 
-        // Functorial transport, before the target is entered, so on_enter
-        // already sees the carried elements.
-        if (!t.functor.empty() && target) {
-            const Functor* f = graph_.functor(t.functor);
-            if (!f)
-                throw std::runtime_error("transition " + t.name.str() + ": no functor " +
-                                         t.functor.str());
-            carry_.clear();
-            carry_.push_back(ev);
-            f->apply(from, *target, carry_);
-        }
+        // What it carries, before the target is entered, so on_enter already
+        // sees it (StateGraph::cross - the laws take it the same way).
+        graph_.cross(t, from, target, ev, args);
 
         switch (t.kind) {
             case TransitionKind::Switch:
-                from.on_exit();
+                hook(from, "on_exit", [&] { from.on_exit(); });
                 stack_.pop_back();
                 enter(*target, args);
                 break;
             case TransitionKind::Push:
-                from.on_pause();
+                hook(from, "on_pause", [&] { from.on_pause(); });
                 enter(*target, args);
                 break;
             case TransitionKind::Pop:
@@ -570,8 +604,8 @@ private:
     StateGraph& graph_;
     std::vector<State*> stack_;
     std::vector<Event> pending_;
+    std::vector<Event> said_;  // said by states (State::says), for the transitions
     std::vector<Event> inbox_;
-    std::vector<Event> carry_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last
     std::unordered_set<const State*> stepped_;  // this frame's, so each has its moment once
     std::unordered_map<const State*, std::vector<Route>> routes_;

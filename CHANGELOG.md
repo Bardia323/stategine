@@ -8,6 +8,19 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **States meet only through the graph - now at run time too.**
+  - What a state `says` (`State::says(event)`) the engine hands to the graph's transitions: an arrow that `emit`s a said event takes the transition on it next frame, with no listener in between. A said event no transition takes is dropped, not handed to another state. What a state has said and the engine not yet taken (`said_out()`) is part of its data: kept by snapshots, versioned, compared by the laws (`<said>`), and a trial's is undone.
+  - Events the engine routes into a state (from `fire`, from a drive) arrive by `State::hear`, never taken for something the state said.
+  - **Breaking:** `State::engine()` is `const Engine*`: a state cannot fire, switch or push; it says. `switch_to` / `push_state` / `pop_state` stay for whoever holds the engine.
+  - `EventBus::subscribe` is for watching from outside; while a law's trial runs, no listener is called (a listener cannot be undone).
+  - `Engine::set_watch_hooks(true)` (`set_watch_updates` is the same switch) watches every hook - `on_update`, `on_event`, `on_render`, and `on_enter`, `on_exit`, `on_pause`, `on_resume` as the engine runs them - and reports one that writes the state's data; `State::wrote_in()` names it.
+- **One name, one thing.**
+  - **Breaking:** an arrow's name is unique in its state (`add_morphism` refuses a second); a transition's in its graph (`connect` refuses a name given twice, and numbers a made-up one, `from-trigger->to#2`, for a guarded alternative on the same event).
+  - **Breaking:** a functor a graph holds keeps its name: `rename` to another name throws, and assigning one under another name throws (use `set_functor`); assigning one under its own name is counted as a rewiring.
+- **A transition means one thing.** `StateGraph::cross` - action, then the functor carrying the event - is how the engine and a law's `Path::transition` both take a transition. In a law, the step is taken only if the engine would take it (its guard passes and nothing it prefers does - the error names what it would take instead), and runs the lifecycle as the engine does; a pop returns to where the path last pushed from.
+- `Functor::compose` maps every event: one the first functor leaves as itself is mapped by the second (`(G . F)(x) = G(x)`), and an identity's own event map is kept.
+- README: the battle `says("victory")` instead of a listener that fires the engine; the functor example uses `connect(from, trigger, to, functor)`.
+
 - **Time is a state.** `sg::Temporal` (`sg/core/Temporal.hpp`) keeps timelines: an element each with `time` and `frame`, moved by its own `advance.<line>` arrow. `sg::drive(graph, clock, state, trigger, additive)` gives the state its line and declares the drive; one clock can keep a whole world's time. `graph.drive(name, clock, state, trigger, additive)` declares that a state changes with a clock's time. Each frame a driven state steps, the engine advances its clock by `dt` and fires `trigger {dt, time, frame}` from the clock. A line keeps one state's time (a line kept for two drives is refused) and moves only when that state steps, so time and motion agree after a pause. An additive drive is handed no `frame`. The engine and the laws build the event the same way (`sg::drive_event`). A driven state reaches its clock; a clock alone reaches nothing.
   - New law, `drive` (in `sg::verify`): `step(0) == id`, and for an `additive` drive `step(a) ; step(b) == step(a + b)` (`LawOptions::drive_dt`).
   - `Keeps::Always` (`sg::drive(..., additive, Keeps::Always)`): a state that keeps its time while not active. The engine steps it once a frame if nothing else did, with what is open in it, and carries its open Live embeddings out - what a game loop used to do by calling `step` itself.

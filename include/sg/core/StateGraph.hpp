@@ -155,10 +155,19 @@ public:
     // --- transitions ---------------------------------------------------------
     // A transition is declared whole - fill in a Transition, guard and all, and
     // connect it - and is read, not rewritten, once it is in the graph.
+    // Its name is its identity - a law's path takes it by name - so no two
+    // share one: a name given twice is refused, and one made up for it
+    // (from-trigger->to) is told apart from an alternative on the same
+    // event, guarded otherwise, by a number (#2, #3, ...).
     const Transition& connect(Transition t) {
+        if (t.name.empty()) {
+            const std::string base = t.from.str() + "-" + t.trigger.str() + "->" + t.to.str();
+            t.name = Key{base};
+            for (int n = 2; transition(t.name); ++n) t.name = Key{base + "#" + std::to_string(n)};
+        } else if (transition(t.name)) {
+            throw std::runtime_error("duplicate transition " + t.name.str());
+        }
         rev_.rewired("connect");
-        if (t.name.empty())
-            t.name = Key{t.from.str() + "-" + t.trigger.str() + "->" + t.to.str()};
         transitions_.push_back(std::move(t));
         const Transition& ref = transitions_.back();
         by_trigger_[ref.trigger].push_back(transitions_.size() - 1);
@@ -242,6 +251,19 @@ public:
     }
 
     static Key any() { return Key{"*"}; }
+
+    // Taking a transition, as far as what it does to data: its action on the
+    // state it leaves (filling the arguments the target is entered with), then
+    // its functor, carrying the event that took it along. The engine takes a
+    // transition by this, and so does a law's path: one transition, one
+    // meaning.
+    void cross(const Transition& t, State& from, State* target, const Event& ev, Params& args) const {
+        if (t.action) t.action(from, ev, args);
+        if (t.functor.empty() || !target) return;
+        const Functor* f = functor(t.functor);
+        if (!f) throw std::runtime_error("transition " + t.name.str() + ": no functor " + t.functor.str());
+        f->apply(from, *target, std::vector<Event>{ev});
+    }
 
     // --- functors -------------------------------------------------------------
     Functor& add_functor(Functor f) {

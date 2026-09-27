@@ -377,6 +377,15 @@ inline Key cod(const Morphism& m) { return m.to.empty() ? m.from : m.to; }
 // EventBus: a double-buffered queue plus direct subscriptions. The buffers are
 // reused frame to frame, so steady-state dispatch does not allocate.
 // ---------------------------------------------------------------------------
+namespace detail {
+// How many law trials are running on this thread (Laws.hpp's Trial): while
+// any is, nothing outside the graph hears what a state does.
+inline int& trials() {
+    static thread_local int n = 0;
+    return n;
+}
+}  // namespace detail
+
 class EventBus {
 public:
     using Listener = std::function<void(const Event&)>;
@@ -388,13 +397,18 @@ public:
     const std::vector<Event>& queued() const { return queue_; }
     void requeue(std::vector<Event> q) { queue_ = std::move(q); }
 
+    // A listener watches a state from outside the graph - a test, a tool, a
+    // log. It is not a way between states: what a state has to tell another
+    // it says (State::says), and the graph's transitions carry it. A law's
+    // trial runs arrows to see what they do and then un-runs them; a
+    // listener could not be un-run, so while a trial runs none is called.
     void subscribe(Key name, Listener fn) { listeners_[name].push_back(std::move(fn)); }
 
     // Swaps the pending queue into `out` so handlers may emit freely.
     void drain_into(std::vector<Event>& out) {
         out.clear();
         out.swap(queue_);
-        if (listeners_.empty()) return;
+        if (listeners_.empty() || detail::trials() > 0) return;
         for (const auto& e : out) {
             auto it = listeners_.find(e.name);
             if (it == listeners_.end()) continue;

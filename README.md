@@ -105,8 +105,9 @@ a room you stepped out of. The engine steps such a state once a frame if the
 active state did not, with what is open in it, and carries its Live embeddings
 back out - so nothing needs stepping by hand from the game loop.
 
-`on_update` still runs. `engine.set_watch_updates(true)` reports any state
-whose `on_update` writes its data instead of emitting an event for an arrow.
+`on_update` still runs. `engine.set_watch_hooks(true)` reports any state whose
+hook - `on_update`, `on_event`, `on_render`, `on_enter`, `on_exit`, `on_pause`,
+`on_resume` - writes its data instead of emitting an event for an arrow.
 
 ## Gluing
 
@@ -274,8 +275,9 @@ public:
                   const int64_t hp = slime->params.get_or<int64_t>("hp", 0) -
                                      ev.args.get_or<int64_t>("dmg", 1);
                   slime->params.set("hp", hp);
-                  if (hp <= 0) s.emit("victory");   // an event of the battle, not yet of the game
+                  if (hp <= 0) s.emit("victory");   // said outward: the graph takes it from here
               });
+        says("victory");   // declared: what the battle tells the world
     }
 };
 ```
@@ -292,17 +294,27 @@ graph.pop("menu", "back");                    // and back off
 graph.set_initial("battle");
 
 sg::Engine engine(graph);
-// A state's events stay in the state. Forward the ones that should move the
-// game - here, rather than from inside the arrow, so the law checks can run
-// the arrow without setting the engine in motion.
-battle.bus().subscribe("victory", [&engine](const sg::Event& e) { engine.fire(e); });
 engine.start();
 engine.fire(sg::Event{"attack", sg::Params{}.set("dmg", int64_t{8})});
 engine.run(60.0);
 ```
 
+A state's events stay in the state, except those it `says`: the engine hands
+those to the graph's transitions (and to nothing else - one no transition takes
+is dropped). Nothing in between: no listener, no `engine.fire` from inside an
+arrow. A state sees its engine const, so it cannot move the stack itself; what
+it said is part of what an arrow did, and a law's trial keeps it to itself.
+`bus().subscribe` is for watching from outside - a test, a log - and never runs
+during a law's trial.
+
 Transitions take an optional `guard`, an `action` (fills the `Params` handed to
-`on_enter`) and a `functor`. `"*"` as the source matches any state.
+`on_enter`) and a `functor`. `"*"` as the source matches any state. A
+transition's name is its identity: a name given twice is refused, and a made-up
+one (`from-trigger->to`) gets `#2`, `#3` for alternatives on the same event; an
+arrow's name is unique in its state. In a law, `Path::transition(name)` is the
+transition the engine would take - on its trigger, only if the engine would
+choose it there (guard and precedence), running its action, carrying the event,
+entering where it goes; a pop returns to where the path last pushed from.
 
 ### Functors
 
@@ -315,7 +327,7 @@ sg::Functor& lift = graph.add_functor("lift", "world2d", "world3d");
 lift.on_object("player", "player", sg::transport::copy_all)
     .on_morphism("move.player", "move.player")
     .on_event(flat.step_event(), deep.step_event());
-graph.connect("world2d", "toggle", "world3d").functor = "lift";
+graph.connect("world2d", "toggle", "world3d", "lift");   // a switch that carries by lift
 graph.compose_functors("roundtrip", {"lift", "flatten"});   // g * f, checked at the seam
 ```
 
