@@ -321,12 +321,9 @@ public:
 
     // Same, plus one event - the one that took a transition - relabelled into
     // the target's queue.
-    void apply(const State& src, State& dst, const Event& carried) const {
+    void apply(const State& src, State& dst, const Event& e) const {
         apply(src, dst);
-        Event out = carried;
-        out.name = image_event(carried.name);
-        out.source = Key{src.id().str() + "/" + name_.str()};
-        dst.emit(std::move(out));
+        dst.hear(carried(e, src));
     }
 
     // Same, plus relabelled events forwarded into the target's queue.

@@ -378,7 +378,8 @@ private:
     //   - to an edit declared on it (graph.edit), applied next frame;
     //   - to the graph's transitions (next frame, with what was fired);
     //   - across each functor out of the state that names the event
-    //     (Functor::on_event), relabelled, to the state it goes to - whose
+    //     (Functor::on_event), relabelled, to the state it goes to - with the
+    //     objects it maps, as a transition's functor carries them - whose
     //     arrows run on it at once. A functor is an interface: it maps
     //     objects, arrows and events. An embedding's functor carries only
     //     while the embedding is open (its `in` from the host as well as the
@@ -401,7 +402,11 @@ private:
                     if ((c.e && !c.e->open) || !c.f->maps_event(e.name)) continue;
                     State* to = graph_.find(c.to);
                     if (!to) continue;
-                    to->hear(c.f->carried(e, s));
+                    // A functor of its own carries its objects with the event,
+                    // as a transition's does; an embedding's objects cross as
+                    // its sync says, so only the event goes.
+                    if (c.e) to->hear(c.f->carried(e, s));
+                    else c.f->apply(s, *to, e);
                     to->dispatch_pending();
                     heard_from(*to, depth + 1);
                 }
