@@ -196,7 +196,8 @@ public:
     // --- frame -------------------------------------------------------------------
     void tick(double dt) {
         if (!running_) return;
-        const Tick t{dt, elapsed(), frame_++};
+        time_ += dt;
+        const Tick t{dt, time_, frame_++};
         process_transitions();
         if (!running_) return;
         if (State* c = top()) {
@@ -232,11 +233,15 @@ public:
         for (uint64_t i = 0; i < frames && running_; ++i) tick(dt);
     }
 
+    // Seconds of wall clock since the engine started: for pacing and for
+    // watching, never for what the world means - a Tick's time is the sum of
+    // the steps taken (simulated_time), so a fixed run is the same every run.
     double elapsed() const {
         return std::chrono::duration<double>(Clock::now() - clock_start_).count();
     }
 
     uint64_t frame() const { return frame_; }
+    double simulated_time() const { return time_; }
     void set_trace(bool on) { trace_ = on; }
 
 private:
@@ -465,6 +470,7 @@ private:
     Clock::time_point clock_start_{};
     Clock::time_point last_{};
     uint64_t frame_ = 0;
+    double time_ = 0.0;  // simulated: the sum of every dt ticked
     bool running_ = false;
     bool trace_ = false;
     bool strict_ = false;

@@ -39,7 +39,7 @@ private:
 // Per-tick context handed to every state.
 struct Tick {
     double dt = 0.0;    // seconds since the previous frame
-    double time = 0.0;  // seconds since the engine started
+    double time = 0.0;  // simulated seconds: the sum of every dt so far, this one included
     uint64_t frame = 0;
 };
 

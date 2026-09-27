@@ -281,10 +281,9 @@ inline std::vector<std::string> adjacency_defects(const Atlas& atlas, const Stat
     return out;
 }
 
-inline std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g,
-                                                int max_cycle = 4) {
+inline std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g) {
     const Cover cover = as_cover(atlas, g);
-    std::vector<std::string> out = cover.descent_defects(g, max_cycle);
+    std::vector<std::string> out = cover.descent_defects(g);
     for (const auto& d : travel_defects(cover, g)) out.push_back(d);
     for (const auto& d : adjacency_defects(atlas, g)) out.push_back(d);
 

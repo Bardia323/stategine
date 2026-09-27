@@ -27,6 +27,7 @@
 #pragma once
 
 #include <cmath>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -199,8 +200,9 @@ public:
     Key other_side(const Overlap& o, Key here) const { return o.u == here ? o.v : o.u; }
 
     // --- descent ----------------------------------------------------------------
-    // Everything that stops these pieces gluing into one space.
-    std::vector<std::string> descent_defects(const StateGraph& g, int max_cycle = 4) const {
+    // Everything that stops these pieces gluing into one space. Complete: every
+    // overlap and every loop of the cover, however long, is held to it.
+    std::vector<std::string> descent_defects(const StateGraph& g) const {
         std::vector<std::string> out;
 
         for (const Overlap& o : overlaps_) {
@@ -226,115 +228,119 @@ public:
                 out.push_back(d);
         }
 
-        for (const auto& d : cocycle_defects(g, max_cycle)) out.push_back(d);
+        for (const auto& d : cocycle_defects(g)) out.push_back(d);
         return out;
     }
 
     // Loops that do not close: walk the ring and you arrive somewhere else.
-    std::vector<std::string> cocycle_defects(const StateGraph& g, int max_cycle = 4) const {
+    //
+    // Every loop, not those up to some length. Grow a tree over each connected
+    // piece of the cover from a root; each overlap the tree does not use closes
+    // exactly one loop - out along the tree, across it, back along the tree -
+    // and every loop of the cover is made of these. So when each of them is
+    // the identity (and separatedness makes going there and back cancel),
+    // every loop is: one check per overlap, not one per path.
+    std::vector<std::string> cocycle_defects(const StateGraph& g) const {
         std::vector<std::string> out;
-        std::vector<Key> path;
-        std::vector<std::size_t> used;
-        for (const auto& kv : by_state_) {
-            const Key start = kv.first;
-            path.clear();
-            used.clear();
-            walk(g, start, start, path, used, max_cycle, out);
+        std::unordered_map<Key, bool> reached;
+        for (Key root : states_in_order()) {
+            if (reached[root] || !g.find(root)) continue;
+            const Tree t = grow(g, root);
+            for (const auto& kv : t.to) reached[kv.first] = true;
+            for (std::size_t oi : t.closing) {
+                const Overlap& o = overlaps_[oi];
+                const Functor* across = transition(g, o, o.u);
+                if (!across) continue;
+                Functor loop = Functor::compose(Functor::compose(t.to.at(o.u), *across),
+                                                t.back.at(o.v));
+                std::string ring;
+                for (const Key& p : t.path.at(o.u)) ring += p.str() + " -> ";
+                const auto& home = t.path.at(o.v);
+                for (auto it = home.rbegin(); it != home.rend(); ++it)
+                    ring += it->str() + (std::next(it) == home.rend() ? "" : " -> ");
+                loop.rename(Key{"loop." + ring});
+                for (const auto& d : identity_defects(g, loop, "cycle " + ring)) out.push_back(d);
+            }
         }
         return out;
     }
 
     // --- gluing -------------------------------------------------------------------
-    // The composite transition from `root` to each state it can reach: the
+    // The composite transition from `root` to every state it can reach: the
     // change of coordinates that expresses that state's local data in the
     // root's terms. This is the glued section - and it is only well defined
     // because descent holds, so descent is asked first: a cover that fails it
-    // glues to nothing, and its defects are put in `seams` if asked for.
-    // Descent is checked on loops of up to `max_depth` overlaps.
+    // glues to nothing, and its defects are put in `seams` if asked for. The
+    // section covers every piece joined to the root, however far.
     std::vector<std::pair<Key, Functor>> sections(const StateGraph& g, Key root,
-                                                  int max_depth = 4,
                                                   std::vector<std::string>* seams = nullptr) const {
         std::vector<std::pair<Key, Functor>> out;
-        const State* root_state = g.find(root);
-        if (!root_state) return out;
-        std::vector<std::string> defects = descent_defects(g, max_depth);
+        if (!g.find(root)) return out;
+        std::vector<std::string> defects = descent_defects(g);
         if (!defects.empty()) {
             if (seams) *seams = std::move(defects);
             return out;
         }
-        out.emplace_back(root, Functor::identity(*root_state, Key{"id." + root.str()}));
-
-        std::unordered_map<Key, std::size_t> seen{{root, 0}};
-        std::vector<std::pair<Key, int>> queue{{root, 0}};
-        for (std::size_t i = 0; i < queue.size(); ++i) {
-            const Key here = queue[i].first;
-            const int depth = queue[i].second;
-            if (depth >= max_depth) continue;
-            const Functor to_here = out[seen[here]].second;
-
-            auto it = by_state_.find(here);
-            if (it == by_state_.end()) continue;
-            for (std::size_t oi : it->second) {
-                const Overlap& o = overlaps_[oi];
-                const Key there = other_side(o, here);
-                if (seen.count(there)) continue;
-                const Functor* step = transition(g, o, here);
-                if (!step) continue;
-                seen.emplace(there, out.size());
-                // root -> here, then here -> there.
-                out.emplace_back(there, Functor::compose(to_here, *step,
-                                                         Key{root.str() + "->" + there.str()}));
-                queue.emplace_back(there, depth + 1);
-            }
-        }
+        const Tree t = grow(g, root);
+        for (Key k : t.order) out.emplace_back(k, t.to.at(k));
         return out;
     }
 
 private:
-    void walk(const StateGraph& g, Key start, Key here, std::vector<Key>& path,
-              std::vector<std::size_t>& used, int budget,
-              std::vector<std::string>& out) const {
-        if (budget <= 0) return;
-        auto it = by_state_.find(here);
-        if (it == by_state_.end()) return;
-        for (std::size_t oi : it->second) {
-            bool already = false;
-            for (std::size_t u : used)
-                if (u == oi) already = true;
-            if (already) continue;
-            const Overlap& o = overlaps_[oi];
-            const Key there = other_side(o, here);
+    // A tree over the piece of the cover joined to `root`: for each state, the
+    // way there from the root and the way back, and the overlaps it leaves out.
+    struct Tree {
+        std::vector<Key> order;                             // as reached, root first
+        std::unordered_map<Key, Functor> to, back;          // root -> k, k -> root
+        std::unordered_map<Key, std::vector<Key>> path;     // root ... k
+        std::vector<std::size_t> closing;                   // overlaps not in the tree
+    };
 
-            used.push_back(oi);
-            path.push_back(here);
-            if (there == start && path.size() >= 3) {
-                // A closed loop of three or more overlaps: compose it.
-                Functor loop = *transition(g, overlaps_[used.front()], start);
-                bool ok = true;
-                Key cursor = other_side(overlaps_[used.front()], start);
-                for (std::size_t k = 1; k < used.size(); ++k) {
-                    const Functor* step = transition(g, overlaps_[used[k]], cursor);
-                    if (!step) {
-                        ok = false;
-                        break;
-                    }
-                    loop = Functor::compose(loop, *step);
-                    cursor = other_side(overlaps_[used[k]], cursor);
-                }
-                if (ok) {
-                    std::string ring;
-                    for (const Key& p : path) ring += p.str() + " -> ";
-                    ring += start.str();
-                    loop.rename(Key{"loop." + ring});
-                    for (const auto& d : identity_defects(g, loop, "cycle " + ring))
-                        out.push_back(d);
-                }
-            } else if (there != start) {
-                walk(g, start, there, path, used, budget - 1, out);
+    Tree grow(const StateGraph& g, Key root) const {
+        Tree t;
+        const State& r = g.state(root);
+        t.to.emplace(root, Functor::identity(r, Key{"id." + root.str()}));
+        t.back.emplace(root, Functor::identity(r, Key{"id." + root.str()}));
+        t.path[root] = {root};
+        t.order.push_back(root);
+        std::vector<bool> in_tree(overlaps_.size(), false), seen(overlaps_.size(), false);
+        for (std::size_t i = 0; i < t.order.size(); ++i) {
+            const Key here = t.order[i];
+            auto it = by_state_.find(here);
+            if (it == by_state_.end()) continue;
+            for (std::size_t oi : it->second) {
+                if (seen[oi]) continue;
+                const Overlap& o = overlaps_[oi];
+                const Key there = other_side(o, here);
+                const Functor* step = transition(g, o, here);
+                const Functor* home = transition(g, o, there);
+                if (!step || !home) continue;  // descent names a missing transition
+                seen[oi] = true;
+                if (t.to.count(there)) continue;  // closes a loop: checked by cocycle
+                in_tree[oi] = true;
+                t.to.emplace(there, Functor::compose(t.to.at(here), *step,
+                                                     Key{root.str() + "->" + there.str()}));
+                t.back.emplace(there, Functor::compose(*home, t.back.at(here),
+                                                       Key{there.str() + "->" + root.str()}));
+                t.path[there] = t.path[here];
+                t.path[there].push_back(there);
+                t.order.push_back(there);
             }
-            path.pop_back();
-            used.pop_back();
         }
+        for (std::size_t oi = 0; oi < overlaps_.size(); ++oi)
+            if (seen[oi] && !in_tree[oi]) t.closing.push_back(oi);
+        return t;
+    }
+
+    // The states of the cover, in the order they were first named - so the
+    // same cover is always walked, and reported, the same way.
+    std::vector<Key> states_in_order() const {
+        std::vector<Key> out;
+        std::unordered_map<Key, bool> named;
+        for (const Overlap& o : overlaps_)
+            for (Key k : {o.u, o.v})
+                if (!named[k]) named[k] = true, out.push_back(k);
+        return out;
     }
 
     std::vector<Overlap> overlaps_;

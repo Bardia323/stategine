@@ -432,8 +432,9 @@ public:
     // arrows and functors on the live graph, and one that tried to rewrite
     // what joins the states would leave the world changed after the check
     // undid its data. Such a change throws RewriteRefused, the trial is
-    // undone, and the check reports it. Elements and arrows added inside a
-    // state on trial are allowed - the trial takes them away again.
+    // undone, and the check reports it. The same holds inside a state: an
+    // element or arrow added or removed on trial is refused too (see Revision
+    // in Core.hpp) - a trial undoes data, and structure is not data.
     class Sealed {
     public:
         explicit Sealed(StateGraph& g) : g_(g) { ++g_.rev_.sealed; }

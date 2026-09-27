@@ -13,7 +13,11 @@ While the major version is 0, a minor bump may break the API.
   - `State::content_version()` versions each queued event (name, sender, arguments), not only how many there are, so a `LawCache` no longer answers from a queue that has changed under the same count.
   - `sg::is_lossless` counts an object or a parameter the round trip drops as lost; before, only changed values were. `identity_defects` takes `whole = true` for the same.
   - **Breaking:** `Cover::sections` checks descent first and glues nothing for a cover that fails it; an optional `std::vector<std::string>* seams` says why.
-  - Docs say what is so: `sg::verify` runs the laws the graph owns, not descent or adjunctions; a `Functor` is partial; functoriality is the per-arrow square; `add_lens` declares, `verify` checks.
+  - Queued events are compared in the order queued, as they are dispatched: `a, b` is not `b, a`.
+  - **Breaking:** `sg::enforce` throws when an equation could not be checked (`LawReport::holds()`), not only on a counterexample. `LawReport::bounded` / `complete()` report a search stopped at its `LawOptions` budget (associativity's `max_triples`), which before was silent.
+  - **Breaking:** descent is checked on every loop of a cover (one per overlap outside a spanning tree), not loops up to four; `Cover::descent_defects`, `cocycle_defects` and `sg::descent_defects(atlas, g)` lose `max_cycle`. `Cover::sections(g, root, seams)` loses `max_depth` and reaches every piece joined to the root.
+  - `Tick::time` is simulated time, the sum of every `dt` (`Engine::simulated_time()`), not the wall clock: a `run_fixed` run is the same every run.
+  - Docs say what is so: a law trial refuses structural change inside a state as well (a `StateGraph` comment said otherwise); `sg::verify` runs the laws the graph owns, not descent or adjunctions; a `Functor` is partial; functoriality is the per-arrow square; `add_lens` declares, `verify` checks.
 
 - **Driven bodies, friction by the part, and a doorway's edge lit softly.**
   - `World::drive(body, x, r)`: moved by the game to where it should be by the end of the next step, at the speed that takes - furniture hauled, a board pulled by its stand, a lift. For that step it is as heavy as the room: what it meets is pushed out of its way, what lies on it goes with it by friction, and what sleeps against it wakes at once. It ends the step still.

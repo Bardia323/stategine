@@ -170,6 +170,24 @@ void test_integration() {
     check(near(s.element("p").params.num(sg::keys::x), 4.0), "integration can be switched off");
 }
 
+// A fixed run is the same every run: a tick's time is the steps taken, not the
+// wall clock.
+struct Clocked : sg::State {
+    using sg::State::State;
+    std::vector<double> times;
+    void on_update(const sg::Tick& t) override { times.push_back(t.time); }
+};
+
+void test_time_is_simulated() {
+    sg::StateGraph g;
+    auto& c = g.add<Clocked>("clocked");
+    g.set_initial("clocked");
+    sg::Engine e(g);
+    e.run_fixed(0.25, 4);
+    check(c.times.size() == 4 && c.times[0] == 0.25 && c.times[3] == 1.0 && e.simulated_time() == 1.0,
+          "a tick's time is the sum of the steps, whatever the wall clock says");
+}
+
 // --- functors ---------------------------------------------------------------
 void test_transports() {
     sg::Element src("a", "thing");
@@ -807,7 +825,7 @@ void test_descent() {
     check(!seams.empty() && named_cycle, "a ring that does not close is reported as a seam");
     // And a ring with a seam has no glued section: gluing asks descent first.
     std::vector<std::string> why;
-    check(bad_ring.sections(g, "u", 4, &why).empty() && !why.empty(),
+    check(bad_ring.sections(g, "u", &why).empty() && !why.empty(),
           "a cover that fails descent glues to nothing, and says why");
 
     // Close it correctly and the seam goes away.
@@ -817,6 +835,29 @@ void test_descent() {
     link_shift(g, good_ring, "w", "u", -8.0);
     check(good_ring.descent_defects(g).empty(), "a ring that closes up glues cleanly");
     check(good_ring.sections(g, "u").size() == 3, "and glues to a section over every piece");
+
+    // A ring of six whose holonomy only shows all the way round: no budget on
+    // loop length hides it.
+    sg::StateGraph h;
+    const char* six[] = {"p0", "p1", "p2", "p3", "p4", "p5"};
+    for (const char* id : six) {
+        h.add<sg::State>(sg::Key{id}).add_element("x", "thing").params.set("v", 0.0);
+    }
+    h.set_initial("p0");
+    sg::Cover long_ring, long_chain;
+    for (int i = 0; i < 6; ++i) link_shift(h, long_ring, six[i], six[(i + 1) % 6], 1.0);
+    for (int i = 0; i < 5; ++i) link_shift(h, long_chain, six[i], six[i + 1], 1.0);
+    bool named = false;
+    for (const auto& d : long_ring.descent_defects(h)) named = named || d.find("cycle") != std::string::npos;
+    check(named, "a ring of six that does not close is a seam");
+    const auto far = long_chain.sections(h, "p0");
+    const sg::Functor* to_p5 = nullptr;
+    for (const auto& sec : far)
+        if (sec.first == sg::Key{"p5"}) to_p5 = &sec.second;
+    sg::State probe5("probe5");
+    if (to_p5) to_p5->apply(h.state("p0"), probe5);
+    check(far.size() == 6 && to_p5 && near(probe5.element("x").params.num("v"), 5.0),
+          "and a section reaches every piece, however far from the root");
 }
 
 // A round trip that drops a parameter outright has lost it, as surely as one
@@ -1428,6 +1469,7 @@ int main() {
     test_transitions_and_stack();
     test_guards_and_wildcards();
     test_integration();
+    test_time_is_simulated();
     test_transports();
     test_functor_roundtrip();
     test_functor_composition();

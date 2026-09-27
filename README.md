@@ -76,9 +76,11 @@ Rooms glued by doorways are one case of local pieces glued into a whole.
 * **descent** lets them glue: across an overlap and back is the identity
   (*separatedness*), and around every loop the composite is the identity
   (*cocycle*). A loop that does not close is a seam;
-* **`sections(root)`** is the glued result, every piece in one chosen chart. It
-  asks descent first: a cover with a seam glues to nothing (pass a
-  `std::vector<std::string>*` to hear why).
+* **`sections(root)`** is the glued result, every piece joined to the root in
+  one chosen chart, however far. It asks descent first: a cover with a seam
+  glues to nothing (pass a `std::vector<std::string>*` to hear why). Descent
+  is checked on every loop, not up to a length: a tree over the cover leaves
+  one closing overlap per independent loop, and those are checked.
 
 ```cpp
 for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: " << seam << "\n";
@@ -142,8 +144,14 @@ result*:
 | Descent | separatedness and cocycle on a `Cover` (`descent_defects`; not part of `verify`) |
 
 "The same result" means every element's parameters and whether it is alive,
-and every queued event - name, sender and arguments, in any order. Two paths
-that queue `damage(5)` and `damage(500)` do not agree.
+and every queued event - name, sender and arguments, in the order queued (the
+queue is dispatched in that order). Two paths that queue `damage(5)` and
+`damage(500)` do not agree, nor do `a, b` and `b, a`.
+
+A report keeps apart what it found, what it could not check and where it
+stopped looking: `ok()` is no counterexample; `holds()` is that and every
+equation run (`unchecked` empty); `complete()` is no search cut short by a
+`LawOptions` budget (`bounded` empty). `sg::enforce` throws unless `holds()`.
 
 Functoriality here is the square `f ; F == F ; F(f)` for each arrow `F` maps:
 what the functor does to data agrees with what the arrows do. It is not by

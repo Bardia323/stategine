@@ -364,6 +364,38 @@ void test_enforce_refuses_a_lie() {
     }
     check(threw && what.find("shop.shelf.stock") != std::string::npos,
           "enforce throws, and the message carries the counterexample");
+
+    // What cannot be checked is not taken for lawful.
+    sg::StateGraph g2;
+    auto& a = g2.add<sg::State>("a");
+    g2.add<sg::State>("b");
+    a.add_element("x", "n").params.set("v", 2.0);
+    g2.add_functor("f", "a", "b").on_object("x", "y");  // would create b.y: not checkable
+    g2.connect("a", "go", "b");
+    const sg::LawReport r = sg::verify(g2);
+    check(r.ok() && !r.all_checked() && !r.holds(), "no counterexample is not the laws holding");
+    threw = false;
+    try {
+        sg::enforce(g2);
+    } catch (const sg::LawError& e) {
+        threw = true;
+        what = e.what();
+    }
+    check(threw && what.find("cannot be shown") != std::string::npos,
+          "enforce refuses an equation it could not check, and says it could not");
+}
+
+// A search cut short by its budget says so.
+void test_budgets_are_visible() {
+    sg::StateGraph g;
+    make_shop(g);
+    g.set_initial("shop");
+    sg::LawOptions o;
+    o.max_triples = 1;
+    const sg::LawReport r = sg::verify(g, {}, o);
+    check(!r.complete() && r.bounded.front().detail.find("budget of 1") != std::string::npos,
+          "associativity stopped at its budget is reported as bounded");
+    check(sg::verify(g).complete(), "and with room enough it is complete");
 }
 
 // --- transitions are arrows too ----------------------------------------------------------------
@@ -520,6 +552,31 @@ void test_typed() {
 // --- what is queued is compared whole ---------------------------------------------------
 // An event is its name, its arguments and who sent it: two paths that queue
 // damage(5) and damage(500) did not leave the same result.
+void test_events_are_compared_in_order() {
+    sg::StateGraph g;
+    auto& s = g.add<sg::State>("say");
+    s.add_element("m", "mouth");
+    g.set_initial("say");
+    const auto say = [](const char* first, const char* second) {
+        return [=](sg::State& st, sg::Element&, sg::Element*, const sg::Event&) {
+            st.emit(sg::Key{first});
+            st.emit(sg::Key{second});
+        };
+    };
+    s.loop("ab", "m", "ab", say("a", "b"));
+    s.loop("ab2", "m", "ab2", say("a", "b"));
+    s.loop("ba", "m", "ba", say("b", "a"));
+    sg::Diagram same("a then b, twice");
+    same.commutes(sg::Path("say", "m").arrow("ab"), sg::Path("say", "m").arrow("ab2"));
+    check(sg::laws::diagram(g, same).empty(), "the same events in the same order agree");
+    sg::Diagram bad("a then b, b then a");
+    bad.commutes(sg::Path("say", "m").arrow("ab"), sg::Path("say", "m").arrow("ba"));
+    const auto vs = sg::laws::diagram(g, bad);
+    show(vs);
+    check(vs.size() == 1 && vs[0].key == "<emitted>",
+          "a then b is not b then a: the queue is dispatched in order");
+}
+
 void test_events_are_compared_whole() {
     sg::StateGraph g;
     auto& s = g.add<sg::State>("fight");
@@ -590,6 +647,8 @@ int main() {
     test_transitions_in_paths();
     test_typed();
     test_events_are_compared_whole();
+    test_events_are_compared_in_order();
+    test_budgets_are_visible();
     test_cache_sees_what_is_queued();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");

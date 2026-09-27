@@ -9,7 +9,7 @@
 //
 // So there is one checker, and the laws are equations it is handed. "The same
 // result" is every element's parameters and whether it is alive, and every
-// event queued - its name, its sender and its arguments:
+// event queued - its name, its sender and its arguments, in the order queued:
 //
 //   identity        id ; f  ==  f  ==  f ; id
 //   associativity   (f ; g) ; h  ==  f ; (g ; h)
@@ -72,6 +72,10 @@ struct Violation {
     // Not a counterexample: the equation could not be checked at all, because
     // running a side would change what the graph is made of (see Trial).
     bool refused = false;
+    // Not a counterexample either: a search stopped at the budget it was given
+    // (LawOptions), and what lies past it was not looked at. Said, so that
+    // "nothing found" is never read as "nothing there".
+    bool bounded = false;
 
     std::string str() const {
         std::string s = law + " @ " + where + ": ";
@@ -717,23 +721,17 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
     }
 
     // What the paths set in motion is part of what they did: each event, name,
-    // arguments and sender, and in any order - two events queued the other
-    // way round are the same things set in motion.
+    // arguments and sender, in the order queued - the queue is dispatched in
+    // that order, so A then B is not B then A.
     const auto names = [](const State::Snapshot& s) {
         std::vector<std::string> n;
         for (const auto& e : s.queue) n.push_back(event_str(e));
-        std::sort(n.begin(), n.end());
         return n;
     };
     const auto same_queues = [](const std::vector<Event>& a, const std::vector<Event>& b) {
         if (a.size() != b.size()) return false;
-        std::vector<bool> taken(b.size(), false);
-        for (const Event& e : a) {
-            bool found = false;
-            for (std::size_t j = 0; !found && j < b.size(); ++j)
-                if (!taken[j] && same_event(e, b[j])) found = taken[j] = true;
-            if (!found) return false;
-        }
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (!same_event(a[i], b[i])) return false;
         return true;
     };
     const auto joined = [](const std::vector<std::string>& n) {
@@ -888,8 +886,20 @@ inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {},
     return out;
 }
 
+// A search that stopped at its budget, said as such.
+inline Violation bounded(const std::string& law, const std::string& where, std::size_t budget) {
+    Violation v;
+    v.law = law;
+    v.where = where;
+    v.detail = "stopped at the budget of " + std::to_string(budget) +
+               " triples (LawOptions::max_triples); the rest were not checked";
+    v.bounded = true;
+    return v;
+}
+
 // (f ; g) ; h == f ; (g ; h) == f ; g ; h, for composable triples of arrows in
-// each state and of registered functors.
+// each state and of registered functors. Past `max_triples` the search stops,
+// and says so.
 inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o = {},
                                     LawCache* cache = nullptr) {
     if (cache) cache->begin(g);
@@ -923,11 +933,15 @@ inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o =
             if (!s.find(dom(f)) || !s.find(cod(f))) continue;
             for (const Morphism* gm : leaving[cod(f)])
                 for (const Morphism* h : leaving[cod(*gm)]) {
-                    if (budget == 0) break;
+                    if (budget == 0) {
+                        out.push_back(bounded("associativity", sid.str(), o.max_triples));
+                        goto next_state;
+                    }
                     --budget;
                     triple(f, *gm, *h);
                 }
         }
+    next_state:;
     }
 
     std::size_t budget = o.max_triples;
@@ -936,7 +950,10 @@ inline std::vector<Violation> associativity(StateGraph& g, const LawOptions& o =
             if (a.second.to() != b.second.from()) continue;
             for (const auto& c : g.functors()) {
                 if (b.second.to() != c.second.from()) continue;
-                if (budget-- == 0) return out;
+                if (budget-- == 0) {
+                    out.push_back(bounded("associativity", "functors", o.max_triples));
+                    return out;
+                }
                 const Functor& f = a.second;
                 const Functor& gf = b.second;
                 const Functor& h = c.second;
@@ -1368,15 +1385,25 @@ struct LawReport {
     // the graph is made of (added an element, a functor...), which a trial
     // never lets happen. Neither broken nor shown to hold.
     std::vector<Violation> unchecked;
+    // Searches that stopped at the budget the caller gave them: what lies past
+    // it was not looked at.
+    std::vector<Violation> bounded;
 
+    // No counterexample found. Not the same as the laws holding: see
+    // all_checked() and complete().
     bool ok() const { return structure.empty() && violations.empty(); }
     bool all_checked() const { return unchecked.empty(); }
+    bool complete() const { return bounded.empty(); }
+    // No counterexample, and every equation was run: the laws hold, as far as
+    // the budgets reach.
+    bool holds() const { return ok() && all_checked(); }
 
     std::string str() const {
         std::string s;
         for (const auto& e : structure) s += "structure: " + e + "\n";
         for (const auto& v : violations) s += v.str() + "\n";
         for (const auto& v : unchecked) s += "unchecked: " + v.str() + "\n";
+        for (const auto& v : bounded) s += "bounded: " + v.str() + "\n";
         return s;
     }
 };
@@ -1384,7 +1411,8 @@ struct LawReport {
 namespace laws {
 // Counterexamples to one side, equations that could not be checked to the other.
 inline void sort_into(LawReport& r, std::vector<Violation> from) {
-    for (auto& v : from) (v.refused ? r.unchecked : r.violations).push_back(std::move(v));
+    for (auto& v : from)
+        (v.bounded ? r.bounded : v.refused ? r.unchecked : r.violations).push_back(std::move(v));
 }
 }  // namespace laws
 
@@ -1422,15 +1450,21 @@ inline LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagra
 // For callers that would rather not start at all than start on a lie.
 struct LawError : std::runtime_error {
     explicit LawError(LawReport r)
-        : std::runtime_error("stategine: the graph breaks its laws\n" + r.str()),
+        : std::runtime_error(std::string(r.ok() ? "stategine: the graph cannot be shown to keep its laws"
+                                                : "stategine: the graph breaks its laws") +
+                             "\n" + r.str()),
           report(std::move(r)) {}
     LawReport report;
 };
 
+// Refuses a graph that breaks a law, and one with an equation that could not
+// be checked at all: what is unknown is not taken for lawful. A search cut
+// short by a budget the caller set is not refused - the caller chose it - but
+// is in the report.
 inline void enforce(StateGraph& g, const std::vector<Diagram>& diagrams = {},
                     const LawOptions& o = {}) {
     LawReport r = verify(g, diagrams, o);
-    if (!r.ok()) throw LawError(std::move(r));
+    if (!r.holds()) throw LawError(std::move(r));
 }
 
 }  // namespace sg
