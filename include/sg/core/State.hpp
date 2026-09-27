@@ -70,12 +70,22 @@ public:
     // Return true to consume the event before any morphism sees it.
     virtual bool on_event(const Event&) { return false; }
 
-    // The frame order is part of the contract, hence non-virtual.
-    void step(const Tick& t) {
-        on_update(t);
+    // The frame order is part of the contract, hence non-virtual. With
+    // `watch`, an on_update that changes the state's data - rather than
+    // emitting an event for an arrow to act on - is noted (wrote_in_update):
+    // behaviour is arrows, and time reaches a state through a drive.
+    void step(const Tick& t, bool watch = false) {
+        if (watch) {
+            const uint64_t before = data_version();
+            on_update(t);
+            if (data_version() != before) wrote_in_update_ = true;
+        } else {
+            on_update(t);
+        }
         dispatch_pending();
         on_render(t);
     }
+    bool wrote_in_update() const { return wrote_in_update_; }
 
     // --- elements (objects) -------------------------------------------------
     Element& add_element(Element e) {
@@ -284,9 +294,7 @@ public:
     // still. It costs a pass over the elements and the queue (no copy, no
     // allocation), which is what makes it worth asking before running arrows.
     uint64_t content_version() const {
-        uint64_t h = mix_stamp(0x9e3779b97f4a7c15ull, structure_);
-        h = mix_stamp(h, params_.stamp());
-        for (const Element& e : elements_) h = mix_stamp(h, (e.params.stamp() << 1) | (e.alive ? 1u : 0u));
+        uint64_t h = data_version();
         const std::vector<Event>& q = bus_.queued();
         h = mix_stamp(h, q.size());
         for (const Event& e : q) {
@@ -294,6 +302,15 @@ public:
             h = mix_stamp(h, std::hash<Key>{}(e.source));
             h = mix_stamp(h, e.args.stamp());
         }
+        return h;
+    }
+
+    // The same, leaving out what is queued: what the state holds, not what it
+    // has set in motion.
+    uint64_t data_version() const {
+        uint64_t h = mix_stamp(0x9e3779b97f4a7c15ull, structure_);
+        h = mix_stamp(h, params_.stamp());
+        for (const Element& e : elements_) h = mix_stamp(h, (e.params.stamp() << 1) | (e.alive ? 1u : 0u));
         return h;
     }
 
@@ -365,6 +382,7 @@ private:
     }
 
     Key id_;
+    bool wrote_in_update_ = false;  // see step(t, watch)
     Params params_;
     std::deque<Element> elements_;
     std::unordered_map<Key, std::size_t> index_;

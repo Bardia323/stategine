@@ -8,6 +8,11 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Time is a state.** `sg::Temporal` (`sg/core/Temporal.hpp`): an element `now` with `time` and `frame`, moved by its own `advance` arrow. `graph.drive(name, clock, state, trigger, additive)` declares that a state changes with a clock's time; the engine advances every clock that drives something and fires `trigger {dt, time, frame}` into driven states while they are active. A driven state reaches its clock; a clock alone reaches nothing.
+  - New law, `drive` (in `sg::verify`): `step(0) == id`, and for an `additive` drive `step(a) ; step(b) == step(a + b)` (`LawOptions::drive_dt`).
+  - Paths gain `event(trigger, args)` - fire an event at a state as a frame does, with what it sets in motion - and `arrow(name, args)`, a step with arguments of its own.
+  - `Engine::set_watch_updates(true)` reports a state whose `on_update` changes its data rather than emitting for an arrow. Off by default; `on_update` is unchanged.
+
 - **The laws see all of what they compare.**
   - Queued events are compared whole - name, sender and arguments - when two paths are checked against each other; before, only names were, so `damage(5)` and `damage(500)` passed as the same result. A counterexample names the arguments.
   - `State::content_version()` versions each queued event (name, sender, arguments), not only how many there are, so a `LawCache` no longer answers from a queue that has changed under the same count.

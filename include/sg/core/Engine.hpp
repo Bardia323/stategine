@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "sg/core/StateGraph.hpp"
+#include "sg/core/Temporal.hpp"
 
 namespace sg {
 
@@ -167,6 +168,9 @@ public:
     // `on_problem` if set, else to stderr; with `strict`, it throws.
     std::function<void(const std::string&)> on_problem;
     void set_strict(bool on) { strict_ = on; }
+    // Watch every state's on_update: one that changes its data, rather than
+    // emitting for an arrow to act on, is reported once, as a problem.
+    void set_watch_updates(bool on) { watch_updates_ = on; }
     void set_watch_interval(double seconds) { watch_interval_ = seconds; }
     const std::vector<std::string>& problems() const { return problems_; }
     // Check now, whatever changed: what is wrong, all of it.
@@ -174,12 +178,7 @@ public:
         watched_ = graph_.revision();
         last_watch_ = elapsed();
         std::vector<std::string> now = graph_.validate();
-        for (const std::string& p : now) {
-            if (std::find(problems_.begin(), problems_.end(), p) != problems_.end()) continue;
-            problems_.push_back(p);
-            if (on_problem) on_problem(p);
-            else std::cerr << "[sg] " << p << "\n";
-        }
+        for (const std::string& p : now) report(p);
         if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
         return now;
     }
@@ -200,11 +199,13 @@ public:
         const Tick t{dt, time_, frame_++};
         process_transitions();
         if (!running_) return;
+        advance_clocks(dt);
         if (State* c = top()) {
             // Edits made in an open Live guest since the last frame land in the
             // host before it updates, so the two never disagree within a frame.
             sync_live_out(*c);
-            c->step(t);
+            drive(*c, dt);
+            step(*c, t);
             step_embeddings(*c, t);
         }
         if (stack_.empty()) running_ = false;
@@ -257,6 +258,56 @@ private:
             focus_.pop_back();
         }
         return nullptr;
+    }
+
+    void report(const std::string& p) {
+        if (std::find(problems_.begin(), problems_.end(), p) != problems_.end()) return;
+        problems_.push_back(p);
+        if (on_problem) on_problem(p);
+        else std::cerr << "[sg] " << p << "\n";
+    }
+
+    // --- time -------------------------------------------------------------------------
+    // Every clock that drives something moves on by dt - through its own
+    // arrow, like any change to any state.
+    void advance_clocks(double dt) {
+        clocks_.clear();
+        for (const Drive& d : graph_.drives())
+            if (std::find(clocks_.begin(), clocks_.end(), d.clock) == clocks_.end()) clocks_.push_back(d.clock);
+        for (Key k : clocks_) {
+            State* c = graph_.find(k);
+            if (!c) continue;  // validate() names it
+            c->emit(Event{Temporal::advance_event(), Params{}.set(keys::dt, dt)});
+            c->dispatch_pending();
+        }
+    }
+
+    // What the clocks driving `s` say, handed to its arrows as an event.
+    void drive(State& s, double dt) {
+        for (const Drive& d : graph_.drives()) {
+            if (d.state != s.id()) continue;
+            const State* c = graph_.find(d.clock);
+            const Element* now = c ? c->find(Temporal::now_id()) : nullptr;
+            if (!now) continue;
+            Event ev{d.trigger, Params{}
+                                    .set(keys::dt, dt)
+                                    .set(keys::time, now->params.num(keys::time))
+                                    .set(keys::frame, now->params.get_or<int64_t>(keys::frame, 0))};
+            ev.source = d.clock;
+            s.emit(std::move(ev));
+        }
+    }
+
+    void step(State& s, const Tick& t) {
+        const bool had = s.wrote_in_update();
+        s.step(t, watch_updates_);
+        if (!had && s.wrote_in_update()) {
+            const std::string p = "state " + s.id().str() +
+                                  " changes its data in on_update, outside any arrow: "
+                                  "drive it from a clock (graph.drive)";
+            report(p);
+            if (strict_) throw std::runtime_error("stategine: " + p);
+        }
     }
 
     void enter(State& s, const Params& args) {
@@ -354,7 +405,8 @@ private:
         for (Route& r : rs) {
             if (!r.e->open) continue;
             if (r.e->sync == EmbedSync::View && r.in) carry(*r.in, *r.subject, *r.guest, r.in_memo, *r.e);
-            r.guest->step(t);
+            drive(*r.guest, t.dt);
+            step(*r.guest, t);
             if (r.e->sync == EmbedSync::Live && r.out) {
                 carry(*r.out, *r.guest, *r.subject, r.out_memo, *r.e);
                 // One guest open in several places - a door hanging in a
@@ -472,6 +524,8 @@ private:
     uint64_t frame_ = 0;
     double time_ = 0.0;  // simulated: the sum of every dt ticked
     bool running_ = false;
+    bool watch_updates_ = false;
+    std::vector<Key> clocks_;  // this frame's, reused
     bool trace_ = false;
     bool strict_ = false;
     uint64_t watched_ = ~uint64_t{0};

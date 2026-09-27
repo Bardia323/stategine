@@ -14,6 +14,7 @@
 #include "sg/core/State.hpp"
 #include "sg/core/StateGraph.hpp"
 #include "sg/core/Store.hpp"
+#include "sg/core/Temporal.hpp"
 #include "sg/core/Text.hpp"
 #include "sg/core/Typed.hpp"
 #include "sg/domains/Console.hpp"

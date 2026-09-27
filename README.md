@@ -66,6 +66,33 @@ graph.embed("door_map", "annex", "door_map", "doormap",     // mounted in the an
             "door_to_map", "map_to_door", sg::EmbedSync::Live, /*subject=*/"hall");
 ```
 
+## Time
+
+Time is a state too. A `sg::Temporal` holds `now` (its `time` and `frame`) and
+one arrow, `advance`; the engine fires it once a frame. A state that changes
+with time says so with a drive, and its arrows do the changing:
+
+```cpp
+graph.add<sg::Temporal>("clock");
+pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+    e.params.set("r", e.params.num("r") + 2.0 * ev.args.num("dt"));
+});
+graph.drive("pond_time", "clock", "pond", "tick", /*additive=*/true);
+```
+
+Each frame, while the pond is active, its `tick` arrows run with `{dt, time,
+frame}` from the clock. Time is a monoid of durations and a drive is its
+action, so the laws hold it to one: `step(0)` is the identity, and a drive that
+claims `additive` keeps `step(a) ; step(b) == step(a + b)` - which an exact
+flow does and a compounding or Euler step does not:
+
+```
+drive @ drive pond_time: pond.money.v was 100; pond [!tick(dt=0.5) ; !tick(dt=0.5)] leaves 225, pond [!tick(dt=1)] leaves 200
+```
+
+`on_update` still runs. `engine.set_watch_updates(true)` reports any state
+whose `on_update` writes its data instead of emitting an event for an arrow.
+
 ## Gluing
 
 Rooms glued by doorways are one case of local pieces glued into a whole.

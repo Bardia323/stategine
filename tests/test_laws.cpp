@@ -14,6 +14,7 @@
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/core/Sheaf.hpp"
+#include "sg/core/Temporal.hpp"
 #include "sg/core/Typed.hpp"
 
 namespace {
@@ -36,6 +37,7 @@ const sg::Violation* find_law(const std::vector<sg::Violation>& vs, const std::s
 }
 
 double num(const sg::State& s, sg::Key e, sg::Key k) { return s.element(e).params.num(k); }
+bool near(double a, double b) { return std::fabs(a - b) < 1e-9; }
 
 // A shop: a till and a shelf, and arrows that move stock and money.
 sg::State& make_shop(sg::StateGraph& g) {
@@ -633,6 +635,109 @@ void test_cache_sees_what_is_queued() {
     check(!sg::verify(g, cache, {d}).ok(), "and the cache does not answer from hit(1)");
 }
 
+// --- time is a state ----------------------------------------------------------------------
+// A pond whose ripple spreads at two metres a second, driven by a clock.
+sg::StateGraph& make_pond(sg::StateGraph& g, bool additive) {
+    g.add<sg::Temporal>("clock");
+    auto& pond = g.add<sg::State>("pond");
+    pond.add_element("ripple", "ripple").params.set("r", 0.0);
+    pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("r", e.params.num("r") + 2.0 * ev.args.num("dt"));
+    });
+    g.drive("pond_time", "clock", "pond", "tick", additive);
+    g.set_initial("pond");
+    return g;
+}
+
+void test_time_is_a_state() {
+    sg::StateGraph g;
+    make_pond(g, true);
+    const sg::LawReport r = sg::verify(g);
+    show(r.violations);
+    check(r.structure.empty() && r.holds(), "a pond driven by a clock is reachable, clock and all, and lawful");
+
+    sg::Engine e(g);
+    e.run_fixed(0.25, 4);
+    const auto& clock = static_cast<const sg::Temporal&>(g.state("clock"));
+    check(near(num(g.state("pond"), "ripple", "r"), 2.0) && near(clock.time(), 1.0) && clock.frame() == 4,
+          "the clock moves by its own arrow, and the pond by the drive: 2 m in a second");
+    g.restore_default("clock");
+    check(clock.time() == 0.0 && clock.frame() == 0, "time goes back to its start like any state");
+
+    // A clock that drives nothing is reached by nothing.
+    sg::StateGraph lone;
+    lone.add<sg::Temporal>("clock");
+    lone.add<sg::State>("room").add_element("x", "n");
+    lone.set_initial("room");
+    bool unreachable = false;
+    for (const auto& p : lone.validate()) unreachable = unreachable || p.find("clock unreachable") != std::string::npos;
+    check(unreachable, "a clock nothing is driven by is refused like any unlinked state");
+
+    sg::StateGraph wrong;
+    make_pond(wrong, false);
+    wrong.drive("idle", "clock", "pond", "nothing");
+    bool named = false;
+    for (const auto& p : wrong.validate()) named = named || p.find("no arrow of pond is fired by nothing") != std::string::npos;
+    check(named, "a drive that moves no arrow is named");
+}
+
+void test_time_acts_as_time() {
+    // Interest compounded per step: two half steps are not one whole step.
+    sg::StateGraph g;
+    make_pond(g, true);
+    auto& pond = g.state("pond");
+    pond.add_element("money", "account").params.set("v", 100.0);
+    pond.loop("interest", "money", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("v", e.params.num("v") * (1.0 + ev.args.num("dt")));
+    });
+    const auto vs = sg::laws::drives(g);
+    show(vs);
+    check(vs.size() == 1 && vs[0].law == "drive" && vs[0].element == sg::Key{"money"},
+          "a step that compounds is caught claiming step(a) ; step(b) == step(a + b)");
+    g.drop_drive("pond_time");
+    g.drive("pond_time", "clock", "pond", "tick", false);
+    check(sg::laws::drives(g).empty(), "and is lawful when it does not claim it: time as steps");
+
+    // A step that moves without time.
+    pond.loop("age", "money", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("ticks", e.params.num("ticks") + 1.0);
+    });
+    const auto zero = sg::laws::drives(g);
+    show(zero);
+    check(zero.size() == 1 && zero[0].key == "ticks", "step(0) that changes something is not the identity");
+}
+
+// on_update that writes, rather than emits, is behaviour outside the arrows.
+struct Sneaky : sg::State {
+    using sg::State::State;
+    void on_update(const sg::Tick& t) override { element("x").params.set("v", element("x").params.num("v") + t.dt); }
+};
+struct Honest : sg::State {
+    using sg::State::State;
+    void on_update(const sg::Tick& t) override { emit(sg::Event{"tick", sg::Params{}.set("dt", t.dt)}); }
+};
+
+void test_updates_are_watched() {
+    for (bool sneaky : {true, false}) {
+        sg::StateGraph g;
+        sg::State& s = sneaky ? static_cast<sg::State&>(g.add<Sneaky>("s")) : g.add<Honest>("s");
+        s.add_element("x", "n").params.set("v", 0.0);
+        s.loop("move", "x", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+            e.params.set("v", e.params.num("v") + ev.args.num("dt"));
+        });
+        g.set_initial("s");
+        sg::Engine e(g);
+        std::vector<std::string> heard;
+        e.on_problem = [&](const std::string& p) { heard.push_back(p); };
+        e.set_watch_updates(true);
+        e.run_fixed(0.5, 3);
+        const bool said = heard.size() == 1 && heard[0].find("on_update") != std::string::npos;
+        check(sneaky ? said : heard.empty(),
+              sneaky ? "an on_update that writes the state's data is reported, once"
+                     : "one that only emits for an arrow is not");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -649,6 +754,9 @@ int main() {
     test_events_are_compared_whole();
     test_events_are_compared_in_order();
     test_budgets_are_visible();
+    test_time_is_a_state();
+    test_time_acts_as_time();
+    test_updates_are_watched();
     test_cache_sees_what_is_queued();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");

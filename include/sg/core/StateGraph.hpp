@@ -66,6 +66,19 @@ struct Seam {
     std::vector<Key> boundary_a, boundary_b;
 };
 
+// A drive: `state` changes with the time `clock` keeps. Each time the clock
+// advances, the state's arrows on `trigger` are fired with {dt, time, frame} -
+// while the state is active, as everything is (an idle state computes
+// nothing). `additive` claims step(a) ; step(b) == step(a + b), and the laws
+// hold it to that (see Temporal.hpp).
+struct Drive {
+    Key name;
+    Key clock;
+    Key state;
+    Key trigger;
+    bool additive = false;
+};
+
 // Who may change what. Whoever holds the graph itself - the code that builds
 // the world, and whatever rewrites it while it runs - may change anything in
 // it, through the states, functors and graph operations it hands back.
@@ -387,6 +400,29 @@ public:
         return it == by_guest_.end() ? none() : it->second;
     }
 
+    // --- drives -----------------------------------------------------------------
+    // Registered by name; registering the same name again replaces it.
+    const Drive& drive(Drive d) {
+        rev_.rewired("drive");
+        if (d.name.empty()) d.name = Key{d.clock.str() + ">" + d.state.str()};
+        for (Drive& have : drives_)
+            if (have.name == d.name) return have = std::move(d);
+        drives_.push_back(std::move(d));
+        return drives_.back();
+    }
+    const Drive& drive(Key name, Key clock, Key state, Key trigger, bool additive = false) {
+        return drive(Drive{name, clock, state, trigger, additive});
+    }
+    void drop_drive(Key name) {
+        rev_.rewired("drop_drive");
+        for (auto it = drives_.begin(); it != drives_.end(); ++it)
+            if (it->name == name) {
+                drives_.erase(it);
+                return;
+            }
+    }
+    const std::deque<Drive>& drives() const { return drives_; }
+
     // --- seams ------------------------------------------------------------------
     // Registered by name; registering the same name again replaces it (a seam
     // is rebuilt whenever its doorways move).
@@ -583,6 +619,23 @@ public:
             for (const auto& e : c.errors) errors.push_back(e);
         }
 
+        for (const Drive& d : drives_) {
+            const State* c = find(d.clock);
+            const State* s = find(d.state);
+            if (!c) errors.push_back("drive " + d.name.str() + ": unknown clock " + d.clock.str());
+            else if (c->kind() != Key{"temporal"})
+                errors.push_back("drive " + d.name.str() + ": " + d.clock.str() + " is not a clock");
+            if (!s) {
+                errors.push_back("drive " + d.name.str() + ": unknown state " + d.state.str());
+                continue;
+            }
+            bool moved = false;
+            for (const Morphism& m : s->morphisms()) moved = moved || m.trigger == d.trigger;
+            if (!moved)
+                errors.push_back("drive " + d.name.str() + ": no arrow of " + d.state.str() +
+                                 " is fired by " + d.trigger.str());
+        }
+
         if (!initial_.empty()) {
             if (!contains(initial_)) {
                 errors.push_back("initial state " + initial_.str() + " does not exist");
@@ -693,6 +746,9 @@ private:
             next[sm.a].push_back(sm.b);
             next[sm.b].push_back(sm.a);
         }
+        // A driven state brings its clock with it; a clock alone reaches
+        // nothing - being driven is not being reachable.
+        for (const auto& d : drives_) next[d.state].push_back(d.clock);
         std::vector<Key> stack{initial_};
         seen.insert(initial_);
         for (Key to : from_anywhere)
@@ -740,6 +796,7 @@ private:
     detail::Revision rev_;
     std::unordered_map<Key, State::Snapshot> defaults_;
     std::deque<Seam> seams_;
+    std::deque<Drive> drives_;
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;

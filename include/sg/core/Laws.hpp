@@ -24,6 +24,8 @@
 //   put-get         write the view back, read it again: you see what you wrote
 //   put-put         writing the same view twice is writing it once
 //   settles         (get ; put) ; (get ; put)  ==  get ; put
+//   drive           time acts on a driven state: step(0) == id, and, where
+//                   the drive claims it, step(a) ; step(b) == step(a + b)
 //   commutes        any two paths a caller declares equal
 //   seam            where two like states meet, the meeting is two-way, its
 //                   round trips are the identity, and both sides agree on
@@ -50,6 +52,7 @@
 
 #include "sg/core/Adjunction.hpp"
 #include "sg/core/StateGraph.hpp"
+#include "sg/core/Temporal.hpp"
 
 namespace sg {
 
@@ -93,12 +96,16 @@ struct Violation {
 // One step: an arrow inside the current state, or a functor / transition out
 // of it. Steps normally name registered arrows; a trial composite that must
 // not be registered (associativity builds both bracketings) is carried here.
+// An event step fires an event at the state as a whole, the way a frame does:
+// every arrow it triggers runs, and what they emit is dispatched in turn.
+// A step may carry its own event arguments; otherwise the equation's are used.
 struct Step {
-    enum class Kind { Arrow, Functor, Transition };
+    enum class Kind { Arrow, Functor, Transition, Event };
     Kind kind = Kind::Arrow;
     Key name;
     std::shared_ptr<const Morphism> arrow;
     std::shared_ptr<const Functor> functor;
+    std::optional<Params> args;
 };
 
 // A path starts at an object - an element of a state, or the state as a
@@ -125,6 +132,13 @@ public:
     Path& transition(Key name) {
         return push(Step{Step::Kind::Transition, name, nullptr, nullptr});
     }
+    // An arrow run with arguments of its own, and an event fired at the state.
+    Path& arrow(Key name, Params args) {
+        return push(Step{Step::Kind::Arrow, name, nullptr, nullptr, std::move(args)});
+    }
+    Path& event(Key trigger, Params args = {}) {
+        return push(Step{Step::Kind::Event, trigger, nullptr, nullptr, std::move(args)});
+    }
 
     // Concatenation; the seam is checked when the path runs.
     Path& then(const Path& p) {
@@ -142,7 +156,14 @@ public:
         s += " [";
         for (std::size_t i = 0; i < steps_.size(); ++i) {
             if (i) s += " ; ";
+            if (steps_[i].kind == Step::Kind::Event) s += "!";
             s += steps_[i].name.str();
+            if (steps_[i].args && !steps_[i].args->empty()) {
+                std::string a;
+                for (const auto& kv : *steps_[i].args)
+                    a += (a.empty() ? "" : ", ") + kv.first.str() + "=" + to_string(kv.second);
+                s += "(" + a + ")";
+            }
         }
         return s + "]";
     }
@@ -195,6 +216,7 @@ struct LawOptions {
     Params args;                                 // handed to every trial event
     std::unordered_map<Key, Params> args_for;    // per trigger, overriding `args`
     std::size_t max_triples = 256;               // associativity budget, per state
+    double drive_dt = 0.5;                       // the step a drive's laws take
 };
 
 namespace laws {
@@ -281,7 +303,7 @@ public:
         Key here = p.state();
         out.push_back(state_version(here));
         for (const Step& s : p.steps()) {
-            if (s.kind == Step::Kind::Arrow) continue;
+            if (s.kind == Step::Kind::Arrow || s.kind == Step::Kind::Event) continue;
             if (s.kind == Step::Kind::Transition) {
                 const Transition* t = g_->transition(s.name);
                 if (!t) {
@@ -470,10 +492,24 @@ inline Outcome run_steps(StateGraph& g, const Path& p, const Params& args) {
                 out.error = tag + "an endpoint is missing from " + here.str();
                 return out;
             }
-            Event ev{m->trigger, args};
+            Event ev{m->trigger, step.args ? *step.args : args};
             ev.source = here;
             if (m->handler) m->handler(s, *src, dst, ev);
             at = cod(*m);
+            continue;
+        }
+        if (step.kind == Step::Kind::Event) {
+            // This event and what it sets in motion, apart from what was
+            // already queued - which is put back ahead of anything left over.
+            State& s = trial.touch(here);
+            std::vector<Event> queued = s.bus().queued();
+            Event ev{step.name, step.args ? *step.args : args};
+            ev.source = here;
+            s.bus().requeue({std::move(ev)});
+            s.dispatch_pending();
+            for (const Event& left : s.bus().queued()) queued.push_back(left);
+            s.bus().requeue(std::move(queued));
+            at = Key{};  // an event acts on the state as a whole
             continue;
         }
 
@@ -1046,6 +1082,41 @@ inline std::vector<Violation> functoriality(StateGraph& g, const LawOptions& o =
     return out;
 }
 
+// Time acts on every driven state as a monoid acts (see Temporal.hpp): no time
+// is no change, and, where the drive claims it, two steps are one step as long
+// as both. Each side fires the drive's event as a frame does, with the time
+// and frame the clock would say.
+inline std::vector<Violation> drives(StateGraph& g, const LawOptions& o = {},
+                                     LawCache* cache = nullptr) {
+    if (cache) cache->begin(g);
+    std::vector<Violation> out;
+    for (const Drive& d : g.drives()) {
+        const State* c = g.find(d.clock);
+        const Element* now = c ? c->find(Temporal::now_id()) : nullptr;
+        if (!now || !g.find(d.state)) continue;  // validate() names it
+        const double t0 = now->params.num(keys::time);
+        const int64_t f0 = now->params.get_or<int64_t>(keys::frame, 0);
+        const auto when = [&](double dt, double t, int64_t f) {
+            Params p = args_for(o, d.trigger);
+            p.set(keys::dt, dt).set(keys::time, t).set(keys::frame, f);
+            return p;
+        };
+        const std::string where = "drive " + d.name.str();
+        append(out, check(g, cache, {"drive", where,
+                                     Path(d.state).event(d.trigger, when(0.0, t0, f0 + 1)),
+                                     Path(d.state), {}}));
+        if (!d.additive) continue;
+        const double a = o.drive_dt;
+        append(out, check(g, cache, {"drive", where,
+                                     Path(d.state)
+                                         .event(d.trigger, when(a, t0 + a, f0 + 1))
+                                         .event(d.trigger, when(a, t0 + 2 * a, f0 + 2)),
+                                     Path(d.state).event(d.trigger, when(2 * a, t0 + 2 * a, f0 + 1)),
+                                     {}}));
+    }
+    return out;
+}
+
 // The lens behind every two-way portal. `in` reads the subject into the
 // guest (get), `out` writes the guest back (put). A view may lose detail -
 // cells for metres, dozens for units - so get ; put need not be the identity,
@@ -1374,7 +1445,7 @@ inline std::vector<Violation> seams(const StateGraph& g) {
 // ---------------------------------------------------------------------------
 // Everything the graph owns at once: the structure `validate` checks, then
 // identity, associativity, composition, functoriality, the lens laws, the
-// seams, and any diagrams handed in. What a graph does not own is checked
+// drives, the seams, and any diagrams handed in. What a graph does not own is checked
 // where it is declared: descent on a `Cover` (`descent_defects`, Sheaf.hpp),
 // an `Adjunction`'s unit and counit, `interface_defects` on embeddings.
 // ---------------------------------------------------------------------------
@@ -1425,6 +1496,7 @@ inline LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams = {}
     laws::sort_into(r, laws::composition(g, o));
     laws::sort_into(r, laws::functoriality(g, o));
     laws::sort_into(r, laws::lenses(g, o));
+    laws::sort_into(r, laws::drives(g, o));
     laws::sort_into(r, laws::seams(g));
     for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
     return r;
@@ -1442,6 +1514,7 @@ inline LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagra
     laws::sort_into(r, laws::composition(g, o, &cache));
     laws::sort_into(r, laws::functoriality(g, o, &cache));
     laws::sort_into(r, laws::lenses(g, o, &cache));
+    laws::sort_into(r, laws::drives(g, o, &cache));
     laws::sort_into(r, laws::seams(g));
     for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
     return r;

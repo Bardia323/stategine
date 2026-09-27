@@ -18,6 +18,7 @@ none of the others. States are connected **only** by the graph:
 | Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow |
 | Embedding | `graph.embed` | a state lives in a portal of another (with `in`/`out` functors, a `subject`, a sync, focus) |
 | Seam | `add_seam`, `glue_doorway` | two states glued along a boundary - a doorway, a door hanging in it |
+| Drive | `graph.drive` | a state changes with the time a clock (`Temporal`) keeps: its arrows on a trigger fire with `{dt, time, frame}` |
 | Adjunction | `Adjunction` | a pair of functors with unit and counit, checked |
 
 Anything else that moves data or control between two states is a bug, however
