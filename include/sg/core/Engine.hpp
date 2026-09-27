@@ -374,12 +374,18 @@ private:
     }
 
     // What a state said outward (State::says) goes where the graph says it
-    // goes, and nowhere else: to the graph's transitions (next frame, with
-    // what was fired), and across each open embedding whose functor from the
-    // state names that event (Functor::on_event) - to the state on its other
-    // side, at once, relabelled. One nothing declares is not handed to any
-    // state: states meet only through what the graph declares.
-    void heard_from(State& s) {
+    // goes, and nowhere else:
+    //   - to an edit declared on it (graph.edit), applied next frame;
+    //   - to the graph's transitions (next frame, with what was fired);
+    //   - across each functor out of the state that names the event
+    //     (Functor::on_event), relabelled, to the state it goes to - whose
+    //     arrows run on it at once. A functor is an interface: it maps
+    //     objects, arrows and events. An embedding's functor carries only
+    //     while the embedding is open (its `in` from the host as well as the
+    //     subject), a transition's only when the transition is taken.
+    // One nothing declares is not handed to any state: states meet only
+    // through what the graph declares.
+    void heard_from(State& s, int depth = 0) {
         if (s.said_out().empty()) return;
         std::vector<Event> said = s.take_said();
         if (!graph_.edits().empty())
@@ -388,35 +394,47 @@ private:
                     if (ed.state == s.id() && ed.event == e.name) asked_.push_back({ed.name, e});
         if (carriers_revision_ != graph_.topology()) index_carriers();
         auto it = carriers_.find(s.id());
-        if (it != carriers_.end())
+        if (it != carriers_.end() && depth < 16) {
+            const std::vector<Carrier> by = it->second;  // a state reached may rewire nothing, but be safe
             for (const Event& e : said)
-                for (const Carrier& c : it->second) {
-                    if (!c.e->open || !c.f->maps_event(e.name)) continue;
-                    if (State* to = graph_.find(c.to)) to->hear(c.f->carried(e, s));
+                for (const Carrier& c : by) {
+                    if ((c.e && !c.e->open) || !c.f->maps_event(e.name)) continue;
+                    State* to = graph_.find(c.to);
+                    if (!to) continue;
+                    to->hear(c.f->carried(e, s));
+                    to->dispatch_pending();
+                    heard_from(*to, depth + 1);
                 }
+        }
         for (Event& e : said) said_.push_back(std::move(e));
     }
 
-    // The embeddings that carry events, by the state they carry them from:
-    // an embedding joins its host (and subject) to its guest, and its `in`
-    // functor's event map says what of theirs reaches the guest; its `out`
-    // functor's, what of the guest's reaches the subject.
     struct Carrier {
-        const Embedding* e;
+        const Embedding* e;  // the embedding it belongs to, if any: carries while open
         const Functor* f;
         Key to;
     };
     void index_carriers() {
         carriers_.clear();
+        std::unordered_set<Key> taken;  // a transition's functor, or an embedding's
+        for (const Transition& t : graph_.transitions())
+            if (!t.functor.empty()) taken.insert(t.functor);
         for (const Embedding& e : graph_.embeddings()) {
             const Key subject = e.subject.empty() ? e.host : e.subject;
             const Functor* in = e.in.empty() ? nullptr : graph_.functor(e.in);
             const Functor* out = e.out.empty() ? nullptr : graph_.functor(e.out);
+            if (in) taken.insert(e.in);
+            if (out) taken.insert(e.out);
             if (in && in->maps_events()) {
                 carriers_[e.host].push_back({&e, in, e.guest});
                 if (subject != e.host) carriers_[subject].push_back({&e, in, e.guest});
             }
             if (out && out->maps_events()) carriers_[e.guest].push_back({&e, out, subject});
+        }
+        for (const auto& kv : graph_.functors()) {
+            const Functor& f = kv.second;
+            if (!f.maps_events() || taken.count(kv.first)) continue;
+            carriers_[f.from()].push_back({nullptr, &f, f.to()});
         }
         carriers_revision_ = graph_.topology();
     }

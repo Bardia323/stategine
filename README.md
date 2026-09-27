@@ -326,9 +326,11 @@ graph.edit("editor", "cmd", [&](sg::StateGraph& g, const sg::Event& asked) {
 });
 ```
 
-What a state says also crosses an open embedding whose functor names the event
-(`Functor::on_event`), to the state on the other side, at once and relabelled -
-the same event map a transition's functor carries:
+A functor maps events as well as objects and arrows, so what a state says also
+crosses each functor out of it that names the event (`Functor::on_event`), to
+the state it goes to, whose arrows run on it at once - relabelled, as a
+transition's functor carries its event. An embedding's functors carry only
+while it is open (its `in` from the host too); a transition's only when taken:
 
 ```cpp
 graph.add_functor("desk.to.board", "desk", "board").on_event("chalk", "write");

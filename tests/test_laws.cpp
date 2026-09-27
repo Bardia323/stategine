@@ -1171,6 +1171,29 @@ void test_edits_are_declared() {
     check(named, "an edit no state asks for is refused");
 }
 
+
+// A functor maps events too: what a state says crosses each functor out of it that names it.
+void test_functors_carry_what_is_said() {
+    sg::StateGraph g;
+    auto& desk = g.add<sg::State>("desk");
+    desk.add_element("pen", "pen");
+    desk.says("chalk");
+    desk.loop("write", "pen", "press", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) { s.emit("chalk"); });
+    auto& board = g.add<sg::State>("board");
+    board.add_element("slate", "slate").params.set("lines", 0.0);
+    board.loop("write", "slate", "write", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+        e.params.set("lines", e.params.num("lines") + 1);
+    });
+    g.add_functor("desk.board", "desk", "board").on_event("chalk", "write");
+    g.set_initial("desk");
+    sg::Engine e(g);
+    e.start();
+    e.fire("press");
+    e.run_fixed(0.1, 1);
+    check(board.find("slate")->params.num("lines") == 1.0,
+          "the board, stepped by no one, writes at once what the desk says - carried by the functor between them");
+}
+
 }  // namespace
 
 int main() {
@@ -1201,6 +1224,7 @@ int main() {
     test_a_transition_in_a_law_is_the_one_the_engine_takes();
     test_listeners_only_observe();
     test_edits_are_declared();
+    test_functors_carry_what_is_said();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

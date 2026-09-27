@@ -865,6 +865,9 @@ private:
             next[sm.a].push_back(sm.b);
             next[sm.b].push_back(sm.a);
         }
+        // A functor that carries what a state says reaches where it goes.
+        for (const auto& kv : functors_)
+            if (kv.second.maps_events()) next[kv.second.from()].push_back(kv.second.to());
         // A driven state brings its clock with it; a clock alone reaches
         // nothing - being driven is not being reachable.
         for (const auto& d : drives_) next[d.state].push_back(d.clock);
