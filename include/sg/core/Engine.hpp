@@ -9,6 +9,7 @@
 #include <iostream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sg/core/StateGraph.hpp"
@@ -344,22 +345,48 @@ private:
     // the host instead - nothing they do reaches back. "Every frame" is as the
     // embedding's propagation says: by default, whenever there is something
     // to carry.
+    // Every open embedding, all the way down: a guest open in a guest (a
+    // world on a tape in a deck in a room) has its moment as the one it is
+    // open in does - each state once a frame, however many hold it.
     void step_embeddings(State& host, const Tick& t) {
-        std::vector<Route>& rs = routes_of(host);
-        for (Route& r : rs) {
-            if (!r.e->open) continue;
-            if (r.e->sync == EmbedSync::View && r.in) carry(*r.in, *r.subject, *r.guest, r.in_memo, *r.e);
-            r.guest->step(t);
-            if (r.e->sync == EmbedSync::Live && r.out) {
-                carry(*r.out, *r.guest, *r.subject, r.out_memo, *r.e);
+        stepped_.clear();
+        stepped_.insert(&host);
+        step_embeddings_in(host, t);
+        due_.clear();
+    }
+    void step_embeddings_in(State& host, const Tick& t) {
+        // Each route is found again, by its embedding's name, before and
+        // after its guest's step: a step may rewrite the graph (a door glued
+        // as someone goes through it), and the routes are then made anew -
+        // never read from the old ones. Those it opens are stepped after.
+        std::vector<Key> names;
+        for (const Route& r : routes_of(host)) names.push_back(r.e->name);
+        const auto route = [&](Key name) -> Route* {
+            for (Route& r : routes_of(host))
+                if (r.e->name == name) return &r;
+            return nullptr;
+        };
+        std::vector<State*> inner;
+        for (Key name : names) {
+            Route* r = route(name);
+            if (!r || !r->e->open) continue;
+            if (r->e->sync == EmbedSync::View && r->in) carry(*r->in, *r->subject, *r->guest, r->in_memo, *r->e);
+            State* guest = r->guest;
+            const bool first = stepped_.insert(guest).second;
+            if (first) guest->step(t);
+            r = route(name);
+            if (!r || !r->e->open) continue;
+            if (r->e->sync == EmbedSync::Live && r->out) {
+                carry(*r->out, *r->guest, *r->subject, r->out_memo, *r->e);
                 // One guest open in several places - a door hanging in a
                 // doorway both rooms embed - is one state: what it did this
                 // frame reaches every place it is shown, not only here.
-                for (Route::Also& o : r.also)
-                    if (o.e->open) carry(*o.out, *r.guest, *o.subject, o.memo, *o.e);
+                for (Route::Also& o : r->also)
+                    if (o.e->open) carry(*o.out, *r->guest, *o.subject, o.memo, *o.e);
             }
+            if (first) inner.push_back(guest);
         }
-        due_.clear();
+        for (State* g : inner) step_embeddings_in(*g, t);
     }
 
     void process_transitions() {
@@ -459,6 +486,7 @@ private:
     std::vector<Event> inbox_;
     std::vector<Event> carry_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last
+    std::unordered_set<const State*> stepped_;  // this frame's, so each has its moment once
     std::unordered_map<const State*, std::vector<Route>> routes_;
     uint64_t routes_revision_ = ~uint64_t{0};
     std::vector<Key> due_;  // OnEvent embeddings an event crossed this frame

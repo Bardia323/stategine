@@ -2,6 +2,7 @@
 // as the typed data paths between them, embeddings as nested interfaces.
 #pragma once
 
+#include <algorithm>
 #include <deque>
 #include <functional>
 #include <map>
@@ -184,6 +185,19 @@ public:
     }
 
     const std::deque<Transition>& transitions() const { return transitions_; }
+    // Where a transition can be taken from, as the graph knows it: its own
+    // `from`, or - taken from any state - the states that say its trigger
+    // (State::says). Empty if it is from any state and nothing declares it.
+    std::vector<Key> sources(const Transition& t) const {
+        if (t.from != any()) return {t.from};
+        std::vector<Key> out;
+        for (const auto& kv : states_) {
+            const auto& said = kv.second->said();
+            if (std::find(said.begin(), said.end(), t.trigger) != said.end()) out.push_back(kv.first);
+        }
+        std::sort(out.begin(), out.end(), [](Key a, Key b) { return a.str() < b.str(); });
+        return out;
+    }
 
     const Transition* transition(Key name) const {
         for (const auto& t : transitions_)
@@ -633,15 +647,23 @@ public:
             os << "  }\n";
         }
         for (const auto& t : transitions_) {
-            if (t.from == any()) os << "  \"*\" [shape=diamond, label=\"any\"];\n";
-            const std::string src = t.from.str();
-            const std::string dst = t.kind == TransitionKind::Pop ? src : t.to.str();
+            // From the states that say its trigger, if it is taken from any
+            // and some do; from "any" otherwise.
+            std::vector<Key> from = sources(t);
+            if (from.empty()) {
+                os << "  \"*\" [shape=diamond, label=\"any\"];\n";
+                from.push_back(any());
+            }
             const char* style = t.kind == TransitionKind::Push
                                     ? "bold"
                                     : (t.kind == TransitionKind::Pop ? "dotted" : "solid");
-            os << "  \"" << src << "\" -> \"" << dst << "\" [label=\"" << t.trigger.str()
-               << (t.functor.empty() ? "" : " / " + t.functor.str()) << "\", style=" << style
-               << "];\n";
+            for (Key f : from) {
+                const std::string src = f.str();
+                const std::string dst = t.kind == TransitionKind::Pop ? src : t.to.str();
+                os << "  \"" << src << "\" -> \"" << dst << "\" [label=\"" << t.trigger.str()
+                   << (t.functor.empty() ? "" : " / " + t.functor.str()) << "\", style=" << style
+                   << "];\n";
+            }
         }
         for (const auto& e : embeddings_)
             os << "  \"" << e.host.str() << "\" -> \"" << e.guest.str() << "\" [label=\"embed "

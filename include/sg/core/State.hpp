@@ -307,6 +307,15 @@ public:
 
     EventBus& bus() { return bus_; }
 
+    // What it says outward: the events it puts on its own bus for whoever
+    // holds it to hand on - a game's door out, a machine's alarm. Declared,
+    // so the graph can tell where a transition on one of them comes from
+    // (StateGraph::sources) and any view of the graph can draw it.
+    void says(Key event) {
+        if (std::find(said_.begin(), said_.end(), event) == said_.end()) said_.push_back(event);
+    }
+    const std::vector<Key>& said() const { return said_; }
+
     // Drains the queue, cascading up to `max_rounds` times so a handler may emit.
     void dispatch_pending(int max_rounds = 16) {
         for (int round = 0; round < max_rounds && !bus_.empty(); ++round) {
@@ -373,6 +382,7 @@ private:
     std::vector<std::size_t> scratch_;
     std::vector<Event> inbox_;
     EventBus bus_;
+    std::vector<Key> said_;
     Engine* engine_ = nullptr;
     uint64_t structure_ = next_stamp();
     uint64_t removals_ = 0;  // how often anything was taken out of the lists
