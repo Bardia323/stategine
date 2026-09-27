@@ -208,6 +208,8 @@ public:
             step(*c, t);
             step_embeddings(*c, t);
         }
+        keep_time(t);
+        stepped_.clear();
         if (stack_.empty()) running_ = false;
         if (graph_.revision() != watched_ && elapsed() - last_watch_ >= watch_interval_) check_graph();
     }
@@ -275,11 +277,7 @@ private:
     // sum of the steps the state has taken: a state set aside and come back to
     // finds no time missing, and no jump.
     void drive(State& s, double dt) {
-        if (drive_revision_ != graph_.topology()) {
-            drive_index_.clear();
-            for (const Drive& d : graph_.drives()) drive_index_[d.state].push_back(&d);
-            drive_revision_ = graph_.topology();
-        }
+        if (drive_revision_ != graph_.topology()) index_drives();
         auto it = drive_index_.find(s.id());
         if (it == drive_index_.end()) return;
         for (const Drive* dp : it->second) {
@@ -291,6 +289,41 @@ private:
             c->dispatch_pending();
             s.emit(drive_event(d, *c, dt));
         }
+    }
+
+    // What keeps its time always and was not stepped with the active state
+    // this frame steps now, once, in the order its drives were declared, with
+    // what is open in it - and whatever it is shown in Live hears of what it
+    // did, as it would had it stepped there.
+    void keep_time(const Tick& t) {
+        if (drive_revision_ != graph_.topology()) index_drives();
+        for (const Drive* d : always_) {
+            State* s = graph_.find(d->state);
+            if (!s || !stepped_.insert(s).second) continue;
+            drive(*s, t.dt);
+            step(*s, t);
+            step_embeddings_in(*s, t);  // and what is open in it, as anywhere
+            for (std::size_t j : graph_.embeddings_holding(s->id())) {
+                const Embedding& e = graph_.embeddings()[j];
+                if (!e.open || e.sync != EmbedSync::Live || e.out.empty()) continue;
+                const Functor* f = graph_.functor(e.out);
+                State* subject = graph_.find(e.subject.empty() ? e.host : e.subject);
+                if (f && subject) carry(*f, *s, *subject, kept_memos_[e.name], e);
+            }
+        }
+    }
+
+    void index_drives() {
+        drive_index_.clear();
+        always_.clear();
+        for (const Drive& d : graph_.drives()) {
+            drive_index_[d.state].push_back(&d);
+            if (d.keeps == Keeps::Always &&
+                std::none_of(always_.begin(), always_.end(), [&](const Drive* o) { return o->state == d.state; }))
+                always_.push_back(&d);
+        }
+        kept_memos_.clear();
+        drive_revision_ = graph_.topology();
     }
 
     void step(State& s, const Tick& t) {
@@ -552,6 +585,8 @@ private:
     bool watch_updates_ = false;
     // Which drives move which state, found again when the interfaces change.
     std::unordered_map<Key, std::vector<const Drive*>> drive_index_;
+    std::vector<const Drive*> always_;  // one per state that keeps its time always
+    std::unordered_map<Key, Functor::Memo> kept_memos_;
     uint64_t drive_revision_ = ~uint64_t{0};
     bool trace_ = false;
     bool strict_ = false;

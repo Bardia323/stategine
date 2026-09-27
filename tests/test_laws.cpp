@@ -754,6 +754,42 @@ void test_time_is_kept_by_its_state() {
     check(refused, "a line shared by two drives is refused");
 }
 
+// What keeps its time always goes on in a room you stepped out of - stepped
+// once a frame, never twice, and heard where it is shown Live.
+void test_time_kept_always() {
+    sg::StateGraph g;
+    make_pond(g, true);
+    auto& clock = static_cast<sg::Temporal&>(g.state("clock"));
+    auto& brook = g.add<sg::State>("brook");
+    brook.add_element("b", "n").params.set("t", 0.0);
+    brook.loop("flow", "b", "flow", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("t", e.params.num("t") + ev.args.num("dt"));
+    });
+    sg::drive(g, clock, "brook", "flow", true, sg::Keeps::Always);
+    g.add_functor("brook.out", "brook", "pond").on_object("b", "ripple", [](const sg::Element& s, sg::Element& d) {
+        d.params.set("brook_t", s.params.num("t"));
+    });
+    g.embed("brook", "pond", "ripple", "brook", sg::Key{}, "brook.out", sg::EmbedSync::Live);
+    g.add<sg::State>("menu").add_element("m", "n");
+    g.push("pond", "pause", "menu");
+    g.pop("menu", "back");
+    check(sg::verify(g).holds(), "a brook that always flows is lawful");
+
+    sg::Engine e(g);
+    e.start();
+    e.open_embed("brook");
+    e.run_fixed(0.25, 2);
+    const auto& b = brook.element("b").params;
+    check(near(b.num("t"), 0.5) && near(clock.time("brook"), 0.5),
+          "shown in the pond, it steps once a frame - as a guest, not again");
+    e.fire("pause");
+    e.run_fixed(0.25, 3);  // the menu is on top
+    check(near(b.num("t"), 1.25) && near(clock.time("brook"), 1.25) && near(clock.time("pond"), 0.5),
+          "with the pond set aside the brook still flows, and the pond's time waits");
+    check(near(g.state("pond").element("ripple").params.num("brook_t"), 1.25),
+          "and the pond hears of it through the Live embedding, as if it had stepped there");
+}
+
 // on_update that writes, rather than emits, is behaviour outside the arrows.
 struct Sneaky : sg::State {
     using sg::State::State;
@@ -804,6 +840,7 @@ int main() {
     test_time_is_a_state();
     test_time_acts_as_time();
     test_time_is_kept_by_its_state();
+    test_time_kept_always();
     test_updates_are_watched();
     test_cache_sees_what_is_queued();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"

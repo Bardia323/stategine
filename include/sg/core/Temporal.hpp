@@ -75,10 +75,10 @@ inline Key timeline_of(const Drive& d) { return d.line.empty() ? d.state : d.lin
 // Declare a drive and give it its line on the clock, in one: `state` changes
 // with the time `clock` keeps for it.
 inline const Drive& drive(StateGraph& g, Temporal& clock, Key state, Key trigger,
-                          bool additive = false) {
+                          bool additive = false, Keeps keeps = Keeps::WhileActive) {
     clock.timeline(state);
     return g.drive(Drive{Key{clock.id().str() + ">" + state.str()}, clock.id(), state, trigger,
-                         additive, state});
+                         additive, state, keeps});
 }
 
 // What a drive hands its state's arrows, the clock having moved: dt, the

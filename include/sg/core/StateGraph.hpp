@@ -67,6 +67,11 @@ struct Seam {
     std::vector<Key> boundary_a, boundary_b;
 };
 
+// Whether a driven state's time goes on only while it is active - the room
+// you are in, and what is open in it - or always: what goes on in a room you
+// stepped out of (a door still swinging, a record still turning).
+enum class Keeps { WhileActive, Always };
+
 // A drive: `state` changes with the time `clock` keeps. Each frame the state
 // steps, its line on the clock advances by dt and the state's arrows on
 // `trigger` are fired with {dt, time, frame}. A line keeps one state's time
@@ -80,6 +85,7 @@ struct Drive {
     Key trigger;
     bool additive = false;
     Key line;  // the clock's timeline this state's time is kept on; the state's name when empty
+    Keeps keeps = Keeps::WhileActive;
 };
 
 // Who may change what. Whoever holds the graph itself - the code that builds
@@ -427,7 +433,7 @@ public:
         return drives_.back();
     }
     const Drive& drive(Key name, Key clock, Key state, Key trigger, bool additive = false) {
-        return drive(Drive{name, clock, state, trigger, additive, Key{}});
+        return drive(Drive{name, clock, state, trigger, additive, Key{}, Keeps::WhileActive});
     }
     void drop_drive(Key name) {
         rev_.rewired("drop_drive");

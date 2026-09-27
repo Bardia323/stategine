@@ -99,6 +99,12 @@ handed `frame` - a step count cannot keep that claim, so there is none to read:
 drive @ drive clock>pond: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
 ```
 
+A drive keeps time `WhileActive` (the default: the room you are in and what is
+open in it) or `Keeps::Always`: a record still turning, a door still swinging in
+a room you stepped out of. The engine steps such a state once a frame if the
+active state did not, with what is open in it, and carries its Live embeddings
+back out - so nothing needs stepping by hand from the game loop.
+
 `on_update` still runs. `engine.set_watch_updates(true)` reports any state
 whose `on_update` writes its data instead of emitting an event for an arrow.
 
