@@ -928,7 +928,13 @@ private:
             if (t.from == any()) from_anywhere.push_back(t.to);
             else next[t.from].push_back(t.to);
         }
-        for (const auto& e : embeddings_) next[e.host].push_back(e.guest);
+        // An embedding joins the two states it is between, as a seam does:
+        // a camera that films a room is reached from the room as much as the
+        // room from the camera.
+        for (const auto& e : embeddings_) {
+            next[e.host].push_back(e.guest);
+            next[e.guest].push_back(e.host);
+        }
         for (const auto& sm : seams_) {
             next[sm.a].push_back(sm.b);
             next[sm.b].push_back(sm.a);

@@ -7,6 +7,7 @@
 // a map on a wall, a debug view in the console and a lit room at once.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -248,17 +249,21 @@ inline Pose compose_pose(const Pose& parent, const Pose& local) {
 }
 
 // The pose of an element in the state's own coordinates, following the parent
-// chain. Depth is bounded, so a cycle cannot hang the frame.
-inline Pose world_pose(const State& s, const Element& e, int max_depth = 8) {
+// chain as far as it goes. A chain that comes back on itself stops where it
+// would go round again, so a cycle cannot hang the frame - and a long chain is
+// followed to its end.
+inline Pose world_pose(const State& s, const Element& e) {
     Pose p = local_pose(e);
     const Element* cur = &e;
-    for (int i = 0; i < max_depth; ++i) {
+    std::vector<const Element*> seen{cur};
+    for (;;) {
         // (The parent's name read where it is, not copied out.)
         if (!cur->params.has(keys::parent)) break;
         const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
         if (!parent_id || parent_id->empty()) break;
         const Element* parent = s.find(Key{*parent_id});
-        if (!parent) break;
+        if (!parent || std::find(seen.begin(), seen.end(), parent) != seen.end()) break;
+        seen.push_back(parent);
         p = compose_pose(local_pose(*parent), p);
         cur = parent;
     }

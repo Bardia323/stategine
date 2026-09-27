@@ -1294,6 +1294,33 @@ void test_shown_focused_and_portals() {
           "with nobody at the computer, its game has no input and waits");
 }
 
+// How deep a state is open is counted, not guessed at: a chain of any length
+// is followed to its end, and embeddings that go round come to an end too.
+void test_depth_has_no_limit_and_cycles_end() {
+    sg::StateGraph g;
+    const int n = 12;
+    for (int i = 0; i <= n; ++i) g.add<sg::State>("s" + std::to_string(i)).add_element("in", sg::kinds::portal);
+    for (int i = 0; i < n; ++i)
+        g.set_focus(g.embed(sg::Key{"e" + std::to_string(i)}, sg::Key{"s" + std::to_string(i)}, "in",
+                            sg::Key{"s" + std::to_string(i + 1)}, sg::Key{}, sg::Key{}, sg::EmbedSync::Commit)
+                        .name,
+                    false);
+    // And the last holds the first again: round and round.
+    g.set_focus(g.embed("back", sg::Key{"s" + std::to_string(n)}, "in", "s0", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("s0");
+    sg::Engine e(g);
+    e.start();
+    for (int i = 0; i < n; ++i) e.open_embed(sg::Key{"e" + std::to_string(i)});
+    check(e.depth(sg::Key{"s" + std::to_string(n)}) == n && e.live(sg::Key{"s" + std::to_string(n)}),
+          "a state twelve embeddings deep is live, and twelve deep");
+    e.open_embed("back");
+    check(e.depth("s0") == 0 && e.depth("s5") == 5, "an embedding that goes round changes no one's depth, and the count ends");
+    e.close_embed("e3", false);
+    check(!e.live("s4") && e.depth("s4") == -1, "and one closed on the way cuts off all beyond it, round or not");
+    e.tick(1.0 / 60.0);
+    check(true, "and a frame of it ends");
+}
+
 }  // namespace
 
 int main() {
@@ -1328,6 +1355,7 @@ int main() {
     test_a_declared_lens_is_checked();
     test_ports_are_declared();
     test_shown_focused_and_portals();
+    test_depth_has_no_limit_and_cycles_end();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

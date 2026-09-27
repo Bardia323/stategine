@@ -224,18 +224,26 @@ public:
         return e ? graph_.find(e->guest) : nullptr;
     }
     // How deep a state is open, from the state the engine is in (0), through
-    // open embeddings; -1 if it is not live.
-    int depth(Key id, int limit = 8) const {
-        if (!stack_.empty() && stack_.back()->id() == id) return 0;
-        if (limit == 0) return -1;
-        int best = -1;
-        for (std::size_t j : graph_.embeddings_holding(id)) {
-            const Embedding& e = graph_.embeddings()[j];
-            if (!e.open) continue;
-            const int d = depth(e.host, limit - 1);
-            if (d >= 0 && (best < 0 || d + 1 < best)) best = d + 1;
-        }
-        return best;
+    // open embeddings: the fewest it is reached by; -1 if it is not live.
+    // The embeddings may go round - a camera filming the room its screen
+    // stands in, a computer in a game in a computer - so each state is
+    // looked at once, however deep it lies: no depth is too deep to count,
+    // and a cycle ends the search, not the world.
+    int depth(Key id) const {
+        if (stack_.empty()) return -1;
+        const Key top = stack_.back()->id();
+        if (id == top) return 0;
+        std::unordered_set<Key> seen{id};
+        std::vector<Key> ring{id}, next;
+        for (int d = 1; !ring.empty(); ++d, ring.swap(next), next.clear())
+            for (Key k : ring)
+                for (std::size_t j : graph_.embeddings_holding(k)) {
+                    const Embedding& e = graph_.embeddings()[j];
+                    if (!e.open) continue;
+                    if (e.host == top) return d;
+                    if (seen.insert(e.host).second) next.push_back(e.host);
+                }
+        return -1;
     }
     bool live(Key id) const { return depth(id) >= 0; }
 
@@ -255,6 +263,8 @@ public:
             drive(*c, dt);
             step(*c, t);
             step_embeddings(*c, t);
+            carry_to_hosts(*c);
+            look_across(*c);
         }
         keep_time(t);
         stepped_.clear();
@@ -376,13 +386,38 @@ private:
             drive(*s, t.dt);
             step(*s, t);
             step_embeddings_in(*s, t);  // and what is open in it, as anywhere
-            for (std::size_t j : graph_.embeddings_holding(s->id())) {
-                const Embedding& e = graph_.embeddings()[j];
-                if (!e.open || e.sync != EmbedSync::Live || e.out.empty()) continue;
-                const Functor* f = graph_.functor(e.out);
-                State* subject = graph_.find(e.subject.empty() ? e.host : e.subject);
-                if (f && subject) carry(*f, *s, *subject, kept_memos_[e.name], e);
-            }
+            carry_to_hosts(*s);
+        }
+    }
+
+    // A room glued to others is seen into from where it is seen: across each
+    // seam of the state the engine is in, its travel carries the viewer's
+    // eye to the far side, so the room beyond stands where it will when you
+    // walk through - its sky, its ground, whatever it shows, aimed from
+    // there. The first seam onto a room is the one it is seen through.
+    void look_across(const State& here) {
+        looked_.clear();
+        for (const Seam& sm : graph_.seams()) {
+            const bool from_a = sm.a == here.id();
+            if (!from_a && sm.b != here.id()) continue;
+            const Key other = from_a ? sm.b : sm.a;
+            if (other == here.id() || std::find(looked_.begin(), looked_.end(), other) != looked_.end()) continue;
+            looked_.push_back(other);
+            const Functor* f = graph_.functor(from_a ? sm.a_to_b : sm.b_to_a);
+            if (State* o = graph_.find(other); f && o) f->apply(here, *o);
+        }
+    }
+
+    // A state stepped on its own - the active one, or one that keeps time
+    // always - is carried, Live, into whatever it is open in: a room into
+    // the camera filming it, as a guest stepped inside its host would be.
+    void carry_to_hosts(State& s) {
+        for (std::size_t j : graph_.embeddings_holding(s.id())) {
+            const Embedding& e = graph_.embeddings()[j];
+            if (!e.open || e.sync != EmbedSync::Live || e.out.empty()) continue;
+            const Functor* f = graph_.functor(e.out);
+            State* subject = graph_.find(e.subject.empty() ? e.host : e.subject);
+            if (f && subject) carry(*f, s, *subject, kept_memos_[e.name], e);
         }
     }
 
@@ -824,6 +859,7 @@ private:
     std::unordered_map<Key, std::vector<const Drive*>> drive_index_;
     std::vector<const Drive*> always_;  // one per state that keeps its time always
     std::unordered_map<Key, Functor::Memo> kept_memos_;
+    std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
     uint64_t drive_revision_ = ~uint64_t{0};
     bool trace_ = false;
     bool strict_ = false;

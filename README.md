@@ -421,6 +421,13 @@ parameters (`r/g/b`, `roughness`, `intensity`, ...).
 
 ![Standing in the annex, looking into the hall: both rooms lit and shadowed by their own lamps](docs/images/east.png)
 
+A camera is a state of its own (`sg::Camera`): a lens, aimed by its arrows.
+It sees a world when the graph says so - `sg::film(graph, camera, world, rig)`
+embeds the world in its lens, the rig's pose carried onto it - and a screen
+shows what it sees by naming that embedding (`shows`). Pointed at its own
+screen, it shows the room, the screen in it, and so on down: each frame's
+picture holds the frame before.
+
 ### Looks
 
 How a room is shown is a state too. A `LookState` has one element per pass

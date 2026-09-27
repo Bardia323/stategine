@@ -17,6 +17,7 @@
 #include "sg/core/Temporal.hpp"
 #include "sg/core/Text.hpp"
 #include "sg/core/Typed.hpp"
+#include "sg/domains/Camera.hpp"
 #include "sg/domains/Console.hpp"
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
