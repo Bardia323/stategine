@@ -7,7 +7,9 @@
 //
 //     these two paths, run on the same data, leave the same result.
 //
-// So there is one checker, and the laws are equations it is handed:
+// So there is one checker, and the laws are equations it is handed. "The same
+// result" is every element's parameters and whether it is alive, and every
+// event queued - its name, its sender and its arguments:
 //
 //   identity        id ; f  ==  f  ==  f ; id
 //   associativity   (f ; g) ; h  ==  f ; (g ; h)
@@ -15,6 +17,10 @@
 //   functoriality   f then F  ==  F then F(f)    - the functor carries the
 //                                                  arrow's *action*, not just
 //                                                  its endpoints
+//                   This is the square for each arrow F maps, not by itself
+//                   the textbook F(id) = id and F(g . f) = F(g) . F(f): the
+//                   identity is carried by construction, and a composite is
+//                   held to the square only where F maps it.
 //   put-get         write the view back, read it again: you see what you wrote
 //   put-put         writing the same view twice is writing it once
 //   settles         (get ; put) ; (get ; put)  ==  get ; put
@@ -578,6 +584,25 @@ inline std::string args_str(const Params& p) {
     return s.empty() ? s : "{" + s + "}";
 }
 
+// Two events are the same event if they have the same name, came from the
+// same sender and carry the same arguments - compared as values are, so a
+// number a hair apart is still the same number.
+inline bool same_params(const Params& a, const Params& b) {
+    if (a.stamp() == b.stamp()) return true;  // the same content (see Stamps in Core.hpp)
+    if (a.size() != b.size()) return false;
+    for (const auto& kv : a)
+        if (!b.has(kv.first) || !same_value(kv.first, kv.second, b.get(kv.first))) return false;
+    return true;
+}
+
+inline bool same_event(const Event& a, const Event& b) {
+    return a.name == b.name && a.source == b.source && same_params(a.args, b.args);
+}
+
+inline std::string event_str(const Event& e) {
+    return e.name.str() + args_str(e.args) + (e.source.empty() ? "" : "@" + e.source.str());
+}
+
 // Every place where two outcomes disagree, as counterexamples.
 inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const Outcome& r,
                                    const State::Snapshot& before) {
@@ -628,7 +653,7 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
             same = a.id == b.id && a.alive == b.alive && a.params.stamp() == b.params.stamp();
         }
         for (std::size_t i = 0; same && i < l.data.queue.size(); ++i)
-            same = l.data.queue[i].name == r.data.queue[i].name;
+            same = same_event(l.data.queue[i], r.data.queue[i]);
         if (same) return out;
     }
 
@@ -691,19 +716,32 @@ inline std::vector<Violation> diff(const Equation& eq, const Outcome& l, const O
         }
     }
 
-    // What the paths set in motion is part of what they did.
+    // What the paths set in motion is part of what they did: each event, name,
+    // arguments and sender, and in any order - two events queued the other
+    // way round are the same things set in motion.
     const auto names = [](const State::Snapshot& s) {
         std::vector<std::string> n;
-        for (const auto& e : s.queue) n.push_back(e.name.str());
+        for (const auto& e : s.queue) n.push_back(event_str(e));
         std::sort(n.begin(), n.end());
         return n;
+    };
+    const auto same_queues = [](const std::vector<Event>& a, const std::vector<Event>& b) {
+        if (a.size() != b.size()) return false;
+        std::vector<bool> taken(b.size(), false);
+        for (const Event& e : a) {
+            bool found = false;
+            for (std::size_t j = 0; !found && j < b.size(); ++j)
+                if (!taken[j] && same_event(e, b[j])) found = taken[j] = true;
+            if (!found) return false;
+        }
+        return true;
     };
     const auto joined = [](const std::vector<std::string>& n) {
         std::string s;
         for (const auto& x : n) s += (s.empty() ? "" : ", ") + x;
         return "{" + s + "}";
     };
-    if (names(l.data) != names(r.data))
+    if (!same_queues(l.data.queue, r.data.queue))
         at(Key{}, "<emitted>", joined(names(before)), joined(names(l.data)),
            joined(names(r.data)));
     return out;
@@ -1317,7 +1355,11 @@ inline std::vector<Violation> seams(const StateGraph& g) {
 }  // namespace laws
 
 // ---------------------------------------------------------------------------
-// Everything at once: the structure `validate` checks, then every law above.
+// Everything the graph owns at once: the structure `validate` checks, then
+// identity, associativity, composition, functoriality, the lens laws, the
+// seams, and any diagrams handed in. What a graph does not own is checked
+// where it is declared: descent on a `Cover` (`descent_defects`, Sheaf.hpp),
+// an `Adjunction`'s unit and counit, `interface_defects` on embeddings.
 // ---------------------------------------------------------------------------
 struct LawReport {
     std::vector<std::string> structure;  // StateGraph::validate

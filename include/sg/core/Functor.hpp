@@ -7,6 +7,11 @@
 //   F_obj : Ob(A) -> Ob(B)      which element of B receives which element of A
 //   F_mor : Hom(A) -> Hom(B)    which arrow of B corresponds to one of A
 //
+// F is partial: it is defined on the objects and arrows it maps - a piece of A,
+// not necessarily all of it - and an object or arrow it does not map is
+// outside its domain (`image_object` / `image_morphism` give an empty key).
+// The identity functor is the one that maps everything.
+//
 // `check_laws` verifies that every mapped arrow f : x -> y has an image
 // F(f) : F(x) -> F(y) in the target. Whether F(f) also *does* what f does,
 // and whether composites and identities behave on real data, is for the laws

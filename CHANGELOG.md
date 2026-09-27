@@ -8,6 +8,13 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **The laws see all of what they compare.**
+  - Queued events are compared whole - name, sender and arguments - when two paths are checked against each other; before, only names were, so `damage(5)` and `damage(500)` passed as the same result. A counterexample names the arguments.
+  - `State::content_version()` versions each queued event (name, sender, arguments), not only how many there are, so a `LawCache` no longer answers from a queue that has changed under the same count.
+  - `sg::is_lossless` counts an object or a parameter the round trip drops as lost; before, only changed values were. `identity_defects` takes `whole = true` for the same.
+  - **Breaking:** `Cover::sections` checks descent first and glues nothing for a cover that fails it; an optional `std::vector<std::string>* seams` says why.
+  - Docs say what is so: `sg::verify` runs the laws the graph owns, not descent or adjunctions; a `Functor` is partial; functoriality is the per-arrow square; `add_lens` declares, `verify` checks.
+
 - **Driven bodies, friction by the part, and a doorway's edge lit softly.**
   - `World::drive(body, x, r)`: moved by the game to where it should be by the end of the next step, at the speed that takes - furniture hauled, a board pulled by its stand, a lift. For that step it is as heavy as the room: what it meets is pushed out of its way, what lies on it goes with it by friction, and what sleeps against it wakes at once. It ends the step still.
   - `Hull::friction`: a part's own friction, where it differs from its body's (a castor rolls; the tray above it grips).

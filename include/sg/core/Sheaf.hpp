@@ -22,7 +22,8 @@
 // arrows of a cover.
 //
 // What it buys, concretely: you cannot quietly build a space that does not
-// close up. `descent_defects` names the seam before anything is drawn.
+// close up. `descent_defects` names the seam before anything is drawn, and
+// `Cover::sections` will not glue a cover that has one.
 #pragma once
 
 #include <cmath>
@@ -47,8 +48,12 @@ struct Overlap {
 };
 
 // How far a composite may stray from the identity before it counts as a seam.
+// A transition carries what it carries - a doorway moves a position and leaves
+// the colour of the wall alone - so by default only what comes back is held to
+// coming back the same. `whole` asks more: that everything comes back, and an
+// object or a parameter the composite drops is a defect too.
 inline std::vector<std::string> identity_defects(const StateGraph& g, const Functor& f,
-                                                 const std::string& tag) {
+                                                 const std::string& tag, bool whole = false) {
     std::vector<std::string> out;
     const State* s = g.find(f.from());
     if (!s || f.from() != f.to()) {
@@ -71,9 +76,15 @@ inline std::vector<std::string> identity_defects(const StateGraph& g, const Func
         const Key image = f.image_object(e.id);
         if (image.empty()) continue;
         const Element* back = scratch.find(image);
-        if (!back) continue;
+        if (!back) {
+            if (whole) out.push_back(tag + ": " + e.id.str() + " does not come back");
+            continue;
+        }
         for (const auto& kv : e.params) {
-            if (!back->params.has(kv.first)) continue;
+            if (!back->params.has(kv.first)) {
+                if (whole) out.push_back(tag + ": " + e.id.str() + "." + kv.first.str() + " is lost");
+                continue;
+            }
             const std::string before = to_string(kv.second);
             const std::string after = to_string(back->params.get(kv.first));
             if (before == after) continue;
@@ -138,9 +149,12 @@ inline std::vector<std::string> idempotence_defects(const StateGraph& g, const F
 
 // Does the round trip lose anything at all? Not a defect either way: a lossless
 // view is an isomorphism onto its image, a lossy one is a projection. Worth
-// being able to ask, and worth not confusing with correctness.
+// being able to ask, and worth not confusing with correctness. Lossless means
+// every object the round trip maps comes back as itself, with every parameter
+// it had, holding what it held: dropping a parameter loses it as surely as
+// changing it. Objects the round trip does not map are outside the view.
 inline bool is_lossless(const StateGraph& g, const Functor& round) {
-    return identity_defects(g, round, "round").empty();
+    return identity_defects(g, round, "round", true).empty();
 }
 
 // Every interface registered in a graph, held to that law. An embedding with
@@ -234,12 +248,20 @@ public:
     // The composite transition from `root` to each state it can reach: the
     // change of coordinates that expresses that state's local data in the
     // root's terms. This is the glued section - and it is only well defined
-    // because descent holds, which is why the check above exists.
+    // because descent holds, so descent is asked first: a cover that fails it
+    // glues to nothing, and its defects are put in `seams` if asked for.
+    // Descent is checked on loops of up to `max_depth` overlaps.
     std::vector<std::pair<Key, Functor>> sections(const StateGraph& g, Key root,
-                                                  int max_depth = 4) const {
+                                                  int max_depth = 4,
+                                                  std::vector<std::string>* seams = nullptr) const {
         std::vector<std::pair<Key, Functor>> out;
         const State* root_state = g.find(root);
         if (!root_state) return out;
+        std::vector<std::string> defects = descent_defects(g, max_depth);
+        if (!defects.empty()) {
+            if (seams) *seams = std::move(defects);
+            return out;
+        }
         out.emplace_back(root, Functor::identity(*root_state, Key{"id." + root.str()}));
 
         std::unordered_map<Key, std::size_t> seen{{root, 0}};

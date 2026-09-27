@@ -279,14 +279,22 @@ public:
 
     // A version of everything a trial run would read or leave: the structure,
     // the state's own params, every element's params and whether it is alive,
-    // what is queued. Equal versions, equal data - so a law that held on this
-    // data holds on it still. It costs a pass over the elements (no copy, no
+    // what is queued (each event's name, sender and arguments, in order).
+    // Equal versions, equal data - so a law that held on this data holds on it
+    // still. It costs a pass over the elements and the queue (no copy, no
     // allocation), which is what makes it worth asking before running arrows.
     uint64_t content_version() const {
         uint64_t h = mix_stamp(0x9e3779b97f4a7c15ull, structure_);
         h = mix_stamp(h, params_.stamp());
         for (const Element& e : elements_) h = mix_stamp(h, (e.params.stamp() << 1) | (e.alive ? 1u : 0u));
-        return mix_stamp(h, bus_.queued().size());
+        const std::vector<Event>& q = bus_.queued();
+        h = mix_stamp(h, q.size());
+        for (const Event& e : q) {
+            h = mix_stamp(h, std::hash<Key>{}(e.name));
+            h = mix_stamp(h, std::hash<Key>{}(e.source));
+            h = mix_stamp(h, e.args.stamp());
+        }
+        return h;
     }
 
     // --- events -------------------------------------------------------------

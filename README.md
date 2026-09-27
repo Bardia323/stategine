@@ -76,7 +76,9 @@ Rooms glued by doorways are one case of local pieces glued into a whole.
 * **descent** lets them glue: across an overlap and back is the identity
   (*separatedness*), and around every loop the composite is the identity
   (*cocycle*). A loop that does not close is a seam;
-* **`sections(root)`** is the glued result, every piece in one chosen chart.
+* **`sections(root)`** is the glued result, every piece in one chosen chart. It
+  asks descent first: a cover with a seam glues to nothing (pass a
+  `std::vector<std::string>*` to hear why).
 
 ```cpp
 for (const auto& seam : sg::descent_defects(atlas, graph)) std::cout << "seam: " << seam << "\n";
@@ -113,9 +115,12 @@ An invalid structure is refused at the earliest point that can see it:
 2. **Structure** (`graph.validate()`). Dangling arrows, unknown endpoints,
    unreachable states, functors whose image arrows do not line up, portals wired
    to the wrong state.
-3. **Live data** (`sg/core/Laws.hpp`). `sg::verify(graph)` runs every law on the
-   states' current contents, then puts everything back. A broken law is a
-   counterexample:
+3. **Live data** (`sg/core/Laws.hpp`). `sg::verify(graph)` runs every law the
+   graph owns (identity, associativity, composition, functoriality, the lens
+   laws, seams, and any diagrams you pass) on the states' current contents,
+   then puts everything back. Descent on a `Cover`, an `Adjunction`'s unit and
+   counit, and `interface_defects` are checked apart, where they are declared.
+   A broken law is a counterexample:
    ```
    functoriality @ functor post on restock: ledger.book.stock was <unset>;
        shop.shelf [restock ; post] leaves 42, shop.shelf [post ; order_wrong] leaves 40
@@ -134,7 +139,16 @@ result*:
 | Put-put | writing the same view twice is writing it once |
 | Settles | `(get ; put)` twice against once - a lossy view must still settle |
 | Commutes | any two paths you declare equal |
-| Descent | separatedness and cocycle on a `Cover` (`descent_defects`) |
+| Descent | separatedness and cocycle on a `Cover` (`descent_defects`; not part of `verify`) |
+
+"The same result" means every element's parameters and whether it is alive,
+and every queued event - name, sender and arguments, in any order. Two paths
+that queue `damage(5)` and `damage(500)` do not agree.
+
+Functoriality here is the square `f ; F == F ; F(f)` for each arrow `F` maps:
+what the functor does to data agrees with what the arrows do. It is not by
+itself the textbook `F(id) = id`, `F(g . f) = F(g) . F(f)`; identities hold by
+construction, and a composite is held to the square only where `F` maps it.
 
 ```cpp
 sg::Diagram d("shelf work");
@@ -190,7 +204,7 @@ release breaks is in `CHANGELOG.md`.
 | Composite | `state.compose("gf", "f", "g", trigger)` | `g . f`, needs `cod(f) == dom(g)` |
 | State | a `State` subclass | a small category |
 | Transition | `graph.connect(from, trigger, to)` | arrow in the state graph |
-| Data transport | `Functor` on a transition or portal | functor `A -> B` |
+| Data transport | `Functor` on a transition or portal | functor `A -> B`, partial: defined on the objects and arrows it maps |
 | View + edit pair | `graph.add_lens(...)` | a functor pair |
 | Adjoint pair | `Adjunction` | `F -| G` by unit, counit and triangle laws; isomorphism when both are identities |
 | Nested interface | `graph.embed(...)` | a state inside an object of another |
