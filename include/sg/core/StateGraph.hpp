@@ -274,8 +274,10 @@ public:
         return it == composites_.end() ? nullptr : &it->second;
     }
 
-    // Declare F and G together, with the round trip checked on the spot: the
-    // usual way one domain gets an editable view in another.
+    // Declare F and G together: the usual way one domain gets an editable view
+    // in another. Declaring checks nothing - there is no data yet to check on;
+    // the round trip is held to the lens laws (put-get, put-put, settles) by
+    // `sg::verify` / `laws::lenses` once the pair is used by an embedding.
     struct Lens {
         Functor& in;   // host -> guest
         Functor& out;  // guest -> host

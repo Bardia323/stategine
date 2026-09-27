@@ -805,6 +805,10 @@ void test_descent() {
     for (const auto& d : seams)
         if (d.find("cycle") != std::string::npos) named_cycle = true;
     check(!seams.empty() && named_cycle, "a ring that does not close is reported as a seam");
+    // And a ring with a seam has no glued section: gluing asks descent first.
+    std::vector<std::string> why;
+    check(bad_ring.sections(g, "u", 4, &why).empty() && !why.empty(),
+          "a cover that fails descent glues to nothing, and says why");
 
     // Close it correctly and the seam goes away.
     sg::Cover good_ring;
@@ -812,6 +816,27 @@ void test_descent() {
     link_shift(g, good_ring, "v", "w", 5.0);
     link_shift(g, good_ring, "w", "u", -8.0);
     check(good_ring.descent_defects(g).empty(), "a ring that closes up glues cleanly");
+    check(good_ring.sections(g, "u").size() == 3, "and glues to a section over every piece");
+}
+
+// A round trip that drops a parameter outright has lost it, as surely as one
+// that changes it.
+void test_lossless_counts_what_is_dropped() {
+    sg::StateGraph g;
+    auto& a = g.add<sg::State>("a");
+    g.add<sg::State>("b");
+    a.add_element("x", "n").params.set("v", 2.0).set("w", 3.0);
+    g.set_initial("a");
+    g.add_functor("there", "a", "b").on_object("x", "y");
+    g.add_functor("back", "b", "a").on_object("y", "x");
+    g.add_functor("there_v", "a", "b").on_object("x", "y", sg::transport::only({"v"}));
+    check(sg::is_lossless(g, sg::Functor::compose(*g.functor("there"), *g.functor("back"))),
+          "a round trip that carries everything is lossless");
+    check(!sg::is_lossless(g, sg::Functor::compose(*g.functor("there_v"), *g.functor("back"))),
+          "one that drops a parameter is not");
+    g.add_functor("back_z", "b", "a").on_object("y", "z");
+    check(!sg::is_lossless(g, sg::Functor::compose(*g.functor("there"), *g.functor("back_z"))),
+          "nor one that brings an object back as another");
 }
 
 void test_atlas_is_a_cover() {
@@ -1418,6 +1443,7 @@ int main() {
     test_seams();
     test_view_portal_validation();
     test_descent();
+    test_lossless_counts_what_is_dropped();
     test_atlas_is_a_cover();
     test_any_domain();
     test_guards_against_past_mistakes();

@@ -13,6 +13,7 @@
 
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
+#include "sg/core/Sheaf.hpp"
 #include "sg/core/Typed.hpp"
 
 namespace {
@@ -516,6 +517,65 @@ void test_typed() {
     check(wrong_state, "an arrow typed for the ledger cannot be registered in the shop");
 }
 
+// --- what is queued is compared whole ---------------------------------------------------
+// An event is its name, its arguments and who sent it: two paths that queue
+// damage(5) and damage(500) did not leave the same result.
+void test_events_are_compared_whole() {
+    sg::StateGraph g;
+    auto& s = g.add<sg::State>("fight");
+    s.add_element("foe", "foe").params.set("hp", 10.0);
+    g.set_initial("fight");
+    const auto hit = [](double amount) {
+        return [amount](sg::State& st, sg::Element&, sg::Element*, const sg::Event&) {
+            st.emit(sg::Event{"damage", sg::Params{}.set("amount", amount)});
+        };
+    };
+    s.loop("jab", "foe", "jab", hit(5.0));
+    s.loop("poke", "foe", "poke", hit(5.0));
+    s.loop("smash", "foe", "smash", hit(500.0));
+
+    sg::Diagram same("jab or poke");
+    same.commutes(sg::Path("fight", "foe").arrow("jab"), sg::Path("fight", "foe").arrow("poke"));
+    check(sg::laws::diagram(g, same).empty(), "two paths that queue the same event agree");
+
+    sg::Diagram bad("jab or smash");
+    bad.commutes(sg::Path("fight", "foe").arrow("jab"), sg::Path("fight", "foe").arrow("smash"));
+    const auto vs = sg::laws::diagram(g, bad);
+    show(vs);
+    check(vs.size() == 1 && vs[0].key == "<emitted>" &&
+              vs[0].left.find("amount=5") != std::string::npos &&
+              vs[0].right.find("amount=500") != std::string::npos,
+          "damage(5) and damage(500) are not the same result, and the arguments are named");
+}
+
+// A kept answer is kept on a version of the data; what is queued is part of
+// that data, arguments and all, not only how much of it there is.
+void test_cache_sees_what_is_queued() {
+    sg::StateGraph g;
+    auto& s = g.add<sg::State>("echo");
+    s.add_element("x", "n").params.set("v", 0.0);
+    g.set_initial("echo");
+    s.loop("copy", "x", "copy", [](sg::State& st, sg::Element& x, sg::Element*, const sg::Event&) {
+        const auto& q = st.bus().queued();
+        x.params.set("v", q.empty() ? 0.0 : q.front().args.num("n"));
+    });
+    s.loop("one", "x", "one", [](sg::State&, sg::Element& x, sg::Element*, const sg::Event&) {
+        x.params.set("v", 1.0);
+    });
+    s.emit(sg::Event{"hit", sg::Params{}.set("n", 1.0)});
+
+    sg::Diagram d("copy what is queued");
+    d.commutes(sg::Path("echo", "x").arrow("copy"), sg::Path("echo", "x").arrow("one"));
+    sg::LawCache cache;
+    const uint64_t before = s.content_version();
+    check(sg::verify(g, cache, {d}).ok(), "with hit(1) queued, copying it is setting one");
+
+    s.bus().requeue({sg::Event{"hit", sg::Params{}.set("n", 100.0)}});
+    check(s.content_version() != before, "another event queued is another version, however many there are");
+    check(!sg::verify(g, {d}).ok(), "with hit(100) queued it is not");
+    check(!sg::verify(g, cache, {d}).ok(), "and the cache does not answer from hit(1)");
+}
+
 }  // namespace
 
 int main() {
@@ -529,6 +589,8 @@ int main() {
     test_enforce_refuses_a_lie();
     test_transitions_in_paths();
     test_typed();
+    test_events_are_compared_whole();
+    test_cache_sees_what_is_queued();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;
