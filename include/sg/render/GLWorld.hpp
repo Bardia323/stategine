@@ -86,6 +86,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
@@ -226,6 +227,30 @@ public:
         surfaces_[portal_element].surface = surface;
     }
 
+    // A lamp that takes its colour and its strength from a picture: the light
+    // `light` (an element's id, in whatever room is drawn) glows as `from`
+    // looks - eased a quarter of the way there each frame, up to `most` - and
+    // not at all while it is not `on`. How a screen lights the room it is in
+    // is how it is drawn: the renderer's to work out, frame by frame, never
+    // written into the world.
+    void spill(Key light, const Surface2D* from, double most, bool on = true) {
+        Spill& sp = spills_[light];
+        sp.from = from;
+        sp.most = most;
+        sp.on = on;
+    }
+
+    // Shafts of daylight in `room`: toward `at` (a point in the room, where
+    // the light comes in), as strong as `strength`, of `colour` - aimed from
+    // whatever camera the room is drawn with. Strength 0, or another room
+    // drawn first, and there are none.
+    void rays(const Spatial3D* room, Vec3d at, double strength, Rgb colour) {
+        rays_room_ = room;
+        rays_at_ = at;
+        rays_strength_ = strength;
+        rays_colour_ = colour;
+    }
+
     // How the viewer's camera crosses a portal into the room it shows: the
     // near room's camera in, the far room's eye out.
     using Carry = std::function<void(const Element& from, Element& to)>;
@@ -317,6 +342,8 @@ public:
     // different root and the same geometry is drawn from the other side.
     void render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
         if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+        ease_spills(rooms);
+        aim_rays(*rooms.front().room);
         // Feeds the graph declares: an open embedding of a 3D state in a
         // `feed` portal. Those it no longer declares go.
         if (graph_) {
@@ -687,6 +714,53 @@ private:
             bloom_chain_[bloom_levels_++].create(lw, lh, gl::GL_RGBA16F, 0, false);
     }
 
+    // Each spilling lamp, a frame further towards what its picture shows.
+    struct Spill {
+        const Surface2D* from = nullptr;
+        double most = 0.0;
+        bool on = true;
+        bool begun = false;
+        double r = 0, g = 0, b = 0, intensity = 0;
+    };
+    void ease_spills(const std::vector<PlacedRoom>& rooms) {
+        for (auto& [id, sp] : spills_) {
+            if (!sp.from) continue;
+            if (!sp.begun)
+                for (const PlacedRoom& placed : rooms)
+                    if (const Element* e = placed.room ? placed.room->find(id) : nullptr) {
+                        sp.r = e->params.num(keys::r), sp.g = e->params.num(keys::g), sp.b = e->params.num(keys::b);
+                        sp.intensity = e->params.num(keys::intensity);
+                        sp.begun = true;
+                        break;
+                    }
+            if (!sp.begun) continue;
+            // As sg::spill: toward the picture's colour, and its brightness.
+            const Rgb c = average_colour(*sp.from);
+            const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+            const double m = std::max({c.r, c.g, c.b, 1e-4});
+            const auto toward = [](double& v, double to) { v += (to - v) * 0.25; };
+            toward(sp.r, 0.35 + 0.65 * c.r / m);
+            toward(sp.g, 0.35 + 0.65 * c.g / m);
+            toward(sp.b, 0.35 + 0.65 * c.b / m);
+            toward(sp.intensity, sp.most * std::min(1.0, 0.12 + 1.5 * lum));
+            if (!sp.on) sp.intensity = 0.0;
+        }
+    }
+
+    // The shafts' aim, from the camera of the room drawn first - if it is the
+    // room they are in.
+    void aim_rays(const Spatial3D& first) {
+        rays_on_ = rays_room_ == &first;
+        if (!rays_on_) return;
+        const Element& cam = first.camera();
+        const Vec3d to = rays_at_ - position_of(cam);
+        const Vec3d f = forward_of(cam);
+        const double half = cam.params.num(keys::fov, 70.0) * 3.14159265358979323846 / 360.0;
+        rays_dir_ = to;
+        rays_fwd_ = f;
+        rays_tan_ = std::tan(half);
+    }
+
     // One room's own lamps, placed as the room is.
     std::vector<Light> own_lights(const Spatial3D& room, const Pose& pose) const {
         std::vector<Light> out;
@@ -696,6 +770,10 @@ private:
             l.pos = to_vec3(compose_pose(pose, pose_of(room, e)).position);
             l.color = color_of(e, l.color);
             l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
+            if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
+                l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
+                l.power = static_cast<float>(sp->second.intensity) * 26.0f;
+            }
             l.dir = gl::normalize(to_vec3(rotate_xz(
                 {e.params.num(Key{"dx"}, 0.0), e.params.num(Key{"dy"}, -1.0), e.params.num(Key{"dz"}, 0.0)}, pose.yaw)));
             l.inner = static_cast<float>(e.params.num(Key{"inner"}, 0.55));
@@ -2237,6 +2315,13 @@ private:
             p.use();
             apply_uniforms(p, post_, passes::composite);
             apply_attended(p, passes::composite);
+            if (rays_on_) {
+                p.set("uRayDir", to_vec3(rays_dir_));
+                p.set("uCamFwd", to_vec3(rays_fwd_));
+                p.set("uTanHalf", static_cast<float>(rays_tan_));
+                p.set("uRays", static_cast<float>(std::max(0.0, rays_strength_)));
+                p.set("uRayColor", gl::Vec3{static_cast<float>(rays_colour_.r), static_cast<float>(rays_colour_.g), static_cast<float>(rays_colour_.b)});
+            }
             p.set("uScene", 0);
             p.set("uBloom", 1);
             p.set("uTime", static_cast<float>(time_));
@@ -2644,6 +2729,12 @@ private:
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
     std::unordered_map<Key, BoundSurface> surfaces_;
+    std::unordered_map<Key, Spill> spills_;
+    const Spatial3D* rays_room_ = nullptr;
+    Vec3d rays_at_{}, rays_dir_{}, rays_fwd_{};
+    double rays_strength_ = 0, rays_tan_ = 0.7;
+    Rgb rays_colour_{1, 1, 1};
+    bool rays_on_ = false;
     std::unordered_map<Key, WorldPortal> worlds_;
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn

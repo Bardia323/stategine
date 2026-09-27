@@ -28,6 +28,8 @@ While the major version is 0, a minor bump may break the API.
   - A host opens, closes and focuses its own portals by saying `portal.open`, `portal.close {commit}`, `portal.focus {on}` with `{portal}`: whatever the graph embeds there, done at once. Saying what already is moves nothing (`focus_embed` is idempotent).
   - Input goes to the deepest focused embedding that is open in a live host - the current state, or open in one that is - not merely the one focused last: a game focused in a computer nobody sits at hears nothing, and one in a focused computer comes before it.
   - What any state said in a frame is heard by the end of it, whether the engine stepped it or not (one pass over the states, in place: `StateGraph::each_state`).
+- **How a room is drawn is the renderer's.** `GLWorld::spill(light, surface, most, on)`: a lamp whose colour and strength follow a picture (a screen's glow on the room), eased frame by frame by the renderer, never written into the world. `GLWorld::rays(room, at, strength, colour)`: daylight's shafts, aimed from whatever camera the room is drawn with.
+- A functor carrying on an event carries whole (its transport may read more than its two elements); it runs only when its source says so.
 - **One name, one thing.**
   - **Breaking:** an arrow's name is unique in its state (`add_morphism` refuses a second); a transition's in its graph (`connect` refuses a name given twice, and numbers a made-up one, `from-trigger->to#2`, for a guarded alternative on the same event).
   - **Breaking:** a functor a graph holds keeps its name: `rename` to another name throws, and assigning one under another name throws (use `set_functor`); assigning one under its own name is counted as a rewiring.
