@@ -68,23 +68,25 @@ graph.embed("door_map", "annex", "door_map", "doormap",     // mounted in the an
 
 ## Time
 
-Time is a state too. A `sg::Temporal` holds `now` (its `time` and `frame`) and
-one arrow, `advance`; the engine fires it once a frame. A state that changes
-with time says so with a drive, and its arrows do the changing:
+Time is a state too. A `sg::Temporal` holds timelines - an element each, with a
+`time` and a `frame`, moved by its own `advance` arrow. A state that changes
+with time says so with a drive, which gives it a line on the clock, and its
+arrows do the changing:
 
 ```cpp
-graph.add<sg::Temporal>("clock");
+auto& clock = graph.add<sg::Temporal>("clock");
 pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
     e.params.set("r", e.params.num("r") + 2.0 * ev.args.num("dt"));
 });
-graph.drive("pond_time", "clock", "pond", "tick", /*additive=*/true);
+sg::drive(graph, clock, "pond", "tick", /*additive=*/true);   // the drive "clock>pond"
 ```
 
-Each frame the pond steps, its clock advances by `dt` and the pond's `tick`
-arrows run with `{dt, time, frame}`, sent by the clock. A clock keeps one
-state's time and moves only when that state steps, so `time` is always the sum
-of the steps the state has taken: paused under a menu and resumed, it finds no
-time missing and no jump (`validate` refuses a clock shared by two drives).
+Each frame the pond steps, its line on the clock advances by `dt` and the
+pond's `tick` arrows run with `{dt, time, frame}`, sent by the clock. A line
+keeps one state's time and moves only when that state steps, so `time` is
+always the sum of the steps the state has taken: paused under a menu and
+resumed, it finds no time missing and no jump. One clock can keep a whole
+world's time, a line per state (`validate` refuses a line kept for two).
 Within a frame, states step in the order the graph declares: the active state,
 then its open embeddings' guests, in the order they were embedded - so which of
 two driven states moves first is never left to chance. Time is a monoid of durations and a drive is its
@@ -94,7 +96,7 @@ flow does and a compounding or Euler step does not. An additive drive is not
 handed `frame` - a step count cannot keep that claim, so there is none to read:
 
 ```
-drive @ drive pond_time: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
+drive @ drive clock>pond: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
 ```
 
 `on_update` still runs. `engine.set_watch_updates(true)` reports any state

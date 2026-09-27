@@ -270,16 +270,24 @@ private:
     // --- time -------------------------------------------------------------------------
     // A state about to step is driven: each clock that keeps its time moves on
     // by dt - through its own arrow, like any change to any state - and what it
-    // then says is handed to the state's arrows. A clock keeps one state's
+    // then says is handed to the state's arrows. A line keeps one state's
     // time and moves only when that state steps, so its time is always the
     // sum of the steps the state has taken: a state set aside and come back to
     // finds no time missing, and no jump.
     void drive(State& s, double dt) {
-        for (const Drive& d : graph_.drives()) {
-            if (d.state != s.id()) continue;
+        if (drive_revision_ != graph_.topology()) {
+            drive_index_.clear();
+            for (const Drive& d : graph_.drives()) drive_index_[d.state].push_back(&d);
+            drive_revision_ = graph_.topology();
+        }
+        auto it = drive_index_.find(s.id());
+        if (it == drive_index_.end()) return;
+        for (const Drive* dp : it->second) {
+            const Drive& d = *dp;
             State* c = graph_.find(d.clock);
-            if (!c || !c->find(Temporal::now_id())) continue;  // validate() names it
-            c->emit(Event{Temporal::advance_event(), Params{}.set(keys::dt, dt)});
+            const Key line = timeline_of(d);
+            if (!c || !c->find(line)) continue;  // validate() names it
+            c->emit(Event{Temporal::advance_event(line), Params{}.set(keys::dt, dt)});
             c->dispatch_pending();
             s.emit(drive_event(d, *c, dt));
         }
@@ -542,6 +550,9 @@ private:
     double time_ = 0.0;  // simulated: the sum of every dt ticked
     bool running_ = false;
     bool watch_updates_ = false;
+    // Which drives move which state, found again when the interfaces change.
+    std::unordered_map<Key, std::vector<const Drive*>> drive_index_;
+    uint64_t drive_revision_ = ~uint64_t{0};
     bool trace_ = false;
     bool strict_ = false;
     uint64_t watched_ = ~uint64_t{0};

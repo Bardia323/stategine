@@ -1098,7 +1098,7 @@ inline std::vector<Violation> drives(StateGraph& g, const LawOptions& o = {},
     std::vector<Violation> out;
     for (const Drive& d : g.drives()) {
         const State* c = g.find(d.clock);
-        const Element* now = c ? c->find(Temporal::now_id()) : nullptr;
+        const Element* now = c ? c->find(timeline_of(d)) : nullptr;
         if (!now || !g.find(d.state)) continue;  // validate() names it
         const double t0 = now->params.num(keys::time);
         const int64_t f0 = now->params.get_or<int64_t>(keys::frame, 0);

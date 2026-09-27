@@ -638,13 +638,13 @@ void test_cache_sees_what_is_queued() {
 // --- time is a state ----------------------------------------------------------------------
 // A pond whose ripple spreads at two metres a second, driven by a clock.
 sg::StateGraph& make_pond(sg::StateGraph& g, bool additive) {
-    g.add<sg::Temporal>("clock");
+    auto& clock = g.add<sg::Temporal>("clock");
     auto& pond = g.add<sg::State>("pond");
     pond.add_element("ripple", "ripple").params.set("r", 0.0);
     pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
         e.params.set("r", e.params.num("r") + 2.0 * ev.args.num("dt"));
     });
-    g.drive("pond_time", "clock", "pond", "tick", additive);
+    sg::drive(g, clock, "pond", "tick", additive);
     g.set_initial("pond");
     return g;
 }
@@ -659,10 +659,10 @@ void test_time_is_a_state() {
     sg::Engine e(g);
     e.run_fixed(0.25, 4);
     const auto& clock = static_cast<const sg::Temporal&>(g.state("clock"));
-    check(near(num(g.state("pond"), "ripple", "r"), 2.0) && near(clock.time(), 1.0) && clock.frame() == 4,
+    check(near(num(g.state("pond"), "ripple", "r"), 2.0) && near(clock.time("pond"), 1.0) && clock.frame("pond") == 4,
           "the clock moves by its own arrow, and the pond by the drive: 2 m in a second");
     g.restore_default("clock");
-    check(clock.time() == 0.0 && clock.frame() == 0, "time goes back to its start like any state");
+    check(clock.time("pond") == 0.0 && clock.frame("pond") == 0, "time goes back to its start like any state");
 
     // A clock that drives nothing is reached by nothing.
     sg::StateGraph lone;
@@ -675,7 +675,8 @@ void test_time_is_a_state() {
 
     sg::StateGraph wrong;
     make_pond(wrong, false);
-    wrong.drive("idle", "clock", "pond", "nothing");
+    wrong.drive(sg::Drive{"idle", "clock", "pond", "nothing", false, "idle"});
+    static_cast<sg::Temporal&>(wrong.state("clock")).timeline("idle");
     bool named = false;
     for (const auto& p : wrong.validate()) named = named || p.find("no arrow of pond is fired by nothing") != std::string::npos;
     check(named, "a drive that moves no arrow is named");
@@ -694,8 +695,8 @@ void test_time_acts_as_time() {
     show(vs);
     check(vs.size() == 1 && vs[0].law == "drive" && vs[0].element == sg::Key{"money"},
           "a step that compounds is caught claiming step(a) ; step(b) == step(a + b)");
-    g.drop_drive("pond_time");
-    g.drive("pond_time", "clock", "pond", "tick", false);
+    g.drop_drive("clock>pond");
+    sg::drive(g, static_cast<sg::Temporal&>(g.state("clock")), "pond", "tick", false);
     check(sg::laws::drives(g).empty(), "and is lawful when it does not claim it: time as steps");
 
     // A step that moves without time.
@@ -732,19 +733,25 @@ void test_time_is_kept_by_its_state() {
     e.run_fixed(0.25, 2);  // the first of these is taken by the pop, then the pond steps
     const auto& clock = static_cast<const sg::Temporal&>(g.state("clock"));
     const auto& r = pond.element("ripple").params;
-    check(near(clock.time(), 0.25 * clock.frame()) && near(r.num("r"), 2.0 * clock.time()) &&
-              near(r.num("seen"), clock.time()),
+    check(near(clock.time("pond"), 0.25 * clock.frame("pond")) && near(r.num("r"), 2.0 * clock.time("pond")) &&
+              near(r.num("seen"), clock.time("pond")),
           "the clock moved only with the pond: time, steps and motion agree after a pause");
     check(!r.get_or<bool>("has_frame", true) && r.get_or<std::string>("from", "") == "clock",
           "an additive drive hands on no frame to count, and the event comes from the clock");
 
-    // One clock, one state's time.
+    // One clock keeps many states' time, each on a line of its own - and a
+    // line kept for two is refused.
     g.add<sg::State>("brook").add_element("b", "n");
-    g.state("brook").loop("flow", "b", "tick", nullptr);
-    g.drive("brook_time", "clock", "brook", "tick");
+    g.state("brook").loop("flow", "b", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+        e.params.set("t", e.params.num("t") + ev.args.num("dt"));
+    });
+    sg::drive(g, static_cast<sg::Temporal&>(g.state("clock")), "brook", "tick");
+    g.embed("pond", "ripple", "brook");
+    check(g.validate().empty(), "a second state keeps its time on its own line of the same clock");
+    g.drive(sg::Drive{"stolen", "clock", "brook", "tick", false, "pond"});
     bool refused = false;
-    for (const auto& p : g.validate()) refused = refused || p.find("a clock keeps one state's time") != std::string::npos;
-    check(refused, "a clock shared by two drives is refused");
+    for (const auto& p : g.validate()) refused = refused || p.find("a line keeps one state's time") != std::string::npos;
+    check(refused, "a line shared by two drives is refused");
 }
 
 // on_update that writes, rather than emits, is behaviour outside the arrows.

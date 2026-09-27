@@ -68,10 +68,10 @@ struct Seam {
 };
 
 // A drive: `state` changes with the time `clock` keeps. Each frame the state
-// steps, the clock advances by dt and the state's arrows on `trigger` are
-// fired with {dt, time, frame}. The clock keeps this one state's time and
-// moves only when it steps (an idle state computes nothing, and loses no
-// time). `additive` claims step(a) ; step(b) == step(a + b), and the laws hold
+// steps, its line on the clock advances by dt and the state's arrows on
+// `trigger` are fired with {dt, time, frame}. A line keeps one state's time
+// and moves only when it steps (an idle state computes nothing, and loses no
+// time); one clock may keep many lines. `additive` claims step(a) ; step(b) == step(a + b), and the laws hold
 // it to that (see Temporal.hpp).
 struct Drive {
     Key name;
@@ -79,6 +79,7 @@ struct Drive {
     Key state;
     Key trigger;
     bool additive = false;
+    Key line;  // the clock's timeline this state's time is kept on; the state's name when empty
 };
 
 // Who may change what. Whoever holds the graph itself - the code that builds
@@ -426,7 +427,7 @@ public:
         return drives_.back();
     }
     const Drive& drive(Key name, Key clock, Key state, Key trigger, bool additive = false) {
-        return drive(Drive{name, clock, state, trigger, additive});
+        return drive(Drive{name, clock, state, trigger, additive, Key{}});
     }
     void drop_drive(Key name) {
         rev_.rewired("drop_drive");
@@ -637,18 +638,23 @@ public:
         for (const Drive& d : drives_) {
             const State* c = find(d.clock);
             const State* s = find(d.state);
+            const Key line = d.line.empty() ? d.state : d.line;
             if (!c) errors.push_back("drive " + d.name.str() + ": unknown clock " + d.clock.str());
             else if (c->kind() != Key{"temporal"})
                 errors.push_back("drive " + d.name.str() + ": " + d.clock.str() + " is not a clock");
+            else if (!c->find(line) || c->find(line)->kind != Key{"timeline"})
+                errors.push_back("drive " + d.name.str() + ": clock " + d.clock.str() +
+                                 " has no timeline " + line.str());
             if (!s) {
                 errors.push_back("drive " + d.name.str() + ": unknown state " + d.state.str());
                 continue;
             }
             for (const Drive& other : drives_)
-                if (&other != &d && other.clock == d.clock) {
-                    errors.push_back("drive " + d.name.str() + ": clock " + d.clock.str() +
-                                     " also keeps time for drive " + other.name.str() +
-                                     " - a clock keeps one state's time; give each its own");
+                if (&other != &d && other.clock == d.clock &&
+                    (other.line.empty() ? other.state : other.line) == line) {
+                    errors.push_back("drive " + d.name.str() + ": timeline " + line.str() + " of " +
+                                     d.clock.str() + " also keeps time for drive " + other.name.str() +
+                                     " - a line keeps one state's time; give each its own");
                     break;
                 }
             bool moved = false;
