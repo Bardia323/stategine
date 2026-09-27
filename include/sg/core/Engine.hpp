@@ -180,6 +180,8 @@ public:
         if (detail::observing() > 0) detail::refused_to_observer(std::string("moved focus: ") + name.str());
         Embedding* e = graph_.embedding_rw(name);
         if (!e) return;
+        const bool listed = std::find(focus_.begin(), focus_.end(), name) != focus_.end();
+        if (e->focus == on && listed == (on && e->open)) return;  // as it is already: nothing moves
         e->focus = on;
         focus_.erase(std::remove(focus_.begin(), focus_.end(), name), focus_.end());
         if (on && e->open) focus_.push_back(name);
@@ -213,14 +215,29 @@ public:
         return now;
     }
 
-    // The guest currently receiving events, if any.
+    // The guest currently receiving events, if any: the innermost focused
+    // embedding that is open, in a host that is itself live - the state the
+    // engine is in, or open in one that is. (A game focused in a computer
+    // nobody sits at hears nothing.)
     const State* focused() const {
-        for (auto it = focus_.rbegin(); it != focus_.rend(); ++it) {
-            const Embedding* e = graph_.embedding(*it);
-            if (e && e->open) return graph_.find(e->guest);
-        }
-        return nullptr;
+        const Embedding* e = innermost();
+        return e ? graph_.find(e->guest) : nullptr;
     }
+    // How deep a state is open, from the state the engine is in (0), through
+    // open embeddings; -1 if it is not live.
+    int depth(Key id, int limit = 8) const {
+        if (!stack_.empty() && stack_.back()->id() == id) return 0;
+        if (limit == 0) return -1;
+        int best = -1;
+        for (std::size_t j : graph_.embeddings_holding(id)) {
+            const Embedding& e = graph_.embeddings()[j];
+            if (!e.open) continue;
+            const int d = depth(e.host, limit - 1);
+            if (d >= 0 && (best < 0 || d + 1 < best)) best = d + 1;
+        }
+        return best;
+    }
+    bool live(Key id) const { return depth(id) >= 0; }
 
     // --- frame -------------------------------------------------------------------
     void tick(double dt) {
@@ -241,6 +258,12 @@ public:
         }
         keep_time(t);
         stepped_.clear();
+        // What any state said this frame - one the engine stepped, or one a
+        // listener-free hand (an edit, the host) sent something to - is
+        // heard by the end of it.
+        graph_.each_state([this](State& s) {
+            if (!s.said_out().empty()) heard_from(s);
+        });
         if (stack_.empty()) running_ = false;
         if (graph_.revision() != watched_ && elapsed() - last_watch_ >= watch_interval_) check_graph();
     }
@@ -287,10 +310,26 @@ private:
     State* focused_guest() {
         while (!focus_.empty()) {
             const Embedding* e = graph_.embedding(focus_.back());
-            if (e && e->open) return graph_.find(e->guest);
+            if (e && e->open) break;
             focus_.pop_back();
         }
-        return nullptr;
+        const Embedding* e = innermost();
+        return e ? graph_.find(e->guest) : nullptr;
+    }
+
+    // The focused embedding input goes to: open, in a live host, and the
+    // deepest of those - a game focused in a focused computer before the
+    // computer; of two as deep, the one focused last.
+    const Embedding* innermost() const {
+        const Embedding* best = nullptr;
+        int best_depth = -1;
+        for (auto it = focus_.rbegin(); it != focus_.rend(); ++it) {
+            const Embedding* e = graph_.embedding(*it);
+            if (!e || !e->open) continue;
+            const int d = depth(e->host);
+            if (d > best_depth) best = e, best_depth = d;
+        }
+        return best;
     }
 
     void report(const std::string& p) {
@@ -313,6 +352,7 @@ private:
         if (it == drive_index_.end()) return;
         for (const Drive* dp : it->second) {
             const Drive& d = *dp;
+            if (d.keeps == Keeps::WhileFocused && focused_guest() != &s) continue;  // it waits
             State* c = graph_.find(d.clock);
             const Key line = timeline_of(d);
             if (!c || !c->find(line)) continue;  // validate() names it
@@ -330,7 +370,9 @@ private:
         if (drive_revision_ != graph_.topology()) index_drives();
         for (const Drive* d : always_) {
             State* s = graph_.find(d->state);
-            if (!s || !stepped_.insert(s).second) continue;
+            if (!s || stepped_.count(s)) continue;
+            if (d->keeps == Keeps::WhileShown && !shown(s->id())) continue;
+            stepped_.insert(s);
             drive(*s, t.dt);
             step(*s, t);
             step_embeddings_in(*s, t);  // and what is open in it, as anywhere
@@ -344,12 +386,19 @@ private:
         }
     }
 
+    // Whether some open embedding shows it.
+    bool shown(Key id) const {
+        for (std::size_t j : graph_.embeddings_holding(id))
+            if (graph_.embeddings()[j].open) return true;
+        return false;
+    }
+
     void index_drives() {
         drive_index_.clear();
         always_.clear();
         for (const Drive& d : graph_.drives()) {
             drive_index_[d.state].push_back(&d);
-            if (d.keeps == Keeps::Always &&
+            if ((d.keeps == Keeps::Always || d.keeps == Keeps::WhileShown) &&
                 std::none_of(always_.begin(), always_.end(), [&](const Drive* o) { return o->state == d.state; }))
                 always_.push_back(&d);
         }
@@ -400,6 +449,9 @@ private:
     void heard_from(State& s, int depth = 0) {
         if (s.said_out().empty()) return;
         std::vector<Event> said = s.take_said();
+        // A host's word about its own portal is done at once.
+        said.erase(std::remove_if(said.begin(), said.end(), [this](const Event& e) { return portal(e); }), said.end());
+        if (said.empty()) return;
         if (!graph_.edits().empty())
             for (const Event& e : said)
                 for (const Edit& ed : graph_.edits())
@@ -661,7 +713,7 @@ private:
                 // Not a transition trigger: hand it to whoever holds focus.
                 if (State* g = focused_guest()) {
                     g->hear(ev);
-                    due_.push_back(focus_.back());  // it crossed that embedding
+                    due_.push_back(innermost()->name);  // it crossed that embedding
                 } else {
                     from->hear(ev);
                 }
@@ -670,6 +722,25 @@ private:
             take(*t, *from, ev);
             if (!running_) return;
         }
+    }
+
+    // A host's word about its own portal (State::says): `portal.open`,
+    // `portal.close` {portal, commit} and `portal.focus` {portal, on} open,
+    // close or focus whatever the graph embeds in that portal of the state
+    // that said it - a computer opening its game's window.
+    bool portal(const Event& ev) {
+        static const Key open{"portal.open"}, close{"portal.close"}, focus{"portal.focus"};
+        if (ev.name != open && ev.name != close && ev.name != focus) return false;
+        const Key at{ev.args.get_or<std::string>("portal", "")};
+        std::vector<Key> names;
+        for (std::size_t j : graph_.embeddings_hosted_by(ev.source))
+            if (graph_.embeddings()[j].portal == at) names.push_back(graph_.embeddings()[j].name);
+        for (Key n : names) {
+            if (ev.name == open) open_embed(n);
+            else if (ev.name == close) close_embed(n, ev.args.get_or<bool>(keys::commit, false));
+            else focus_embed(n, ev.args.get_or<bool>("on", true));
+        }
+        return true;
     }
 
     static Key embed_open_event() {

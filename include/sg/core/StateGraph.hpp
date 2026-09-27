@@ -70,7 +70,15 @@ struct Seam {
 // Whether a driven state's time goes on only while it is active - the room
 // you are in, and what is open in it - or always: what goes on in a room you
 // stepped out of (a door still swinging, a record still turning).
-enum class Keeps { WhileActive, Always };
+// When a driven state's time goes on:
+//   WhileActive   when it steps - the active state, and what is open in it
+//   Always        every frame, wherever it is (a record still turning)
+//   WhileShown    every frame some embedding shows it open - wherever that
+//                 is, the active state or not (a game on a set, played by
+//                 no one)
+//   WhileFocused  only while it has the input (a game on a computer, which
+//                 waits while another window is in front)
+enum class Keeps { WhileActive, Always, WhileShown, WhileFocused };
 
 // A drive: `state` changes with the time `clock` keeps. Each frame the state
 // steps, its line on the clock advances by dt and the state's arrows on
@@ -162,6 +170,13 @@ public:
 
     bool contains(Key id) const { return states_.count(id) != 0; }
     std::size_t size() const { return states_.size(); }
+
+    // Every state, in place: for whoever holds the graph (the engine, once a
+    // frame) - no list made.
+    template <typename F>
+    void each_state(F&& f) {
+        for (auto& kv : states_) f(*kv.second);
+    }
 
     std::vector<Key> ids() const {
         std::vector<Key> out;

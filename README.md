@@ -100,7 +100,9 @@ drive @ drive clock>pond: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tic
 ```
 
 A drive keeps time `WhileActive` (the default: the room you are in and what is
-open in it) or `Keeps::Always`: a record still turning, a door still swinging in
+open in it), `Keeps::WhileShown` (while any embedding shows it open - a game on
+a set), `Keeps::WhileFocused` (only while it has the input - a game on a
+computer, which waits while another window is in front) or `Keeps::Always`: a record still turning, a door still swinging in
 a room you stepped out of. The engine steps such a state once a frame if the
 active state did not, with what is open in it, and carries its Live embeddings
 back out - so nothing needs stepping by hand from the game loop.

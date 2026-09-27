@@ -23,6 +23,11 @@ While the major version is 0, a minor bump may break the API.
 - **Ports: the world outside reaches a state only where the graph says.** `graph.port(state, event)` declares that `event` may come in to `state` from outside (a program's output, a sensor); `Engine::send(state, event)` delivers it at the start of the next frame, and refuses one the graph does not declare (and one sent from a listener).
 - `StateGraph::lens(get, put)`: two functors declared a lens on their own, with no embedding - a window showing a board it can also draw on - held to the lens laws (put-get, settles, put-put) by `sg::verify` like an embedding's pair.
 - `Surface2D::stale()`: a surface says its picture no longer matches its own data (a copy carried in by a functor), and `raster()` paints again - a picture memoised on its data, never told from outside.
+- **Where time and input go, the graph says.**
+  - `Keeps::WhileShown` (time goes on while some embedding shows the state open, wherever it is) and `Keeps::WhileFocused` (only while it has the input: its drive does not fire otherwise).
+  - A host opens, closes and focuses its own portals by saying `portal.open`, `portal.close {commit}`, `portal.focus {on}` with `{portal}`: whatever the graph embeds there, done at once. Saying what already is moves nothing (`focus_embed` is idempotent).
+  - Input goes to the deepest focused embedding that is open in a live host - the current state, or open in one that is - not merely the one focused last: a game focused in a computer nobody sits at hears nothing, and one in a focused computer comes before it.
+  - What any state said in a frame is heard by the end of it, whether the engine stepped it or not (one pass over the states, in place: `StateGraph::each_state`).
 - **One name, one thing.**
   - **Breaking:** an arrow's name is unique in its state (`add_morphism` refuses a second); a transition's in its graph (`connect` refuses a name given twice, and numbers a made-up one, `from-trigger->to#2`, for a guarded alternative on the same event).
   - **Breaking:** a functor a graph holds keeps its name: `rename` to another name throws, and assigning one under another name throws (use `set_functor`); assigning one under its own name is counted as a rewiring.

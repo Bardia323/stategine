@@ -1239,6 +1239,61 @@ void test_ports_are_declared() {
     check(gauge.find("needle")->params.num("v") == 3.0, "through a declared one, it reaches the state's arrow");
 }
 
+
+// A game on a set runs while it is shown; one on a computer only while it is played; a host opens its own portal.
+void test_shown_focused_and_portals() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::State>("room");
+    room.add_element("desk", "desk");
+    room.add_element("set", sg::kinds::portal);
+    room.add_element("pc_port", sg::kinds::portal);
+    auto& pc = g.add<sg::State>("pc");
+    pc.add_element("win", sg::kinds::portal);
+    pc.says("portal.open");
+    pc.says("portal.focus");
+    pc.loop("launch", "win", "launch", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event&) {
+        s.emit(sg::Event{"portal.open", sg::Params{}.set("portal", std::string("win"))});
+        s.emit(sg::Event{"portal.focus", sg::Params{}.set("portal", std::string("win")).set("on", true)});
+    });
+    const auto game = [&](const char* id) -> sg::State& {
+        auto& s = g.add<sg::State>(id);
+        s.add_element("hero", "hero").params.set("t", 0.0);
+        s.loop("run", "hero", "tick", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+            e.params.set("t", e.params.num("t") + ev.args.num("dt"));
+        });
+        return s;
+    };
+    auto& on_set = game("on_set");
+    auto& on_pc = game("on_pc");
+    auto& clock = g.add<sg::Temporal>("clock");
+    sg::drive(g, clock, on_set.id(), "tick", false, sg::Keeps::WhileShown);
+    sg::drive(g, clock, on_pc.id(), "tick", false, sg::Keeps::WhileFocused);
+    g.set_focus(g.embed("set", "room", "set", "on_set", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_focus(g.embed("pc", "room", "pc_port", "pc", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_focus(g.embed("app", "pc", "win", "on_pc", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("room");
+    sg::Engine e(g);
+    e.start();
+    e.run_fixed(0.5, 2);
+    check(on_set.find("hero")->params.num("t") == 0.0, "a game on a set that is not on keeps no time");
+    e.open_embed("set");
+    e.run_fixed(0.5, 2);
+    check(on_set.find("hero")->params.num("t") == 1.0, "shown, it keeps its time");
+
+    e.open_embed("pc");
+    pc.emit("launch");
+    pc.dispatch_pending();
+    e.run_fixed(0.5, 1);  // said now, opened and focused at the start of the next frame
+    e.run_fixed(0.5, 2);
+    check(e.embed_open("app") && e.focused() == &on_pc, "the computer opens and focuses its own window by saying so");
+    check(on_pc.find("hero")->params.num("t") > 0.0, "played, the game on it keeps its time");
+    const double t = on_pc.find("hero")->params.num("t");
+    e.close_embed("pc");
+    e.run_fixed(0.5, 2);
+    check(e.focused() == nullptr && on_pc.find("hero")->params.num("t") == t,
+          "with nobody at the computer, its game has no input and waits");
+}
+
 }  // namespace
 
 int main() {
@@ -1272,6 +1327,7 @@ int main() {
     test_functors_carry_what_is_said();
     test_a_declared_lens_is_checked();
     test_ports_are_declared();
+    test_shown_focused_and_portals();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;
