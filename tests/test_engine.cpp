@@ -1539,114 +1539,216 @@ void test_adjunction_is_not_an_isomorphism() {
 }
 
 void test_kan_extensions() {
-    // A = the order 0 < 1, C = one object, K collapses A onto C and R picks
-    // out 1: K -| R, unit u : 0 -> 1. B = a shelf, low < high, and F puts
-    // the order on it. Lan_K F = F . R sends * to high, and its 2-cell is
-    // F(u) = lift: what F does below 1 carried up to it.
-    sg::StateGraph g;
-    auto& A = g.add<sg::State>("order");
-    auto& C = g.add<sg::State>("point");
-    auto& B = g.add<sg::State>("shelf");
+    // A known piece of a world, and a picture of the piece. A = {p -f-> q};
+    // B = A and one more thing past it, {p -f-> q -g-> r}; K the inclusion,
+    // carrying each object whole; F draws A in C = {P -Ff-> Q}. Lan_K F asks
+    // what F must do on all of B: r lies past q, so it goes where q goes.
     const auto add = [](sg::State&, sg::Element& from, sg::Element* to, const sg::Event&) {
         if (to) to->params.set("v", to->params.num("v") + from.params.num("v"));
     };
-    A.add_element("0", "n").params.set("v", 1.0);
-    A.add_element("1", "n").params.set("v", 5.0);
-    C.add_element("*", "n");
-    B.add_element("low", "slot").params.set("v", 1.0);
-    B.add_element("high", "slot").params.set("v", 5.0);
-    A.arrow("u", "0", "1", "never", add);
-    A.loop("id_1", "1", "never", nullptr);
-    C.loop("id_*", "*", "never", nullptr);
-    B.arrow("lift", "low", "high", "never", add);
-    B.loop("id_high", "high", "never", nullptr);
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n").params.set("v", 1.0);
+        A.add_element("q", "n").params.set("v", 5.0);
+        A.arrow("f", "p", "q", "never", add);
+        B.add_element("p", "n").params.set("v", 1.0);
+        B.add_element("q", "n").params.set("v", 5.0);
+        B.add_element("r", "n");
+        B.arrow("f", "p", "q", "never", add);
+        B.arrow("g", "q", "r", "never", nullptr);
+        C.add_element("P", "n").params.set("v", 1.0);
+        C.add_element("Q", "n").params.set("v", 5.0);
+        C.arrow("Ff", "P", "Q", "never", add);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q").on_morphism("f", "f");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q").on_morphism("f", "Ff");
 
-    // K and R carry no data: the point has none to give or to take.
-    sg::Functor& K = g.add_functor("K", "order", "point");
-    K.on_object("0", "*", sg::transport::only({}))
-        .on_object("1", "*", sg::transport::only({}))
-        .on_morphism("u", "id_*")
-        .on_morphism("id_1", "id_*");
-    sg::Functor& R = g.add_functor("R", "point", "order");
-    R.on_object("*", "1", sg::transport::only({})).on_morphism("id_*", "id_1");
-    sg::Functor& F = g.add_functor("F", "order", "shelf");
-    F.on_object("0", "low").on_object("1", "high").on_morphism("u", "lift").on_morphism("id_1", "id_high");
+        // First compiled: the extension exists, but g goes to the identity
+        // on Q, which the picture does not name, and r's data derives from
+        // nothing declared. Found, not executable: no functor.
+        sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+        std::printf("        %s\n", r.str().c_str());
+        check(r.defects.empty() && r.complete && !r.ok(), "nothing makes it impossible, but it has holes: no functor");
+        check(r.objects.at("p") == sg::Key{"P"} && r.objects.at("q") == sg::Key{"Q"} &&
+                  r.objects.at("r") == sg::Key{"Q"},
+              "r, forced past q, goes where q goes: the colimit is Q, found among the picture's own elements");
+        check(r.arrows.at("f") == sg::Key{"Ff"} && !r.arrows.count("g"), "f goes to Ff; g has nowhere named to go");
+        check(r.cells.at("p").empty() && r.cells.at("q").empty(), "on the piece itself the 2-cell is the identity");
+        check(r.holes.size() == 2 && r.holes_of(sg::kan::Hole::Kind::Arrow) == 1 &&
+                  r.holes_of(sg::kan::Hole::Kind::Transport) == 1,
+              "two holes: an identity at Q (an arrow), and r's data (a transport)");
+        check(r.current(g), "and what it was worked out from has not moved");
 
-    sg::Adjunction adj("K -| R", &K, &R);
-    adj.identity("id_1").identity("id_*").unit("0", "u").unit("1").counit("*");
-    check(adj.holds(A, C), "K -| R");
+        // Data moving under the same structure leaves the answer standing.
+        C.element("Q").params.set("v", 9.0);
+        check(r.current(g), "data moved: nothing to compile again");
+        C.element("Q").params.set("v", 5.0);
 
-    sg::Kan lan = sg::Kan::left("Lan_K F", F, adj);
-    lan.identity("id_high");
-    const auto defects = lan.check(A, B, C);
-    for (const auto& d : defects) std::printf("        %s\n", d.c_str());
-    check(defects.empty(), "Lan_K F along K -| R: typed, natural, resting on the adjunction");
-    check(lan.extension().image_object("*") == sg::Key{"high"}, "Lan_K F is F after R: * goes to high");
-    check(lan.cell("0") == sg::Kan::Word{"lift"} && lan.cell("1").empty(),
-          "its 2-cell is F(eta): lift at 0, the identity at 1");
-    check(sg::laws::kan(g, lan).empty(), "and its squares hold on live data");
+        // Fill the holes as any world is changed: an identity loop at Q, and
+        // a transport said for r (it carries nothing).
+        C.loop("id_Q", "Q", "never", nullptr);
+        check(!r.current(g), "structure moved: the answer is stale");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        r = sg::kan::left(g, "K", "F", "Lan", o);
+        std::printf("        %s\n", r.str().c_str());
+        check(r.ok() && r.complete && r.holes.empty() && r.defects.empty(), "compiled: an ordinary functor");
+        check(r.functor->image_object("r") == sg::Key{"Q"} && r.functor->image_morphism("g") == sg::Key{"id_Q"},
+              "r to Q, g to Q's identity");
+        check(r.functor->declared_of("p") != nullptr, "p's transport is F's own, derived, declared as F's is");
 
-    // Any other extension passes through it: G sends * to high as well, with
-    // gamma lift at 0; sigma is the identity, and gamma = alpha ; sigma K.
-    sg::Functor G("G", "point", "shelf");
-    G.on_object("*", "high").on_morphism("id_*", "id_high");
-    auto through = lan.factor(G, {{"0", {"lift"}}}, A, B, C);
-    for (const auto& d : through.defects) std::printf("        %s\n", d.c_str());
-    check(through.ok() && through.sigma.at("*").empty(), "a competitor factors through Lan, by the identity");
-    // One whose 2-cell runs the wrong way does not.
-    sg::Functor Low("Low", "point", "shelf");
-    Low.on_object("*", "low");
-    check(!lan.factor(Low, {}, A, B, C).ok(), "a 2-cell with no arrow high -> low is not one");
+        // The graph takes it as it takes any functor; the laws hold it to its arrows.
+        g.add_functor(std::move(*r.functor));
+        g.connect("piece", "grow", "world", "K");
+        g.connect("world", "draw", "picture", "Lan");
+        g.set_initial("piece");
+        const sg::LawReport report = sg::verify(g);
+        if (!report.ok()) std::printf("%s", report.str().c_str());
+        check(report.ok(), "and in the graph its laws hold like any functor's");
+    }
 
-    // An adjunction is a Kan extension: R = Lan_K id_A, its 2-cell the unit.
-    const sg::Functor id_A = sg::Functor::identity(A);
-    sg::Kan right_adjoint = sg::Kan::left("Lan_K id", id_A, adj);
-    check(right_adjoint.holds(A, A, C) && right_adjoint.extension().image_object("*") == sg::Key{"1"} &&
-              right_adjoint.cell("0") == sg::Kan::Word{"u"},
-          "R is Lan_K id, with the unit for its 2-cell");
+    // Where no element of C has the universal property, there is no
+    // extension. B = {p -a-> r <-b- q}, A = {p, q}: r's colimit is a
+    // coproduct of P and Q, and the picture has two candidates, T and T2,
+    // neither through the other.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        A.add_element("q", "n");
+        B.add_element("p", "n");
+        B.add_element("q", "n");
+        B.add_element("r", "n");
+        B.arrow("a", "p", "r", "never", nullptr);
+        B.arrow("b", "q", "r", "never", nullptr);
+        for (const char* x : {"P", "Q", "T", "T2"}) C.add_element(x, "n");
+        C.arrow("tp", "P", "T", "never", nullptr);
+        C.arrow("tq", "Q", "T", "never", nullptr);
+        C.arrow("sp", "P", "T2", "never", nullptr);
+        C.arrow("sq", "Q", "T2", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan", o);
+        std::printf("        %s\n", r.str().c_str());
+        check(!r.ok() && r.complete && r.defects.size() == 1 && r.holes.empty(),
+              "two cocones, neither universal: no colimit at r - it cannot exist, and that is proven");
+        C.remove_with_arrows("T2");
+        check(!r.current(g), "the picture changed");
+        r = sg::kan::left(g, "K", "F", "Lan", o);
+        check(r.ok() && r.objects.at("r") == sg::Key{"T"} && r.arrows.at("a") == sg::Key{"tp"} &&
+                  r.arrows.at("b") == sg::Key{"tq"},
+              "with T alone, it is the coproduct, and a, b go to its legs");
 
-    // Right: along R, whose left adjoint is K, Ran_R P = P . K. P puts the
-    // point on high; Ran_R P sends both 0 and 1 to high, and F passes
-    // through it by sigma_0 = lift.
-    sg::Functor& P = g.add_functor("P", "point", "shelf");
-    P.on_object("*", "high").on_morphism("id_*", "id_high");
-    sg::Kan ran = sg::Kan::right("Ran_R P", P, adj);
-    ran.identity("id_high");
-    const auto rdefects = ran.check(C, B, A);
-    for (const auto& d : rdefects) std::printf("        %s\n", d.c_str());
-    check(rdefects.empty(), "Ran_R P along K -| R");
-    check(ran.extension().image_object("0") == sg::Key{"high"} &&
-              ran.extension().image_object("1") == sg::Key{"high"},
-          "Ran_R P is P after K");
-    auto from_above = ran.factor(F, {}, C, B, A);
-    for (const auto& d : from_above.defects) std::printf("        %s\n", d.c_str());
-    check(from_above.ok() && from_above.sigma.at("0") == sg::Kan::Word{"lift"} &&
-              from_above.sigma.at("1").empty(),
-          "F passes through Ran_R P by lift at 0, the identity at 1");
+        // An inclusion only: two objects of A onto one of B is refused.
+        g.add_functor("K2", "piece", "world").on_object("p", "p").on_object("q", "p");
+        const sg::kan::Result k2 = sg::kan::left(g, "K2", "F", "Lan2");
+        check(!k2.ok() && k2.defects.empty() && !k2.complete && k2.holes_of(sg::kan::Hole::Kind::Unsupported) == 1,
+              "along a functor that is not an inclusion: not resolved, and not called impossible");
+    }
 
-    // Declared in the graph, it is the composite it is, checked as one.
-    // It reaches the world as any functor does: here it carries the way from
-    // the point onto the shelf.
-    lan.declare(g);
-    ran.declare(g);
-    check(g.composite_chain("Lan_K F") && g.composite_chain("Ran_R P"), "declared as composites");
-    g.connect("order", "collapse", "point", "K");
-    g.connect("point", "shelve", "shelf", "Lan_K F");
-    g.set_initial("order");
-    const sg::LawReport r = sg::verify(g);
-    if (!r.ok()) std::printf("%s", r.str().c_str());
-    check(r.ok(), "and the graph's laws hold with them in it");
+    // Right: B = {p <-x- r -y-> q}, A = {p, q}. Ran_K F at r is the limit of
+    // P and Q - a product, which the picture has as Pr with its projections.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        A.add_element("q", "n");
+        B.add_element("p", "n");
+        B.add_element("q", "n");
+        B.add_element("r", "n");
+        B.add_element("far", "n");  // nothing of A reaches it or is reached: outside
+        B.arrow("x", "r", "p", "never", nullptr);
+        B.arrow("y", "r", "q", "never", nullptr);
+        for (const char* e : {"P", "Q", "Pr"}) C.add_element(e, "n");
+        C.arrow("pi1", "Pr", "P", "never", nullptr);
+        C.arrow("pi2", "Pr", "Q", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        const sg::kan::Result r = sg::kan::right(g, "K", "F", "Ran", o);
+        std::printf("        %s\n", r.str().c_str());
+        check(r.ok() && r.objects.at("r") == sg::Key{"Pr"} && r.arrows.at("x") == sg::Key{"pi1"} &&
+                  r.arrows.at("y") == sg::Key{"pi2"},
+              "Ran at r is the product Pr; x and y go to its projections");
+        check(!r.objects.count("far"), "and what the piece does not force is left out");
+    }
 
-    // An F that does not carry the unit has no 2-cell there.
-    sg::Functor bare("bare", "order", "shelf");
-    bare.on_object("0", "low").on_object("1", "high");
-    sg::Kan broken = sg::Kan::left("Lan_K bare", bare, adj);
-    broken.identity("id_high");
-    check(!broken.holds(A, B, C), "a 2-cell F does not carry is refused");
-    // Nor is there one along a pair that is not adjoint.
-    sg::Adjunction not_adj("K -| R, no unit", &K, &R);
-    not_adj.identity("id_1").identity("id_*");
-    check(!sg::Kan::left("Lan", F, not_adj).holds(A, B, C), "no adjunction, no extension");
+    // A transport is composed from declared ones, or it is a hole. A = {p},
+    // B = {p}, C = {P}; F carries p's `v` to P's `w`.
+    {
+        const auto world = [](sg::StateGraph& g) {
+            g.add<sg::State>("piece").add_element("p", "n").params.set("v", 2.0);
+            g.add<sg::State>("world").add_element("p", "n").params.set("u", 2.0);
+            g.add<sg::State>("picture").add_element("P", "n");
+            g.add_functor("F", "piece", "picture").on_object("p", "P", sg::transport::swizzle({{"w", "v"}}));
+        };
+        using Kind = sg::kan::Hole::Kind;
+        {
+            // K renames v to u: undone, then F's - one declared transport.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", sg::transport::swizzle({{"u", "v"}}));
+            sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(r.ok() && r.functor->declared_of("p") != nullptr, "K a renaming: undone, then F's, declared");
+            sg::Element P("P", "n");
+            (*r.functor->transport_of("p"))(g.state("world").element("p"), P);
+            check(P.params.num("w") == 2.0 && !P.params.has("u") && !P.params.has("v"),
+                  "and it carries the world's u to the picture's w, nothing else");
+        }
+        {
+            // K opaque: nothing says how to undo it.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", [](const sg::Element& s, sg::Element& d) {
+                d.params.set("u", s.params.num("v"));
+            });
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.defects.empty() && r.holes.size() == 1 && r.holes_of(Kind::Transport) == 1,
+                  "K's transport opaque: a transport hole, no copy made up");
+        }
+        {
+            // F reads what K does not carry.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", sg::transport::swizzle({{"u", "x"}}));
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.holes_of(Kind::Transport) == 1, "F reads v, which K does not carry: a transport hole");
+        }
+    }
+
+    // A search cut short proves nothing: no colimit found within the budget
+    // is a hole, not a defect. B = {p -a-> m -b-> r}, A = {p}; C = {P -c-> X
+    // -d-> Y}: whether P is universal turns on P -> Y, two arrows long.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        for (const char* e : {"p", "m", "r"}) B.add_element(e, "n");
+        B.arrow("a", "p", "m", "never", nullptr);
+        B.arrow("b", "m", "r", "never", nullptr);
+        for (const char* e : {"P", "X", "Y"}) C.add_element(e, "n");
+        C.arrow("c", "P", "X", "never", nullptr);
+        C.arrow("d", "X", "Y", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p");
+        g.add_functor("F", "piece", "picture").on_object("p", "P");
+        sg::kan::Options o;
+        o.max_path = 1;
+        const sg::kan::Result cut = sg::kan::left(g, "K", "F", "Lan", o);
+        std::printf("        %s\n", cut.str().c_str());
+        check(!cut.ok() && !cut.complete && cut.defects.empty() && cut.holes_of(sg::kan::Hole::Kind::Budget) > 0,
+              "cut at one arrow: not resolved, never called impossible");
+    }
 }
 
 int main() {

@@ -1,48 +1,84 @@
-// Stategine - Kan extensions: a functor carried on along another.
+// Stategine - Kan extensions: a functor found, not a thing added.
 //
-// Given F : A -> B and K : A -> C, a left Kan extension of F along K is a
-// functor Lan_K F : C -> B with a 2-cell
+// Given K : A -> B and F : A -> C, the left Kan extension of F along K is the
+// functor Lan_K F : B -> C that does on B what F does on A, as well as B's
+// structure lets it: at each object b of B,
 //
-//     alpha : F => Lan_K F . K          alpha_a : F(a) -> Lan_K F (K(a))
+//     Lan_K F (b)  =  the colimit in C of  F(a)  over every  K(a) -> b
+//     Ran_K F (b)  =  the limit    in C of  F(a)  over every  b -> K(a)
 //
-// through which every other such pair passes exactly once: for G : C -> B and
-// gamma : F => G . K there is one sigma : Lan_K F => G with
+// This header is a compiler, not a new kind of thing. It reads states,
+// functors and arrows the graph already has, works the extension out, and
+// hands back an ordinary `Functor` - which the graph takes like any other
+// (`graph.add_functor(std::move(*r.functor))`), and which nothing afterwards
+// can tell from one written by hand. The engine gains no object, no path and
+// no propagation: what is costly (the search, the proof) is done here, once,
+// and what runs is a table looked up and a transport carried.
 //
-//     gamma_a  ==  alpha_a ; sigma_K(a)
+// Nothing is invented. A colimit is not a new object of C: it is an element
+// C already has, with arrows C already has, that has the universal property
+// - every other cocone passes through it by exactly one arrow. It is searched
+// for among C's own elements; if none has it, the extension does not exist
+// at b, and the result says so (`defects`). A world that lacks it can be given
+// it the way any world is changed - an edit adds the element and its arrows -
+// and compiled again.
 //
-// It is what F does on A, said everywhere on C as well as it can be from
-// below. The right one, Ran_K F with beta : Ran_K F . K => F, is the same
-// from above: gamma : G . K => F passes through it as gamma_a == sigma_K(a) ; beta_a.
+// A state is read as the category its arrows generate. An arrow is a word of
+// generating arrows: a composite is the word of its parts, and a loop that
+// does nothing (no handler, not a composite) is an identity, the empty word -
+// as `State::composite` reads it. Two arrows are equal when they are the same
+// word. Hom-sets are searched up to `Options::max_path` arrows and cones up to
+// `max_cones`; a search cut short says where (`Hole::Budget`), as the laws do: not
+// looked at is never read as not there.
 //
-// The engine builds one where what it already has builds it. Along a functor
-// with a right adjoint, K -| R, the left extension is F after R; along one
-// with a left adjoint, L -| K, the right extension is F after L:
+// Where the extension exists, what it maps is forced:
+//   objects    b goes to the apex of its colimit (limit);
+//   arrows     b -> b' goes to the one arrow between the apexes that the
+//              universal property gives - which must be an arrow C already
+//              names (a generator, a composite, an identity loop), or it is a
+//              hole to fill (`holes`);
+//   data       a transport is a function, and no universal property makes
+//              one. It is derived only where it composes from transports
+//              already declared: at b = K(a), the leg there the identity,
+//              K's transport at a undone (it carries a whole, or renames
+//              it - its declared stages say which) and then F's. Or it is
+//              supplied (`Options::supply`). Anything else is a hole
+//              (`Hole::Transport`): never a copy of everything, never code
+//              guessed.
 //
-//     Lan_K F  =  F . R      alpha_a = F(eta_a)     sigma_c = gamma_R(c) ; G(eps_c)
-//     Ran_K F  =  F . L      beta_a  = F(eps_a)     sigma_c = G(eta_c) ; gamma_L(c)
+// So a result is one of three, and says which:
+//   the extension exists    `functor`: an ordinary functor, proven;
+//   it cannot exist         `defects`: what makes it impossible - no
+//                           (co)limit in C, found by a search that looked at
+//                           everything; a functor given that is not one;
+//   not resolved (yet)      `holes`: an arrow C does not name, a transport no
+//                           declared one composes into, a search cut at its
+//                           budget, a case this compiler does not take.
+// With any hole or defect there is no functor. `complete` says no search was
+// cut short: what `defects` says is then proven too.
 //
-// That these are universal is a theorem about the adjunction, so an extension
-// here is exactly as good as its `Adjunction`, which `check` asks first.
-// Nothing else is taken on trust: the 2-cell is typed arrow by arrow in B and
-// natural on every arrow F carries, and `factor` hands back the sigma a given
-// competitor passes through, with the equations that say it does. An
-// adjunction is itself one: K -| R makes R = Lan_K id_A, the unit its 2-cell.
+// For now K is an inclusion - one to one on objects and arrows: a known piece
+// A of a larger world B. The extension is defined on what K's image forces:
+// every object of B reached from it (for Ran, every object reaching it). An
+// object nothing of A reaches is outside it, as a functor may leave an
+// object out - which is exactly the Kan extension along K into the part of
+// B that K reaches, since every way into a reached object runs through
+// reached ones.
 //
-// The extension is a functor like any other - partial where F and the adjoint
-// are, carrying an object's data by the adjoint's transport and then F's - and
-// it reaches the world as any functor does: `declare` puts it in the graph as
-// the composite it is, which the laws hold to its chain (`composition`).
-// `laws::kan` (Laws.hpp) runs the 2-cell's squares on live data, with the
-// adjunction's equations.
-//
-// Paths are words, compared as `Adjunction::check` compares them: composites
-// unfolded into their parts, identities dropped - B's identities declared
-// here (`identity`), A's and C's on the adjunction.
+// A result is materialised and kept; `current(graph)` says whether what it
+// read - the three states' structure, the two functors' maps - is as it was.
+// Data moving under the same structure leaves it current: compile again only
+// when it is not.
 #pragma once
 
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "sg/core/Adjunction.hpp"
@@ -51,335 +87,689 @@
 #include "sg/core/StateGraph.hpp"
 
 namespace sg {
+namespace kan {
 
-class Kan {
-public:
-    using Word = Adjunction::Word;
-    enum class Side { Left, Right };
+using Word = std::vector<Key>;
 
-    // Lan_K F along K = adj.left(), where `adj` is K -| R. F and the
-    // adjunction are held, not copied, as an Adjunction holds its functors.
-    static Kan left(Key name, const Functor& f, const Adjunction& adj) {
-        return Kan(Side::Left, name, f, adj);
-    }
+enum class Side { Left, Right };
 
-    // Ran_K F along K = adj.right(), where `adj` is L -| K.
-    static Kan right(Key name, const Functor& f, const Adjunction& adj) {
-        return Kan(Side::Right, name, f, adj);
-    }
+struct Options {
+    std::size_t max_path = 6;     // the longest word a hom-set is searched for
+    std::size_t max_cones = 4096; // how many cocones (cones) one object's search may look at
 
-    Key name() const { return name_; }
-    Side side() const { return side_; }
-    bool is_left() const { return side_ == Side::Left; }
-    const Adjunction& adjunction() const { return *adj_; }
-    const Functor& extended() const { return *f_; }  // F : A -> B
-    const Functor& along() const { return is_left() ? adj_->left() : adj_->right(); }    // K : A -> C
-    const Functor& adjoint() const { return is_left() ? adj_->right() : adj_->left(); }  // R or L : C -> A
-
-    // Lan_K F or Ran_K F : C -> B, under this extension's name. Made again
-    // whenever F or the adjoint has been mapped anew since.
-    const Functor& extension() const {
-        if (!built_ || f_stamp_ != f_->stamp() || adjoint_stamp_ != adjoint().stamp()) {
-            ext_ = Functor::compose(adjoint(), *f_, name_);
-            f_stamp_ = f_->stamp();
-            adjoint_stamp_ = adjoint().stamp();
-            built_ = true;
-        }
-        return ext_;
-    }
-
-    // An arrow of B that is an identity: a no-op loop standing for id_x.
-    Kan& identity(Key arrow) {
-        identities_.insert(arrow);
+    // A transport for an object of B whose data no declared transport derives:
+    // what you give is what runs.
+    struct Supplied {
+        Transport run;
+        std::shared_ptr<const Stages> declared;
+    };
+    std::unordered_map<Key, Supplied> supplied;
+    Options& supply(Key b, Transport t) {
+        supplied[b] = Supplied{std::move(t), nullptr};
         return *this;
     }
-
-    bool is_identity(Key arrow) const {
-        return arrow.empty() || identities_.count(arrow) > 0 || adj_->is_identity(arrow);
+    Options& supply(Key b, transport::Declared t) {
+        supplied[b] = Supplied{Transport(t), t.stages};
+        return *this;
     }
+};
 
-    // --- the 2-cell ---------------------------------------------------------------
-    // Its component at an object a of A, as the path in B it runs:
-    // F(a) -> Lan(K(a)) for a left extension, Ran(K(a)) -> F(a) for a right.
-    Word cell(Key a) const {
-        return map(*f_, word(is_left() ? adj_->unit_at(a) : adj_->counit_at(a)));
-    }
-
-    // --- is it one ----------------------------------------------------------------
-    // Everything that keeps this from being the Kan extension of F along K.
-    // Empty means it is: the adjunction holds, the functors keep their
-    // arrows' ends, and the 2-cell is typed and natural.
-    std::vector<std::string> check(const State& a, const State& b, const State& c) const {
-        std::vector<std::string> out;
-        const std::string tag = "kan " + name_.str() + ": ";
-        const Functor& F = *f_;
-        const Functor& K = along();
-        if (a.id() != F.from() || b.id() != F.to() || c.id() != K.to()) {
-            out.push_back(tag + "checked on " + a.id().str() + ", " + b.id().str() + ", " +
-                          c.id().str() + " but extends " + F.from().str() + " -> " + F.to().str() +
-                          " along " + K.from().str() + " -> " + K.to().str());
-            return out;
-        }
-        // What it rests on.
-        for (auto& e : is_left() ? adj_->check(a, c) : adj_->check(c, a)) out.push_back(tag + e);
-        for (auto& e : F.check_laws(a, b)) out.push_back(tag + e);
-        const Functor& E = extension();
-        for (auto& e : E.check_laws(c, b)) out.push_back(tag + e);
-
-        // The 2-cell's components run between the right ends, in B.
-        for (const auto& e : a.elements()) {
-            const Key fa = F.image_object(e.id);
-            if (fa.empty()) continue;  // outside F: nothing there to extend
-            const Key ka = K.image_object(e.id);
-            const Key eka = ka.empty() ? Key{} : E.image_object(ka);
-            if (eka.empty()) {
-                out.push_back(tag + name_.str() + "(" + K.name().str() + "(" + e.id.str() +
-                              ")) is not defined");
-                continue;
-            }
-            const std::string what = "2-cell at " + e.id.str();
-            if (is_left()) {
-                typed(out, tag, what, b, cell(e.id), fa, eka);
-            } else {
-                typed(out, tag, what, b, cell(e.id), eka, fa);
-            }
-        }
-        if (!out.empty()) return out;  // the squares below assume the types
-
-        for (const Square& sq : equations(a, b)) compare(out, tag, b, sq);
-        return out;
-    }
-
-    bool holds(const State& a, const State& b, const State& c) const { return check(a, b, c).empty(); }
-
-    // --- the squares ----------------------------------------------------------------
-    // Naturality of the 2-cell, one square in B for each arrow f : a -> a'
-    // of A that F carries (a partial F is extended from what it carries):
-    //
-    //     left     F(f) ; alpha_a'   ==  alpha_a ; Lan(K(f))
-    //     right    Ran(K(f)) ; beta_a'  ==  beta_a ; F(f)
-    //
-    // `at` is the object of B both sides start from.
-    struct Square {
-        std::string law;
-        Key at;
-        Word lhs;
-        Word rhs;
+// Why an extension is not (yet) made, where it is.
+struct Hole {
+    enum class Kind {
+        Arrow,        // the universal property sends an arrow of B to one C does not name
+        Transport,    // no declared transport composes into the data an object needs
+        Budget,       // a search stopped at its budget: past it, nothing was looked at
+        Unsupported,  // a case this compiler does not take (K not an inclusion)
     };
+    Kind kind = Kind::Transport;
+    Key at;           // the object or arrow of B it is at (empty: the whole)
+    std::string why;
 
-    std::vector<Square> equations(const State& a, const State& /*b*/) const {
-        std::vector<Square> out;
-        const Functor& F = *f_;
-        const Functor& K = along();
-        const Functor& E = extension();
-        for (const auto& f : a.morphisms()) {
-            if (is_identity(f.name)) continue;
-            if (!F.is_identity() && F.image_morphism(f.name).empty()) continue;
-            if (F.image_object(dom(f)).empty() || F.image_object(cod(f)).empty()) continue;
-            const Word Ff = map(F, {f.name});
-            const Word EKf = map(E, map(K, {f.name}));
-            if (is_left()) {
-                out.push_back({"naturality at " + f.name.str(), F.image_object(dom(f)),
-                               cat(Ff, cell(cod(f))), cat(cell(dom(f)), EKf)});
-            } else {
-                const Key ka = K.image_object(dom(f));
-                out.push_back({"naturality at " + f.name.str(), ka.empty() ? Key{} : E.image_object(ka),
-                               cat(EKf, cell(cod(f))), cat(cell(dom(f)), Ff)});
-            }
+    static const char* name(Kind k) {
+        switch (k) {
+            case Kind::Arrow: return "arrow";
+            case Kind::Transport: return "transport";
+            case Kind::Budget: return "budget";
+            case Kind::Unsupported: return "unsupported";
         }
-        return out;
+        return "?";
+    }
+    std::string str() const { return std::string(name(kind)) + (at.empty() ? "" : " at " + at.str()) + ": " + why; }
+};
+
+struct Result {
+    // The executable extension: only when there is no hole and no defect.
+    std::optional<Functor> functor;
+    std::vector<Hole> holes;             // not resolved: see Hole
+    std::vector<std::string> defects;    // cannot exist: proven so where `complete`
+    bool complete = false;               // no search was cut short
+
+    Side side = Side::Left;
+    Key name, along, extends;  // the extension, K, F
+    Key from, to;              // B, C
+
+    // What was found: b -> its apex, an arrow of B -> the arrow of C it goes
+    // to, and the 2-cell at each object a of A - the leg at (a, id), a word
+    // of C: F(a) -> Lan(K(a)), or Ran(K(a)) -> F(a).
+    std::unordered_map<Key, Key> objects;
+    std::unordered_map<Key, Key> arrows;
+    std::unordered_map<Key, Word> cells;
+
+    bool ok() const { return functor.has_value(); }
+    std::size_t holes_of(Hole::Kind k) const {
+        return static_cast<std::size_t>(
+            std::count_if(holes.begin(), holes.end(), [k](const Hole& h) { return h.kind == k; }));
     }
 
-    // --- universal ----------------------------------------------------------------
-    // Another functor G : C -> B with a 2-cell gamma - F => G . K for a left
-    // extension, G . K => F for a right - given as a path in B per object of A
-    // (one not given is the identity). `sigma` is the one 2-cell between the
-    // extension and G it passes through, per object of C; `defects` is
-    // everything that keeps gamma from being a 2-cell of that type, or from
-    // passing through sigma. That sigma is the only one is the adjunction's
-    // doing; `check` says whether there is one.
-    struct Factor {
-        std::unordered_map<Key, Word> sigma;
-        std::vector<std::string> defects;
-        bool ok() const { return defects.empty(); }
-    };
+    // Whether what it was worked out from is as it was.
+    bool current(const StateGraph& g) const;
 
-    Factor factor(const Functor& g, const std::unordered_map<Key, Word>& gamma, const State& a,
-                  const State& b, const State& c) const {
-        Factor out;
-        const std::string tag = "kan " + name_.str() + " through " + g.name().str() + ": ";
-        const Functor& F = *f_;
-        const Functor& K = along();
-        const Functor& A = adjoint();
-        const Functor& E = extension();
-        if (g.from() != K.to() || g.to() != F.to()) {
-            out.defects.push_back(tag + "runs " + g.from().str() + " -> " + g.to().str() + ", needs " +
-                                  K.to().str() + " -> " + F.to().str());
-            return out;
-        }
-        const auto gamma_at = [&](Key x) {
-            auto it = gamma.find(x);
-            return it == gamma.end() ? Word{} : it->second;
-        };
-
-        // gamma is a 2-cell of the right type, natural on what F carries.
-        for (const auto& e : a.elements()) {
-            const Key fa = F.image_object(e.id);
-            const Key ka = K.image_object(e.id);
-            const Key gka = ka.empty() ? Key{} : g.image_object(ka);
-            if (fa.empty()) continue;
-            if (gka.empty()) {
-                out.defects.push_back(tag + g.name().str() + "(" + K.name().str() + "(" + e.id.str() +
-                                      ")) is not defined");
-                continue;
-            }
-            const std::string what = "gamma at " + e.id.str();
-            if (is_left()) {
-                typed(out.defects, tag, what, b, gamma_at(e.id), fa, gka);
-            } else {
-                typed(out.defects, tag, what, b, gamma_at(e.id), gka, fa);
-            }
-        }
-        if (!out.defects.empty()) return out;
-        for (const auto& f : a.morphisms()) {
-            if (is_identity(f.name)) continue;
-            if (!F.is_identity() && F.image_morphism(f.name).empty()) continue;
-            if (F.image_object(dom(f)).empty() || F.image_object(cod(f)).empty()) continue;
-            const Word Ff = map(F, {f.name});
-            const Word GKf = map(g, map(K, {f.name}));
-            if (is_left()) {
-                compare(out.defects, tag, b,
-                        {"gamma natural at " + f.name.str(), F.image_object(dom(f)),
-                         cat(Ff, gamma_at(cod(f))), cat(gamma_at(dom(f)), GKf)});
-            } else {
-                compare(out.defects, tag, b,
-                        {"gamma natural at " + f.name.str(), g.image_object(K.image_object(dom(f))),
-                         cat(GKf, gamma_at(cod(f))), cat(gamma_at(dom(f)), Ff)});
-            }
-        }
-
-        // sigma, at every object of C the extension reaches.
-        for (const auto& e : c.elements()) {
-            const Key ac = A.image_object(e.id);
-            const Key ec = E.image_object(e.id);
-            const Key gc = g.image_object(e.id);
-            if (ac.empty() || ec.empty() || gc.empty()) continue;
-            Word s = is_left() ? cat(gamma_at(ac), map(g, word(adj_->counit_at(e.id))))
-                               : cat(map(g, word(adj_->unit_at(e.id))), gamma_at(ac));
-            if (is_left()) {
-                typed(out.defects, tag, "sigma at " + e.id.str(), b, s, ec, gc);
-            } else {
-                typed(out.defects, tag, "sigma at " + e.id.str(), b, s, gc, ec);
-            }
-            out.sigma.emplace(e.id, std::move(s));
-        }
-        if (!out.defects.empty()) return out;
-
-        // And gamma is alpha then sigma (sigma then beta), component by component.
-        for (const auto& e : a.elements()) {
-            const Key fa = F.image_object(e.id);
-            const Key ka = K.image_object(e.id);
-            if (fa.empty() || ka.empty()) continue;
-            auto it = out.sigma.find(ka);
-            if (it == out.sigma.end()) {
-                out.defects.push_back(tag + "sigma at " + ka.str() + " is not defined");
-                continue;
-            }
-            const Word through = is_left() ? cat(cell(e.id), it->second) : cat(it->second, cell(e.id));
-            compare(out.defects, tag, b,
-                    {"factors at " + e.id.str(), is_left() ? fa : g.image_object(ka), gamma_at(e.id), through});
-        }
-        return out;
+    std::string str() const {
+        std::string s = std::string(side == Side::Left ? "Lan" : "Ran") + " " + name.str() + ": ";
+        s += ok() ? "compiled" : !defects.empty() ? (complete ? "cannot exist" : "cannot exist, as far as searched")
+                                                  : "not resolved";
+        for (const auto& e : defects) s += "\n  defect: " + e;
+        for (const auto& h : holes) s += "\n  hole: " + h.str();
+        return s;
     }
 
-    // --- in the graph ---------------------------------------------------------------
-    // The extension put in the graph as what it is: the composite of the
-    // adjoint and then F, whose claim the laws check (`composition`). Where
-    // either is not the graph's own (an identity made on the spot), it is put
-    // in as the functor it makes.
-    Functor& declare(StateGraph& g) const {
-        const Functor& A = adjoint();
-        if (g.functor(A.name()) == &A && g.functor(f_->name()) == f_)
-            return g.compose_functors(name_, {A.name(), f_->name()});
-        return g.add_functor(extension());
-    }
+    std::vector<uint64_t> read;  // what it was worked out from (current)
+};
 
-    // A path through a functor, arrow by arrow; identities go to nothing. An
-    // arrow the functor does not carry maps to `F(f)?`, which no state has.
-    Word map(const Functor& f, const Word& w) const {
-        Word out;
-        for (Key k : w) {
-            if (is_identity(k)) continue;
-            const Key img = f.is_identity() ? k : f.image_morphism(k);
-            out.push_back(img.empty() ? Key{f.name().str() + "(" + k.str() + ")?"} : img);
+namespace detail {
+
+// A loop that does nothing and is no composite: an identity, the empty word.
+inline bool is_identity(const Morphism& m) { return !m.handler && m.parts.empty() && dom(m) == cod(m); }
+
+inline std::string str(const Word& w) { return Adjunction::str(w); }
+
+inline bool starts_with(const Word& w, const Word& prefix) {
+    return prefix.size() <= w.size() && std::equal(prefix.begin(), prefix.end(), w.begin());
+}
+
+inline Word cat(Word x, const Word& y) {
+    x.insert(x.end(), y.begin(), y.end());
+    return x;
+}
+
+// A state read as the category its arrows generate - or its opposite, whose
+// words are the same arrows read backwards (a right extension is a left one
+// with every arrow turned round).
+class View {
+public:
+    View(const State& s, bool op) : s_(&s), op_(op) {
+        for (const Morphism& m : s.morphisms()) {
+            if (!m.parts.empty() || is_identity(m)) continue;
+            out_[src(m)].push_back({m.name, tgt(m)});
+            in_[tgt(m)].push_back(src(m));
         }
-        return out;
     }
 
-    Word unfold(const State& s, const Word& w, std::string& why) const {
-        return unfold_path(s, w, [this](Key k) { return is_identity(k); }, why);
+    const State& state() const { return *s_; }
+    bool op() const { return op_; }
+    Key src(const Morphism& m) const { return op_ ? cod(m) : dom(m); }
+    Key tgt(const Morphism& m) const { return op_ ? dom(m) : cod(m); }
+
+    // An arrow as the word it is, read the way this view reads.
+    Word word(Key arrow) const {
+        std::string why;
+        Word w = unfold_path(*s_, {arrow},
+                             [this](Key k) {
+                                 const Morphism* m = s_->morphism(k);
+                                 return m && is_identity(*m);
+                             },
+                             why);
+        if (op_) std::reverse(w.begin(), w.end());
+        return w;
+    }
+
+    // Written as the state writes it.
+    Word plain(Word w) const {
+        if (op_) std::reverse(w.begin(), w.end());
+        return w;
+    }
+
+    // Every word from x to y of at most n arrows; `cut` if a longer one may be.
+    const std::vector<Word>& paths(Key x, Key y, std::size_t n, bool& cut) const {
+        Hom& h = homs_[{x, y}];
+        if (!h.built) {
+            h.built = true;
+            const std::unordered_set<Key>& to_y = reaching(y);
+            if (to_y.count(x)) {
+                Word w;
+                walk(x, y, n, to_y, w, h);
+            }
+        }
+        if (h.cut) cut = true;
+        return h.words;
+    }
+
+    // Everything reached from `from` (itself included).
+    std::unordered_set<Key> reached(const std::vector<Key>& from) const {
+        std::unordered_set<Key> seen(from.begin(), from.end());
+        std::vector<Key> todo(from.begin(), from.end());
+        while (!todo.empty()) {
+            const Key at = todo.back();
+            todo.pop_back();
+            auto it = out_.find(at);
+            if (it == out_.end()) continue;
+            for (const auto& e : it->second)
+                if (seen.insert(e.second).second) todo.push_back(e.second);
+        }
+        return seen;
+    }
+
+    // The arrow the state names for word w from x to y: a generator, a
+    // composite of them, or - for the empty word - an identity loop at x.
+    Key name_for(Key x, Key y, const Word& w) const {
+        for (const Morphism& m : s_->morphisms())
+            if (src(m) == x && tgt(m) == y && word(m.name) == w) return m.name;
+        return Key{};
     }
 
 private:
-    Kan(Side side, Key name, const Functor& f, const Adjunction& adj)
-        : side_(side), name_(name), f_(&f), adj_(&adj) {
-        const Functor& K = along();
-        if (f.from() != K.from())
-            throw std::runtime_error("kan " + name_.str() + ": " + f.name().str() + " starts at " +
-                                     f.from().str() + ", but " + K.name().str() + " at " + K.from().str());
-    }
+    struct Hom {
+        bool built = false, cut = false;
+        std::vector<Word> words;
+    };
 
-    static Word word(Key k) { return k.empty() ? Word{} : Word{k}; }
-    static Word cat(Word x, const Word& y) {
-        x.insert(x.end(), y.begin(), y.end());
-        return x;
-    }
-
-    // `w` is a path of `s` from `from` to `to`: each arrow there, each
-    // starting where the last ended. The empty path only where from is to.
-    void typed(std::vector<std::string>& out, const std::string& tag, const std::string& what,
-               const State& s, const Word& w, Key from, Key to) const {
-        Key at = from;
-        for (Key k : w) {
-            if (is_identity(k)) continue;
-            const Morphism* m = s.morphism(k);
-            if (!m) {
-                out.push_back(tag + what + ": no arrow " + k.str() + " in " + s.id().str());
+    void walk(Key at, Key y, std::size_t n, const std::unordered_set<Key>& to_y, Word& w, Hom& h) const {
+        if (at == y) h.words.push_back(w);
+        auto it = out_.find(at);
+        if (it == out_.end()) return;
+        for (const auto& e : it->second) {
+            if (!to_y.count(e.second)) continue;
+            if (w.size() >= n) {
+                h.cut = true;
                 return;
             }
-            if (dom(*m) != at) {
-                out.push_back(tag + what + ": " + k.str() + " starts at " + dom(*m).str() + ", not " +
-                              at.str());
-                return;
-            }
-            at = cod(*m);
-        }
-        if (at != to)
-            out.push_back(tag + what + ": " + Adjunction::str(w) + " runs " + from.str() + " -> " +
-                          at.str() + ", needs " + from.str() + " -> " + to.str());
-    }
-
-    void compare(std::vector<std::string>& out, const std::string& tag, const State& s,
-                 const Square& sq) const {
-        std::string why;
-        const Word l = unfold(s, sq.lhs, why);
-        const Word r = unfold(s, sq.rhs, why);
-        if (!why.empty()) {
-            out.push_back(tag + sq.law + ": " + why);
-        } else if (l != r) {
-            out.push_back(tag + sq.law + ": " + Adjunction::str(sq.lhs) + " is " + Adjunction::str(l) +
-                          " but " + Adjunction::str(sq.rhs) + " is " + Adjunction::str(r));
+            w.push_back(e.first);
+            walk(e.second, y, n, to_y, w, h);
+            w.pop_back();
         }
     }
 
-    Side side_;
-    Key name_;
-    const Functor* f_;
-    const Adjunction* adj_;
-    std::unordered_set<Key> identities_;
-    mutable Functor ext_;
-    mutable uint64_t f_stamp_ = 0, adjoint_stamp_ = 0;
-    mutable bool built_ = false;
+    // Everything with a way to y (y included).
+    const std::unordered_set<Key>& reaching(Key y) const {
+        auto found = reaching_.find(y);
+        if (found != reaching_.end()) return found->second;
+        std::unordered_set<Key> seen{y};
+        std::vector<Key> todo{y};
+        while (!todo.empty()) {
+            const Key at = todo.back();
+            todo.pop_back();
+            auto it = in_.find(at);
+            if (it == in_.end()) continue;
+            for (Key k : it->second)
+                if (seen.insert(k).second) todo.push_back(k);
+        }
+        return reaching_.emplace(y, std::move(seen)).first->second;
+    }
+
+    const State* s_;
+    bool op_;
+    std::unordered_map<Key, std::vector<std::pair<Key, Key>>> out_;  // generators out: name, target
+    std::unordered_map<Key, std::vector<Key>> in_;
+    mutable std::map<std::pair<Key, Key>, Hom> homs_;
+    mutable std::unordered_map<Key, std::unordered_set<Key>> reaching_;
 };
+
+inline std::vector<uint64_t> version(const Functor& k, const Functor& f, const State& a, const State& b,
+                                     const State& c) {
+    const std::hash<Key> h;
+    return {h(k.name()), h(f.name()), k.stamp(), f.stamp(), a.structure(), b.structure(), c.structure()};
+}
+
+// The image of an arrow of A under a functor, as a word of the view it lands
+// in; false where the functor does not carry it.
+inline bool image_word(const Functor& f, const View& v, Key arrow, Word& out) {
+    const Key img = f.is_identity() ? arrow : f.image_morphism(arrow);
+    if (img.empty() || !v.state().morphism(img)) return false;
+    out = v.word(img);
+    return true;
+}
+
+// What carries an object across, as the functor it is made for takes it.
+struct Carry {
+    Transport run;
+    std::shared_ptr<const Stages> declared;
+};
+
+// The data at b = K(a) made into F(a)'s, composed only from what K and F
+// declare: K's transport at a undone, then F's. K's is undone when its stages
+// say it carries a whole (every parameter as it is) or renames it (each
+// parameter it sets copied from one of a's, no two alike): undone, b's data
+// is a's, or the part of it K carried. Anything else - K's transport opaque,
+// or doing arithmetic; F's reading what K did not carry, or opaque after a
+// renaming - cannot be composed, and `why` says so.
+inline bool derive(const Functor& K, const Functor& F, Key a, Carry& out, std::string& why) {
+    const auto fs = [&]() -> Carry {
+        if (F.is_identity()) return Carry{Transport(transport::copy_all), transport::copy_all.stages};
+        const Transport* t = F.transport_of(a);
+        return Carry{t ? *t : Transport{}, F.declared_of(a)};
+    };
+    if (K.is_identity()) {
+        out = fs();
+        return true;
+    }
+    const std::shared_ptr<const Stages> k = K.declared_of(a);
+    if (!k) {
+        why = K.name().str() + "'s transport at " + a.str() + " is opaque: nothing says how to undo it";
+        return false;
+    }
+    if (k->size() == 1 && (*k)[0].copy_all && (*k)[0].rows.empty()) {
+        out = fs();
+        return true;
+    }
+    // A renaming: copies only, each target and each source once.
+    bool renaming = k->size() == 1 && !(*k)[0].copy_all && !(*k)[0].rows.empty();
+    std::unordered_set<Key> sources, targets;
+    Affine back;
+    if (renaming)
+        for (const Affine::Row& r : (*k)[0].rows) {
+            if (!Affine::is_copy(r) || r.terms[0].of_target || !sources.insert(r.terms[0].param).second ||
+                !targets.insert(r.param).second) {
+                renaming = false;
+                break;
+            }
+            back.copy(r.terms[0].param, r.param);
+        }
+    if (!renaming) {
+        why = K.name().str() + "'s transport at " + a.str() + " is not a renaming: it cannot be undone";
+        return false;
+    }
+    const Carry f = fs();
+    if (!f.declared) {
+        why = F.name().str() + "'s transport at " + a.str() + " is opaque: it cannot be composed after " +
+              K.name().str() + "'s renaming undone";
+        return false;
+    }
+    const Affine& first = f.declared->front();
+    if (first.copy_all) {
+        why = F.name().str() + " carries every parameter of " + a.str() + ", and " + K.name().str() +
+              " carries only some";
+        return false;
+    }
+    for (const Affine::Row& r : first.rows)
+        for (const Affine::Term& t : r.terms)
+            if (!t.of_target && !sources.count(t.param)) {
+                why = F.name().str() + " reads " + t.param.str() + " of " + a.str() + ", which " + K.name().str() +
+                      " does not carry";
+                return false;
+            }
+    auto stages = std::make_shared<Stages>();
+    stages->push_back(std::move(back));
+    stages->insert(stages->end(), f.declared->begin(), f.declared->end());
+    std::shared_ptr<const Stages> both = std::move(stages);
+    out = Carry{Transport(transport::Declared{both}), both};
+    return true;
+}
+
+// One object b's (co)limit: the comma category over it, and the apex found.
+struct Point {
+    struct Obj {
+        Key a;
+        Word g;   // K(a) -> b, a word of B
+        Key fa;   // F(a)
+    };
+    std::vector<Obj> objs;
+    std::map<std::pair<Key, Word>, std::size_t> index;
+    Key apex;
+    std::vector<Word> legs;  // F(a) -> apex, a word of C, per object
+};
+
+inline Result compile(Side side, const StateGraph& g, Key k_name, Key f_name, Key name, const Options& o) {
+    Result r;
+    r.side = side;
+    r.name = name;
+    r.along = k_name;
+    r.extends = f_name;
+    const Functor* K = g.functor(k_name);
+    const Functor* F = g.functor(f_name);
+    if (!K || !F) {
+        r.defects.push_back(std::string("no functor ") + (!K ? k_name.str() : f_name.str()) + " in the graph");
+        r.complete = true;
+        return r;
+    }
+    if (K->from() != F->from()) {
+        r.defects.push_back(k_name.str() + " starts at " + K->from().str() + ", " + f_name.str() + " at " +
+                            F->from().str());
+        r.complete = true;
+        return r;
+    }
+    const State* A = g.find(K->from());
+    const State* B = g.find(K->to());
+    const State* C = g.find(F->to());
+    if (!A || !B || !C) {
+        r.defects.push_back("a state it joins is not in the graph");
+        r.complete = true;
+        return r;
+    }
+    r.from = B->id();
+    r.to = C->id();
+    r.read = version(*K, *F, *A, *B, *C);
+    // Not functors: nothing to extend.
+    for (auto& e : K->check_laws(*A, *B)) r.defects.push_back(e);
+    for (auto& e : F->check_laws(*A, *C)) r.defects.push_back(e);
+    if (!r.defects.empty()) {
+        r.complete = true;
+        return r;
+    }
+
+    // Along an inclusion: one to one, on objects and on arrows.
+    if (!K->is_identity()) {
+        std::unordered_map<Key, Key> seen;
+        K->for_each_object([&](Key a, Key b) {
+            auto in = seen.emplace(b, a);
+            if (!in.second)
+                r.holes.push_back({Hole::Kind::Unsupported, b,
+                                   k_name.str() + " is not an inclusion: " + in.first->second.str() + " and " +
+                                       a.str() + " both go to " + b.str()});
+        });
+        seen.clear();
+        K->for_each_morphism([&](Key a, Key b) {
+            auto in = seen.emplace(b, a);
+            if (!in.second)
+                r.holes.push_back({Hole::Kind::Unsupported, b,
+                                   k_name.str() + " is not an inclusion: arrows " + in.first->second.str() +
+                                       " and " + a.str() + " both go to " + b.str()});
+        });
+    }
+    if (!r.holes.empty()) return r;  // not complete: nothing was searched
+
+    const bool op = side == Side::Right;
+    const View va(*A, op), vb(*B, op), vc(*C, op);
+    const std::string colimit = op ? "limit" : "colimit";
+    const std::size_t n = o.max_path;
+
+    // The diagram: the objects of A both functors carry, and the arrows
+    // between them both carry.
+    struct Arrow {
+        Key s, t;
+        Word k, f;  // K(h) in B, F(h) in C
+    };
+    std::vector<Key> as;
+    std::vector<Key> images;
+    for (const auto& e : A->elements()) {
+        const Key ka = K->image_object(e.id), fa = F->image_object(e.id);
+        if (ka.empty() || fa.empty()) continue;
+        as.push_back(e.id);
+        images.push_back(ka);
+    }
+    std::vector<Arrow> hs;
+    for (const Morphism& m : A->morphisms()) {
+        if (!m.parts.empty() || is_identity(m)) continue;
+        Arrow h{va.src(m), va.tgt(m), {}, {}};
+        if (!image_word(*K, vb, m.name, h.k) || !image_word(*F, vc, m.name, h.f)) continue;
+        if (F->image_object(dom(m)).empty() || F->image_object(cod(m)).empty()) continue;
+        hs.push_back(std::move(h));
+    }
+
+    // Each object of B that K's image forces.
+    const std::unordered_set<Key> forced = vb.reached(images);
+    std::unordered_map<Key, Point> points;
+    for (const auto& be : B->elements()) {
+        const Key b = be.id;
+        if (!forced.count(b)) continue;
+        bool cut = false;
+        Point p;
+        for (Key a : as)
+            for (const Word& w : vb.paths(K->image_object(a), b, n, cut)) {
+                p.index.emplace(std::make_pair(a, w), p.objs.size());
+                p.objs.push_back({a, w, F->image_object(a)});
+            }
+        // What the cocone must respect: each arrow h of A between them.
+        struct Tie {
+            std::size_t i, j;  // leg i == F(h) ; leg j
+            Word f;
+        };
+        std::vector<Tie> ties;
+        for (const Arrow& h : hs)
+            for (std::size_t j = 0; j < p.objs.size(); ++j) {
+                if (p.objs[j].a != h.t) continue;
+                const Word from = cat(h.k, p.objs[j].g);
+                auto it = p.index.find({h.s, from});
+                if (it != p.index.end()) ties.push_back({it->second, j, h.f});
+                else if (from.size() > n) cut = true;
+            }
+
+        // Every cocone on C's own elements, the ties kept.
+        struct Cone {
+            Key apex;
+            std::vector<Word> legs;
+        };
+        std::vector<Cone> cones;
+        bool out_of_budget = false;
+        for (const auto& xe : C->elements()) {
+            const Key x = xe.id;
+            std::vector<const std::vector<Word>*> options;
+            bool none = false;
+            for (const auto& ob : p.objs) {
+                options.push_back(&vc.paths(ob.fa, x, n, cut));
+                if (options.back()->empty()) none = true;
+            }
+            if (none) continue;
+            std::vector<Word> legs(p.objs.size());
+            std::function<void(std::size_t)> choose = [&](std::size_t i) {
+                if (out_of_budget) return;
+                if (i == p.objs.size()) {
+                    if (cones.size() >= o.max_cones) {
+                        out_of_budget = true;
+                        return;
+                    }
+                    cones.push_back({x, legs});
+                    return;
+                }
+                for (const Word& w : *options[i]) {
+                    legs[i] = w;
+                    bool kept = true;
+                    for (const Tie& t : ties) {
+                        if (std::max(t.i, t.j) != i) continue;
+                        if (legs[t.i] != cat(t.f, legs[t.j])) {
+                            kept = false;
+                            break;
+                        }
+                    }
+                    if (kept) choose(i + 1);
+                }
+            };
+            choose(0);
+        }
+        if (out_of_budget) cut = true;
+
+        // The one every other passes through, by exactly one arrow.
+        const Cone* found = nullptr;
+        for (const Cone& cand : cones) {
+            bool universal = true;
+            if (p.objs.empty()) {
+                for (const auto& xe : C->elements())
+                    if (vc.paths(cand.apex, xe.id, n, cut).size() != 1) universal = false;
+            } else {
+                for (const Cone& mu : cones) {
+                    if (!starts_with(mu.legs[0], cand.legs[0])) {
+                        universal = false;
+                        break;
+                    }
+                    const Word u(mu.legs[0].begin() + static_cast<std::ptrdiff_t>(cand.legs[0].size()),
+                                 mu.legs[0].end());
+                    for (std::size_t i = 1; i < p.objs.size() && universal; ++i)
+                        universal = mu.legs[i] == cat(cand.legs[i], u);
+                    if (!universal) break;
+                }
+            }
+            if (universal) {
+                found = &cand;
+                break;
+            }
+        }
+        // Cut short, neither a (co)limit found nor one missing is proven:
+        // past the budget may lie a cone that does not pass through it, or
+        // the one that is universal.
+        if (cut)
+            r.holes.push_back({Hole::Kind::Budget, b,
+                               "words past " + std::to_string(n) + " arrows" +
+                                   (out_of_budget ? " and cones past " + std::to_string(o.max_cones) : "") +
+                                   " not looked at"});
+        if (!found) {
+            if (!cut)
+                r.defects.push_back(b.str() + ": no " + colimit + " in " + C->id().str() + " of " +
+                                    std::to_string(p.objs.size()) + " object(s) of " + f_name.str() + " over " +
+                                    (op ? b.str() + " -> " + k_name.str() : k_name.str() + " -> " + b.str()) +
+                                    (cones.empty() ? " (no cone at all)" : ""));
+            continue;
+        }
+        p.apex = found->apex;
+        p.legs = found->legs;
+        r.objects[b] = p.apex;
+        points.emplace(b, std::move(p));
+    }
+
+    // The 2-cell: the leg at (a, id).
+    for (Key a : as) {
+        auto pt = points.find(K->image_object(a));
+        if (pt == points.end()) continue;
+        auto it = pt->second.index.find({a, Word{}});
+        if (it != pt->second.index.end()) r.cells[a] = vc.plain(pt->second.legs[it->second]);
+    }
+
+    // Arrows: each goes where the universal property sends it.
+    for (const Morphism& m : B->morphisms()) {
+        auto ps = points.find(vb.src(m));
+        auto pt = points.find(vb.tgt(m));
+        if (ps == points.end() || pt == points.end()) continue;
+        const Point& s = ps->second;
+        const Point& t = pt->second;
+        if (is_identity(m)) {
+            const Key id = vc.name_for(s.apex, s.apex, {});
+            if (!id.empty()) r.arrows[m.name] = id;
+            else
+                r.holes.push_back({Hole::Kind::Arrow, m.name,
+                                   "an identity, and " + C->id().str() + " names none at " + s.apex.str() +
+                                       ": give it an identity loop"});
+            continue;
+        }
+        const Word w = vb.word(m.name);
+        std::optional<Word> u;
+        bool cut = false, apart = false;
+        if (s.objs.empty()) {
+            const auto& only = vc.paths(s.apex, t.apex, n, cut);
+            if (only.size() == 1) u = only[0];
+        }
+        for (std::size_t i = 0; i < s.objs.size(); ++i) {
+            const Word to = cat(s.objs[i].g, w);
+            auto it = t.index.find({s.objs[i].a, to});
+            if (it == t.index.end()) {
+                if (to.size() > n) cut = true;
+                continue;
+            }
+            const Word& lt = t.legs[it->second];
+            if (!starts_with(lt, s.legs[i])) {
+                apart = true;
+                break;
+            }
+            const Word rest(lt.begin() + static_cast<std::ptrdiff_t>(s.legs[i].size()), lt.end());
+            if (u && *u != rest) {
+                apart = true;
+                break;
+            }
+            u = rest;
+        }
+        const Key from = op ? t.apex : s.apex, to = op ? s.apex : t.apex;
+        if (apart) {
+            r.holes.push_back({Hole::Kind::Arrow, m.name,
+                               "no one arrow " + from.str() + " -> " + to.str() + " of " + C->id().str() +
+                                   " agrees with every leg"});
+            continue;
+        }
+        if (!u) {
+            r.holes.push_back(cut ? Hole{Hole::Kind::Budget, m.name,
+                                         "its image lies past " + std::to_string(n) + " arrows"}
+                                  : Hole{Hole::Kind::Arrow, m.name, "no leg says where it goes"});
+            continue;
+        }
+        const Key img = vc.name_for(s.apex, t.apex, *u);
+        if (img.empty()) {
+            r.holes.push_back({Hole::Kind::Arrow, m.name,
+                               "goes to " + str(vc.plain(*u)) + " (" + from.str() + " -> " + to.str() + "), which " +
+                                   C->id().str() + " does not name: " +
+                                   (u->empty() ? "give " + from.str() + " an identity loop" : "compose it")});
+            continue;
+        }
+        r.arrows[m.name] = img;
+    }
+
+    // Data: supplied, or composed from what is declared - never made up.
+    std::unordered_map<Key, Carry> carry;
+    for (const auto& be : B->elements()) {
+        const Key b = be.id;
+        auto pt = points.find(b);
+        if (pt == points.end()) continue;
+        auto given = o.supplied.find(b);
+        if (given != o.supplied.end()) {
+            if (!given->second.run && !given->second.declared) {
+                r.holes.push_back({Hole::Kind::Transport, b, "the transport supplied is empty"});
+                continue;
+            }
+            carry[b] = Carry{given->second.run, given->second.declared};
+            continue;
+        }
+        Key a;
+        for (Key x : as)
+            if (K->image_object(x) == b) a = x;
+        auto id_leg = a.empty() ? pt->second.index.end() : pt->second.index.find({a, Word{}});
+        const bool at_a = !a.empty() && id_leg != pt->second.index.end() && pt->second.legs[id_leg->second].empty();
+        std::string why;
+        if (at_a && derive(*K, *F, a, carry[b], why)) continue;
+        carry.erase(b);
+        r.holes.push_back({Hole::Kind::Transport, b,
+                           "to " + pt->second.apex.str() + ": " +
+                               (at_a ? why
+                                     : std::string("its data is no object's of ") + A->id().str() +
+                                           " carried as it is, so no declared transport composes into it") +
+                               " - supply one (kan::Options::supply)"});
+    }
+
+    r.complete = r.holes_of(Hole::Kind::Budget) == 0;
+    if (!r.defects.empty() || !r.holes.empty()) return r;
+    Functor out(name, B->id(), C->id());
+    for (const auto& be : B->elements()) {
+        auto obj = r.objects.find(be.id);
+        if (obj == r.objects.end()) continue;
+        const Carry& c = carry.at(be.id);
+        if (c.declared) out.on_object(be.id, obj->second, transport::Declared{c.declared});
+        else out.on_object(be.id, obj->second, c.run);
+    }
+    for (const Morphism& m : B->morphisms()) {
+        auto it = r.arrows.find(m.name);
+        if (it != r.arrows.end()) out.on_morphism(m.name, it->second);
+    }
+    r.functor = std::move(out);
+    return r;
+}
+
+}  // namespace detail
+
+// Lan_K F : B -> C, for K : A -> B and F : A -> C registered in the graph.
+inline Result left(const StateGraph& g, Key k, Key f, Key name, const Options& o = {}) {
+    return detail::compile(Side::Left, g, k, f, name, o);
+}
+
+// Ran_K F : B -> C.
+inline Result right(const StateGraph& g, Key k, Key f, Key name, const Options& o = {}) {
+    return detail::compile(Side::Right, g, k, f, name, o);
+}
+
+}  // namespace kan
+
+inline bool kan::Result::current(const StateGraph& g) const {
+    const Functor* k = g.functor(along);
+    const Functor* f = g.functor(extends);
+    if (!k || !f) return false;
+    const State* a = g.find(k->from());
+    const State* b = g.find(k->to());
+    const State* c = g.find(f->to());
+    return a && b && c && read == detail::version(*k, *f, *a, *b, *c);
+}
 
 }  // namespace sg

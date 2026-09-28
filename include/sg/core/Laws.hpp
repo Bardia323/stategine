@@ -51,7 +51,6 @@
 #include <vector>
 
 #include "sg/core/Adjunction.hpp"
-#include "sg/core/Kan.hpp"
 #include "sg/core/StateGraph.hpp"
 #include "sg/core/Temporal.hpp"
 
@@ -1367,32 +1366,6 @@ inline std::vector<Violation> adjunction(StateGraph& g, const Adjunction& adj,
     return out;
 }
 
-// --- Kan extensions ----------------------------------------------------------------
-// A Kan extension on live data: the adjunction it rests on, as above, and the
-// squares `Kan::check` decides on the arrows - its 2-cell natural on every
-// arrow F carries - each run in B from where it starts.
-inline std::vector<Violation> kan(StateGraph& g, const Kan& k, const LawOptions& o = {},
-                                  LawCache* cache = nullptr) {
-    std::vector<Violation> out = adjunction(g, k.adjunction(), o, cache);
-    const State* a = g.find(k.extended().from());
-    const State* b = g.find(k.extended().to());
-    if (!a || !b) {
-        out.push_back(Violation{"kan", k.name().str(), "", "", {}, {}, "", "", "", "", "",
-                                "a state it joins is not in the graph"});
-        return out;
-    }
-    const auto path = [&](Key at, const Kan::Word& w) {
-        Path p(b->id(), at);
-        for (Key s : w)
-            if (!k.is_identity(s)) p.arrow(s);
-        return p;
-    };
-    for (const auto& sq : k.equations(*a, *b))
-        append(out, check(g, cache, Equation{"kan", k.name().str() + ", " + sq.law, path(sq.at, sq.lhs),
-                                             path(sq.at, sq.rhs), o.args}));
-    return out;
-}
-
 
 // --- seams ---------------------------------------------------------------------
 // Where two states meet as one place (see `Seam` in StateGraph.hpp): a
@@ -1594,8 +1567,7 @@ inline std::vector<Violation> seams(const StateGraph& g) {
 // identity, associativity, composition, functoriality, the lens laws, the
 // drives, the seams, and any diagrams handed in. What a graph does not own is checked
 // where it is declared: descent on a `Cover` (`descent_defects`, Sheaf.hpp),
-// an `Adjunction`'s unit and counit, a `Kan` extension's 2-cell (`laws::kan`),
-// `interface_defects` on embeddings.
+// an `Adjunction`'s unit and counit, `interface_defects` on embeddings.
 // ---------------------------------------------------------------------------
 struct LawReport {
     std::vector<std::string> structure;  // StateGraph::validate

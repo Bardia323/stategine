@@ -166,8 +166,7 @@ An invalid structure is refused at the earliest point that can see it:
    graph owns (identity, associativity, composition, functoriality, the lens
    laws, seams, and any diagrams you pass) on the states' current contents,
    then puts everything back. Descent on a `Cover`, an `Adjunction`'s unit and
-   counit, a `Kan` extension's 2-cell, and `interface_defects` are checked
-   apart, where they are declared.
+   counit, and `interface_defects` are checked apart, where they are declared.
    A broken law is a counterexample:
    ```
    functoriality @ functor post on restock: ledger.book.stock was <unset>;
@@ -299,7 +298,7 @@ release breaks is in `CHANGELOG.md`.
 | Data transport | `Functor` on a transition or portal | functor `A -> B`, partial: defined on the objects and arrows it maps |
 | View + edit pair | `graph.add_lens(...)` | a functor pair |
 | Adjoint pair | `Adjunction` | `F -| G` by unit, counit and triangle laws; isomorphism when both are identities |
-| Extension along a functor | `Kan::left`, `Kan::right` | `Lan_K F = F . R` along `K -| R`, `Ran_K F = F . L` along `L -| K`, with the universal 2-cell |
+| Extension along a functor | `sg::kan::left`, `sg::kan::right` | `Lan_K F`, `Ran_K F`: pointwise (co)limits searched among what `C` already has, compiled to an ordinary `Functor` |
 | Nested interface | `graph.embed(...)` | a state inside an object of another |
 | Cover, gluing | `Cover`, `Atlas`, `sections(root)` | descent |
 
@@ -415,28 +414,51 @@ isomorphism. What a round trip loses is still reported (`unit_defects`,
 `counit_defects`, `data_defects`, `is_isomorphism`): those measure whether the
 pair is an isomorphism, not whether it is adjoint.
 
-A **Kan extension** carries a functor `F : A -> B` on along `K : A -> C`: a
-functor `C -> B` that does on all of `C` what `F` does on `A`, as well as that
-can be done from below (`Lan`) or from above (`Ran`), with a 2-cell through
-which any other attempt passes exactly once. The engine builds one out of what
-it has - along a functor with an adjoint, it is `F` after the adjoint:
+A **Kan extension** is a functor found, not a thing added. `sg::kan` is a
+compiler: given `K : A -> B` (a known piece `A` of a world `B`) and
+`F : A -> C`, it works out what `F` must do on all of `B` that the piece
+forces, and hands back an ordinary `Functor`:
 
 ```cpp
-sg::Adjunction adj("K -| R", &K, &R);             // declared and checked as above
-sg::Kan lan = sg::Kan::left("Lan_K F", F, adj);   // Lan_K F = F . R,  alpha_a = F(eta_a)
-lan.check(A, B, C);                               // the adjunction, and the 2-cell typed and natural
-lan.factor(G, gamma, A, B, C);                    // the one sigma another (G, gamma) passes through
-lan.declare(graph);                               // in the graph as the composite R ; F
-sg::laws::kan(graph, lan);                        // its squares on live data
+sg::kan::Result r = sg::kan::left(graph, "K", "F", "extended");   // or kan::right
+if (r.ok()) graph.add_functor(std::move(*r.functor));             // nothing can tell where it came from
+else std::puts(r.str().c_str());                                  // defects, holes
 ```
 
-`Kan::right(name, F, adj)` along `adj`'s right functor, whose left adjoint `L`
-it then is, gives `Ran_K F = F . L`, `beta_a = F(eps_a)`. Nothing new moves
-data: the extension is a functor - partial where `F` and the adjoint are,
-carrying by the adjoint's transport and then `F`'s - and is used where any
-functor is, on a transition, an embedding, a lens. An adjunction is itself
-one: `K -| R` makes `R = Lan_K id`, its unit the 2-cell. Along a functor with
-no adjoint declared there is nothing to build from, and none is made.
+At each object `b` it searches `C`'s own elements and arrows for the colimit
+of `F(a)` over every `K(a) -> b` (for `right`, the limit over every
+`b -> K(a)`) - `Lan_K F (b) = colim (K | b)`, `Ran_K F (b) = lim (b | K)` -
+an element every other cocone passes through by exactly one arrow. Nothing is
+invented: no colimit object, no new arrow, no guessed code. A result is one
+of three, and says which:
+
+- **it exists**: `functor`, an ordinary `Functor`, proven;
+- **it cannot exist**: `defects` - `C` has no (co)limit at some `b` (and the
+  search looked at everything), or `K` or `F` is not a functor;
+- **not resolved**: `holes`, each a `Hole` with its `kind` and where it is -
+  `Arrow` (the universal property sends an arrow to one `C` does not name: a
+  composite or an identity loop to add), `Transport` (no declared transport
+  composes into an object's data), `Budget` (a search stopped at
+  `Options::max_path` / `max_cones`), `Unsupported` (`K` not an inclusion).
+
+`complete` says no search was cut short, so a defect is proven. A transport
+is a function no universal property makes: at `b = K(a)`, the leg there the
+identity, it is `K`'s transport at `a` undone - when its declared stages say
+it carries `a` whole or renames it - and then `F`'s; or it is supplied
+(`kan::Options::supply(b, transport)`). Anything else is a `Transport` hole,
+never a silent copy. An edit adds what is missing, and the compiler runs
+again.
+
+A state is read as the category its arrows generate: a composite is the word
+of its parts, a loop that does nothing is an identity. For now `K` is an
+inclusion, and the extension covers what `K`'s image reaches (for `right`,
+what reaches it). Hom-sets and cones are searched within `Options` budgets,
+and a search cut short says so (`Hole::Budget`, `complete`).
+
+The cost is paid once. The result is materialised; `r.current(graph)` says
+whether the structure it read - the three states, the two functors' maps - is
+as it was. Data moving under the same structure leaves it current; compile
+again only when it is not.
 
 ### Embeddings
 

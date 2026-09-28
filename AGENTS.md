@@ -15,12 +15,11 @@ none of the others. States are connected **only** by the graph:
 | Interface | Declared with | What it is |
 | --- | --- | --- |
 | Transition | `graph.connect` / `push` / `pop`, on what a state `says` | the active state changes |
-| Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow |
+| Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow - written by hand, or found by `sg::kan` (a Kan extension, compiled to an ordinary functor; not another kind of thing) |
 | Embedding | `graph.embed` | a state lives in a portal of another (with `in`/`out` functors, a `subject`, a sync, focus) |
 | Seam | `add_seam`, `glue_doorway` | two states glued along a boundary - a doorway, a door hanging in it |
 | Drive | `graph.drive` | a state changes with the time a clock (`Temporal`) keeps: its arrows on a trigger fire with `{dt, time, frame}` |
 | Adjunction | `Adjunction` | a pair of functors with unit and counit, checked |
-| Kan extension | `Kan::left` / `Kan::right`, `declare` | a functor carried on along another through an adjunction (`F` after the adjoint), with its universal 2-cell checked - made of functors, and a functor itself |
 | Port | `graph.port(state, event)` | the world outside (a program, a device) speaks to a state: `engine.send`, next frame |
 | Edit | `graph.edit(state, event, fn)` | what a state says rewrites the graph: applied by the engine at the start of the next frame, answered back to the state |
 
