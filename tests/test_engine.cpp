@@ -1536,6 +1536,300 @@ void test_adjunction_is_not_an_isomorphism() {
     check(!wrong.holds(A, B), "a unit of the wrong type is refused");
 }
 
+// What a Kan result may claim: a functor only on a finished search with
+// nothing left open; a defect only where a search finished; nothing either
+// way on one that did not.
+bool epistemic(const sg::kan::Result& r) {
+    if (r.ok() && (!r.complete || !r.holes.empty() || !r.defects.empty())) return false;
+    if (!r.defects.empty() && !r.complete) return false;
+    if (!r.holes.empty() && r.ok()) return false;
+    if (!r.complete && (r.ok() || !r.defects.empty())) return false;
+    return true;
+}
+
+void test_kan_extensions() {
+    // A known piece of a world, and a picture of the piece. A = {p -f-> q};
+    // B = A and one more thing past it, {p -f-> q -g-> r}; K the inclusion,
+    // carrying each object whole; F draws A in C = {P -Ff-> Q}. Lan_K F asks
+    // what F must do on all of B: r lies past q, so it goes where q goes.
+    const auto add = [](sg::State&, sg::Element& from, sg::Element* to, const sg::Event&) {
+        if (to) to->params.set("v", to->params.num("v") + from.params.num("v"));
+    };
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n").params.set("v", 1.0);
+        A.add_element("q", "n").params.set("v", 5.0);
+        A.arrow("f", "p", "q", "never", add);
+        B.add_element("p", "n").params.set("v", 1.0);
+        B.add_element("q", "n").params.set("v", 5.0);
+        B.add_element("r", "n");
+        B.arrow("f", "p", "q", "never", add);
+        B.arrow("g", "q", "r", "never", nullptr);
+        C.add_element("P", "n").params.set("v", 1.0);
+        C.add_element("Q", "n").params.set("v", 5.0);
+        C.arrow("Ff", "P", "Q", "never", add);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q").on_morphism("f", "f");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q").on_morphism("f", "Ff");
+
+        // First compiled: the extension exists, but g goes to the identity
+        // on Q, which the picture does not name, and r's data derives from
+        // nothing declared. Found, not executable: no functor.
+        sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+        check(epistemic(r), "and it claims only what it proved");
+        std::printf("        %s\n", r.str().c_str());
+        check(r.defects.empty() && r.complete && !r.ok(), "nothing makes it impossible, but it has holes: no functor");
+        check(r.objects.at("p") == sg::Key{"P"} && r.objects.at("q") == sg::Key{"Q"} &&
+                  r.objects.at("r") == sg::Key{"Q"},
+              "r, forced past q, goes where q goes: the colimit is Q, found among the picture's own elements");
+        check(r.arrows.at("f") == sg::Key{"Ff"} && !r.arrows.count("g"), "f goes to Ff; g has nowhere named to go");
+        check(r.cells.at("p").empty() && r.cells.at("q").empty(), "on the piece itself the 2-cell is the identity");
+        check(r.holes.size() == 2 && r.holes_of(sg::kan::Hole::Kind::Arrow) == 1 &&
+                  r.holes_of(sg::kan::Hole::Kind::Transport) == 1,
+              "two holes: an identity at Q (an arrow), and r's data (a transport)");
+        check(r.current(g), "and what it was worked out from has not moved");
+
+        // Data moving under the same structure leaves the answer standing.
+        C.element("Q").params.set("v", 9.0);
+        check(r.current(g), "data moved: nothing to compile again");
+        C.element("Q").params.set("v", 5.0);
+
+        // Fill the holes as any world is changed: an identity loop at Q, and
+        // a transport said for r (it carries nothing).
+        C.loop("id_Q", "Q", "never", nullptr);
+        check(!r.current(g), "structure moved: the answer is stale");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        r = sg::kan::left(g, "K", "F", "Lan", o);
+        check(epistemic(r), "and it claims only what it proved");
+        std::printf("        %s\n", r.str().c_str());
+        check(r.ok() && r.complete && r.holes.empty() && r.defects.empty(), "compiled: an ordinary functor");
+        check(r.functor->image_object("r") == sg::Key{"Q"} && r.functor->image_morphism("g") == sg::Key{"id_Q"},
+              "r to Q, g to Q's identity");
+        check(r.functor->declared_of("p") != nullptr, "p's transport is F's own, derived, declared as F's is");
+
+        // The graph takes it as it takes any functor; the laws hold it to its arrows.
+        g.add_functor(std::move(*r.functor));
+        g.connect("piece", "grow", "world", "K");
+        g.connect("world", "draw", "picture", "Lan");
+        g.set_initial("piece");
+        const sg::LawReport report = sg::verify(g);
+        if (!report.ok()) std::printf("%s", report.str().c_str());
+        check(report.ok(), "and in the graph its laws hold like any functor's");
+    }
+
+    // Where no element of C has the universal property, there is no
+    // extension. B = {p -a-> r <-b- q}, A = {p, q}: r's colimit is a
+    // coproduct of P and Q, and the picture has two candidates, T and T2,
+    // neither through the other.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        A.add_element("q", "n");
+        B.add_element("p", "n");
+        B.add_element("q", "n");
+        B.add_element("r", "n");
+        B.arrow("a", "p", "r", "never", nullptr);
+        B.arrow("b", "q", "r", "never", nullptr);
+        for (const char* x : {"P", "Q", "T", "T2"}) C.add_element(x, "n");
+        C.arrow("tp", "P", "T", "never", nullptr);
+        C.arrow("tq", "Q", "T", "never", nullptr);
+        C.arrow("sp", "P", "T2", "never", nullptr);
+        C.arrow("sq", "Q", "T2", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan", o);
+        check(epistemic(r), "and it claims only what it proved");
+        std::printf("        %s\n", r.str().c_str());
+        check(!r.ok() && r.complete && r.defects.size() == 1 && r.holes.empty(),
+              "two cocones, neither universal: no colimit at r - it cannot exist, and that is proven");
+        C.remove_with_arrows("T2");
+        check(!r.current(g), "the picture changed");
+        r = sg::kan::left(g, "K", "F", "Lan", o);
+        check(epistemic(r), "and it claims only what it proved");
+        check(r.ok() && r.objects.at("r") == sg::Key{"T"} && r.arrows.at("a") == sg::Key{"tp"} &&
+                  r.arrows.at("b") == sg::Key{"tq"},
+              "with T alone, it is the coproduct, and a, b go to its legs");
+
+        // An inclusion only: two objects of A onto one of B is refused.
+        g.add_functor("K2", "piece", "world").on_object("p", "p").on_object("q", "p");
+        const sg::kan::Result k2 = sg::kan::left(g, "K2", "F", "Lan2");
+        check(epistemic(k2), "and it claims only what it proved");
+        check(!k2.ok() && k2.defects.empty() && !k2.complete && k2.holes_of(sg::kan::Hole::Kind::Unsupported) == 1,
+              "along a functor that is not an inclusion: not resolved, and not called impossible");
+    }
+
+    // Right: B = {p <-x- r -y-> q}, A = {p, q}. Ran_K F at r is the limit of
+    // P and Q - a product, which the picture has as Pr with its projections.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        A.add_element("q", "n");
+        B.add_element("p", "n");
+        B.add_element("q", "n");
+        B.add_element("r", "n");
+        B.add_element("far", "n");  // nothing of A reaches it or is reached: outside
+        B.arrow("x", "r", "p", "never", nullptr);
+        B.arrow("y", "r", "q", "never", nullptr);
+        for (const char* e : {"P", "Q", "Pr"}) C.add_element(e, "n");
+        C.arrow("pi1", "Pr", "P", "never", nullptr);
+        C.arrow("pi2", "Pr", "Q", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p").on_object("q", "q");
+        g.add_functor("F", "piece", "picture").on_object("p", "P").on_object("q", "Q");
+        sg::kan::Options o;
+        o.supply("r", sg::transport::only({}));
+        const sg::kan::Result r = sg::kan::right(g, "K", "F", "Ran", o);
+        check(epistemic(r), "and it claims only what it proved");
+        std::printf("        %s\n", r.str().c_str());
+        check(r.ok() && r.objects.at("r") == sg::Key{"Pr"} && r.arrows.at("x") == sg::Key{"pi1"} &&
+                  r.arrows.at("y") == sg::Key{"pi2"},
+              "Ran at r is the product Pr; x and y go to its projections");
+        check(!r.objects.count("far"), "and what the piece does not force is left out");
+    }
+
+    // A transport is composed from declared ones, or it is a hole. A = {p},
+    // B = {p}, C = {P}; F carries p's `v` to P's `w`.
+    {
+        const auto world = [](sg::StateGraph& g) {
+            g.add<sg::State>("piece").add_element("p", "n").params.set("v", 2.0);
+            g.add<sg::State>("world").add_element("p", "n").params.set("u", 2.0);
+            g.add<sg::State>("picture").add_element("P", "n");
+            g.add_functor("F", "piece", "picture").on_object("p", "P", sg::transport::swizzle({{"w", "v"}}));
+        };
+        using Kind = sg::kan::Hole::Kind;
+        {
+            // K renames v to u: undone, then F's - one declared transport.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", sg::transport::swizzle({{"u", "v"}}));
+            sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(epistemic(r), "and it claims only what it proved");
+            check(r.ok() && r.functor->declared_of("p") != nullptr, "K a renaming: undone, then F's, declared");
+            sg::Element P("P", "n");
+            (*r.functor->transport_of("p"))(g.state("world").element("p"), P);
+            check(P.params.num("w") == 2.0 && !P.params.has("u") && !P.params.has("v"),
+                  "and it carries the world's u to the picture's w, nothing else");
+        }
+        {
+            // K opaque: nothing says how to undo it.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", [](const sg::Element& s, sg::Element& d) {
+                d.params.set("u", s.params.num("v"));
+            });
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(epistemic(r), "and it claims only what it proved");
+            check(!r.ok() && r.complete && r.defects.empty() && r.holes.size() == 1 &&
+                      r.holes_of(Kind::Unsupported) == 1,
+                  "K's transport opaque: searched through, but nothing to invert - unsupported, no copy made up");
+        }
+        {
+            // F reads what K does not carry.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world").on_object("p", "p", sg::transport::swizzle({{"u", "x"}}));
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(epistemic(r), "and it claims only what it proved");
+            check(!r.ok() && r.holes_of(Kind::Transport) == 1, "F reads v, which K drops: a transport hole");
+        }
+        {
+            // Looks like a rename, but two of a's parameters land on one: no inverse.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world")
+                .on_object("p", "p", sg::transport::swizzle({{"u", "v"}, {"u", "x"}}));
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(epistemic(r), "and it claims only what it proved");
+            check(!r.ok() && r.complete && r.holes.size() == 1 && r.holes_of(Kind::Transport) == 1,
+                  "a rename with a collision is not inverted: a transport hole");
+        }
+        {
+            // One of a's parameters to two of b's: not one to one either.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world")
+                .on_object("p", "p", sg::transport::swizzle({{"u", "v"}, {"u2", "v"}}));
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.holes_of(Kind::Transport) == 1, "a rename that duplicates is not inverted either");
+        }
+        {
+            // A copy of everything with a rename on top: the rename may overwrite.
+            sg::StateGraph g;
+            world(g);
+            g.add_functor("K", "piece", "world")
+                .on_object("p", "p", sg::transport::swizzle({{"u", "v"}}, true));
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.holes_of(Kind::Transport) == 1, "a copy with renames on top is not inverted");
+        }
+        {
+            // F opaque: nothing declared to compose, even after a whole copy.
+            sg::StateGraph g;
+            g.add<sg::State>("piece").add_element("p", "n");
+            g.add<sg::State>("world").add_element("p", "n");
+            g.add<sg::State>("picture").add_element("P", "n");
+            g.add_functor("K", "piece", "world").on_object("p", "p");
+            g.add_functor("F", "piece", "picture").on_object("p", "P", [](const sg::Element& s, sg::Element& d) {
+                d.params.set("w", s.params.num("v"));
+            });
+            const sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.complete && r.holes_of(Kind::Unsupported) == 1,
+                  "F's transport opaque: unsupported, not reused as if composed");
+        }
+        {
+            // F the identity: only a whole copy makes b's data literally a's.
+            sg::StateGraph g;
+            g.add<sg::State>("piece").add_element("p", "n").params.set("v", 2.0);
+            g.add<sg::State>("world").add_element("p", "n");
+            g.add_functor(sg::Functor::identity("piece", "F"));
+            g.add_functor("K", "piece", "world").on_object("p", "p");
+            sg::kan::Result r = sg::kan::left(g, "K", "F", "Lan");
+            check(epistemic(r), "and it claims only what it proved");
+            check(r.ok() && r.functor->image_object("p") == sg::Key{"p"},
+                  "F the identity, K a whole copy: the identity transport, the same representation");
+            g.set_functor(sg::Functor("K", "piece", "world").on_object("p", "p", sg::transport::swizzle({{"u", "v"}})));
+            r = sg::kan::left(g, "K", "F", "Lan");
+            check(!r.ok() && r.holes_of(Kind::Transport) == 1,
+                  "F the identity after a rename: a's other parameters are not there - a hole, not a copy");
+        }
+    }
+
+    // A search cut short proves nothing: no colimit found within the budget
+    // is a hole, not a defect. B = {p -a-> m -b-> r}, A = {p}; C = {P -c-> X
+    // -d-> Y}: whether P is universal turns on P -> Y, two arrows long.
+    {
+        sg::StateGraph g;
+        auto& A = g.add<sg::State>("piece");
+        auto& B = g.add<sg::State>("world");
+        auto& C = g.add<sg::State>("picture");
+        A.add_element("p", "n");
+        for (const char* e : {"p", "m", "r"}) B.add_element(e, "n");
+        B.arrow("a", "p", "m", "never", nullptr);
+        B.arrow("b", "m", "r", "never", nullptr);
+        for (const char* e : {"P", "X", "Y"}) C.add_element(e, "n");
+        C.arrow("c", "P", "X", "never", nullptr);
+        C.arrow("d", "X", "Y", "never", nullptr);
+        g.add_functor("K", "piece", "world").on_object("p", "p");
+        g.add_functor("F", "piece", "picture").on_object("p", "P");
+        sg::kan::Options o;
+        o.max_path = 1;
+        const sg::kan::Result cut = sg::kan::left(g, "K", "F", "Lan", o);
+        check(epistemic(cut), "and it claims only what it proved");
+        std::printf("        %s\n", cut.str().c_str());
+        check(!cut.ok() && !cut.complete && cut.defects.empty() && cut.holes_of(sg::kan::Hole::Kind::Budget) > 0,
+              "cut at one arrow: not resolved, never called impossible");
+    }
+}
+
 int main() {
     test_one_rotation();
     test_keys_and_params();
@@ -1549,6 +1843,7 @@ int main() {
     test_functor_roundtrip();
     test_functor_composition();
     test_adjunction_is_not_an_isomorphism();
+    test_kan_extensions();
     test_lens();
     test_embedding();
     test_anchors();

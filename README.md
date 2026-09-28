@@ -301,6 +301,7 @@ release breaks is in `CHANGELOG.md`.
 | Data transport | `Functor` on a transition or portal | functor `A -> B`, partial: defined on the objects and arrows it maps |
 | View + edit pair | `graph.add_lens(...)` | a functor pair |
 | Adjoint pair | `Adjunction` | `F -| G` by unit, counit and triangle laws; isomorphism when both are identities |
+| Extension along a functor | `sg::kan::left`, `sg::kan::right` | `Lan_K F`, `Ran_K F`: pointwise (co)limits searched among what `C` already has, compiled to an ordinary `Functor` |
 | Nested interface | `graph.embed(...)` | a state inside an object of another |
 | Cover, gluing | `Cover`, `Atlas`, `sections(root)` | descent |
 
@@ -415,6 +416,61 @@ is adjoint to picking out `1`, with unit `0 -> 1` - so an adjunction is not an
 isomorphism. What a round trip loses is still reported (`unit_defects`,
 `counit_defects`, `data_defects`, `is_isomorphism`): those measure whether the
 pair is an isomorphism, not whether it is adjoint.
+
+A **Kan extension** is a functor found, not a thing added. `sg::kan` is a
+compiler: given `K : A -> B` (a known piece `A` of a world `B`) and
+`F : A -> C`, it works out what `F` must do on all of `B` that the piece
+forces, and hands back an ordinary `Functor`:
+
+```cpp
+sg::kan::Result r = sg::kan::left(graph, "K", "F", "extended");   // or kan::right
+if (r.ok()) graph.add_functor(std::move(*r.functor));             // nothing can tell where it came from
+else std::puts(r.str().c_str());                                  // defects, holes
+```
+
+At each object `b` it searches `C`'s own elements and arrows for the colimit
+of `F(a)` over every `K(a) -> b` (for `right`, the limit over every
+`b -> K(a)`) - `Lan_K F (b) = colim (K | b)`, `Ran_K F (b) = lim (b | K)` -
+an element every other cocone passes through by exactly one arrow. Nothing is
+invented: no colimit object, no new arrow, no guessed code. A result is one
+of three, and says which:
+
+- **it exists**: `functor`, an ordinary `Functor`;
+- **it cannot exist**: `defects` - `C` has no (co)limit at some `b`, and the
+  search there looked at everything; or `K` or `F` is not a functor;
+- **not derivable (yet)**: `holes`, each a `Hole` with its `kind` and where
+  it is - `Arrow` (the universal property sends an arrow to one `C` does not
+  name: a composite or an identity loop to add), `Transport` (a transport
+  not provably invertible, or one reading what `K` drops), `Budget` (a
+  search stopped at `Options::max_path` / `max_cones`), `Unsupported` (what
+  cannot be made executable: an opaque transport, `K` not an inclusion).
+
+It keeps to: a functor only with `complete` and no hole or defect; a defect
+only with `complete`; with `complete == false`, neither existence nor
+nonexistence. `complete` is about search alone - an `Unsupported` hole may
+stand with it true.
+
+A transport is `F . K^-1` from declared stages only. At `b = K(a)`, the leg
+there the identity, `K`'s transport at `a` is undone where its stages prove
+it invertible - a whole copy (the identity), or a one to one renaming with
+`F` reading only what it carries - and then `F`'s runs. A rename with a
+collision, a parameter dropped that `F` reads, arithmetic, a copy with
+renames on top: `Transport` holes. `F` the identity gives the identity
+transport only where `K` carries `a` whole - the same representation. Or a
+transport is supplied (`kan::Options::supply(b, transport)`). Never a copy
+of everything, never guessed code. An edit adds what is missing, and the
+compiler runs again.
+
+A state is read as the category its arrows generate: a composite is the word
+of its parts, a loop that does nothing is an identity. For now `K` is an
+inclusion, and the extension covers what `K`'s image reaches (for `right`,
+what reaches it). Hom-sets and cones are searched within `Options` budgets,
+and a search cut short says so (`Hole::Budget`, `complete`).
+
+The cost is paid once. The result is materialised; `r.current(graph)` says
+whether the structure it read - the three states, the two functors' maps - is
+as it was. Data moving under the same structure leaves it current; compile
+again only when it is not.
 
 ### Embeddings
 
@@ -610,7 +666,7 @@ unchecked (`LawReport::unchecked`), apart from the counterexamples.
 ```
 include/sg/
   core/      the engine, domain-agnostic
-    Core.hpp State.hpp Functor.hpp Adjunction.hpp Embedding.hpp
+    Core.hpp State.hpp Functor.hpp Adjunction.hpp Kan.hpp Embedding.hpp
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
     Declared.hpp (what a step does, said: affine arrows and transports)

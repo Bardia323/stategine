@@ -10,6 +10,7 @@
 #include "sg/core/Embedding.hpp"
 #include "sg/core/Engine.hpp"
 #include "sg/core/Functor.hpp"
+#include "sg/core/Kan.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/core/State.hpp"
 #include "sg/core/StateGraph.hpp"

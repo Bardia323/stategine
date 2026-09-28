@@ -186,6 +186,13 @@ public:
         for (const auto& kv : obj_) fn(kv.first, kv.second.dst, kv.second.declared.get());
     }
 
+    // What carries one object across, and what it says it does: read, so
+    // that another functor can be made from this one's own (Kan.hpp). Null
+    // where the object is not mapped - and for the identity, which carries
+    // everything as it is (copy_all) and keeps no table.
+    const Transport* transport_of(Key src) const;
+    std::shared_ptr<const Stages> declared_of(Key src) const;
+
     // --- application --------------------------------------------------------
     // Push every mapped object of `src` into `dst`, creating targets as needed.
     void apply(const State& src, State& dst) const;

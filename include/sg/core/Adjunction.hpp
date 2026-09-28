@@ -37,6 +37,30 @@
 
 namespace sg {
 
+// A path as the generating arrows it runs: composites into their parts,
+// identities - whatever `is_identity` says is one - into nothing. An arrow
+// the state does not have is named in `why` (the first one only).
+template <typename IsIdentity>
+std::vector<Key> unfold_path(const State& s, const std::vector<Key>& w, const IsIdentity& is_identity,
+                             std::string& why, int depth = 0) {
+    std::vector<Key> out;
+    for (Key k : w) {
+        if (is_identity(k)) continue;
+        const Morphism* m = s.morphism(k);
+        if (!m) {
+            if (why.empty()) why = "no arrow " + k.str() + " in " + s.id().str();
+            continue;
+        }
+        if (m->parts.empty() || depth > 32) {
+            out.push_back(k);
+        } else {
+            const std::vector<Key> inner = unfold_path(s, m->parts, is_identity, why, depth + 1);
+            out.insert(out.end(), inner.begin(), inner.end());
+        }
+    }
+    return out;
+}
+
 class Adjunction {
 public:
     // A path inside one state, as the arrows it runs, first applied first.
@@ -134,7 +158,7 @@ private:
 
     // A path as the generating arrows it runs: composites into their parts,
     // identities into nothing.
-    Word unfold(const State& s, const Word& w, std::string& why, int depth = 0) const;
+    Word unfold(const State& s, const Word& w, std::string& why) const;
 
     static std::vector<std::string> defects(const State& s, const Functor& out_f,
                                             const Functor& back_f);

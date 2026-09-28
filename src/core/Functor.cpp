@@ -351,4 +351,14 @@ void Functor::refuse_if_identity(const char* what) const {
                                  " on an identity would make it something else");
 }
 
+const Transport* Functor::transport_of(Key src) const {
+    auto it = obj_.find(src);
+    return identity_ || it == obj_.end() ? nullptr : &it->second.transport;
+}
+
+std::shared_ptr<const Stages> Functor::declared_of(Key src) const {
+    auto it = obj_.find(src);
+    return identity_ || it == obj_.end() ? nullptr : it->second.declared;
+}
+
 }  // namespace sg
