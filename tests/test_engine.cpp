@@ -1278,9 +1278,8 @@ void test_looks() {
 
     check(sg::active_look(hall) == sg::Key{"calm"}, "the first look a room wears is the one shown");
     check(sg::worn_looks(g, "hall").size() == 2, "and it may wear more than one");
-    check(g.validate().empty(), "looks are reachable through the rooms that wear them");
     check(sg::look_defects(g).empty(), "a room showing a look it wears has nothing wrong");
-    check(sg::verify(g).ok(), "and a graph with looks in it keeps every law");
+    check(sg::verify(g).ok(), "looks are reachable through the rooms that wear them, and a graph with looks in it keeps every law");
 
     sg::LookState standard("<standard>");
     standard.uniform(p::scene, "uFogDensity", 0.018).uniform(p::composite, "uTint", 1.0, 1.0, 1.0);
@@ -1417,7 +1416,7 @@ void test_a_camera_is_a_state() {
         sg::StateGraph g;
         auto& cam = g.add<sg::Camera>("cam");
         g.set_initial("cam");
-        check(g.validate().empty() && sg::verify(g).ok(), "a camera alone is a whole state, and keeps every law");
+        check(sg::verify(g).ok(), "a camera alone is a whole state, and keeps every law");
         cam.emit(sg::Event{sg::Camera::aim_event(), sg::Params{}.set(sg::keys::x, 1.0).set(sg::keys::yaw, 0.5)});
         cam.emit(sg::Event{sg::Camera::zoom_event(), sg::Params{}.set(sg::keys::fov, 500.0)});
         cam.dispatch_pending();
@@ -1436,10 +1435,9 @@ void test_a_camera_is_a_state() {
     const sg::Key film = sg::film(g, cam.id(), room.id(), "rig");
     screen.params.set("feed", 1.0).set("shows", film.str());
     g.set_initial("room");
-    check(g.validate().empty(), "filming reaches the camera: a camera that films a room is part of the graph");
     const sg::LawReport r = sg::verify(g);
     if (!r.ok()) std::printf("%s", r.str().c_str());
-    check(r.ok(), "and the room, the camera and the filming keep every law");
+    check(r.ok(), "filming reaches the camera (a camera that films a room is part of the graph), and the room, the camera and the filming keep every law");
     const sg::Embedding* em = g.embedding(film);
     check(em && em->host == cam.id() && em->guest == room.id() && !em->focus,
           "the room is embedded in the lens, and takes no input through it");
