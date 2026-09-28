@@ -432,22 +432,31 @@ an element every other cocone passes through by exactly one arrow. Nothing is
 invented: no colimit object, no new arrow, no guessed code. A result is one
 of three, and says which:
 
-- **it exists**: `functor`, an ordinary `Functor`, proven;
-- **it cannot exist**: `defects` - `C` has no (co)limit at some `b` (and the
-  search looked at everything), or `K` or `F` is not a functor;
-- **not resolved**: `holes`, each a `Hole` with its `kind` and where it is -
-  `Arrow` (the universal property sends an arrow to one `C` does not name: a
-  composite or an identity loop to add), `Transport` (no declared transport
-  composes into an object's data), `Budget` (a search stopped at
-  `Options::max_path` / `max_cones`), `Unsupported` (`K` not an inclusion).
+- **it exists**: `functor`, an ordinary `Functor`;
+- **it cannot exist**: `defects` - `C` has no (co)limit at some `b`, and the
+  search there looked at everything; or `K` or `F` is not a functor;
+- **not derivable (yet)**: `holes`, each a `Hole` with its `kind` and where
+  it is - `Arrow` (the universal property sends an arrow to one `C` does not
+  name: a composite or an identity loop to add), `Transport` (a transport
+  not provably invertible, or one reading what `K` drops), `Budget` (a
+  search stopped at `Options::max_path` / `max_cones`), `Unsupported` (what
+  cannot be made executable: an opaque transport, `K` not an inclusion).
 
-`complete` says no search was cut short, so a defect is proven. A transport
-is a function no universal property makes: at `b = K(a)`, the leg there the
-identity, it is `K`'s transport at `a` undone - when its declared stages say
-it carries `a` whole or renames it - and then `F`'s; or it is supplied
-(`kan::Options::supply(b, transport)`). Anything else is a `Transport` hole,
-never a silent copy. An edit adds what is missing, and the compiler runs
-again.
+It keeps to: a functor only with `complete` and no hole or defect; a defect
+only with `complete`; with `complete == false`, neither existence nor
+nonexistence. `complete` is about search alone - an `Unsupported` hole may
+stand with it true.
+
+A transport is `F . K^-1` from declared stages only. At `b = K(a)`, the leg
+there the identity, `K`'s transport at `a` is undone where its stages prove
+it invertible - a whole copy (the identity), or a one to one renaming with
+`F` reading only what it carries - and then `F`'s runs. A rename with a
+collision, a parameter dropped that `F` reads, arithmetic, a copy with
+renames on top: `Transport` holes. `F` the identity gives the identity
+transport only where `K` carries `a` whole - the same representation. Or a
+transport is supplied (`kan::Options::supply(b, transport)`). Never a copy
+of everything, never guessed code. An edit adds what is missing, and the
+compiler runs again.
 
 A state is read as the category its arrows generate: a composite is the word
 of its parts, a loop that does nothing is an identity. For now `K` is an

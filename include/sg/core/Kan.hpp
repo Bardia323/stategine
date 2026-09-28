@@ -38,24 +38,33 @@
 //              names (a generator, a composite, an identity loop), or it is a
 //              hole to fill (`holes`);
 //   data       a transport is a function, and no universal property makes
-//              one. It is derived only where it composes from transports
-//              already declared: at b = K(a), the leg there the identity,
-//              K's transport at a undone (it carries a whole, or renames
-//              it - its declared stages say which) and then F's. Or it is
-//              supplied (`Options::supply`). Anything else is a hole
-//              (`Hole::Transport`): never a copy of everything, never code
-//              guessed.
+//              one. It is F . K^-1, from declared stages only: at b = K(a),
+//              the leg there the identity, K's transport at a undone where
+//              its stages prove it invertible (a whole copy; a one to one
+//              renaming, F reading only what it carries), then F's. Or it is
+//              supplied (`Options::supply`). Otherwise a hole: never a copy
+//              of everything, never code guessed.
 //
 // So a result is one of three, and says which:
-//   the extension exists    `functor`: an ordinary functor, proven;
-//   it cannot exist         `defects`: what makes it impossible - no
-//                           (co)limit in C, found by a search that looked at
-//                           everything; a functor given that is not one;
-//   not resolved (yet)      `holes`: an arrow C does not name, a transport no
-//                           declared one composes into, a search cut at its
-//                           budget, a case this compiler does not take.
-// With any hole or defect there is no functor. `complete` says no search was
-// cut short: what `defects` says is then proven too.
+//   the extension exists    `functor`: an ordinary functor;
+//   it cannot exist         `defects`: no (co)limit at some b, where the
+//                           search there looked at everything; K or F not a
+//                           functor;
+//   not derivable (yet)     `holes`: Arrow (the universal property sends an
+//                           arrow of B to one C does not name), Transport (a
+//                           transport not provably invertible, or reading
+//                           what K drops), Budget (a search cut short),
+//                           Unsupported (what this compiler cannot make
+//                           executable: an opaque transport, K not an
+//                           inclusion).
+// And it keeps to:
+//   functor present   => complete, no hole, no defect
+//   defect present    => complete: a search that finished proved it
+//   hole present      => no functor
+//   complete == false => neither existence nor nonexistence is claimed
+// `complete` is about search alone: every search the answer rests on ran to
+// its end. An Unsupported hole may stand with it true - the category was
+// searched through, but the mapping cannot be made executable.
 //
 // For now K is an inclusion - one to one on objects and arrows: a known piece
 // A of a larger world B. The extension is defined on what K's image forces:
@@ -336,71 +345,98 @@ struct Carry {
     std::shared_ptr<const Stages> declared;
 };
 
-// The data at b = K(a) made into F(a)'s, composed only from what K and F
-// declare: K's transport at a undone, then F's. K's is undone when its stages
-// say it carries a whole (every parameter as it is) or renames it (each
-// parameter it sets copied from one of a's, no two alike): undone, b's data
-// is a's, or the part of it K carried. Anything else - K's transport opaque,
-// or doing arithmetic; F's reading what K did not carry, or opaque after a
-// renaming - cannot be composed, and `why` says so.
-inline bool derive(const Functor& K, const Functor& F, Key a, Carry& out, std::string& why) {
-    const auto fs = [&]() -> Carry {
-        if (F.is_identity()) return Carry{Transport(transport::copy_all), transport::copy_all.stages};
-        const Transport* t = F.transport_of(a);
-        return Carry{t ? *t : Transport{}, F.declared_of(a)};
-    };
-    if (K.is_identity()) {
-        out = fs();
-        return true;
-    }
-    const std::shared_ptr<const Stages> k = K.declared_of(a);
-    if (!k) {
-        why = K.name().str() + "'s transport at " + a.str() + " is opaque: nothing says how to undo it";
-        return false;
-    }
-    if (k->size() == 1 && (*k)[0].copy_all && (*k)[0].rows.empty()) {
-        out = fs();
-        return true;
-    }
-    // A renaming: copies only, each target and each source once.
-    bool renaming = k->size() == 1 && !(*k)[0].copy_all && !(*k)[0].rows.empty();
-    std::unordered_set<Key> sources, targets;
-    Affine back;
-    if (renaming)
-        for (const Affine::Row& r : (*k)[0].rows) {
-            if (!Affine::is_copy(r) || r.terms[0].of_target || !sources.insert(r.terms[0].param).second ||
-                !targets.insert(r.param).second) {
-                renaming = false;
-                break;
-            }
-            back.copy(r.terms[0].param, r.param);
+// The data at b = K(a) made into F(a)'s: F . K^-1 at a, from declared
+// stages only. K's transport at a is undone only where its stages prove it
+// invertible on what F then reads:
+//   it copies a whole       its inverse is the identity;
+//   it renames              each parameter it sets copied from one of a's,
+//                           no two sources and no two targets alike: undone
+//                           by the renaming turned round, on the parameters
+//                           it carries - so F may read only those.
+// A rename with a collision, a parameter F reads that K drops, arithmetic, a
+// copy of everything with renames on top: not provably invertible, a
+// Transport hole. A transport that says nothing of what it does (a function,
+// opaque) cannot be composed from declared stages at all: Unsupported.
+// F the identity is F(a) = a's data as it is: only K carrying a whole makes
+// b's data literally a's, and then the transport is the identity; after a
+// renaming, a's other parameters are not there to be the identity of.
+inline bool derive(const Functor& K, const Functor& F, Key a, Carry& out, Hole::Kind& kind, std::string& why) {
+    // K's inverse at a: none (whole), or a renaming turned round.
+    bool whole = K.is_identity();
+    std::optional<Affine> back;
+    std::unordered_set<Key> carried;
+    if (!whole) {
+        const std::shared_ptr<const Stages> k = K.declared_of(a);
+        if (!k) {
+            kind = Hole::Kind::Unsupported;
+            why = K.name().str() + "'s transport at " + a.str() + " is opaque: no declared stages to invert";
+            return false;
         }
-    if (!renaming) {
-        why = K.name().str() + "'s transport at " + a.str() + " is not a renaming: it cannot be undone";
+        if (k->size() == 1 && (*k)[0].copy_all && (*k)[0].rows.empty()) {
+            whole = true;
+        } else {
+            kind = Hole::Kind::Transport;
+            if (k->size() != 1 || (*k)[0].copy_all || (*k)[0].rows.empty()) {
+                why = K.name().str() + "'s transport at " + a.str() + " is not a whole copy or a pure renaming: " +
+                      "not provably invertible";
+                return false;
+            }
+            std::unordered_set<Key> targets;
+            Affine inv;
+            for (const Affine::Row& r : (*k)[0].rows) {
+                if (!Affine::is_copy(r) || r.terms[0].of_target) {
+                    why = K.name().str() + " sets " + r.param.str() + " of " + a.str() +
+                          " by arithmetic, not a copy: not provably invertible";
+                    return false;
+                }
+                if (!carried.insert(r.terms[0].param).second || !targets.insert(r.param).second) {
+                    why = K.name().str() + "'s renaming at " + a.str() + " is not one to one (" +
+                          r.terms[0].param.str() + " -> " + r.param.str() + " collides): no inverse";
+                    return false;
+                }
+                inv.copy(r.terms[0].param, r.param);
+            }
+            back = std::move(inv);
+        }
+    }
+    if (F.is_identity()) {
+        if (whole) {  // b's data is a's, and F(a) is a: the same representation
+            out = Carry{Transport(transport::copy_all), transport::copy_all.stages};
+            return true;
+        }
+        kind = Hole::Kind::Transport;
+        why = F.name().str() + " is the identity, so " + a.str() + "'s every parameter is its data; " +
+              K.name().str() + " carries only some";
         return false;
     }
-    const Carry f = fs();
-    if (!f.declared) {
-        why = F.name().str() + "'s transport at " + a.str() + " is opaque: it cannot be composed after " +
-              K.name().str() + "'s renaming undone";
+    const std::shared_ptr<const Stages> f = F.declared_of(a);
+    if (!f) {
+        kind = Hole::Kind::Unsupported;
+        why = F.name().str() + "'s transport at " + a.str() + " is opaque: no declared stages to compose";
         return false;
     }
-    const Affine& first = f.declared->front();
+    if (whole) {
+        out = Carry{Transport(transport::Declared{f}), f};
+        return true;
+    }
+    // F must read only what K carried: its first stage reads a.
+    kind = Hole::Kind::Transport;
+    const Affine& first = f->front();
     if (first.copy_all) {
-        why = F.name().str() + " carries every parameter of " + a.str() + ", and " + K.name().str() +
-              " carries only some";
+        why = F.name().str() + " reads every parameter of " + a.str() + ", and " + K.name().str() +
+              " drops all but its renamed ones";
         return false;
     }
     for (const Affine::Row& r : first.rows)
         for (const Affine::Term& t : r.terms)
-            if (!t.of_target && !sources.count(t.param)) {
+            if (!t.of_target && !carried.count(t.param)) {
                 why = F.name().str() + " reads " + t.param.str() + " of " + a.str() + ", which " + K.name().str() +
-                      " does not carry";
+                      " drops: nothing to undo it from";
                 return false;
             }
     auto stages = std::make_shared<Stages>();
-    stages->push_back(std::move(back));
-    stages->insert(stages->end(), f.declared->begin(), f.declared->end());
+    stages->push_back(std::move(*back));
+    stages->insert(stages->end(), f->begin(), f->end());
     std::shared_ptr<const Stages> both = std::move(stages);
     out = Carry{Transport(transport::Declared{both}), both};
     return true;
@@ -612,12 +648,18 @@ inline Result compile(Side side, const StateGraph& g, Key k_name, Key f_name, Ke
                                    (out_of_budget ? " and cones past " + std::to_string(o.max_cones) : "") +
                                    " not looked at"});
         if (!found) {
-            if (!cut)
-                r.defects.push_back(b.str() + ": no " + colimit + " in " + C->id().str() + " of " +
+            if (cut) continue;
+            // Searched through and through, and none: the pointwise extension
+            // cannot exist, whatever else was or was not found. That is the
+            // whole answer - searches cut elsewhere are not needed for it.
+            r.defects.push_back(b.str() + ": no " + colimit + " in " + C->id().str() + " of " +
                                     std::to_string(p.objs.size()) + " object(s) of " + f_name.str() + " over " +
                                     (op ? b.str() + " -> " + k_name.str() : k_name.str() + " -> " + b.str()) +
                                     (cones.empty() ? " (no cone at all)" : ""));
-            continue;
+            r.holes.clear();
+            r.objects.clear();
+            r.complete = true;
+            return r;
         }
         p.apex = found->apex;
         p.legs = found->legs;
@@ -720,9 +762,10 @@ inline Result compile(Side side, const StateGraph& g, Key k_name, Key f_name, Ke
         auto id_leg = a.empty() ? pt->second.index.end() : pt->second.index.find({a, Word{}});
         const bool at_a = !a.empty() && id_leg != pt->second.index.end() && pt->second.legs[id_leg->second].empty();
         std::string why;
-        if (at_a && derive(*K, *F, a, carry[b], why)) continue;
+        Hole::Kind kind = Hole::Kind::Transport;
+        if (at_a && derive(*K, *F, a, carry[b], kind, why)) continue;
         carry.erase(b);
-        r.holes.push_back({Hole::Kind::Transport, b,
+        r.holes.push_back({kind, b,
                            "to " + pt->second.apex.str() + ": " +
                                (at_a ? why
                                      : std::string("its data is no object's of ") + A->id().str() +
