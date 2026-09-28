@@ -41,6 +41,10 @@ add_library(stategine_render STATIC ${_sg_render_sources})
 add_library(stategine::render ALIAS stategine_render)
 target_link_libraries(stategine_render PUBLIC stategine)
 
+# A game's modules, built the same way: stategine_module(), and
+# stategine_check_modules() to hold them to it.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineModules.cmake)
+
 # Opt-in extras, for projects that want what the engine's own targets use.
 #   stategine::warnings        -Wall -Wextra, or /W4
 #   stategine::static_runtime  MinGW: link the runtime in, so binaries run
@@ -196,6 +200,19 @@ if(SG_BUILD_TESTS)
   sg_compile_fail(functor_object_map "needs X to be an object of F's source")
   sg_compile_fail(lens_halves "needs out to run back along in")
   sg_compile_fail(not_parallel "only parallel arrows can commute")
+
+  # The engine's own headers kept to its rules: each part includes only what
+  # it builds on, and a header says what a thing is.
+  set_property(GLOBAL PROPERTY STATEGINE_MODULES
+    "sg/core=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/core:"
+    "sg/algebra=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/algebra:sg/core"
+    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains:sg/core"
+    "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/physics:sg/core"
+    "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gl:"
+    "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render:sg/core,sg/domains,sg/gl"
+    "sg/gpu=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gpu:sg/core,sg/algebra")
+  stategine_check_modules(NAME sg_shape)
+  set_property(GLOBAL PROPERTY STATEGINE_MODULES "")
 
   add_executable(sg_bench tests/bench.cpp)
   target_link_libraries(sg_bench PRIVATE stategine_dev)

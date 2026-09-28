@@ -133,11 +133,15 @@ its `.cpp` is what it does. Each module (and the engine: `stategine`,
 `stategine_render`) is a library; the compiler takes each file on its own
 and all at once, and the linker is the one pass that brings them together.
 A changed body recompiles its own file, never every file that includes it.
-A body goes in a header only if it is a line, a template, or hot.
+A body goes in a header only if it is a line, a template, or hot - and a hot
+one says so in a comment above it (`// inline: every frame reaches for it`).
+`sg_shape` (the engine's) and `stategine_check_modules()` (a project's) fail
+on a module that includes what it does not use, or a header with a body that
+has no reason to be there.
 
 ## Adding a state, a room, an interface - checklist
 
-1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above.
+1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above. In a project, the module is `stategine_module(<name> USES ...)`, and `stategine_check_modules()` holds every module to this (see `cmake/StategineModules.cmake`).
 2. Its data in elements and params; its behaviour as arrows on them; no hidden state.
 3. Its look (if it is seen) worn by it.
 4. How it is reached: which interface, from which state, at which portal. Declare it in the graph.

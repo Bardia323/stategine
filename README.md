@@ -511,6 +511,28 @@ compiled mid-game because `prepare` never saw it.
 | --- | --- |
 | ![The hall in its calm look](docs/images/room.png) | ![The same view in the alert look](docs/images/alert.png) |
 
+## A game's modules
+
+A game built on the engine is built the way the engine is: each state (or a
+few that belong together) a module, each module a library - its headers say
+what a thing is, its `.cpp` files what it does - compiled on its own and all
+at once, with the linker the one pass that brings them together. A change
+recompiles only the files that changed.
+
+```cmake
+FetchContent_MakeAvailable(stategine)
+stategine_module(sheets)                          # src/sheets/*.cpp
+stategine_module(desert USES sheets)              # may include sheets/ - nothing else of yours
+stategine_module(room   USES sheets desert EXCLUDE main)
+add_executable(game src/room/main.cpp)
+target_link_libraries(game PRIVATE room)
+stategine_check_modules()                         # one test: modules their own, headers in shape
+```
+
+`stategine_check_modules()` fails on a module that includes one it does not
+`USES` (never what uses it), and on a body in a header that is longer than a
+line and neither a template, constexpr, nor said why (`// inline: ...`).
+
 ## Performance
 
 Names are interned once, so hot paths compare pointers; morphisms are bucketed

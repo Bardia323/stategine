@@ -14,6 +14,8 @@
 
 namespace sg::gl {
 
+// A window and its GL context, by GLFW. inline: GLFW is the project's, so
+// this stays a header, built where GLFW is.
 class Window {
 public:
     Window(int w, int h, const std::string& title) {

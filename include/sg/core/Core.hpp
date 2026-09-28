@@ -56,6 +56,7 @@ private:
     }
     static const std::string* intern(std::string s) { return &*table().insert(std::move(s)).first; }
     // Looked up without copying when it is there already - the usual case.
+    // inline: every name made in a frame goes through it.
     static const std::string* intern_ref(const std::string& s) {
         auto& t = table();
         const auto it = t.find(s);
@@ -65,7 +66,7 @@ private:
     // (`params.num("x")`): each is remembered by where its characters are, in
     // a small table keyed by that address, and taken from there after one
     // comparison of the characters - a buffer reused for another name is
-    // simply looked up again.
+    // simply looked up again. inline: every Key{"..."} in a frame is this.
     static const std::string* intern_literal(const char* s) {
         struct Slot {
             const char* at = nullptr;
@@ -220,6 +221,8 @@ uint64_t mix_stamp(uint64_t h, uint64_t v);
 // Copies share their entries until one of them writes: a copy of a state (a
 // snapshot, a law's trial, a default kept) costs a pointer per element, and
 // only what is then changed is copied for real.
+//
+// inline: every arrow reads and writes through it, every frame.
 // ---------------------------------------------------------------------------
 class Params {
 public:

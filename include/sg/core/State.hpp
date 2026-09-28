@@ -99,21 +99,19 @@ public:
 
     Element& add_element(Key id, Key kind) { return add_element(Element{id, kind}); }
 
+    // An element by its name. inline: every arrow, every frame, looks one up.
     Element* find(Key id) {
         auto it = index_.find(id);
         return it == index_.end() ? nullptr : &elements_[it->second];
     }
-
     const Element* find(Key id) const {
         auto it = index_.find(id);
         return it == index_.end() ? nullptr : &elements_[it->second];
     }
-
     Element& element(Key id) {
         if (Element* e = find(id)) return *e;
         throw std::out_of_range("no element " + id.str() + " in state " + id_.str());
     }
-
     const Element& element(Key id) const {
         if (const Element* e = find(id)) return *e;
         throw std::out_of_range("no element " + id.str() + " in state " + id_.str());

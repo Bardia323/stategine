@@ -190,6 +190,7 @@ inline void load(ProcLoader loader) {
 }
 
 // Cheap guard used after each pipeline stage while bringing a scene up.
+// inline: GL.hpp is the loader's own header, macros and all.
 inline void check(const char* where) {
     const GLenum err = glGetError();
     if (err != GL_NO_ERROR)

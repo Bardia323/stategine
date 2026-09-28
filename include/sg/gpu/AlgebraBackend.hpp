@@ -118,7 +118,8 @@ using RocmBackend = DeviceBackend<Rocm>;
 using VulkanBackend = DeviceBackend<Vulkan>;
 using MetalBackend = DeviceBackend<Metal>;
 
-// Every backend, the CPU's first.
+// Every backend, the CPU's first. inline: which are built in is decided
+// where this is included (SG_WITH_*).
 inline std::vector<std::unique_ptr<algebra::Backend>> backends() {
     std::vector<std::unique_ptr<algebra::Backend>> out;
     out.push_back(std::make_unique<algebra::CpuBackend>());
@@ -130,6 +131,7 @@ inline std::vector<std::unique_ptr<algebra::Backend>> backends() {
 }
 
 // The first device that is here - CUDA, ROCm, Vulkan, Metal - or the CPU.
+// inline: as backends().
 inline std::unique_ptr<algebra::Backend> best() {
     std::vector<std::unique_ptr<algebra::Backend>> all = backends();
     for (std::size_t i = 1; i < all.size(); ++i)
