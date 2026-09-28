@@ -69,6 +69,11 @@ from what it says, and the laws can check it without running it
 (`sg::algebra`, `LawOptions::accelerate`). Never write a description beside a
 handler that does something else: what is said is what runs.
 
+A state's time is its line on the clock and nothing else: what shows or plays
+it takes that time too - a world that keeps its own time says so
+(`own_time`), and the renderer moves its shaders by it, not by its own
+clock. Nothing that presents a state runs a clock of its own for it.
+
 **4. Every state is reachable, and the engine keeps checking.**
 `graph.validate()` refuses a state no interface reaches (seams count). The
 engine re-validates whenever the graph changes (`StateGraph::revision`) and

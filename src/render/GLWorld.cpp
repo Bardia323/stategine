@@ -107,6 +107,11 @@ void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
 
 void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
     if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+    {
+        static const Key own{"own_time"};
+        const Params& p = rooms.front().room->params();
+        world_time_ = p.has(own) ? p.num(own) : time_;
+    }
     ease_spills(rooms);
     aim_rays(*rooms.front().room);
     // Feeds the graph declares: an open embedding of a 3D state in a
@@ -927,7 +932,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
         p.set("uSunDir", sun_dir);
         p.set("uSunColor", sun_color);
         p.set("uViewPos", cam.eye);
-        p.set("uTime", static_cast<float>(time_));
+        p.set("uTime", static_cast<float>(world_time_));
         p.set("uShadowTexel", 1.0f / static_cast<float>(maps.array.size()),
               1.0f / static_cast<float>(maps.array.size()));
         p.set("uShadowMaps", 1);
@@ -1944,7 +1949,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         }
         p.set("uScene", 0);
         p.set("uBloom", 1);
-        p.set("uTime", static_cast<float>(time_));
+        p.set("uTime", static_cast<float>(world_time_));
         p.set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
         screen_.draw();
     };

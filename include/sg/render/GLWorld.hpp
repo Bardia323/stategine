@@ -41,7 +41,9 @@
 // An open world - `sky` = 1 on the state - has a sky instead of a ceiling and
 // walls, and may carry a `terrain` element: ground that goes on for ever,
 // sampled from a height function bound with bind_terrain and rebuilt around
-// the viewer as they walk. A light with `sun` = 1 is parallel light with an
+// the viewer as they walk. A state with `own_time` among its params keeps its own
+// time: its shaders move by it (`uTime`), not by the renderer's clock - still
+// when it is still. A light with `sun` = 1 is parallel light with an
 // orthographic shadow that follows the viewer. How far anything is drawn is
 // the state's `far` (120 m unless it says otherwise).
 //
@@ -665,6 +667,11 @@ private:
     std::chrono::steady_clock::time_point last_frame_{};
     bool clock_started_ = false;
     double dt_ = 0.0, time_ = 0.0;
+    // The time its shaders move by (`uTime`: water, clouds, stars, grain):
+    // the renderer's own, unless the world drawn keeps its own (`own_time` on
+    // the state) - then the world's, so a world whose time stands still
+    // stands still in every pass too.
+    double world_time_ = 0.0;
     double fixed_step_ = 0.0;
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
