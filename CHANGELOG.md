@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **Copies of a state cost a pointer per element.** `Params` share their entries between copies until one writes (copy-on-write): a snapshot, a law's trial, a default kept no longer copies every name and string. Checking the dev room's laws went from about 2 s to about 0.5 s. `Params::text(key)` reads a text where it is (no copy), `Params::is(key, "text")` compares it.
 - **States meet only through the graph - now at run time too.**
   - What a state `says` (`State::says(event)`) the engine hands to the graph's transitions: an arrow that `emit`s a said event takes the transition on it next frame, with no listener in between. A said event no transition takes is dropped, not handed to another state. What a state has said and the engine not yet taken (`said_out()`) is part of its data: kept by snapshots, versioned, compared by the laws (`<said>`), and a trial's is undone.
   - Events the engine routes into a state (from `fire`, from a drive) arrive by `State::hear`, never taken for something the state said.
