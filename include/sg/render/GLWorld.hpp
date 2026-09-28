@@ -17,7 +17,8 @@
 //
 // And without being told: a portal with `feed` = 1 that the graph embeds a 3D
 // state in, while that embedding is open, shows it as a feed (`feed_w` x
-// `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture). What is
+// `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture; `untone`
+// = 0 shows it as paint, colour lit by the room, not as light). What is
 // shown is what the graph declares, and only that. The portal may belong to
 // a state that is not drawn - a deck, whose output is what it plays - and a
 // panel in a room shows it by `shows` = that embedding's name: a set cabled

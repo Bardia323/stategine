@@ -176,6 +176,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
             f.view->render(*f.world, f.w, f.h);
             f.view->output_ = nullptr;
             f.view->eye_override_ = nullptr;
+            f.out[1 - f.front].mipmap();
             f.front = 1 - f.front;
             ++feed_views;
         }
@@ -1732,7 +1733,10 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         f->second.shown().bind_color(0);
         tex_w = f->second.w, tex_h = f->second.h;
         scene_->set("uTexFlip", 1.0f);
-        scene_->set("uUntone", 1.0f);
+        // Developed light, taken back to light - unless the panel is paint
+        // (`untone` = 0): then the picture is only colour, as a canvas is,
+        // and reflects the room's light and no more.
+        scene_->set("uUntone", e.params.num(Key{"untone"}, 1.0) > 0.5 ? 1.0f : 0.0f);
     } else {
         auto it = surfaces_.find(e.id);
         if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening

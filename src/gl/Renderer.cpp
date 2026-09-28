@@ -271,8 +271,19 @@ std::vector<float> quad_vertices() {
     };
 }
 
+void RenderTarget::mipmap() {
+    if (!color_tex_) return;
+    glBindTexture(GL_TEXTURE_2D, color_tex_);
+    if (!mipmapped_) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        mipmapped_ = true;
+    }
+    glGenerateMipmap(GL_TEXTURE_2D);
+}
+
 void RenderTarget::create(int w, int h, GLenum internal_format, int samples, bool with_depth, bool depth_texture) {
     destroy();
+    mipmapped_ = false;
     w_ = w;
     h_ = h;
     samples_ = samples;

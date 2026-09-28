@@ -165,6 +165,12 @@ public:
 
     void bind_color(int unit) const;
 
+    // Its picture made again at every smaller size, and sampled between
+    // them from then on: for a picture that is shown smaller than it was
+    // drawn - a feed on a screen across the room - so its fine detail does
+    // not shimmer as the screen is neared or left.
+    void mipmap();
+
     void destroy();
 
     int width() const { return w_; }
@@ -174,6 +180,7 @@ public:
 private:
     GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0, depth_tex_ = 0;
     int w_ = 0, h_ = 0, samples_ = 0;
+    bool mipmapped_ = false;
 };
 
 // Depth-only target sampled with hardware comparison, for shadows.
