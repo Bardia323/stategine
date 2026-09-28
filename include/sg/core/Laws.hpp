@@ -215,6 +215,37 @@ private:
     std::vector<Equation> equations_;
 };
 
+namespace laws {
+// What answers some equations faster than running them - compiled, and run
+// in a batch (sg/algebra) - and hands every other one back. It takes an
+// equation or it does not (`take`); what it took it answers at the end
+// (`finish`), and every counterexample it gives is the verifier's own: an
+// equation it finds broken is checked again here, by running it, and only
+// what that finds is said. It is never a second truth.
+class Accelerator {
+public:
+    virtual ~Accelerator() = default;
+    virtual bool take(StateGraph& g, const Equation& eq) = 0;
+    virtual std::vector<Violation> finish(StateGraph& g) = 0;
+};
+// The accelerator the laws offer their equations to now, if any.
+inline Accelerator*& accelerating() {
+    static thread_local Accelerator* a = nullptr;
+    return a;
+}
+// For as long as it lives, the laws offer their equations to `a` first.
+class Accelerating {
+public:
+    explicit Accelerating(Accelerator* a) : was_(accelerating()) { accelerating() = a; }
+    ~Accelerating() { accelerating() = was_; }
+    Accelerating(const Accelerating&) = delete;
+    Accelerating& operator=(const Accelerating&) = delete;
+
+private:
+    Accelerator* was_;
+};
+}  // namespace laws
+
 // How the automatic laws probe arrows that read event arguments. An integrator
 // that returns early when dt is zero satisfies every law vacuously; give it a
 // dt and the laws are about something.
@@ -223,6 +254,8 @@ struct LawOptions {
     std::unordered_map<Key, Params> args_for;    // per trigger, overriding `args`
     std::size_t max_triples = 256;               // associativity budget, per state
     double drive_dt = 0.5;                       // the step a drive's laws take
+    // Offered every equation first, when set (see laws::Accelerator).
+    laws::Accelerator* accelerate = nullptr;
 };
 
 namespace laws {
@@ -899,6 +932,7 @@ inline std::vector<Violation> check_direct(StateGraph& g, const Equation& eq) {
 // Run both sides of one equation and report where they disagree - or, with a
 // cache, say what was found before, if what it was found on still holds.
 inline std::vector<Violation> check(StateGraph& g, LawCache* cache, const Equation& eq) {
+    if (Accelerator* a = accelerating(); a && a->take(g, eq)) return {};
     if (!cache || cache->strategy() == LawCache::Strategy::Direct) return check_direct(g, eq);
     using clock = std::chrono::steady_clock;
     const auto asked = clock::now();
@@ -938,7 +972,10 @@ inline std::vector<Violation> check(StateGraph& g, LawCache* cache, const Equati
     });
 }
 
-inline std::vector<Violation> check(StateGraph& g, const Equation& eq) { return check_direct(g, eq); }
+inline std::vector<Violation> check(StateGraph& g, const Equation& eq) {
+    if (Accelerator* a = accelerating(); a && a->take(g, eq)) return {};
+    return check_direct(g, eq);
+}
 
 inline void append(std::vector<Violation>& to, std::vector<Violation> from) {
     for (auto& v : from) to.push_back(std::move(v));
@@ -958,8 +995,8 @@ inline std::vector<Violation> identity(StateGraph& g, const LawOptions& o = {},
         const State& s = g.state(sid);
         for (const Morphism& m : s.morphisms()) {
             if (!s.find(dom(m)) || !s.find(cod(m))) continue;  // validate() names it
-            const Morphism id_dom{Key{"id." + dom(m).str()}, dom(m), Key{}, m.trigger, nullptr, {}};
-            const Morphism id_cod{Key{"id." + cod(m).str()}, cod(m), Key{}, m.trigger, nullptr, {}};
+            const Morphism id_dom{Key{"id." + dom(m).str()}, dom(m), Key{}, m.trigger, nullptr, {}, nullptr};
+            const Morphism id_cod{Key{"id." + cod(m).str()}, cod(m), Key{}, m.trigger, nullptr, {}, nullptr};
             const Params args = args_for(o, m.trigger);
             const std::string where = sid.str() + "." + m.name.str();
             const Path f = Path(sid, dom(m)).arrow(m.name);
@@ -1574,14 +1611,18 @@ inline LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams = {}
                         const LawOptions& o = {}) {
     LawReport r;
     r.structure = g.validate();
-    laws::sort_into(r, laws::identity(g, o));
-    laws::sort_into(r, laws::associativity(g, o));
-    laws::sort_into(r, laws::composition(g, o));
-    laws::sort_into(r, laws::functoriality(g, o));
-    laws::sort_into(r, laws::lenses(g, o));
-    laws::sort_into(r, laws::drives(g, o));
-    laws::sort_into(r, laws::seams(g));
-    for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
+    {
+        laws::Accelerating fast(o.accelerate);
+        laws::sort_into(r, laws::identity(g, o));
+        laws::sort_into(r, laws::associativity(g, o));
+        laws::sort_into(r, laws::composition(g, o));
+        laws::sort_into(r, laws::functoriality(g, o));
+        laws::sort_into(r, laws::lenses(g, o));
+        laws::sort_into(r, laws::drives(g, o));
+        laws::sort_into(r, laws::seams(g));
+        for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
+    }
+    if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));
     return r;
 }
 
@@ -1592,14 +1633,18 @@ inline LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagra
                         const LawOptions& o = {}) {
     LawReport r;
     r.structure = g.validate();
-    laws::sort_into(r, laws::identity(g, o, &cache));
-    laws::sort_into(r, laws::associativity(g, o, &cache));
-    laws::sort_into(r, laws::composition(g, o, &cache));
-    laws::sort_into(r, laws::functoriality(g, o, &cache));
-    laws::sort_into(r, laws::lenses(g, o, &cache));
-    laws::sort_into(r, laws::drives(g, o, &cache));
-    laws::sort_into(r, laws::seams(g));
-    for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
+    {
+        laws::Accelerating fast(o.accelerate);
+        laws::sort_into(r, laws::identity(g, o, &cache));
+        laws::sort_into(r, laws::associativity(g, o, &cache));
+        laws::sort_into(r, laws::composition(g, o, &cache));
+        laws::sort_into(r, laws::functoriality(g, o, &cache));
+        laws::sort_into(r, laws::lenses(g, o, &cache));
+        laws::sort_into(r, laws::drives(g, o, &cache));
+        laws::sort_into(r, laws::seams(g));
+        for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
+    }
+    if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));
     return r;
 }
 

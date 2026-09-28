@@ -421,6 +421,8 @@ struct Event {
 // ---------------------------------------------------------------------------
 class State;
 
+struct DeclaredStep;  // Declared.hpp
+
 struct Morphism {
     using Handler = std::function<void(State&, Element& from, Element* to, const Event&)>;
 
@@ -432,6 +434,9 @@ struct Morphism {
     // For a composite, the arrows it was built from, first applied first. The
     // laws check that the composite still does what its parts do in order.
     std::vector<Key> parts;
+    // What it does, declared (Declared.hpp) - the steps its handler is made
+    // of - or nothing, when it says nothing: it may do anything.
+    std::shared_ptr<const std::vector<DeclaredStep>> declared;
 };
 
 // The type of an arrow. An endomorphism leaves `to` empty, but its codomain is

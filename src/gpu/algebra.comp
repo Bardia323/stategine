@@ -1,0 +1,77 @@
+// Stategine - one job of a batch, on a Vulkan device.
+//
+// Exactly what sg::algebra::run_job does (include/sg/algebra/Program.hpp),
+// in doubles (the device must have shaderFloat64). What is a byte on the host
+// (how a slot is compared, a verdict) is a word here.
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Jobs { uint jobs[]; };          // 8 per job
+layout(std430, binding = 1) readonly buffer RowSlot { uint row_slot[]; };
+layout(std430, binding = 2) readonly buffer RowFirst { uint row_first[]; };
+layout(std430, binding = 3) readonly buffer RowCount { uint row_count[]; };
+layout(std430, binding = 4) readonly buffer RowBias { double row_bias[]; };
+layout(std430, binding = 5) readonly buffer TermCol { uint term_col[]; };
+layout(std430, binding = 6) readonly buffer TermK { double term_k[]; };
+layout(std430, binding = 7) readonly buffer Start { double start[]; };
+layout(std430, binding = 8) readonly buffer CmpSlot { uint cmp_slot[]; };
+layout(std430, binding = 9) readonly buffer CmpHow { uint cmp_how[]; };
+layout(std430, binding = 10) readonly buffer ScratchFirst { uint scratch_first[]; };
+layout(std430, binding = 11) buffer Scratch { double scratch[]; };
+layout(std430, binding = 12) buffer Agree { uint agree[]; };
+layout(std430, binding = 13) buffer Where { uint where_[]; };
+layout(push_constant) uniform Count { uint n; };
+
+double dmod(double a, double m) { return a - m * trunc(a / m); }
+
+int judge(uint how, double a, double b) {
+    if (a == b) return 1;
+    if (how == 0u) return 0;
+    double d = a - b;
+    if (how == 2u) {
+        const double turn = 6.283185307179586LF;
+        d = dmod(d, turn);
+        if (d > turn * 0.5LF) d -= turn;
+        if (d < -turn * 0.5LF) d += turn;
+    }
+    d = abs(d);
+    if (!(d == d)) return 0;
+    if (d < 1e-6LF * 0.999LF) return 1;
+    if (d > 1e-6LF * 1.001LF) return 0;
+    return 2;
+}
+
+void main() {
+    const uint j = gl_GlobalInvocationID.x;
+    if (j >= n) return;
+    const uint slots = jobs[8u * j + 5u];
+    const uint l = scratch_first[j], r = l + slots;
+    for (uint i = 0u; i < slots; ++i) scratch[l + i] = scratch[r + i] = start[jobs[8u * j + 4u] + i];
+    for (uint side = 0u; side < 2u; ++side) {
+        const uint first = jobs[8u * j + side * 2u], count = jobs[8u * j + side * 2u + 1u];
+        const uint y = side == 0u ? l : r;
+        for (uint k = first; k < first + count; ++k) {
+            double v = row_bias[k];
+            for (uint t = row_first[k]; t < row_first[k] + row_count[k]; ++t) v += term_k[t] * scratch[y + term_col[t]];
+            scratch[y + row_slot[k]] = v;
+        }
+    }
+    uint verdict = 1u, at = 0u;
+    for (uint c = jobs[8u * j + 6u]; c < jobs[8u * j + 6u] + jobs[8u * j + 7u]; ++c) {
+        const uint s = cmp_slot[c];
+        const int v = judge(cmp_how[c], scratch[l + s], scratch[r + s]);
+        if (v == 0) {
+            verdict = 0u;
+            at = s;
+            break;
+        }
+        if (v == 2 && verdict == 1u) {
+            verdict = 2u;
+            at = s;
+        }
+    }
+    agree[j] = verdict;
+    where_[j] = at;
+}

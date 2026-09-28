@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "sg/core/Core.hpp"
+#include "sg/core/Declared.hpp"
 
 namespace sg {
 
@@ -182,11 +183,27 @@ public:
     }
 
     const Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn) {
-        return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}});
+        return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}, nullptr});
     }
 
     const Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn) {
-        return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}});
+        return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}, nullptr});
+    }
+
+    // An arrow that says what it does (Declared.hpp): its handler is made
+    // from what it says, so the two are one. On one element, or from one to
+    // another.
+    const Morphism& affine(Key name, Key on, Key trigger, Affine a) { return affine(name, on, Key{}, trigger, std::move(a)); }
+    const Morphism& affine(Key name, Key from, Key to, Key trigger, Affine a) {
+        auto steps = std::make_shared<const DeclaredSteps>(DeclaredSteps{DeclaredStep{from, to, std::move(a)}});
+        Morphism m{name, from, to, trigger,
+                   [steps](State&, Element& src, Element* dst, const Event& ev) {
+                       sg::run((*steps)[0].does, src, dst ? *dst : src, &ev.args);
+                   },
+                   {},
+                   nullptr};
+        m.declared = steps;
+        return add_morphism(std::move(m));
     }
 
     const std::deque<Morphism>& morphisms() const { return morphisms_; }
@@ -218,18 +235,33 @@ public:
         const Key mid_id = cod(f);
         const Key g_to = g.to;
         const Key end_id = cod(g);
-        return Morphism{name,
-                        f.from,
-                        end_id == f.from ? Key{} : end_id,
-                        trigger,
-                        [fh, gh, f_to, mid_id, g_to](State& s, Element& from, Element*,
-                                                     const Event& ev) {
-                            if (fh) fh(s, from, f_to.empty() ? nullptr : s.find(f_to), ev);
-                            Element* mid = s.find(mid_id);
-                            if (!mid) return;
-                            if (gh) gh(s, *mid, g_to.empty() ? nullptr : s.find(g_to), ev);
-                        },
-                        {f.name, g.name}};
+        Morphism m{name,
+                   f.from,
+                   end_id == f.from ? Key{} : end_id,
+                   trigger,
+                   [fh, gh, f_to, mid_id, g_to](State& s, Element& from, Element*,
+                                                const Event& ev) {
+                       if (fh) fh(s, from, f_to.empty() ? nullptr : s.find(f_to), ev);
+                       Element* mid = s.find(mid_id);
+                       if (!mid) return;
+                       if (gh) gh(s, *mid, g_to.empty() ? nullptr : s.find(g_to), ev);
+                   },
+                   {f.name, g.name},
+                   nullptr};
+        // Declared if both parts are: what each says, one after the other (an
+        // arrow with no handler - an identity - says it does nothing).
+        const auto says = [](const Morphism& x) -> const DeclaredSteps* {
+            static const DeclaredSteps nothing;
+            return x.declared ? x.declared.get() : x.handler ? nullptr : &nothing;
+        };
+        if (const DeclaredSteps* a = says(f); a) {
+            if (const DeclaredSteps* b = says(g); b) {
+                auto both = std::make_shared<DeclaredSteps>(*a);
+                both->insert(both->end(), b->begin(), b->end());
+                m.declared = std::move(both);
+            }
+        }
+        return m;
     }
 
     // --- trial runs -----------------------------------------------------------

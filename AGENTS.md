@@ -62,6 +62,13 @@ arrow must be a function of params and event args. A cache a state keeps (a
 solver's contacts, a mesh) must be pure in its params, or memoised on them -
 never hidden state the laws cannot restore.
 
+Where an arrow or a transport is affine - each parameter it sets a sum of
+parameters times numbers, plus a number - say so (`State::affine`,
+`sg::transport::only` / `swizzle` / `copy_all` / `affine`): its handler is made
+from what it says, and the laws can check it without running it
+(`sg::algebra`, `LawOptions::accelerate`). Never write a description beside a
+handler that does something else: what is said is what runs.
+
 **4. Every state is reachable, and the engine keeps checking.**
 `graph.validate()` refuses a state no interface reaches (seams count). The
 engine re-validates whenever the graph changes (`StateGraph::revision`) and
