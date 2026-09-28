@@ -226,6 +226,44 @@ in a loop was registered with the wrong type, and a rebuilt part could leave its
 composite behind unnoticed. It also found the demo's 2D/3D "isomorphism" held
 only on scratch data.
 
+### The laws, compiled
+
+Running every equation is slow on a big graph. Some can be answered without
+running anything: every step on them says what it does. An arrow made with
+`State::affine`, or a transport from `sg::transport::only` / `swizzle` /
+`copy_all` / `affine`, carries its description (`sg/core/Declared.hpp`: each
+parameter it sets is a sum of parameters it reads, times numbers - perhaps
+times an event argument such as `dt` - plus a number). Its handler is made
+from that description, so the two are one thing, not two truths. The
+integrator of every `Spatial` body is such an arrow.
+
+```
+Equation {lhs, rhs} --try_compile--> representable? --yes--> algebra::Program --> a backend's batch --> the report
+                                                    --no---> the verifier runs it, as before  ------------^
+```
+
+`sg::algebra` (`Operator.hpp`, `Program.hpp`, `Backend.hpp`, `Compile.hpp`)
+compiles an equation into two programs over the live data. Two sides that
+leave a parameter the very same expression hold it the same, and are not run
+at all. What is left runs in a batch on a backend: the CPU (`CpuBackend`), or a
+GPU (`sg/gpu/AlgebraBackend.hpp`: CUDA, ROCm, Vulkan, Metal, each built in where
+its toolchain is found). An equation the batch finds apart, or too near the
+tolerance to say, is run again by the verifier, and the verifier's
+counterexample is what is reported. The laws stay the truth, and a step that
+says nothing is run as ever.
+
+```cpp
+auto backend = sg::gpu::best();                 // a GPU if there is one here, the CPU if not
+sg::algebra::Accelerated fast(*backend);        // compiled programs are kept, per graph
+sg::LawOptions o;
+o.accelerate = &fast;
+sg::LawReport r = sg::verify(graph, {}, o);     // the same report, faster
+```
+
+`./build/sg_algebra` holds every backend to the verifier's report, lawful and
+broken. At 400 bodies: plain 0.9 s, compiled 0.3 s the first time and 35 ms
+after.
+
 ## Using stategine in a project
 
 Pin a release; none of the engine's examples, tests or downloads come along.
@@ -550,6 +588,9 @@ include/sg/
     Core.hpp State.hpp Functor.hpp Adjunction.hpp Embedding.hpp
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
+    Declared.hpp (what a step does, said: affine arrows and transports)
+  algebra/   the laws compiled: Operator, Program, Backend (CPU), Compile
+  gpu/       the algebra's batches on a GPU: AlgebraBackend.hpp (src/gpu: CUDA, ROCm, Vulkan, Metal)
   domains/   what a state is about: Spatial, Atlas, Console, Surface, Look
   physics/   solvers a state can step in its arrows, plain data in and out:
     Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)

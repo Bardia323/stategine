@@ -1345,6 +1345,58 @@ void test_an_embedding_follows_its_portal() {
     check(!e.embed_open("on"), "and off again, not");
 }
 
+// Arriving is an event of the state arrived at: `state.entered {from, by}`,
+// for its own arrows - the same in the engine and in a law's path.
+void test_arriving_is_heard() {
+    sg::StateGraph g;
+    g.add<sg::State>("hall").add_element("door", "door");
+    auto& annex = g.add<sg::State>("annex");
+    annex.add_element("mat", "mat").params.set("from", std::string());
+    annex.loop("arrive", "mat", sg::StateGraph::entered_event(), [](sg::State&, sg::Element& m, sg::Element*, const sg::Event& ev) {
+        m.params.set("from", ev.args.get_or<std::string>("from", ""));
+    });
+    g.connect("hall", "go", "annex");
+    g.set_initial("hall");
+    sg::Engine e(g);
+    e.start();
+    e.fire("go");
+    e.tick(1.0 / 60.0);
+    check(e.current()->id() == sg::Key{"annex"} && annex.element("mat").params.get_or<std::string>("from", "") == "hall",
+          "the annex hears it was entered, and from the hall");
+    check(sg::verify(g).ok(), "and the laws take the transition the same way");
+    annex.element("mat").params.set("from", std::string());
+    e.switch_to("hall");
+    e.switch_to("annex");
+    e.tick(1.0 / 60.0);
+    check(annex.element("mat").params.get_or<std::string>("from", "") == "hall", "and entered by hand, it hears it all the same");
+}
+
+// A kept functor: its target follows its source whenever it changes, with no
+// portal between them - and nothing is carried when nothing changed.
+void test_a_kept_functor_follows() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::State>("room");
+    room.add_element("desk", "desk").params.set("x", 1.0);
+    auto& model = g.add<sg::State>("model");
+    model.add_element("block", "block").params.set("x", 0.0);
+    g.add_functor("model.in", "room", "model").on_object("desk", "block", sg::transport::copy_all);
+    g.keep("model.in");
+    g.set_initial("room");
+    check(g.validate().empty(), "a kept functor reaches what it keeps, and is sound");
+    sg::Engine e(g);
+    e.start();
+    e.tick(1.0 / 60.0);
+    check(model.element("block").params.num("x") == 1.0, "the model follows the room");
+    room.element("desk").params.set("x", 2.5);
+    e.tick(1.0 / 60.0);
+    check(model.element("block").params.num("x") == 2.5, "and follows it as it changes");
+    const uint64_t was = model.element("block").params.stamp();
+    e.tick(1.0 / 60.0);
+    check(model.element("block").params.stamp() == was, "and nothing changed, nothing is carried");
+    g.drop_functor("model.in");
+    check(g.kept().empty() && !g.validate().empty(), "dropped, it is kept no more - and the model, reached by nothing now, is named");
+}
+
 }  // namespace
 
 int main() {
@@ -1381,6 +1433,8 @@ int main() {
     test_shown_focused_and_portals();
     test_depth_has_no_limit_and_cycles_end();
     test_an_embedding_follows_its_portal();
+    test_arriving_is_heard();
+    test_a_kept_functor_follows();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

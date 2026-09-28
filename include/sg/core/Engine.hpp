@@ -75,23 +75,41 @@ public:
     // these (a state sees its engine const). They are for whoever holds the
     // engine - the program that built the graph, with the same right it has
     // to rewrite the graph: a debug teleport, a menu outside the world.
+    // (A state entered by hand hears it as one entered by a transition does:
+    // `state.entered {from}`, `by` empty.)
     void switch_to(Key id, Params args = {}) {
         if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "switch_to " + id.str());
+        const Key from = top() ? top()->id() : Key{};
         if (State* c = top()) {
             hook(*c, "on_exit", [&] { c->on_exit(); });
             stack_.pop_back();
         }
         enter(graph_.state(id), args);
+        arrived(from);
     }
 
     void push_state(Key id, Params args = {}) {
         if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "push_state " + id.str());
+        const Key from = top() ? top()->id() : Key{};
         if (State* c = top()) hook(*c, "on_pause", [&] { c->on_pause(); });
         enter(graph_.state(id), args);
+        arrived(from);
     }
 
     void pop_state() {
         if (detail::observing() > 0) detail::refused_to_observer(std::string("moved the stack: ") + "pop_state");
+        const Key from = top() ? top()->id() : Key{};
+        leave_top();
+        arrived(from);
+    }
+
+private:
+    void arrived(Key from) {
+        if (State* now = top(); now && !from.empty())
+            now->hear(Event{StateGraph::entered_event(), Params{}.set("from", from.str()).set("by", std::string())});
+    }
+    // The top of the stack left, and what is under it resumed.
+    void leave_top() {
         if (stack_.empty()) return;
         State* c = stack_.back();
         hook(*c, "on_exit", [&] { c->on_exit(); });
@@ -103,6 +121,8 @@ public:
         State* under = stack_.back();
         hook(*under, "on_resume", [&] { under->on_resume(); });
     }
+
+public:
 
     // --- embeddings -------------------------------------------------------------
     // Open a portal: run `in` to build the guest's view of the host, enter the
@@ -256,6 +276,7 @@ public:
         time_ += dt;
         const Tick t{dt, time_, frame_++};
         apply_edits();
+        carry_kept();  // after the edits: what a target asked for is done before it follows again
         take_inputs();
         process_transitions();
         if (!running_) return;
@@ -391,6 +412,19 @@ private:
             step(*s, t);
             step_embeddings_in(*s, t);  // and what is open in it, as anywhere
             carry_to_hosts(*s);
+        }
+    }
+
+    // Each kept functor carries what changed in its source since it last did
+    // (StateGraph::keep), at the start of the frame, once the edits asked
+    // for are done - so a target that asked for something (a block let go
+    // on a model) is answered before it follows its source again.
+    void carry_kept() {
+        for (Key name : graph_.kept()) {
+            const Functor* f = graph_.functor(name);
+            State* src = f ? graph_.find(f->from()) : nullptr;
+            State* dst = f ? graph_.find(f->to()) : nullptr;
+            if (src && dst) f->apply(*src, *dst, kept_carries_[name]);
         }
     }
 
@@ -852,7 +886,7 @@ private:
                 enter(*target, args);
                 break;
             case TransitionKind::Pop:
-                pop_state();
+                leave_top();  // (heard as entered already, by cross)
                 break;
         }
     }
@@ -887,6 +921,7 @@ private:
     std::unordered_map<Key, Functor::Memo> kept_memos_;
     std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
     std::vector<Key> following_;  // the embeddings that follow their portals (follow_portals)
+    std::unordered_map<Key, Functor::Memo> kept_carries_;  // what each kept functor last carried
     uint64_t follow_revision_ = 0;
     bool followed_ = false;
     uint64_t drive_revision_ = ~uint64_t{0};

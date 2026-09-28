@@ -48,18 +48,17 @@ public:
     // Endomorphism on one body: velocity integrates into position. Registered
     // per element so the arrow really is an arrow of this category, visible in
     // the DOT output and checkable by validate().
+    // Declared (sg/core/Declared.hpp): x <- x + vx dt, and so on - so the
+    // laws can check it without running it (sg/algebra).
     const Morphism& add_integrator(Key id) {
-        const int dims = dims_;
-        return loop(Key{"move." + id.str()}, id, step_event_,
-                    [dims](State&, Element& e, Element*, const Event& ev) {
-                        const double dt = ev.args.num(keys::dt);
-                        if (dt == 0.0) return;
-                        e.params.set(keys::x, e.params.num(keys::x) + e.params.num(keys::vx) * dt);
-                        e.params.set(keys::y, e.params.num(keys::y) + e.params.num(keys::vy) * dt);
-                        if (dims == 3)
-                            e.params.set(keys::z,
-                                         e.params.num(keys::z) + e.params.num(keys::vz) * dt);
-                    });
+        Affine a;
+        const auto axis = [&](Key p, Key v) {
+            a.set(p, {Affine::Term{p, 1.0, Key{}, true}, Affine::Term{v, 1.0, keys::dt, true}});
+        };
+        axis(keys::x, keys::vx);
+        axis(keys::y, keys::vy);
+        if (dims_ == 3) axis(keys::z, keys::vz);
+        return affine(Key{"move." + id.str()}, id, step_event_, std::move(a));
     }
 
     void on_update(const Tick& t) override {

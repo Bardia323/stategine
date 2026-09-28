@@ -43,6 +43,13 @@ if(MINGW)
 endif()
 
 # Everything this repository builds for itself uses both.
+# The GPU backends of the algebra (include/sg/gpu): each built in where its
+# toolchain is found, and nothing otherwise - every backend then runs on the
+# CPU, and says it is not here.
+add_library(stategine_gpu INTERFACE)
+add_library(stategine::gpu ALIAS stategine_gpu)
+include(cmake/gpu.cmake OPTIONAL)
+
 add_library(stategine_dev INTERFACE)
 target_link_libraries(stategine_dev INTERFACE stategine stategine_warnings
                       stategine_static_runtime)
@@ -109,6 +116,12 @@ if(SG_BUILD_TESTS)
   add_executable(sg_tests tests/test_engine.cpp)
   target_link_libraries(sg_tests PRIVATE stategine_dev)
   add_test(NAME sg_tests COMMAND sg_tests)
+
+  # The laws, compiled (sg/algebra) - the same reports as the verifier's, on
+  # every backend built in (sg/gpu).
+  add_executable(sg_algebra tests/test_algebra.cpp)
+  target_link_libraries(sg_algebra PRIVATE stategine_dev stategine_gpu)
+  add_test(NAME sg_algebra COMMAND sg_algebra)
 
   # The core, built with no domain and no renderer in sight. This target exists
   # to fail: if anything in core/ grows a dependency on rooms or on pixels, the

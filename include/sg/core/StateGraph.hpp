@@ -292,11 +292,18 @@ public:
     // meaning.
     void cross(const Transition& t, State& from, State* target, const Event& ev, Params& args) const {
         if (t.action) t.action(from, ev, args);
-        if (t.functor.empty() || !target) return;
-        const Functor* f = functor(t.functor);
-        if (!f) throw std::runtime_error("transition " + t.name.str() + ": no functor " + t.functor.str());
-        f->apply(from, *target, ev);
+        if (!target) return;
+        if (!t.functor.empty()) {
+            const Functor* f = functor(t.functor);
+            if (!f) throw std::runtime_error("transition " + t.name.str() + ": no functor " + t.functor.str());
+            f->apply(from, *target, ev);
+        }
+        // Arriving is an event of the state arrived at: it hears where from,
+        // and by which transition, for its own arrows to answer.
+        target->hear(Event{entered_event(), Params{}.set("from", from.id().str()).set("by", t.name.str())});
     }
+    // What a state entered by a transition hears (cross): {from, by}.
+    static Key entered_event() { return Key{"state.entered"}; }
 
     // --- functors -------------------------------------------------------------
     Functor& add_functor(Functor f) {
@@ -343,6 +350,7 @@ public:
         composites_.erase(name);
         lenses_.erase(std::remove_if(lenses_.begin(), lenses_.end(), [&](const LensPair& l) { return l.get == name || l.put == name; }),
                       lenses_.end());
+        kept_.erase(std::remove(kept_.begin(), kept_.end(), name), kept_.end());
         return true;
     }
 
@@ -558,6 +566,20 @@ public:
         return false;
     }
     const std::vector<std::pair<Key, Key>>& ports() const { return ports_; }
+
+    // --- kept functors ------------------------------------------------------------
+    // A functor whose target follows its source: whenever an object it maps
+    // changed, the engine carries it (by the frame, with a memo - nothing
+    // changed costs a comparison). A model on a table kept to the room it is
+    // of, with no portal between them. Kept again, nothing changes.
+    void keep(Key functor, bool on = true) {
+        const auto it = std::find(kept_.begin(), kept_.end(), functor);
+        if (on == (it != kept_.end())) return;
+        rev_.rewired("keep");
+        if (on) kept_.push_back(functor);
+        else kept_.erase(it);
+    }
+    const std::vector<Key>& kept() const { return kept_; }
 
     // --- edits ------------------------------------------------------------------
     // Registered by name (`state:event` when empty); again, it is replaced.
@@ -810,6 +832,8 @@ public:
 
         for (const auto& p : ports_)
             if (!find(p.first)) errors.push_back("port " + p.second.str() + ": unknown state " + p.first.str());
+        for (Key k : kept_)
+            if (!functor(k)) errors.push_back("kept functor " + k.str() + " is not declared");
 
         for (const Edit& e : edits_) {
             const State* s = find(e.state);
@@ -951,6 +975,9 @@ private:
         // A functor that carries what a state says reaches where it goes.
         for (const auto& kv : functors_)
             if (kv.second.maps_events()) next[kv.second.from()].push_back(kv.second.to());
+        // And a kept one, which carries into it whenever its source changes.
+        for (Key k : kept_)
+            if (const Functor* f = functor(k)) next[f->from()].push_back(f->to());
         // A driven state brings its clock with it; a clock alone reaches
         // nothing - being driven is not being reachable.
         for (const auto& d : drives_) next[d.state].push_back(d.clock);
@@ -1006,6 +1033,7 @@ private:
     std::deque<Edit> edits_;
     std::vector<LensPair> lenses_;
     std::vector<std::pair<Key, Key>> ports_;
+    std::vector<Key> kept_;  // functors whose targets follow their sources (keep)
     std::unordered_map<Key, std::vector<std::size_t>> by_host_;
     std::unordered_map<Key, std::vector<std::size_t>> by_guest_;
     std::unordered_map<Key, std::size_t> by_name_;

@@ -252,6 +252,10 @@ inline uint64_t mix_stamp(uint64_t h, uint64_t v) {
 // ---------------------------------------------------------------------------
 // Params: a small flat map. Elements carry a handful of entries, so a linear
 // scan over contiguous memory beats hashing - and there is no per-key node.
+//
+// Copies share their entries until one of them writes: a copy of a state (a
+// snapshot, a law's trial, a default kept) costs a pointer per element, and
+// only what is then changed is copied for real.
 // ---------------------------------------------------------------------------
 class Params {
 public:
@@ -260,11 +264,11 @@ public:
     // Setting a value it already holds is no change, and is not stamped as
     // one: whatever follows from these params need not look again.
     Params& set(Key key, Value v) {
-        if (Value* slot = slot_of(key)) {
-            if (*slot == v) return *this;
-            *slot = std::move(v);
+        if (const Value* held = slot_of(key)) {
+            if (*held == v) return *this;
+            *slot_of_mine(key) = std::move(v);
         } else {
-            entries_.emplace_back(key, std::move(v));
+            mine().emplace_back(key, std::move(v));
         }
         stamp_ = next_stamp();
         return *this;
@@ -288,6 +292,17 @@ public:
         return fallback;
     }
 
+    // The text under `key`, read where it is (no copy); null if there is none.
+    const std::string* text(Key key) const {
+        const Value* v = slot_of(key);
+        return v ? std::get_if<std::string>(v) : nullptr;
+    }
+    // Whether the text under `key` is `s`.
+    bool is(Key key, const char* s) const {
+        const std::string* t = text(key);
+        return t && *t == s;
+    }
+
     // Convenience for the common numeric case: reads ints as doubles too.
     double num(Key key, double fallback = 0.0) const {
         const Value* v = slot_of(key);
@@ -298,42 +313,54 @@ public:
     }
 
     void erase(Key key) {
-        for (std::size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].first == key) {
-                entries_[i] = std::move(entries_.back());
-                entries_.pop_back();
+        if (!slot_of(key)) return;
+        std::vector<Entry>& es = mine();
+        for (std::size_t i = 0; i < es.size(); ++i) {
+            if (es[i].first == key) {
+                es[i] = std::move(es.back());
+                es.pop_back();
                 stamp_ = next_stamp();
                 return;
             }
         }
     }
 
-    std::size_t size() const { return entries_.size(); }
-    bool empty() const { return entries_.empty(); }
+    std::size_t size() const { return all().size(); }
+    bool empty() const { return all().empty(); }
     void clear() {
-        if (entries_.empty()) return;
-        entries_.clear();
+        if (empty()) return;
+        entries_.reset();
         stamp_ = next_stamp();
     }
 
-    std::vector<Entry>::const_iterator begin() const { return entries_.begin(); }
-    std::vector<Entry>::const_iterator end() const { return entries_.end(); }
-    const std::vector<Entry>& all() const { return entries_; }
+    std::vector<Entry>::const_iterator begin() const { return all().begin(); }
+    std::vector<Entry>::const_iterator end() const { return all().end(); }
+    const std::vector<Entry>& all() const {
+        static const std::vector<Entry> none;
+        return entries_ ? *entries_ : none;
+    }
 
 private:
-    Value* slot_of(Key key) {
-        for (auto& e : entries_)
+    // The entries, this copy's own to write: shared ones are copied first.
+    std::vector<Entry>& mine() {
+        if (!entries_) entries_ = std::make_shared<std::vector<Entry>>();
+        else if (entries_.use_count() > 1) entries_ = std::make_shared<std::vector<Entry>>(*entries_);
+        return *entries_;
+    }
+    Value* slot_of_mine(Key key) {
+        for (auto& e : mine())
             if (e.first == key) return &e.second;
         return nullptr;
     }
 
     const Value* slot_of(Key key) const {
-        for (const auto& e : entries_)
+        if (!entries_) return nullptr;
+        for (const auto& e : *entries_)
             if (e.first == key) return &e.second;
         return nullptr;
     }
 
-    std::vector<Entry> entries_;
+    std::shared_ptr<std::vector<Entry>> entries_;
     uint64_t stamp_ = 0;
 };
 
@@ -421,6 +448,8 @@ struct Event {
 // ---------------------------------------------------------------------------
 class State;
 
+struct DeclaredStep;  // Declared.hpp
+
 struct Morphism {
     using Handler = std::function<void(State&, Element& from, Element* to, const Event&)>;
 
@@ -432,6 +461,9 @@ struct Morphism {
     // For a composite, the arrows it was built from, first applied first. The
     // laws check that the composite still does what its parts do in order.
     std::vector<Key> parts;
+    // What it does, declared (Declared.hpp) - the steps its handler is made
+    // of - or nothing, when it says nothing: it may do anything.
+    std::shared_ptr<const std::vector<DeclaredStep>> declared;
 };
 
 // The type of an arrow. An endomorphism leaves `to` empty, but its codomain is

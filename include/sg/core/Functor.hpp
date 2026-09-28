@@ -35,29 +35,41 @@ using Transport = std::function<void(const Element& src, Element& dst)>;
 
 namespace transport {
 
+// A transport that says what it does (Declared.hpp): stages, each from what
+// the last left through an element made fresh between them. What it runs is
+// what it says - its function is made from it.
+struct Declared {
+    std::shared_ptr<const Stages> stages;
+    static Declared of(Affine a) { return Declared{std::make_shared<const Stages>(Stages{std::move(a)})}; }
+    inline void operator()(const Element& s, Element& d) const;
+};
+
 // Everything crosses unchanged.
-inline void copy_all(const Element& s, Element& d) {
-    for (const auto& kv : s.params) d.params.set(kv.first, kv.second);
-}
+inline const Declared copy_all = Declared::of([] {
+    Affine a;
+    a.copy_all = true;
+    return a;
+}());
 
 // Only the named parameters cross.
-inline Transport only(std::vector<Key> names) {
-    return [names = std::move(names)](const Element& s, Element& d) {
-        for (Key k : names)
-            if (s.params.has(k)) d.params.set(k, s.params.get(k));
-    };
+inline Declared only(std::vector<Key> names) {
+    Affine a;
+    for (Key k : names) a.copy(k, k);
+    return Declared::of(std::move(a));
 }
 
 // Rename on the way over: {destination, source}. This is the whole content of
 // "the map's y axis is the world's z axis", and it works for any pair of
 // domains that share the parameter vocabulary.
-inline Transport swizzle(std::vector<std::pair<Key, Key>> pairs, bool copy_rest = false) {
-    return [pairs = std::move(pairs), copy_rest](const Element& s, Element& d) {
-        if (copy_rest) copy_all(s, d);
-        for (const auto& p : pairs)
-            if (s.params.has(p.second)) d.params.set(p.first, s.params.get(p.second));
-    };
+inline Declared swizzle(std::vector<std::pair<Key, Key>> pairs, bool copy_rest = false) {
+    Affine a;
+    a.copy_all = copy_rest;
+    for (const auto& p : pairs) a.copy(p.first, p.second);
+    return Declared::of(std::move(a));
 }
+
+// Affine on the way over: what it says (Declared.hpp), declared.
+inline Declared affine(Affine a) { return Declared::of(std::move(a)); }
 
 // Rename plus a scalar map on each value, for unit changes (cells <-> metres).
 inline Transport swizzle_scaled(std::vector<std::pair<Key, Key>> pairs,
@@ -115,6 +127,23 @@ private:
     std::size_t slot_;
 };
 
+namespace transport {
+// Stages run in turn, through an element made fresh between each two.
+inline void run_stages(const Stages& st, std::size_t i, const Element& s, Element& d) {
+    if (i + 1 >= st.size()) {
+        if (i < st.size()) sg::run(st[i], s, d);
+        return;
+    }
+    Middle held;
+    Element& mid = held.element(s);
+    sg::run(st[i], s, mid);
+    run_stages(st, i + 1, mid, d);
+}
+inline void Declared::operator()(const Element& s, Element& d) const {
+    if (stages) run_stages(*stages, 0, s, d);
+}
+}  // namespace transport
+
 class Functor {
 public:
     Functor() = default;
@@ -167,7 +196,16 @@ public:
     // --- object map ---------------------------------------------------------
     Functor& on_object(Key src_element, Key dst_element, Transport t = nullptr) {
         refuse_if_identity("on_object");
-        obj_[src_element] = ObjMap{dst_element, std::move(t)};
+        // No transport is every parameter, as it is: said so.
+        const bool said = !t;
+        obj_[src_element] = ObjMap{dst_element, std::move(t), said ? transport::copy_all.stages : nullptr};
+        remapped("on_object");
+        return *this;
+    }
+    // A transport that says what it does: kept with what it says.
+    Functor& on_object(Key src_element, Key dst_element, transport::Declared t) {
+        refuse_if_identity("on_object");
+        obj_[src_element] = ObjMap{dst_element, Transport(t), t.stages};
         remapped("on_object");
         return *this;
     }
@@ -234,6 +272,12 @@ public:
     template <typename Fn>
     void for_each_object(Fn&& fn) const {
         for (const auto& kv : obj_) fn(kv.first, kv.second.dst);
+    }
+    // And with what each says it does (Declared.hpp) - null, where it says
+    // nothing - in the order `apply` carries them.
+    template <typename Fn>
+    void for_each_declared(Fn&& fn) const {
+        for (const auto& kv : obj_) fn(kv.first, kv.second.dst, kv.second.declared.get());
     }
 
     // --- application --------------------------------------------------------
@@ -358,6 +402,13 @@ public:
             if (mid == g.obj_.end()) continue;  // outside G's image: dropped
             Transport tf = kv.second.transport;
             Transport tg = mid->second.transport;
+            // Declared if both are: the one's stages, then the other's.
+            std::shared_ptr<const Stages> said;
+            if (kv.second.declared && mid->second.declared) {
+                auto both = std::make_shared<Stages>(*kv.second.declared);
+                both->insert(both->end(), mid->second.declared->begin(), mid->second.declared->end());
+                said = std::move(both);
+            }
             h.obj_[kv.first] = ObjMap{mid->second.dst,
                                       [tf, tg](const Element& s, Element& d) {
                                           Middle held;
@@ -372,7 +423,8 @@ public:
                                           } else {
                                               transport::copy_all(scratch, d);
                                           }
-                                      }};
+                                      },
+                                      std::move(said)};
         }
         for (const auto& kv : f.mor_) {
             auto mid = g.mor_.find(kv.second);
@@ -461,6 +513,7 @@ private:
     struct ObjMap {
         Key dst;
         Transport transport;
+        std::shared_ptr<const Stages> declared;  // what it says it does; null: nothing said
     };
 
     void build(const State& src, State& dst, Memo& m) const {
