@@ -274,6 +274,7 @@ void Engine::drive(State& s, double dt) {
     for (const Drive* dp : it->second) {
         const Drive& d = *dp;
         if (d.keeps == Keeps::WhileFocused && focused_guest() != &s) continue;  // it waits
+        if (d.keeps == Keeps::WhileEntered && current() != &s) continue;        // shown, not entered: it waits
         State* c = graph_.find(d.clock);
         const Key line = timeline_of(d);
         if (!c || !c->find(line)) continue;  // validate() names it

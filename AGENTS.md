@@ -98,7 +98,12 @@ its own `LookState` (`sg::wear`) and keeps it wherever it is shown - a realm's
 VHS picture is the realm's. Whatever shows it adds only what it itself is: a
 CRT panel's glass is the television's. Composites share `gl::film_glsl()`,
 `godrays_glsl()`, `fxaa_glsl()`; lighting that is the same in every world
-lives in `sg/domains/Light.hpp`, not in a game.
+lives in `sg/domains/Light.hpp`, not in a game. A feed panel is a screen
+(its picture developed light, taken back through the tone curve) unless it
+says `untone` = 0; a world whose feed must be seen as paint makes its own
+picture ready for the room it hangs in, in its own look. A world whose time
+must stand still while it is only shown is driven `Keeps::WhileEntered`
+(`WhileActive` runs it while it is open in another state).
 
 **8. Watching is const; structure is counted.** The engine and a const graph
 show the world const - act by firing events, never by writing into what

@@ -78,7 +78,10 @@ struct Seam {
 //                 no one)
 //   WhileFocused  only while it has the input (a game on a computer, which
 //                 waits while another window is in front)
-enum class Keeps { WhileActive, Always, WhileShown, WhileFocused };
+//   WhileEntered  only while it is where one is - the active state itself,
+//                 not what is open in another (a world in a painting, still
+//                 on the wall and going on only once someone is in it)
+enum class Keeps { WhileActive, Always, WhileShown, WhileFocused, WhileEntered };
 
 // A drive: `state` changes with the time `clock` keeps. Each frame the state
 // steps, its line on the clock advances by dt and the state's arrows on
