@@ -1538,6 +1538,117 @@ void test_adjunction_is_not_an_isomorphism() {
     check(!wrong.holds(A, B), "a unit of the wrong type is refused");
 }
 
+void test_kan_extensions() {
+    // A = the order 0 < 1, C = one object, K collapses A onto C and R picks
+    // out 1: K -| R, unit u : 0 -> 1. B = a shelf, low < high, and F puts
+    // the order on it. Lan_K F = F . R sends * to high, and its 2-cell is
+    // F(u) = lift: what F does below 1 carried up to it.
+    sg::StateGraph g;
+    auto& A = g.add<sg::State>("order");
+    auto& C = g.add<sg::State>("point");
+    auto& B = g.add<sg::State>("shelf");
+    const auto add = [](sg::State&, sg::Element& from, sg::Element* to, const sg::Event&) {
+        if (to) to->params.set("v", to->params.num("v") + from.params.num("v"));
+    };
+    A.add_element("0", "n").params.set("v", 1.0);
+    A.add_element("1", "n").params.set("v", 5.0);
+    C.add_element("*", "n");
+    B.add_element("low", "slot").params.set("v", 1.0);
+    B.add_element("high", "slot").params.set("v", 5.0);
+    A.arrow("u", "0", "1", "never", add);
+    A.loop("id_1", "1", "never", nullptr);
+    C.loop("id_*", "*", "never", nullptr);
+    B.arrow("lift", "low", "high", "never", add);
+    B.loop("id_high", "high", "never", nullptr);
+
+    // K and R carry no data: the point has none to give or to take.
+    sg::Functor& K = g.add_functor("K", "order", "point");
+    K.on_object("0", "*", sg::transport::only({}))
+        .on_object("1", "*", sg::transport::only({}))
+        .on_morphism("u", "id_*")
+        .on_morphism("id_1", "id_*");
+    sg::Functor& R = g.add_functor("R", "point", "order");
+    R.on_object("*", "1", sg::transport::only({})).on_morphism("id_*", "id_1");
+    sg::Functor& F = g.add_functor("F", "order", "shelf");
+    F.on_object("0", "low").on_object("1", "high").on_morphism("u", "lift").on_morphism("id_1", "id_high");
+
+    sg::Adjunction adj("K -| R", &K, &R);
+    adj.identity("id_1").identity("id_*").unit("0", "u").unit("1").counit("*");
+    check(adj.holds(A, C), "K -| R");
+
+    sg::Kan lan = sg::Kan::left("Lan_K F", F, adj);
+    lan.identity("id_high");
+    const auto defects = lan.check(A, B, C);
+    for (const auto& d : defects) std::printf("        %s\n", d.c_str());
+    check(defects.empty(), "Lan_K F along K -| R: typed, natural, resting on the adjunction");
+    check(lan.extension().image_object("*") == sg::Key{"high"}, "Lan_K F is F after R: * goes to high");
+    check(lan.cell("0") == sg::Kan::Word{"lift"} && lan.cell("1").empty(),
+          "its 2-cell is F(eta): lift at 0, the identity at 1");
+    check(sg::laws::kan(g, lan).empty(), "and its squares hold on live data");
+
+    // Any other extension passes through it: G sends * to high as well, with
+    // gamma lift at 0; sigma is the identity, and gamma = alpha ; sigma K.
+    sg::Functor G("G", "point", "shelf");
+    G.on_object("*", "high").on_morphism("id_*", "id_high");
+    auto through = lan.factor(G, {{"0", {"lift"}}}, A, B, C);
+    for (const auto& d : through.defects) std::printf("        %s\n", d.c_str());
+    check(through.ok() && through.sigma.at("*").empty(), "a competitor factors through Lan, by the identity");
+    // One whose 2-cell runs the wrong way does not.
+    sg::Functor Low("Low", "point", "shelf");
+    Low.on_object("*", "low");
+    check(!lan.factor(Low, {}, A, B, C).ok(), "a 2-cell with no arrow high -> low is not one");
+
+    // An adjunction is a Kan extension: R = Lan_K id_A, its 2-cell the unit.
+    const sg::Functor id_A = sg::Functor::identity(A);
+    sg::Kan right_adjoint = sg::Kan::left("Lan_K id", id_A, adj);
+    check(right_adjoint.holds(A, A, C) && right_adjoint.extension().image_object("*") == sg::Key{"1"} &&
+              right_adjoint.cell("0") == sg::Kan::Word{"u"},
+          "R is Lan_K id, with the unit for its 2-cell");
+
+    // Right: along R, whose left adjoint is K, Ran_R P = P . K. P puts the
+    // point on high; Ran_R P sends both 0 and 1 to high, and F passes
+    // through it by sigma_0 = lift.
+    sg::Functor& P = g.add_functor("P", "point", "shelf");
+    P.on_object("*", "high").on_morphism("id_*", "id_high");
+    sg::Kan ran = sg::Kan::right("Ran_R P", P, adj);
+    ran.identity("id_high");
+    const auto rdefects = ran.check(C, B, A);
+    for (const auto& d : rdefects) std::printf("        %s\n", d.c_str());
+    check(rdefects.empty(), "Ran_R P along K -| R");
+    check(ran.extension().image_object("0") == sg::Key{"high"} &&
+              ran.extension().image_object("1") == sg::Key{"high"},
+          "Ran_R P is P after K");
+    auto from_above = ran.factor(F, {}, C, B, A);
+    for (const auto& d : from_above.defects) std::printf("        %s\n", d.c_str());
+    check(from_above.ok() && from_above.sigma.at("0") == sg::Kan::Word{"lift"} &&
+              from_above.sigma.at("1").empty(),
+          "F passes through Ran_R P by lift at 0, the identity at 1");
+
+    // Declared in the graph, it is the composite it is, checked as one.
+    // It reaches the world as any functor does: here it carries the way from
+    // the point onto the shelf.
+    lan.declare(g);
+    ran.declare(g);
+    check(g.composite_chain("Lan_K F") && g.composite_chain("Ran_R P"), "declared as composites");
+    g.connect("order", "collapse", "point", "K");
+    g.connect("point", "shelve", "shelf", "Lan_K F");
+    g.set_initial("order");
+    const sg::LawReport r = sg::verify(g);
+    if (!r.ok()) std::printf("%s", r.str().c_str());
+    check(r.ok(), "and the graph's laws hold with them in it");
+
+    // An F that does not carry the unit has no 2-cell there.
+    sg::Functor bare("bare", "order", "shelf");
+    bare.on_object("0", "low").on_object("1", "high");
+    sg::Kan broken = sg::Kan::left("Lan_K bare", bare, adj);
+    broken.identity("id_high");
+    check(!broken.holds(A, B, C), "a 2-cell F does not carry is refused");
+    // Nor is there one along a pair that is not adjoint.
+    sg::Adjunction not_adj("K -| R, no unit", &K, &R);
+    not_adj.identity("id_1").identity("id_*");
+    check(!sg::Kan::left("Lan", F, not_adj).holds(A, B, C), "no adjunction, no extension");
+}
+
 int main() {
     test_one_rotation();
     test_keys_and_params();
@@ -1551,6 +1662,7 @@ int main() {
     test_functor_roundtrip();
     test_functor_composition();
     test_adjunction_is_not_an_isomorphism();
+    test_kan_extensions();
     test_lens();
     test_embedding();
     test_anchors();

@@ -3,6 +3,7 @@
 // translation unit would not build.
 #include "sg/core/Adjunction.hpp"
 #include "sg/core/Engine.hpp"
+#include "sg/core/Kan.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/core/Sheaf.hpp"
 #include "sg/core/Typed.hpp"

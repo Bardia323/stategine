@@ -166,7 +166,8 @@ An invalid structure is refused at the earliest point that can see it:
    graph owns (identity, associativity, composition, functoriality, the lens
    laws, seams, and any diagrams you pass) on the states' current contents,
    then puts everything back. Descent on a `Cover`, an `Adjunction`'s unit and
-   counit, and `interface_defects` are checked apart, where they are declared.
+   counit, a `Kan` extension's 2-cell, and `interface_defects` are checked
+   apart, where they are declared.
    A broken law is a counterexample:
    ```
    functoriality @ functor post on restock: ledger.book.stock was <unset>;
@@ -298,6 +299,7 @@ release breaks is in `CHANGELOG.md`.
 | Data transport | `Functor` on a transition or portal | functor `A -> B`, partial: defined on the objects and arrows it maps |
 | View + edit pair | `graph.add_lens(...)` | a functor pair |
 | Adjoint pair | `Adjunction` | `F -| G` by unit, counit and triangle laws; isomorphism when both are identities |
+| Extension along a functor | `Kan::left`, `Kan::right` | `Lan_K F = F . R` along `K -| R`, `Ran_K F = F . L` along `L -| K`, with the universal 2-cell |
 | Nested interface | `graph.embed(...)` | a state inside an object of another |
 | Cover, gluing | `Cover`, `Atlas`, `sections(root)` | descent |
 
@@ -412,6 +414,29 @@ is adjoint to picking out `1`, with unit `0 -> 1` - so an adjunction is not an
 isomorphism. What a round trip loses is still reported (`unit_defects`,
 `counit_defects`, `data_defects`, `is_isomorphism`): those measure whether the
 pair is an isomorphism, not whether it is adjoint.
+
+A **Kan extension** carries a functor `F : A -> B` on along `K : A -> C`: a
+functor `C -> B` that does on all of `C` what `F` does on `A`, as well as that
+can be done from below (`Lan`) or from above (`Ran`), with a 2-cell through
+which any other attempt passes exactly once. The engine builds one out of what
+it has - along a functor with an adjoint, it is `F` after the adjoint:
+
+```cpp
+sg::Adjunction adj("K -| R", &K, &R);             // declared and checked as above
+sg::Kan lan = sg::Kan::left("Lan_K F", F, adj);   // Lan_K F = F . R,  alpha_a = F(eta_a)
+lan.check(A, B, C);                               // the adjunction, and the 2-cell typed and natural
+lan.factor(G, gamma, A, B, C);                    // the one sigma another (G, gamma) passes through
+lan.declare(graph);                               // in the graph as the composite R ; F
+sg::laws::kan(graph, lan);                        // its squares on live data
+```
+
+`Kan::right(name, F, adj)` along `adj`'s right functor, whose left adjoint `L`
+it then is, gives `Ran_K F = F . L`, `beta_a = F(eps_a)`. Nothing new moves
+data: the extension is a functor - partial where `F` and the adjoint are,
+carrying by the adjoint's transport and then `F`'s - and is used where any
+functor is, on a transition, an embedding, a lens. An adjunction is itself
+one: `K -| R` makes `R = Lan_K id`, its unit the 2-cell. Along a functor with
+no adjoint declared there is nothing to build from, and none is made.
 
 ### Embeddings
 
@@ -585,7 +610,7 @@ unchecked (`LawReport::unchecked`), apart from the counterexamples.
 ```
 include/sg/
   core/      the engine, domain-agnostic
-    Core.hpp State.hpp Functor.hpp Adjunction.hpp Embedding.hpp
+    Core.hpp State.hpp Functor.hpp Adjunction.hpp Kan.hpp Embedding.hpp
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
     Declared.hpp (what a step does, said: affine arrows and transports)
