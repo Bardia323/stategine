@@ -116,8 +116,13 @@ const LookMix& LookFader::mix(Key who, const LookState& target) {
     Fade& f = it->second;
     if (f.frame != frame_) {
         f.frame = frame_;
-        f.mix.toward(target,
-                     static_cast<float>(dt_ / std::max(1e-3, target.fade_seconds())));
+        // A look that fades in at once (fade 0) is left at once too: what
+        // it is shown as - a painting become its world - holds only in it,
+        // and blended into another it would show as neither.
+        double fade = target.fade_seconds();
+        for (const LookMix::Part& p : f.mix.parts)
+            if (p.look != &target && p.look->fade_seconds() <= 0.0) fade = 0.0;
+        f.mix.toward(target, fade <= 0.0 ? 1.0f : static_cast<float>(dt_ / std::max(1e-3, fade)));
     }
     return f.mix;
 }

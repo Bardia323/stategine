@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **A look that cuts in is cut from.** Leaving a look whose `fade` is 0 is immediate too: the new room is no longer drawn for a while through the old look's shader (a painting's compensation darkening the room it is left for).
 - **A world keeps its own time in every pass.** A state with `own_time` among its params is drawn by it: its shaders' `uTime` (water, clouds, stars, grain) is the world's time, not the renderer's clock - so a world whose time stands still stands still on screen too.
 - **`Keeps::WhileEntered`: a state whose time goes on only while it is where one is** - the active state itself, not a guest open in another (a world shown in a painting stays still on the wall, and goes on once someone is in it).
 - **A feed shown small holds still, and can be paint.** A world's feed is made again at every smaller size after it is drawn (`RenderTarget::mipmap`), so a screen seen from across a room - or neared - no longer shimmers with the fine detail of its picture. A feed panel with `untone` = 0 shows its picture as colour lit by the room (a painting), not as light taken back through the tone curve (a screen).

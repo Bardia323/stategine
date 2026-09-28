@@ -73,6 +73,7 @@ public:
     // Replace a pass's shaders. An empty vertex shader keeps the renderer's.
     LookState& shader(Key pass, std::string fs, std::string vs = {});
 
+    // How long it takes to fade in. 0: it is cut to - and cut from.
     LookState& fade(double seconds) {
         params().set(look_keys::fade, seconds);
         return *this;
