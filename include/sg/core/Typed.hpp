@@ -161,11 +161,7 @@ void require_objects_of_one_state() {
                   "sg: an arrow inside a state cannot leave it; use a functor between states");
 }
 
-inline void require_state(const State& s, Key want, const char* what) {
-    if (s.id() != want)
-        throw std::logic_error(std::string("sg::typed::") + what + ": state is " + s.id().str() +
-                               ", but the tag says " + want.str());
-}
+void require_state(const State& s, Key want, const char* what);
 }  // namespace detail
 
 // Register f : X -> Y in `s`. X == Y registers an endomorphism.

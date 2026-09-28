@@ -126,9 +126,18 @@ in a frame's path. What the frame runs is the declared model looked up by
 index: arrows by trigger, transitions by trigger and by name, drives and
 routes by state, rebuilt only when the graph's revision moves.
 
+The build keeps the same rules. A machine is a state too, and the compiler
+is the interface to it: a header is what a thing is - its declarations, its
+types, its templates, its one-line bodies, and what every frame reaches for;
+its `.cpp` is what it does. Each module (and the engine: `stategine`,
+`stategine_render`) is a library; the compiler takes each file on its own
+and all at once, and the linker is the one pass that brings them together.
+A changed body recompiles its own file, never every file that includes it.
+A body goes in a header only if it is a line, a template, or hot.
+
 ## Adding a state, a room, an interface - checklist
 
-1. Its own header (and module). Includes: the engine, modules under it. Nothing above.
+1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above.
 2. Its data in elements and params; its behaviour as arrows on them; no hidden state.
 3. Its look (if it is seen) worn by it.
 4. How it is reached: which interface, from which state, at which portal. Declare it in the graph.

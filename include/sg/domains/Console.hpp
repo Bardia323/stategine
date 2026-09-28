@@ -13,31 +13,7 @@ namespace sg {
 
 class ConsoleState : public State {
 public:
-    explicit ConsoleState(Key id = Key{"console"}) : State(id) {
-        add_element(Key{"log"}, kinds::textbuffer).params.set(Key{"count"}, int64_t{0});
-        add_element(Key{"input"}, kinds::textline).params.set(keys::text, std::string{});
-        add_element(Key{"prompt"}, Key{"label"}).params.set(keys::text, std::string("> "));
-
-        // input --submit--> log
-        arrow(Key{"submit"}, Key{"input"}, Key{"log"}, submit_event(),
-              [](State& s, Element& in, Element* log, const Event& ev) {
-                  std::string text = ev.args.get_or<std::string>(
-                      keys::text, in.params.get_or<std::string>(keys::text, ""));
-                  if (text.empty()) return;
-                  auto& self = static_cast<ConsoleState&>(s);
-                  self.push_line(text);
-                  in.params.set(keys::text, std::string{});
-                  log->params.set(Key{"count"}, static_cast<int64_t>(self.lines_.size()));
-                  s.emit(Event{command_event(), Params{}.set(keys::text, text)});
-              });
-
-        // log --clear--> log
-        loop(Key{"clear"}, Key{"log"}, clear_event(),
-             [](State& s, Element& log, Element*, const Event&) {
-                 static_cast<ConsoleState&>(s).lines_.clear();
-                 log.params.set(Key{"count"}, int64_t{0});
-             });
-    }
+    explicit ConsoleState(Key id = Key{"console"});
 
     Key kind() const override { return Key{"console"}; }
 
@@ -45,22 +21,15 @@ public:
     static Key command_event() { return Key{"console.command"}; }
     static Key clear_event() { return Key{"console.clear"}; }
 
-    void submit(const std::string& text) {
-        emit(Event{submit_event(), Params{}.set(keys::text, text)});
-    }
+    void submit(const std::string& text);
 
-    void push_line(std::string line) {
-        lines_.push_back(std::move(line));
-        while (lines_.size() > max_lines_) lines_.pop_front();
-    }
+    void push_line(std::string line);
 
     const std::deque<std::string>& lines() const { return lines_; }
     std::deque<std::string>& lines() { return lines_; }
     void set_max_lines(std::size_t n) { max_lines_ = n; }
 
-    void on_enter(const Params& args) override {
-        if (args.has(Key{"banner"})) push_line(to_string(args.get(Key{"banner"})));
-    }
+    void on_enter(const Params& args) override;
 
 private:
     std::deque<std::string> lines_;

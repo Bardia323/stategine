@@ -39,22 +39,8 @@ public:
     // own, so one clock can keep a whole world's time while every state's
     // time is the sum of its own steps - a state set aside loses none.
     // Asking again for a line that is there is that line.
-    Element& timeline(Key line) {
-        if (Element* e = find(line)) return *e;
-        Element& e = add_element(line, timeline_kind());
-        e.params.set(keys::time, 0.0).set(keys::frame, int64_t{0});
-        loop(Key{"advance." + line.str()}, line, advance_event(line),
-             [](State&, Element& n, Element*, const Event& ev) {
-                 const double dt = ev.args.num(keys::dt);
-                 n.params.set(keys::time, n.params.num(keys::time) + dt);
-                 n.params.set(keys::frame, n.params.get_or<int64_t>(keys::frame, 0) + 1);
-             });
-        return e;
-    }
-    bool has_timeline(Key line) const {
-        const Element* e = find(line);
-        return e && e->kind == timeline_kind();
-    }
+    Element& timeline(Key line);
+    bool has_timeline(Key line) const;
 
     static Key timeline_kind() {
         static const Key k{"timeline"};
@@ -74,30 +60,16 @@ inline Key timeline_of(const Drive& d) { return d.line.empty() ? d.state : d.lin
 
 // Declare a drive and give it its line on the clock, in one: `state` changes
 // with the time `clock` keeps for it.
-inline const Drive& drive(StateGraph& g, Temporal& clock, Key state, Key trigger,
-                          bool additive = false, Keeps keeps = Keeps::WhileActive) {
-    clock.timeline(state);
-    return g.drive(Drive{Key{clock.id().str() + ">" + state.str()}, clock.id(), state, trigger,
-                         additive, state, keeps});
-}
+const Drive& drive(StateGraph& g, Temporal& clock, Key state, Key trigger,
+                          bool additive = false, Keeps keeps = Keeps::WhileActive);
 
 // What a drive hands its state's arrows, the clock having moved: dt, the
 // time the line now says, and - unless the drive is additive - the frame.
 // A claim that two steps are one step cannot be kept by an arrow that counts
 // steps, so an additive drive gives it nothing to count. The engine and the
 // laws both build the event here, so what is checked is what runs.
-inline Event drive_event(const Drive& d, double dt, double time, int64_t frame) {
-    Params p;
-    p.set(keys::dt, dt).set(keys::time, time);
-    if (!d.additive) p.set(keys::frame, frame);
-    Event ev{d.trigger, std::move(p)};
-    ev.source = d.clock;
-    return ev;
-}
+Event drive_event(const Drive& d, double dt, double time, int64_t frame);
 
-inline Event drive_event(const Drive& d, const State& clock, double dt) {
-    const Element& line = clock.element(timeline_of(d));
-    return drive_event(d, dt, line.params.num(keys::time), line.params.get_or<int64_t>(keys::frame, 0));
-}
+Event drive_event(const Drive& d, const State& clock, double dt);
 
 }  // namespace sg

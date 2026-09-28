@@ -46,44 +46,15 @@ struct Affine {
     bool copy_all = false;        // first, every parameter of the element read, as it is
     std::vector<Row> rows;        // then these, one after another
 
-    static bool is_copy(const Row& r) {
-        return r.terms.size() == 1 && r.terms[0].k == 1.0 && r.terms[0].arg.empty() && r.bias == 0.0;
-    }
+    static bool is_copy(const Row& r);
 
-    Affine& copy(Key to, Key from) {
-        rows.push_back(Row{to, {Term{from, 1.0, Key{}, false}}, 0.0});
-        return *this;
-    }
-    Affine& set(Key to, std::vector<Term> terms, double bias = 0.0) {
-        rows.push_back(Row{to, std::move(terms), bias});
-        return *this;
-    }
+    Affine& copy(Key to, Key from);
+    Affine& set(Key to, std::vector<Term> terms, double bias = 0.0);
 };
 
 // Running it: `src` read, `dst` written (the same element, for an arrow on
 // one), `args` the event's.
-inline void run(const Affine& a, const Element& src, Element& dst, const Params* args = nullptr) {
-    if (a.copy_all && &src != &dst)
-        for (const auto& kv : src.params) dst.params.set(kv.first, kv.second);
-    for (const Affine::Row& r : a.rows) {
-        bool there = true;
-        for (const Affine::Term& t : r.terms)
-            if (!(t.of_target ? dst : src).params.has(t.param)) there = false;
-        if (!there) continue;
-        if (Affine::is_copy(r)) {
-            const Affine::Term& t = r.terms[0];
-            dst.params.set(r.param, (t.of_target ? dst : src).params.get(t.param));
-            continue;
-        }
-        double v = r.bias;
-        for (const Affine::Term& t : r.terms) {
-            double k = t.k;
-            if (!t.arg.empty()) k *= args ? args->num(t.arg) : 0.0;
-            v += k * (t.of_target ? dst : src).params.num(t.param);
-        }
-        dst.params.set(r.param, v);
-    }
-}
+void run(const Affine& a, const Element& src, Element& dst, const Params* args = nullptr);
 
 // A transport, declared: stages run one after another, each from what the
 // last left - through an element made fresh between them (its id and kind,

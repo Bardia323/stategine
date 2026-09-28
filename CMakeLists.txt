@@ -20,11 +20,26 @@ option(SG_BUILD_TESTS "Build the tests, law checks and compile-fail cases" ${SG_
 option(SG_BUILD_GL "Build the OpenGL room example (downloads GLFW)" ${SG_TOP_LEVEL})
 
 # --- the library ---------------------------------------------------------------
-# Header-only: an include path and a language level, nothing else.
-add_library(stategine INTERFACE)
+# A header says what a thing is; its .cpp, what it does. Each .cpp is
+# compiled once, on its own and all at once, and the linker brings them
+# together: a changed body recompiles its own file, not every file that
+# includes its header.
+file(GLOB _sg_sources CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/algebra/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.cpp)
+add_library(stategine STATIC ${_sg_sources})
 add_library(stategine::stategine ALIAS stategine)
-target_include_directories(stategine INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(stategine INTERFACE cxx_std_17)
+target_include_directories(stategine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(stategine PUBLIC cxx_std_17)
+
+# Drawing (sg/gl, sg/render): a library of its own on top, for what shows a
+# world. It needs no window: GL is loaded through the window's own
+# glfwGetProcAddress, and sg/gl/Window.hpp - GLFW's - stays a header.
+file(GLOB _sg_render_sources CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp)
+add_library(stategine_render STATIC ${_sg_render_sources})
+add_library(stategine::render ALIAS stategine_render)
+target_link_libraries(stategine_render PUBLIC stategine)
 
 # Opt-in extras, for projects that want what the engine's own targets use.
 #   stategine::warnings        -Wall -Wextra, or /W4
@@ -51,7 +66,7 @@ add_library(stategine::gpu ALIAS stategine_gpu)
 include(cmake/gpu.cmake OPTIONAL)
 
 add_library(stategine_dev INTERFACE)
-target_link_libraries(stategine_dev INTERFACE stategine stategine_warnings
+target_link_libraries(stategine_dev INTERFACE stategine stategine_render stategine_warnings
                       stategine_static_runtime)
 
 if(SG_BUILD_EXAMPLES)

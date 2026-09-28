@@ -7,7 +7,10 @@ can be **embedded** in an element of another, so an interface in one domain
 edits the world in another. The engine holds all of it to its laws - at compile
 time where it can, on live data where it must.
 
-Header-only C++17, no dependencies. The OpenGL example fetches GLFW on demand.
+C++17, no dependencies. Two libraries: `stategine::stategine` (the core, the
+domains, physics, the compiled laws) and `stategine::render` (GL and the ASCII
+renderer); `sg/gl/Window.hpp` is a header over your own GLFW. The OpenGL example
+fetches GLFW on demand.
 
 Building on it, or changing it? [AGENTS.md](AGENTS.md) is the short version of
 how: standalone states, joined only through interfaces the graph declares and
