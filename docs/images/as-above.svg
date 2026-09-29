@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 900" width="1000" height="900" role="img" aria-label="An inverted triangle holding the same diagram at every scale: objects joined by arrows f and g, with the composite. Each object opens into the same diagram, and the last one is again an object of the first.">
+<defs>
+<style>.ser{font-family:"Times New Roman",Times,serif;font-weight:700}.mono{font-family:"Courier New",Consolas,monospace}</style>
+<pattern id="haz" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="16" fill="#e60012"/><rect x="8" width="8" height="16" fill="#000"/></pattern>
+<pattern id="hex" width="34" height="58.9" patternUnits="userSpaceOnUse"><path d="M17,0 L34,9.8 V29.4 L17,39.2 L0,29.4 V9.8 Z M17,39.2 V58.9" fill="none" stroke="#ff6a00" stroke-opacity=".10" stroke-width="1"/></pattern>
+<marker id="hf2f2f2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#f2f2f2"/></marker>
+<marker id="hff2a1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#ff2a1a"/></marker>
+<marker id="hff8a00" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#ff8a00"/></marker>
+<marker id="h39ff88" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#39ff88"/></marker>
+<marker id="hb06cff" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#b06cff"/></marker>
+<clipPath id="tc"><polygon points="60,110 840,110 450,870"/></clipPath></defs>
+<rect width="1000" height="900" fill="#000"/><rect width="1000" height="900" fill="url(#hex)"/>
+<rect x="20" y="20" width="960" height="9" fill="url(#haz)"/><rect x="20" y="871" width="960" height="9" fill="url(#haz)"/>
+<polygon points="60,110 840,110 450,870" fill="#000" stroke="#ff8a00" stroke-width="5" stroke-linejoin="miter"/>
+<polygon points="82,124 818,124 450,830" fill="none" stroke="#ff8a00" stroke-width="1.2" stroke-opacity=".7"/>
+<g clip-path="url(#tc)"><rect x="60" y="110" width="780" height="14" fill="url(#haz)"/></g>
+<rect x="230" y="142" width="440" height="178" fill="#000" fill-opacity=".85" stroke="#ff2a1a" stroke-width="1" stroke-dasharray="2 3"/>
+<path d="M230,152 V142 H240 M660,142 H670 V152 M670,310 V320 H660 M240,320 H230 V310" fill="none" stroke="#ff2a1a" stroke-width="2.6"/>
+<rect x="230" y="129" width="90" height="13" fill="#ff2a1a"/>
+<text x="235" y="139" font-family="Courier New,monospace" font-weight="700" font-size="10" fill="#000" letter-spacing="1">StateGraph</text>
+<rect x="340" y="385" width="220" height="122" fill="#000" fill-opacity=".85" stroke="#ff8a00" stroke-width="1" stroke-dasharray="2 3"/>
+<path d="M340,395 V385 H350 M550,385 H560 V395 M560,497 V507 H550 M350,507 H340 V497" fill="none" stroke="#ff8a00" stroke-width="2.6"/>
+<rect x="340" y="372" width="50" height="13" fill="#ff8a00"/>
+<text x="345" y="382" font-family="Courier New,monospace" font-weight="700" font-size="10" fill="#000" letter-spacing="1">State</text>
+<rect x="395" y="575" width="110" height="90" fill="#000" fill-opacity=".85" stroke="#39ff88" stroke-width="1" stroke-dasharray="2 3"/>
+<path d="M395,585 V575 H405 M495,575 H505 V585 M505,655 V665 H495 M405,665 H395 V655" fill="none" stroke="#39ff88" stroke-width="2.6"/>
+<rect x="395" y="562" width="50" height="13" fill="#39ff88"/>
+<text x="400" y="572" font-family="Courier New,monospace" font-weight="700" font-size="10" fill="#000" letter-spacing="1">State</text>
+<path d="M325.0,180.0 L435.0,290.0" stroke="#ff2a1a" stroke-width="2.2" marker-end="url(#hff2a1a)"/>
+<path d="M465.0,290.0 L575.0,180.0" stroke="#ff2a1a" stroke-width="2.2" marker-end="url(#hff2a1a)"/>
+<path d="M331.2,165.0 L568.8,165.0" stroke="#f2f2f2" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#hf2f2f2)"/>
+<polygon points="325.8,174.1 310.0,183.2 294.2,174.1 294.2,155.9 310.0,146.8 325.8,155.9" fill="#000" stroke="#ff2a1a" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="317.1,169.1 310.0,173.2 302.9,169.1 302.9,160.9 310.0,156.8 317.1,160.9" fill="#ff2a1a"/>
+<polygon points="465.8,314.1 450.0,323.2 434.2,314.1 434.2,295.9 450.0,286.8 465.8,295.9" fill="#000" stroke="#ff2a1a" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="457.1,309.1 450.0,313.2 442.9,309.1 442.9,300.9 450.0,296.8 457.1,300.9" fill="#ff2a1a"/>
+<polygon points="605.8,174.1 590.0,183.2 574.2,174.1 574.2,155.9 590.0,146.8 605.8,155.9" fill="#000" stroke="#ff2a1a" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="597.1,169.1 590.0,173.2 582.9,169.1 582.9,160.9 590.0,156.8 597.1,160.9" fill="#ff2a1a"/>
+<text x="363.0" y="237" text-anchor="middle" class="mono" font-size="15" fill="#ff2a1a" font-weight="700" letter-spacing="1.5">f</text>
+<text x="537.0" y="237" text-anchor="middle" class="mono" font-size="15" fill="#ff2a1a" font-weight="700" letter-spacing="1.5">g</text>
+<path d="M384.0,416.5 L441.0,473.5" stroke="#ff8a00" stroke-width="2.2" marker-end="url(#hff8a00)"/>
+<path d="M459.0,473.5 L516.0,416.5" stroke="#ff8a00" stroke-width="2.2" marker-end="url(#hff8a00)"/>
+<path d="M387.8,407.5 L512.2,407.5" stroke="#ff2a1a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#hff2a1a)"/>
+<polygon points="383.4,412.4 375.0,417.2 366.6,412.4 366.6,402.6 375.0,397.8 383.4,402.6" fill="#000" stroke="#ff8a00" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="378.8,409.7 375.0,411.9 371.2,409.7 371.2,405.3 375.0,403.1 378.8,405.3" fill="#ff8a00"/>
+<polygon points="458.4,487.4 450.0,492.2 441.6,487.4 441.6,477.6 450.0,472.8 458.4,477.6" fill="#000" stroke="#ff8a00" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="453.8,484.7 450.0,486.9 446.2,484.7 446.2,480.3 450.0,478.1 453.8,480.3" fill="#ff8a00"/>
+<polygon points="533.4,412.4 525.0,417.2 516.6,412.4 516.6,402.6 525.0,397.8 533.4,402.6" fill="#000" stroke="#ff8a00" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="528.8,409.7 525.0,411.9 521.2,409.7 521.2,405.3 525.0,403.1 528.8,405.3" fill="#ff8a00"/>
+<path d="M416.4,604.4 L443.6,631.6" stroke="#39ff88" stroke-width="2.2" marker-end="url(#h39ff88)"/>
+<path d="M456.4,631.6 L483.6,604.4" stroke="#39ff88" stroke-width="2.2" marker-end="url(#h39ff88)"/>
+<path d="M419.0,598.0 L481.0,598.0" stroke="#ff2a1a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#hff2a1a)"/>
+<polygon points="415.2,601.0 410.0,604.0 404.8,601.0 404.8,595.0 410.0,592.0 415.2,595.0" fill="#000" stroke="#39ff88" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="412.3,599.4 410.0,600.7 407.7,599.4 407.7,596.6 410.0,595.3 412.3,596.6" fill="#39ff88"/>
+<polygon points="455.2,641.0 450.0,644.0 444.8,641.0 444.8,635.0 450.0,632.0 455.2,635.0" fill="#000" stroke="#39ff88" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="452.3,639.4 450.0,640.7 447.7,639.4 447.7,636.6 450.0,635.3 452.3,636.6" fill="#39ff88"/>
+<polygon points="495.2,601.0 490.0,604.0 484.8,601.0 484.8,595.0 490.0,592.0 495.2,595.0" fill="#000" stroke="#39ff88" stroke-width="2.2" stroke-linejoin="round"/>
+<polygon points="492.3,599.4 490.0,600.7 487.7,599.4 487.7,596.6 490.0,595.3 492.3,596.6" fill="#39ff88"/>
+<path d="M450.0,321.0 L450.0,385.0" stroke="#f2f2f2" stroke-width="2.2" stroke-dasharray="3 4" marker-end="url(#hf2f2f2)"/>
+<path d="M450.0,494.5 L450.0,575.0" stroke="#f2f2f2" stroke-width="2.2" stroke-dasharray="3 4" marker-end="url(#hf2f2f2)"/>
+<text x="464" y="536" text-anchor="start" class="mono" font-size="11" fill="#f2f2f2" font-weight="700" letter-spacing="1.5">embed</text>
+<path d="M506,592 L700,592 L700,165.0 L612,165.0" fill="none" stroke="#b06cff" stroke-width="2.4" stroke-dasharray="7 4" marker-end="url(#hb06cff)"/>
+<circle cx="450" cy="868" r="5" fill="#ff2a1a"/>
+<text x="38" y="100" text-anchor="start" class="ser" font-size="64" fill="#f2f2f2" letter-spacing="2" transform="translate(38,0) scale(0.8,1) translate(-38,0)">AS ABOVE</text>
+<text x="962" y="848" text-anchor="end" class="ser" font-size="64" fill="#f2f2f2" letter-spacing="2" transform="translate(962,0) scale(0.8,1) translate(-962,0)">SO BELOW</text>
+<text x="38" y="690" text-anchor="start" class="mono" font-size="11" fill="#ff8a00" font-weight="700" letter-spacing="1.5">sg::verify(graph)</text>
+<text x="38" y="706" text-anchor="start" class="mono" font-size="11" fill="#ff8a00" font-weight="700" letter-spacing="1.5">EVERY STATE IS A CATEGORY</text>
+<text x="38" y="722" text-anchor="start" class="mono" font-size="11" fill="#ff8a00" font-weight="700" letter-spacing="1.5">THE GRAPH OF THEM, TOO</text>
+<rect x="38" y="770" width="190" height="52" fill="none" stroke="#ff2a1a" stroke-width="2.4"/><rect x="44" y="776" width="178" height="40" fill="none" stroke="#ff2a1a" stroke-width=".8"/>
+<text x="52" y="795" text-anchor="start" class="mono" font-size="14" fill="#ff2a1a" font-weight="700" letter-spacing="1.5">STATEGINE</text>
+<text x="52" y="811" text-anchor="start" class="mono" font-size="12" fill="#ff2a1a" font-weight="700" letter-spacing="1.5">v0.3.0</text>
+<text x="512" y="0" text-anchor="start" class="mono" font-size="1" fill="#f2f2f2" font-weight="700" letter-spacing="1.5"></text>
+<rect x="38" y="676" width="120" height="0" />
+<text x="408" y="309" text-anchor="end" class="mono" font-size="11" fill="#f2f2f2" font-weight="700" letter-spacing="1.5">OBJECT</text>
+<line x1="528" y1="242" x2="552" y2="266" stroke="#f2f2f2" stroke-width="1.2"/>
+<text x="556" y="274" text-anchor="start" class="mono" font-size="11" fill="#f2f2f2" font-weight="700" letter-spacing="1.5">ARROW</text>
+<path d="M772,150 H786 V665 H772" fill="none" stroke="#39ff88" stroke-width="2.4"/><path d="M786,407 H800" stroke="#39ff88" stroke-width="2.4"/>
+<text x="806" y="410" text-anchor="start" class="ser" font-size="30" fill="#39ff88" letter-spacing="2" transform="translate(806,0) scale(0.8,1) translate(-806,0)">LAWS</text>
+<text x="806" y="432" text-anchor="start" class="mono" font-size="14" fill="#39ff88" font-weight="700" letter-spacing="1.5">HOLD AT</text>
+<text x="806" y="450" text-anchor="start" class="mono" font-size="14" fill="#39ff88" font-weight="700" letter-spacing="1.5">EVERY LEVEL</text>
+<text x="38" y="470" text-anchor="start" class="ser" font-size="64" fill="#ff8a00" letter-spacing="3" transform="translate(38,0) scale(0.8,1) translate(-38,0)">STATE</text>
+</svg>

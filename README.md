@@ -1,11 +1,20 @@
 # stategine
 #### as above; so below
-A game engine whose only structural idea is the **state**. A state is a small
-category: elements are its objects, events acting on them are its arrows. States
-form a **graph**; data crosses between them through **functors**, and a state
-can be **embedded** in an element of another, so an interface in one domain
-edits the world in another. The engine holds all of it to its laws - at compile
-time where it can, on live data where it must.
+*Quod est inferius est sicut quod est superius, et quod est superius est sicut quod est inferius.*
+
+<p align="center"><img src="docs/images/as-above.svg" width="700" alt="An inverted triangle: the graph of states above, one state below, the same laws at every level"></p>
+
+A metaphysics engine. It models what things are, how they are joined, and what
+must hold when they are. Its one idea is the **state**: a small category whose
+elements are objects and whose events are arrows. States form a **graph**; data
+crosses between them through **functors**, and a state can be **embedded** in an
+element of another, so an interface in one domain edits the world in another.
+The engine holds all of it to its laws - at compile time where it can, on live
+data where it must.
+
+Physics and a renderer come with it: bodies, ropes, light, GL and ASCII. Each
+is a state like any other, met through the graph. What you build on it - a
+game, a desktop, a painting you walk into - is a world of states.
 
 C++17, no dependencies. Two libraries: `stategine::stategine` (the core, the
 domains, physics, the compiled laws) and `stategine::render` (GL and the ASCII
@@ -289,7 +298,7 @@ uncommitted edits included: `-DFETCHCONTENT_SOURCE_DIR_STATEGINE=../stategine`.
 sets this up, with a ctest that runs every law on the game's world. What each
 release breaks is in `CHANGELOG.md`.
 
-## Writing a game
+## Writing a world
 
 | Concept | In the engine | Category theory |
 | --- | --- | --- |
