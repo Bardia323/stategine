@@ -62,4 +62,8 @@ inline Key film_name(Key camera, Key world) { return Key{camera.str() + ".film."
 // `camera.roll`); a screen shows the picture with `shows` = the returned name.
 Key film(StateGraph& g, Key camera, Key world, Key rig = Key{});
 
+// The embedding `film` declares, as data: the world in the camera's lens, Live,
+// taking no input, open while the camera runs, its `out` the rig's functor.
+Embedding film_embedding(Key camera, Key world, Key rig = Key{});
+
 }  // namespace sg

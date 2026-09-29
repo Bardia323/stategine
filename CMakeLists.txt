@@ -73,6 +73,22 @@ add_library(stategine_dev INTERFACE)
 target_link_libraries(stategine_dev INTERFACE stategine stategine_render stategine_warnings
                       stategine_static_runtime)
 
+# The DSL (sg/dsl): a notation for the construction the engine already has, and
+# its compiler, sgc. The library reads a source, holds it to the ontology and
+# lowers it to a Plan of the engine's own calls; sgc writes them as C++, and
+# `apply` makes them on a live graph (a world rewriting itself by graph.edit).
+# There is no runtime here: the one that runs the result is the engine.
+option(SG_BUILD_DSL "Build the DSL compiler (sgc) and its library" ON)
+if(SG_BUILD_DSL)
+  file(GLOB _sg_dsl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/dsl/*.cpp)
+  add_library(stategine_dsl STATIC ${_sg_dsl_sources})
+  add_library(stategine::dsl ALIAS stategine_dsl)
+  target_link_libraries(stategine_dsl PUBLIC stategine)
+  add_executable(sgc tools/sgc.cpp)
+  target_link_libraries(sgc PRIVATE stategine_dsl stategine_warnings stategine_static_runtime)
+  include(cmake/StategineDsl.cmake)
+endif()
+
 if(SG_BUILD_EXAMPLES)
   add_executable(sg_demo examples/demo.cpp)
   target_link_libraries(sg_demo PRIVATE stategine_dev)
@@ -210,9 +226,23 @@ if(SG_BUILD_TESTS)
     "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/physics:sg/core"
     "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gl:"
     "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render:sg/core,sg/domains,sg/gl"
-    "sg/gpu=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gpu:sg/core,sg/algebra")
+    "sg/gpu=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gpu:sg/core,sg/algebra"
+    "sg/dsl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/dsl:sg/core,sg/domains")
   stategine_check_modules(NAME sg_shape)
   set_property(GLOBAL PROPERTY STATEGINE_MODULES "")
+
+  # The DSL: what it says and refuses, the vertical slice compiled by sgc and
+  # run by the engine, one construction read three ways, and a world that
+  # compiles from inside (its source and its compiler states, its change an edit).
+  if(SG_BUILD_DSL)
+    add_executable(sg_dsl tests/dsl/test_dsl.cpp)
+    target_link_libraries(sg_dsl PRIVATE stategine_dev stategine_dsl)
+    stategine_compile_dsl(sg_dsl NAME scenario SOURCES tests/dsl/scenario.sg)
+    stategine_compile_dsl(sg_dsl NAME world SOURCES src/dsl/compiler.sg tests/dsl/desk.sg)
+    stategine_compile_dsl(sg_dsl NAME kitchen SOURCES tests/dsl/kitchen.sg)
+    target_compile_definitions(sg_dsl PRIVATE SG_DSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/dsl")
+    add_test(NAME sg_dsl COMMAND sg_dsl)
+  endif()
 
   add_executable(sg_bench tests/bench.cpp)
   target_link_libraries(sg_bench PRIVATE stategine_dev)

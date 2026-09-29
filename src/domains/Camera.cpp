@@ -47,9 +47,22 @@ Key film(StateGraph& g, Key camera, Key world, Key rig) {
         g.set_functor(std::move(f));
     }
     // Open while the camera runs (the lens's `open`, its own arrow's).
-    g.set_follows(g.set_focus(g.embed(name, camera, Camera::lens_id(), world, Key{}, out, EmbedSync::Live).name, false), true);
-    if (!rig.empty()) g.set_propagation(name, Propagation::Continuous);
+    g.embed(film_embedding(camera, world, rig));
     return name;
+}
+
+Embedding film_embedding(Key camera, Key world, Key rig) {
+    Embedding e;
+    e.name = film_name(camera, world);
+    e.host = camera;
+    e.portal = Camera::lens_id();
+    e.guest = world;
+    if (!rig.empty()) e.out = Key{e.name.str() + ".rig"};
+    e.sync = EmbedSync::Live;
+    e.focus = false;
+    e.follows = true;
+    if (!rig.empty()) e.propagate = Propagation::Continuous;
+    return e;
 }
 
 }  // namespace sg

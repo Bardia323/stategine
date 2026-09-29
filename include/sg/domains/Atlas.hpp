@@ -91,6 +91,10 @@ private:
 const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
                           const std::vector<std::pair<Key, Key>>& also = {});
 
+// The seam glue_doorway declares, as data: what it is called and what it joins,
+// worked out from the names alone (its functors are made from the portals).
+Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also = {});
+
 // --- the atlas as a cover --------------------------------------------------------
 // Rooms glued along doorways are one instance of local data over a cover, so
 // the atlas hands itself to the general machinery rather than re-deriving what

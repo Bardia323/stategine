@@ -1,0 +1,121 @@
+# The rest of the notation, once each: what the scenario does not use.
+#
+#   composition of arrows and of functors, a lens shown and written back, a kept
+#   functor, transports (only, swizzle, a step it says, a native), an embedding
+#   with its in and out, push and pop, an edit, a state with a file-free look.
+
+state time : temporal
+initial hall
+
+# --- arrows and their composition -------------------------------------------------
+state hall {
+    element n : object {
+        v = 0.0
+        one = 1.0
+    }
+    element menu_button
+    element idle
+    element face : object {
+        t = 0.0
+        rate = 1.0
+    }
+
+    face -> face : run(dt) on hall.run {
+        t = t + rate * dt
+    }
+
+    n -> n : inc on hall.inc {
+        v = v + one
+    }
+    compose twice = inc ; inc on hall.twice
+
+    idle -> idle : wait
+    say hall.shown
+}
+
+# --- a lens: a model, its view, and the way back --------------------------------------
+state model {
+    element m : sprite {
+        x = 0.0
+        y = 0.0
+    }
+    element window : portal {
+        w = 1.0
+        h = 1.0
+        open = true
+    }
+}
+
+state view {
+    element v : sprite {
+        x = 0.0
+        y = 0.0
+    }
+}
+
+functor get : model -> view {
+    object m -> v only(x)
+}
+
+functor put : view -> model {
+    object v -> m only(x)
+}
+
+compose there_and_back = get ; put
+
+lens get <-> put
+
+embed model.window -> view
+    in get
+    out put
+    sync live
+    propagate continuous
+    focus false
+
+# --- transports -------------------------------------------------------------------------
+state scaled {
+    element w : sprite {
+        x = 0.0
+        y = 0.0
+        z = 0.0
+    }
+    element bent : sprite {
+        x = 0.0
+    }
+}
+
+transport bend native tenfold
+
+functor scale : model -> scaled {
+    object m -> w {
+        y = 2 * x + 1
+    }
+    event model.moved -> scaled.moved
+}
+
+functor swap : model -> scaled {
+    object m -> w swizzle(z = x)
+}
+
+functor warp : model -> scaled {
+    object m -> bent via bend
+}
+
+# A kept functor: the view follows the model whenever the model changes.
+keep get
+
+drive time -> hall.run
+    keeps active
+
+transition hall -[goto.model]-> model
+
+# --- push and pop ---------------------------------------------------------------------------
+state menu {
+    element item
+}
+
+transition hall -[open.menu]-> menu push
+transition menu -[close.menu]-> pop
+
+# --- an edit: a state says, and asks the graph to change -------------------------------------
+edit hall on hall.shown native note_shown

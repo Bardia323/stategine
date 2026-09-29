@@ -574,6 +574,80 @@ compiled mid-game because `prepare` never saw it.
 | --- | --- |
 | ![The hall in its calm look](docs/images/room.png) | ![The same view in the alert look](docs/images/alert.png) |
 
+## The notation
+
+What this page has written in C++ - a state and its arrows, a functor, an
+embedding, a transition, a seam, a drive - has a textual form, and the form is
+only that: another syntax for the same model. A program is a *presentation* of
+a graph; `sgc` reads it, holds it to the ontology, and writes the C++ that
+builds the same construction through the engine's own API. There is no
+interpreter, no script and no second runtime; the engine that runs the result
+does not know where its declarations came from.
+
+```
+state time : temporal
+initial void
+
+state void : spatial3d {
+    element terminal : portal { x = 0.0  y = 1.0  z = -2.0  w = 1.6  h = 1.0  open = true }
+    element gate     : portal { x = 3.0  yaw = 1.5707963267948966  w = 1.0  h = 2.0 }
+}
+state terminal { element screen : portal { w = 1.6  h = 1.0  open = true } }
+
+state exit {
+    element idle
+    element playing
+    element finished
+    element runner : sprite { x = 0.0  vx = 2.0 }
+
+    idle -> playing : start on exit.start
+    playing -> finished : win on exit.win native exit_won      # the inside of the arrow is C++
+    runner -> runner : run(dt) on exit.tick { x = x + vx * dt } # or it says what it does (an Affine)
+
+    say exit.out
+}
+
+embed void.terminal -> terminal  sync commit  focus true  follows true
+embed terminal.screen -> exit    sync commit  focus true  follows true
+drive time -> exit.tick keeps focused
+
+seam void.gate <-> room.gate  name gate        # a shared boundary ...
+transition void -[exit.out]-> room carry gate.ab   # ... and one way through it
+
+state void.look : look { fade = 0.4  element scene : pass { uAmbient = 0.2  uSky = [0.05, 0.06, 0.08] } }
+wear void <- void.look
+```
+
+Every construct is one engine primitive: `state` a `State` (of the kind's own
+class: `state`, `temporal`, `spatial2d`, `spatial3d`, `look`, `camera`,
+`console`), `element` and `key = value` its data, `a -> b : name` an arrow
+(`loop` when `a` is `b`), `compose` composition, `functor` with `object` and
+`event` maps, `compose f = g ; h` and `lens` for functors, `transition`,
+`embed`, `seam` (`sg::glue_doorway`), `drive`, `port`, `keep`, `edit`,
+`initial`. Sugar is only sugar: `wear` is `sg::wear`, `film` is `sg::film`,
+`when e1 e2` an event mapping of a functor, `bind` a table an input adapter
+turns into `Engine::fire`. `extern state` names a state built in C++, so the
+two can be ported one declaration at a time. A seam and a transition are
+different claims - a shared boundary, a directed change of active state - and
+neither makes the other.
+
+What the ontology forbids has no syntax, and the compiler says why: a private
+timer (`elapsed`), a write from one state into another, IO in a transport, a
+callback, `on_update`. C++ is for devices and for *native* computations - the
+inside of an arrow, a transport or an edit that is already declared, named in
+the notation and handed only its own elements (`sg::dsl::Natives`).
+
+```cmake
+stategine_compile_dsl(game NAME world SOURCES src/world.sg)   # -> sgen::build_world(graph, natives, bindings)
+```
+
+The same plan can be made on a running graph: a source held by an ordinary
+state, a compiler that is a state with native arrows, and the change asked of
+the graph by `graph.edit` - the world rewriting itself by the one lawful way
+(`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`). `sg::dsl::facts(graph)` says
+what a graph is made of in canonical lines, so what a DSL program declares can
+be held beside the C++ it replaces before that C++ goes.
+
 ## A game's modules
 
 A game built on the engine is built the way the engine is: each state (or a

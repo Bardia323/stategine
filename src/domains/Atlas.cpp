@@ -70,6 +70,16 @@ bool Atlas::placement(const StateGraph& g, Key root, Key other, Pose& out, int m
     return false;
 }
 
+Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also) {
+    Seam seam{name, a, b, Key{name.str() + ".ab"}, Key{name.str() + ".ba"}, Key{name.str() + ".glue.ab"},
+              Key{name.str() + ".glue.ba"}, {pa}, {pb}};
+    for (const auto& [x, y] : also) {
+        seam.boundary_a.push_back(x);
+        seam.boundary_b.push_back(y);
+    }
+    return seam;
+}
+
 const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also) {
     const Element& here = g.state(a).element(pa);
     const Element& there = g.state(b).element(pb);
@@ -82,12 +92,10 @@ const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, 
     glue_b.on_object(pa, pb, seam_carry(here, there));
     glue_a.on_object(pb, pa, seam_carry(there, here));
     // The boundary on each side: the doorway, and whatever hangs in it.
-    Seam seam{name, a, b, ab, ba, gab, gba, {pa}, {pb}};
+    Seam seam = doorway_seam(name, a, pa, b, pb, also);
     for (const auto& [x, y] : also) {
         glue_b.on_object(x, y, pose_carry(here, there));
         glue_a.on_object(y, x, pose_carry(there, here));
-        seam.boundary_a.push_back(x);
-        seam.boundary_b.push_back(y);
     }
     g.set_functor(std::move(to_b));
     g.set_functor(std::move(to_a));

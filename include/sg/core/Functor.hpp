@@ -173,6 +173,12 @@ public:
 
     Key image_event(Key name) const;
 
+    // Walk the event map: {source event, target event}.
+    template <typename Fn>
+    void for_each_event(Fn&& fn) const {
+        for (const auto& kv : evt_) fn(kv.first, kv.second);
+    }
+
     // Walk the object map. Whoever applies a functor to live state wants to
     // know what it will write before it writes it.
     template <typename Fn>

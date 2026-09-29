@@ -1,0 +1,58 @@
+# A world that compiles from inside.
+#
+# The notation is not a state; a source document may be, and a compiler may be.
+# Here both are ordinary states, and the compiler's insides are native (see
+# sg/dsl/Compiler.hpp). Nothing here mutates the graph: the compiler *says* a
+# change, and the graph's edit - applied by the engine at the start of the next
+# frame - makes it.
+#
+#   source      says source.compile
+#     -> functor carries the text, and the event
+#   compiler    idle -> compiling -> success | error
+#     says compiler.change
+#     -> edit: the graph changes, and the answer comes back as
+#        compiler.change.done, heard by the compiler
+
+state source {
+    element document : textbuffer {
+        text = ""
+    }
+
+    document -> document : set_text(text) on source.set native source_set_text
+    document -> document : request on source.request native source_request
+
+    say source.compile
+}
+
+state compiler {
+    element input : textbuffer {
+        text = ""
+    }
+    element idle
+    element compiling
+    element success
+    element error
+    element report : textbuffer {
+        ok = false
+        why = ""
+    }
+    phase = "idle"
+
+    idle -> compiling : begin on compiler.request native compile_begin
+    compiling -> success : valid on compiler.valid native compile_valid
+    compiling -> error : invalid on compiler.invalid native compile_invalid
+    report -> report : settled on compiler.change.done native compile_settled
+
+    say compiler.change
+}
+
+functor source.to.compiler : source -> compiler {
+    object document -> input
+    event source.compile -> compiler.request
+}
+
+# What the world outside - an editor, a hand - may say to the source.
+port source.set
+port source.request
+
+edit compiler on compiler.change native compile_apply

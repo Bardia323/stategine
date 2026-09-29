@@ -88,6 +88,9 @@ inline Key look_slot_id() { return Key{"look"}; }
 // `host` may be shown with `look`. The first look a state wears is its active one.
 const Embedding& wear(StateGraph& g, Key host, Key look);
 
+// The embedding `wear` declares, as data.
+Embedding wear_embedding(Key host, Key look);
+
 // Show `host` with another look it wears. A parameter write, so an arrow can
 // do it as well as a caller.
 void set_look(State& host, Key look);

@@ -1,0 +1,21 @@
+# A desk with two windows: an editor, where a source is held, and a machine,
+# where a compiler runs. Both are ordinary states, open in the desk's portals.
+
+initial desk
+
+state desk {
+    element editor : portal {
+        open = true
+    }
+    element machine : portal {
+        open = true
+    }
+}
+
+embed desk.editor -> source
+    focus false
+    follows true
+
+embed desk.machine -> compiler
+    focus false
+    follows true

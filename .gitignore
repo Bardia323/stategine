@@ -3,3 +3,4 @@ build/
 *.ppm
 *.obj
 .vs/
+build-*/

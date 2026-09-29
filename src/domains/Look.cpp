@@ -43,8 +43,17 @@ const Embedding& wear(StateGraph& g, Key host, Key look) {
     Element* slot = h.find(look_slot_id());
     if (!slot) slot = &h.add_element(look_slot_id(), kinds::look_slot);
     if (!slot->params.has(look_keys::active)) slot->params.set(look_keys::active, look.str());
-    return g.embed(Key{host.str() + "/look:" + look.str()}, host, look_slot_id(), look, Key{},
-                   Key{}, EmbedSync::Commit);
+    return g.embed(wear_embedding(host, look));
+}
+
+Embedding wear_embedding(Key host, Key look) {
+    Embedding e;
+    e.name = Key{host.str() + "/look:" + look.str()};
+    e.host = host;
+    e.portal = look_slot_id();
+    e.guest = look;
+    e.sync = EmbedSync::Commit;
+    return e;
 }
 
 void set_look(State& host, Key look) {

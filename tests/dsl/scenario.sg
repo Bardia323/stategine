@@ -1,0 +1,215 @@
+# The vertical slice, in the notation.
+#
+#   Void
+#     -> Terminal embedding
+#         -> Exit embedding
+#
+#   Exit says exit.out
+#     -> carried through the graph
+#     -> the directed transition Void -> Room
+#
+# Void and Room have Looks; the camera is a state; input reaches the focused
+# guest; what changes with time is driven on a Temporal; two rooms share a
+# seam, and can be crossed one way only.
+
+state time : temporal
+initial void
+
+# --- the void, and a terminal in it --------------------------------------------
+state void : spatial3d {
+    element terminal : portal {
+        x = 0.0
+        y = 1.0
+        z = -2.0
+        w = 1.6
+        h = 1.0
+        open = true
+    }
+    element gate : portal {
+        x = 3.0
+        y = 0.0
+        z = 0.0
+        yaw = 1.5707963267948966
+        w = 1.0
+        h = 2.0
+    }
+}
+
+state void.look : look {
+    fade = 0.4
+
+    element scene : pass {
+        uFogDensity = 0.01
+        uAmbient = 0.2
+        uSky = [0.05, 0.06, 0.08]
+    }
+
+    element composite : pass {
+        uBloom = 0.6
+    }
+}
+
+wear void <- void.look
+
+state terminal {
+    element screen : portal {
+        w = 1.6
+        h = 1.0
+        open = true
+    }
+}
+
+# --- EXIT, the game in the terminal ----------------------------------------------
+state exit {
+    element idle
+    element playing
+    element finished
+    element runner : sprite {
+        x = 0.0
+        vx = 2.0
+    }
+
+    idle -> playing : start on exit.start
+    playing -> finished : win on exit.win native exit_won
+    runner -> runner : run(dt) on exit.tick {
+        x = x + vx * dt
+    }
+
+    say exit.out
+}
+
+embed void.terminal -> terminal
+    sync commit
+    focus true
+    follows true
+
+embed terminal.screen -> exit
+    sync commit
+    focus true
+    follows true
+
+# A game on a computer waits while another window is in front of it.
+drive time -> exit.tick
+    keeps focused
+
+# --- the room beyond ---------------------------------------------------------------
+state room : spatial3d {
+    element tripod : anchor {
+        x = 3.0
+        y = 1.5
+        z = 0.0
+    }
+    element monitor : portal {
+        x = -3.0
+        y = 1.0
+        z = 0.0
+        w = 1.2
+        h = 0.8
+        open = true
+    }
+    element seat : portal {
+        x = 0.0
+        y = 0.0
+        z = 2.0
+        w = 0.5
+        h = 0.5
+        open = true
+    }
+    element gate : portal {
+        x = -6.0
+        y = 0.0
+        z = 0.0
+        yaw = -1.5707963267948966
+        w = 1.0
+        h = 2.0
+    }
+    element door : portal {
+        x = 4.0
+        y = 0.0
+        z = 0.0
+        yaw = 1.5707963267948966
+        w = 1.0
+        h = 2.0
+    }
+}
+
+state room.look : look {
+    fade = 0.5
+
+    element scene : pass {
+        uFogDensity = 0.008
+        uAmbient = 0.5
+    }
+}
+
+wear room <- room.look
+
+# The void has a gate onto the room: one boundary, seen from both sides. What
+# crosses it - a viewer's eye - is carried by the seam's own travel (gate.ab).
+seam void.gate <-> room.gate
+    name gate
+
+# exit.out, said by the game in the terminal, takes the engine from the void to
+# the room: a directed change of active state, carrying the seam's travel one
+# way. The seam says the boundary is shared; only this transition says who may
+# go through it, and there is none back.
+transition void -[exit.out]-> room
+    carry gate.ab
+
+# --- the camera is a state ------------------------------------------------------------
+state camera : camera {
+    element lens : portal {
+        fov = 70.0
+    }
+
+    lens -> lens : zoom(fov) on camera.zoom
+}
+
+film camera -> room
+    rig tripod
+
+embed room.monitor -> camera
+    sync live
+    focus false
+    follows true
+
+# --- someone in the room, sitting: what they say the camera hears ------------------------
+state player {
+    element seat
+
+    seat -> seat : sit(fov) on player.sit native player_sits
+
+    say player.sits
+}
+
+embed room.seat -> player
+    sync commit
+    focus false
+    follows true
+
+port player.sit
+
+when player.sits camera.zoom
+
+# --- a second room, through a door that shares its boundary, crossed one way ----------
+state annex : spatial3d {
+    element door : portal {
+        x = -4.0
+        y = 0.0
+        z = 0.0
+        yaw = -1.5707963267948966
+        w = 1.0
+        h = 2.0
+    }
+}
+
+seam room.door <-> annex.door
+
+transition room -[cross]-> annex
+    with arrived = 1.0
+
+# --- input: keys become events of arrows, fired through the engine ----------------------
+bind keyboard {
+    Enter -> exit.start
+    Space -> exit.win
+}

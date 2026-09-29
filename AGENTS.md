@@ -185,19 +185,37 @@ And what carries between them, all declared in the graph:
 ## Adding a state, a room, an interface - checklist
 
 1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above. In a project, the module is `stategine_module(<name> USES ...)`, and `stategine_check_modules()` holds every module to this (see `cmake/StategineModules.cmake`).
-2. Its data in elements and params; its behaviour as arrows on them; no hidden state.
-3. Its look (if it is seen) worn by it.
-4. How it is reached: which interface, from which state, at which portal. Declare it in the graph.
+2. Its data in elements and params; its behaviour as arrows on them; no hidden state. Written in the notation (*The DSL*, `docs/notation.md`) wherever the notation can say it; C++ only for what is native.
+3. Its look (if it is seen) worn by it (`wear`).
+4. How it is reached: which interface, from which state, at which portal. Declare it in the graph (`embed`, `transition`, `seam`, ...).
 5. How it is acted on from outside: an event, through a focused embedding - not a method call from the game loop.
 6. Its default holds (build it fully in its constructor or before `engine.start`; `keep_default` after deliberate setup).
 7. Its content (if any) in a `TextStore` file, apart from its form.
 8. A test that builds its graph **alone** and runs `sg::verify`, plus one that it is reached through its interface in the whole.
 9. `CHANGELOG.md`: what changed, in plain words; **Breaking** where a project must change.
 
+## The DSL: the construction, written as notation
+
+The engine has a textual syntax for what it already is (`sg/dsl/`, the compiler
+`sgc`, `stategine_compile_dsl()` in `cmake/StategineDsl.cmake`). It is not a
+scripting language and adds no runtime: `tests/dsl/scenario.sg` is a whole
+vertical slice, and `sg/dsl/Compile.hpp` says how a program becomes the
+engine's own calls.
+
+- **Author Stategine structure in the DSL.** Ordinary states, elements, params, arrows, compositions, functors, lenses, embeddings, transitions, seams, drives, ports, Looks, cameras and their graph relations must be authored in the Stategine DSL whenever the DSL can express them. Do not add equivalent declarations directly in C++. C++ is reserved for engine/runtime implementation, devices and native computations attached to already-declared arrows or transports.
+- **Sugar must disappear during lowering.** `wear`, `film`, `when`, input bindings and any other convenience syntax are legal only when they lower mechanically to existing Stategine primitives. No sugar construct may introduce runtime semantics of its own. Every construct names the primitive it becomes (`sg/dsl/Plan.hpp`: one step is one call of the engine's API); if you cannot name it, the syntax does not go in.
+- **Seams and transitions are different.** A seam identifies two boundaries bidirectionally. A transition is a directed change of active state. A seam does not imply two-way traversal. One-way traversal across a shared boundary is expressed as a seam plus only the permitted directed transition (`seam a.door <-> b.door` and `transition a -[cross]-> b`; if the transition carries anything between like states, it carries the seam's own travel functor - the engine's seam law allows nothing else). A seam never makes a transition; two transitions never make a seam.
+- **Port before removing.** For every existing C++ declaration migrated into the DSL, first reproduce it in the DSL, verify equivalence and run the laws/tests, and only then remove the old declaration. Never delete first and reconstruct afterward. Equivalence is `sg::dsl::facts` (`sg/dsl/Facts.hpp`): everything the DSL declares is in the C++-built graph's facts (`missing(plan, graph)` is empty); then the C++ goes, and the graph's facts are as they were.
+- **The notation is not a state; a source document may be one.** The DSL grammar is notation. A DSL program is a textual presentation of a StateGraph, and compiling it interprets that presentation into ordinary structure: the same objects the C++ API would have made. If source lives in the world (a terminal, a file, a sheet, a book, an editor) it is an ordinary state, and a compiler that reads it is a state whose arrows are native computations. Compiling into the running graph is never a mutation from an arrow or a callback: the compiler says a change, the graph declares it an `edit`, and the engine applies it at the start of the next frame (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`). Keep the levels apart - grammar is notation; the source document may be a state; the compiler may be a state with native computation; the result is plain StateGraph structure. Nothing here is a privileged meta-runtime.
+
+What the compiler refuses is the ontology, as errors with the reason: a private timer (use a Temporal drive), a direct write from one state into another (target an arrow through a declared interface), IO in a transport (external effects cross a declared device or port), a callback that changes another state, `on_update`, `emit` as orchestration, a mode duplicating focus, input that writes a state. There is no syntax for any of them, and none to make migrating them easier: a migration repairs them (a `camera.params().set("fov", ...)` becomes the arrow `lens -> lens : zoom(fov)` and a functor to it).
+
+A native computation implements the inside of a declared arrow, transport or edit and nothing else (`sg/dsl/Natives.hpp`): its type gives it its own state and elements, never the graph, a clock, an engine or another state. The declaration stays the semantic source of truth.
+
 ## Before you finish
 
 ```sh
-cmake --build build && ctest --test-dir build        # engine tests: laws, graph watch, defaults, text
+cmake --build build && ctest --test-dir build        # engine tests: laws, graph watch, defaults, text, the DSL
 ```
 - `graph.validate()` empty and `sg::verify(graph)` ok on every graph you touched.
 - No new state without an interface to it; no game-loop code writing into a state it does not own.

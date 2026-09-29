@@ -6,6 +6,15 @@ project says so.
 
 While the major version is 0, a minor bump may break the API.
 
+## Unreleased
+
+- **The notation** (`sg/dsl/`, `sgc`, `stategine_compile_dsl()`). A textual syntax for the construction the engine already has - states, elements, params, arrows and their composition, functors (object, event and arrow maps, composition), lenses, transitions (switch, push, pop), embeddings, seams, drives, ports, kept functors, edits, `initial`, and the sugar `wear`, `film`, `when`, `bind`, transport aliases. Not a language with a runtime: every construct is one call of the engine's API (`Plan.hpp`), read three ways and only these - written as C++17 by `sgc` (`emit_cpp`), made on a live graph (`sg::dsl::apply`, all checked before anything is made), and said as canonical facts (`sg::dsl::facts`, for holding a DSL program beside the C++ it replaces).
+  - It refuses the ontology's patterns, with the reason: a private timer, a direct write into another state, IO in a transport, callbacks, `on_update`, `emit` as orchestration, input that writes a state, an arrow that reads `dt` with no drive. A seam never makes a transition and two transitions never make a seam.
+  - `native <name>` names the inside of a declared arrow, transport or edit (`sg::dsl::Natives`); the type it is given is its own state's elements, never the graph, a clock or another state.
+  - A world may compile from inside: a source is an ordinary state, a compiler a state with native arrows, and what it makes it asks of the graph by `graph.edit` (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`).
+  - `Functor::for_each_event`; `doorway_seam`, `wear_embedding`, `film_embedding`: the declarations `glue_doorway`, `wear` and `film` make, as data, so that what reads them and what makes them are one.
+  - `SG_BUILD_DSL` (default on) builds `stategine::dsl` and `sgc`.
+
 ## v0.3.0
 
 - **A folder per state for the files it owns** (`sg/core/Assets.hpp`, in `sg.hpp`). `sg::Assets(root)` keeps `<root>/<owner>/<name>`: `folder(owner)` and `file(owner, name)` make what they name, and refuse - `std::invalid_argument` - an owner that is not one plain name and a name that climbs out (`..`) or starts from a root or drive, so one state cannot reach another's files by the path it is given. `owners()` lists them; `adopt(from, owner, rename)` moves an older flat folder in, once, never over a file already there. `TextStore::bind(key, assets, owner, name, initial)` keeps a text in an owner's folder. What a run writes (pictures, dumps) is kept the same way, in an `Assets` rooted at `<build>/out`.
