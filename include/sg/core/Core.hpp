@@ -431,6 +431,10 @@ struct Morphism {
     // What it does, declared (Declared.hpp) - the steps its handler is made
     // of - or nothing, when it says nothing: it may do anything.
     std::shared_ptr<const std::vector<DeclaredStep>> declared;
+    // The native computation - a name a source binds it by - that is the inside
+    // of its handler, when a source declared one. Identity for holding two
+    // declarations side by side; nothing is claimed about what the C++ does.
+    Key native = Key{};
 };
 
 // The type of an arrow. An endomorphism leaves `to` empty, but its codomain is

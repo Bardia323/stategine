@@ -242,6 +242,14 @@ if(SG_BUILD_TESTS)
     stategine_compile_dsl(sg_dsl NAME kitchen SOURCES tests/dsl/kitchen.sg)
     target_compile_definitions(sg_dsl PRIVATE SG_DSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/dsl")
     add_test(NAME sg_dsl COMMAND sg_dsl)
+
+    # Two invariants held hard: applying a plan is all or nothing (and so is a
+    # world compiling from inside), and facts keep every value the engine holds
+    # as data, so declarations that differ in one are not equivalent.
+    add_executable(sg_dsl_strong tests/dsl/test_dsl_strong.cpp)
+    target_link_libraries(sg_dsl_strong PRIVATE stategine_dev stategine_dsl)
+    stategine_compile_dsl(sg_dsl_strong NAME strongworld SOURCES src/dsl/compiler.sg tests/dsl/desk.sg)
+    add_test(NAME sg_dsl_strong COMMAND sg_dsl_strong)
   endif()
 
   add_executable(sg_bench tests/bench.cpp)

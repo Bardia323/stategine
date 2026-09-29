@@ -109,6 +109,7 @@ const Transition* StateGraph::resolve(const State& from, const Event& ev) const 
 }
 
 void StateGraph::cross(const Transition& t, State& from, State* target, const Event& ev, Params& args) const {
+    for (const auto& kv : t.enter) args.set(kv.first, kv.second);
     if (t.action) t.action(from, ev, args);
     if (!target) return;
     if (!t.functor.empty()) {
@@ -381,6 +382,59 @@ const Seam* StateGraph::seam(Key name) const {
     for (const Seam& s : seams_)
         if (s.name == name) return &s;
     return nullptr;
+}
+
+Checkpoint StateGraph::checkpoint() const {
+    Checkpoint c;
+    for (const auto& kv : states_) c.states.insert(kv.first);
+    for (const auto& kv : functors_) c.functors.insert(kv.first);
+    for (const auto& kv : composites_) c.composites.insert(kv.first);
+    for (const auto& kv : defaults_) c.defaults.insert(kv.first);
+    c.transitions = transitions_.size();
+    c.embeddings = embeddings_.size();
+    c.lenses = lenses_.size();
+    c.ports = ports_.size();
+    c.kept = kept_.size();
+    c.seams = seams_;
+    c.drives = drives_;
+    c.edits = edits_;
+    c.initial = initial_;
+    return c;
+}
+
+void StateGraph::rollback(const Checkpoint& c) {
+    rev_.rewired("rollback");  // refused while sealed, before anything is touched
+    // What joins states first, then what they join.
+    transitions_.erase(transitions_.begin() + static_cast<std::ptrdiff_t>(std::min(c.transitions, transitions_.size())), transitions_.end());
+    by_trigger_.clear();
+    transition_by_name_.clear();
+    for (std::size_t i = 0; i < transitions_.size(); ++i) {
+        by_trigger_[transitions_[i].trigger].push_back(i);
+        transition_by_name_.emplace(transitions_[i].name, i);
+    }
+    embeddings_.erase(embeddings_.begin() + static_cast<std::ptrdiff_t>(std::min(c.embeddings, embeddings_.size())), embeddings_.end());
+    by_host_.clear();
+    by_guest_.clear();
+    by_name_.clear();
+    for (std::size_t i = 0; i < embeddings_.size(); ++i) index_embedding(i);
+    seams_ = c.seams;
+    drives_ = c.drives;
+    edits_ = c.edits;
+    lenses_.resize(std::min(c.lenses, lenses_.size()));
+    ports_.resize(std::min(c.ports, ports_.size()));
+    kept_.resize(std::min(c.kept, kept_.size()));
+    for (auto it = composites_.begin(); it != composites_.end();) it = c.composites.count(it->first) ? std::next(it) : composites_.erase(it);
+    for (auto it = functors_.begin(); it != functors_.end();) it = c.functors.count(it->first) ? std::next(it) : functors_.erase(it);
+    for (auto it = defaults_.begin(); it != defaults_.end();) it = c.defaults.count(it->first) ? std::next(it) : defaults_.erase(it);
+    for (auto it = states_.begin(); it != states_.end();) {
+        if (c.states.count(it->first)) {
+            ++it;
+            continue;
+        }
+        state_checks_.erase(it->second.get());
+        it = states_.erase(it);
+    }
+    initial_ = c.initial;
 }
 
 void StateGraph::keep_defaults() {

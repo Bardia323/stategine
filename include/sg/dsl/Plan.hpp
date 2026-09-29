@@ -97,8 +97,7 @@ struct Lens {
 };
 // graph.connect
 struct Connect {
-    sg::Transition t;  // its action, if any, is made from `enter`
-    sg::Params enter;  // what the state entered is told: constants (Transition::action)
+    sg::Transition t;  // what the state entered is told is `t.enter`: data, not a lambda
 };
 // graph.embed
 struct Embed {

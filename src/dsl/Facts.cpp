@@ -9,6 +9,7 @@
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Camera.hpp"
 #include "sg/domains/Look.hpp"
+#include "sg/domains/Spatial.hpp"
 #include "sg/dsl/Kinds.hpp"
 
 namespace sg::dsl {
@@ -47,10 +48,25 @@ std::string stages_text(const Stages* st) {
     return out;
 }
 
+// What the state entered is told, as data, by name.
+std::string enter_text(const Params& p) {
+    std::vector<std::string> kv;
+    for (const auto& [k, v] : p) kv.push_back(k.str() + "=" + text_detail::value(v));
+    std::sort(kv.begin(), kv.end());
+    std::string out;
+    for (const std::string& s : kv) out += (out.empty() ? "" : ",") + s;
+    return "[" + out + "]";
+}
+
+// A native computation: by the name a source bound it by, or opaque C++ (which
+// says nothing of what it is, and is not pretended to).
+std::string native_text(Key id) { return id.empty() ? "native" : "native:" + id.str(); }
+
 std::string transition_fact(const Transition& t, Key name) {
     const char* kind = t.kind == TransitionKind::Push ? "push" : t.kind == TransitionKind::Pop ? "pop" : "switch";
     return "transition " + name.str() + " " + t.from.str() + " -[" + t.trigger.str() + "]-> " + dash(t.to) + " kind=" + kind +
-           " carry=" + dash(t.functor) + " guard=" + (t.guard ? "1" : "0") + " action=" + (t.action ? "1" : "0");
+           " carry=" + dash(t.functor) + " enter=" + enter_text(t.enter) + " guard=" + (t.guard ? "opaque" : "none") +
+           " action=" + (t.action ? "opaque" : "none");
 }
 
 std::string embed_fact(const Embedding& e) {
@@ -85,8 +101,8 @@ std::string arrow_fact(Key state, Key name, Key from, Key to, Key trigger, const
     return "arrow " + state.str() + " " + name.str() + " " + from.str() + " -> " + (to.empty() ? "=" : to.str()) + " on " + trigger.str() + " body=" + body;
 }
 
-std::string edit_fact(Key name, Key state, Key event, Key reply) {
-    return "edit " + name.str() + " state=" + state.str() + " event=" + event.str() + " reply=" + reply.str();
+std::string edit_fact(Key name, Key state, Key event, Key reply, const std::string& apply) {
+    return "edit " + name.str() + " state=" + state.str() + " event=" + event.str() + " reply=" + reply.str() + " apply=" + apply;
 }
 
 std::string object_fact(Key f, Key src, Key dst, const std::string& how) {
@@ -118,7 +134,7 @@ std::vector<std::string> facts(const StateGraph& g, Scope scope) {
                                   " on " + m.trigger.str());
                     continue;
                 }
-                std::string body = m.handler ? "native" : "none";
+                std::string body = m.handler ? native_text(m.native) : "none";
                 if (m.declared) {
                     body.clear();
                     for (const DeclaredStep& st : *m.declared) body += (body.empty() ? "" : " | ") + affine_text(st.does);
@@ -131,7 +147,10 @@ std::vector<std::string> facts(const StateGraph& g, Scope scope) {
     for (const Transition& t : g.transitions()) out.push_back(transition_fact(t, t.name));
     for (const auto& [name, f] : g.functors()) {
         out.push_back("functor " + name.str() + " " + f.from().str() + " -> " + f.to().str());
-        f.for_each_declared([&](Key src, Key dst, const Stages* st) { out.push_back(object_fact(name, src, dst, stages_text(st))); });
+        if (f.is_identity()) out.push_back("identity " + name.str());
+        f.for_each_declared([&](Key src, Key dst, const Stages* st) {
+            out.push_back(object_fact(name, src, dst, st ? stages_text(st) : native_text(f.native_of(src))));
+        });
         f.for_each_event([&](Key src, Key dst) { out.push_back("event " + name.str() + " " + src.str() + " -> " + dst.str()); });
         f.for_each_morphism([&](Key src, Key dst) { out.push_back("arrowmap " + name.str() + " " + src.str() + " -> " + dst.str()); });
         if (const std::vector<Key>* chain = g.composite_chain(name)) {
@@ -146,7 +165,7 @@ std::vector<std::string> facts(const StateGraph& g, Scope scope) {
     for (const Drive& d : g.drives()) out.push_back(drive_fact(d));
     for (const auto& p : g.ports()) out.push_back("port " + p.first.str() + " " + p.second.str());
     for (Key k : g.kept()) out.push_back("keep " + k.str());
-    for (const Edit& e : g.edits()) out.push_back(edit_fact(e.name, e.state, e.event, e.reply));
+    for (const Edit& e : g.edits()) out.push_back(edit_fact(e.name, e.state, e.event, e.reply, e.apply ? native_text(e.native) : "nothing"));
     if (!g.initial().empty()) out.push_back("initial " + g.initial().str());
     finish(out);
     return out;
@@ -154,7 +173,9 @@ std::vector<std::string> facts(const StateGraph& g, Scope scope) {
 
 std::vector<std::string> facts(const Plan& plan) {
     std::vector<std::string> out;
+    std::set<Key> made, worn;  // the states the plan makes; those whose first look is worn
     for (const Step& s : plan.steps) {
+        if (const auto* made_state = std::get_if<plan::State>(&s)) made.insert(made_state->id);
         std::visit(
             [&](const auto& st) {
                 using S = std::decay_t<decltype(st)>;
@@ -168,7 +189,7 @@ std::vector<std::string> facts(const Plan& plan) {
                     else out.push_back("eparam " + st.state.str() + " " + st.element.str() + " " + st.key.str() + " " + text_detail::value(st.value));
                 } else if constexpr (std::is_same_v<S, plan::Arrow>) {
                     if (!st.own) {
-                        const std::string body = st.body == plan::Arrow::Body::Native ? "native" : st.body == plan::Arrow::Body::Affine ? affine_text(st.affine) : "none";
+                        const std::string body = st.body == plan::Arrow::Body::Native ? "native:" + st.native : st.body == plan::Arrow::Body::Affine ? affine_text(st.affine) : "none";
                         out.push_back(arrow_fact(st.state, st.name, st.from, st.to, st.trigger, body));
                     }
                 } else if constexpr (std::is_same_v<S, plan::Compose>) {
@@ -178,7 +199,7 @@ std::vector<std::string> facts(const Plan& plan) {
                 } else if constexpr (std::is_same_v<S, plan::Functor>) {
                     out.push_back("functor " + st.name.str() + " " + st.from.str() + " -> " + st.to.str());
                 } else if constexpr (std::is_same_v<S, plan::Object>) {
-                    std::string how = "native";
+                    std::string how = "native:" + st.native;
                     switch (st.transport) {
                         case plan::Object::Transport::Copy: how = stages_text(transport::copy_all.stages.get()); break;
                         case plan::Object::Transport::Only: how = stages_text(transport::only(st.names).stages.get()); break;
@@ -200,13 +221,27 @@ std::vector<std::string> facts(const Plan& plan) {
                 } else if constexpr (std::is_same_v<S, plan::Connect>) {
                     Key name = st.t.name;
                     if (name.empty()) name = Key{st.t.from.str() + "-" + st.t.trigger.str() + "->" + st.t.to.str()};
-                    sg::Transition t = st.t;
-                    if (!st.enter.empty()) t.action = [](State&, const Event&, Params&) {};  // said only as there being one
-                    out.push_back(transition_fact(t, name));
+                    out.push_back(transition_fact(st.t, name));
                 } else if constexpr (std::is_same_v<S, plan::Embed>) {
                     out.push_back(embed_fact(st.e));
                 } else if constexpr (std::is_same_v<S, plan::Glue>) {
-                    out.push_back(seam_fact(doorway_seam(st.name, st.a, st.pa, st.b, st.pb, st.also)));
+                    const Seam seam = doorway_seam(st.name, st.a, st.pa, st.b, st.pb, st.also);
+                    out.push_back(seam_fact(seam));
+                    // what it makes with it: the travel and the glue, each carrying its objects by a computation
+                    // that reads the doorways' poses (opaque: those are the portals' own params)
+                    const auto functor = [&](Key name, Key from, Key to, std::vector<std::pair<Key, Key>> objects) {
+                        out.push_back("functor " + name.str() + " " + from.str() + " -> " + to.str());
+                        for (const auto& o : objects) out.push_back(object_fact(name, o.first, o.second, "native"));
+                    };
+                    std::vector<std::pair<Key, Key>> glue_ab{{st.pa, st.pb}}, glue_ba{{st.pb, st.pa}};
+                    for (const auto& x : st.also) {
+                        glue_ab.push_back(x);
+                        glue_ba.push_back({x.second, x.first});
+                    }
+                    functor(seam.a_to_b, st.a, st.b, {{SpatialState::camera_id(), SpatialState::camera_id()}});
+                    functor(seam.b_to_a, st.b, st.a, {{SpatialState::camera_id(), SpatialState::camera_id()}});
+                    functor(seam.glue_ab, st.a, st.b, glue_ab);
+                    functor(seam.glue_ba, st.b, st.a, glue_ba);
                 } else if constexpr (std::is_same_v<S, plan::Drive>) {
                     out.push_back(drive_fact(st.d));
                 } else if constexpr (std::is_same_v<S, plan::Port>) {
@@ -215,12 +250,23 @@ std::vector<std::string> facts(const Plan& plan) {
                     out.push_back("keep " + st.functor.str());
                 } else if constexpr (std::is_same_v<S, plan::Wear>) {
                     out.push_back(embed_fact(wear_embedding(st.host, st.look)));
+                    // a host the plan makes gets its look slot, showing the first look it wears
+                    if (made.count(st.host)) {
+                        out.push_back("element " + st.host.str() + " look look_slot");
+                        if (worn.insert(st.host).second)
+                            out.push_back("eparam " + st.host.str() + " look active " + text_detail::value(Value{st.look.str()}));
+                    }
                 } else if constexpr (std::is_same_v<S, plan::Film>) {
-                    out.push_back(embed_fact(film_embedding(st.camera, st.world, st.rig)));
+                    const Embedding e = film_embedding(st.camera, st.world, st.rig);
+                    out.push_back(embed_fact(e));
+                    if (!st.rig.empty()) {  // the rig's pose onto the lens, by a computation of the world's own poses
+                        out.push_back("functor " + e.out.str() + " " + st.world.str() + " -> " + st.camera.str());
+                        out.push_back(object_fact(e.out, st.rig, Camera::lens_id(), "native"));
+                    }
                 } else if constexpr (std::is_same_v<S, plan::Initial>) {
                     out.push_back("initial " + st.state.str());
                 } else if constexpr (std::is_same_v<S, plan::Edit>) {
-                    out.push_back(edit_fact(Key{st.state.str() + ":" + st.event.str()}, st.state, st.event, st.reply));
+                    out.push_back(edit_fact(Key{st.state.str() + ":" + st.event.str()}, st.state, st.event, st.reply, "native:" + st.native));
                 }
             },
             s);
@@ -229,11 +275,47 @@ std::vector<std::string> facts(const Plan& plan) {
     return out;
 }
 
-std::vector<std::string> missing(const Plan& plan, const StateGraph& g) {
+namespace {
+
+// A fact with the name of its native computation left out: what a graph built
+// by hand can be held to, since its C++ says nothing of what it is.
+std::string opaque(std::string line) {
+    for (std::size_t at = line.find("native:"); at != std::string::npos; at = line.find("native:", at + 1)) {
+        std::size_t end = line.find_first_of(" ,]", at);
+        if (end == std::string::npos) end = line.size();
+        line.erase(at + 6, end - (at + 6));  // "native:name" -> "native"
+    }
+    return line;
+}
+
+// What the plan declares that the graph does not have, and what it has only as
+// an unnamed native.
+void compare(const Plan& plan, const StateGraph& g, std::vector<std::string>* absent, std::vector<std::string>* unnamed) {
     const std::vector<std::string> want = facts(plan);
     const std::vector<std::string> have = facts(g, Scope::Whole);
+    const std::set<std::string> in_graph(have.begin(), have.end());
+    for (const std::string& line : want) {
+        if (in_graph.count(line)) continue;
+        const std::string blind = opaque(line);
+        if (blind != line && in_graph.count(blind)) {
+            if (unnamed) unnamed->push_back(line);
+        } else if (absent) {
+            absent->push_back(line);
+        }
+    }
+}
+
+}  // namespace
+
+std::vector<std::string> missing(const Plan& plan, const StateGraph& g) {
     std::vector<std::string> out;
-    std::set_difference(want.begin(), want.end(), have.begin(), have.end(), std::back_inserter(out));
+    compare(plan, g, &out, nullptr);
+    return out;
+}
+
+std::vector<std::string> unverified(const Plan& plan, const StateGraph& g) {
+    std::vector<std::string> out;
+    compare(plan, g, nullptr, &out);
     return out;
 }
 

@@ -34,8 +34,20 @@ std::vector<std::string> facts(const StateGraph& g, Scope scope = Scope::Whole);
 // class (a look's passes) it says only what the source said.
 std::vector<std::string> facts(const Plan& plan);
 
-// The facts of `plan` that the graph does not have.
+// The facts of `plan` that the graph does not have. Every value the engine
+// holds as data is in a fact: a transition's `enter` constants, an arrow's
+// affine rows, a transport's stages, a composite's chain, an embedding's every
+// field, a drive's line and keeps, an edit's reply. A native computation is
+// there by the name the source bound it to (`native:exit_won`), so `native foo`
+// against `native bar` differs. C++ built by hand names none: a fact of the plan
+// with a native name is met by the graph's unnamed native (see `unverified`),
+// and by nothing else.
 std::vector<std::string> missing(const Plan& plan, const StateGraph& g);
+
+// The facts of `plan` that the graph has only as an unnamed native: the graph's
+// C++ was not shown to be the computation the source names. Not an error - a
+// declaration being ported from a lambda cannot be told more - but not proven.
+std::vector<std::string> unverified(const Plan& plan, const StateGraph& g);
 
 // The lines that differ, `-` only in `before`, `+` only in `after`.
 std::vector<std::string> difference(const std::vector<std::string>& before, const std::vector<std::string>& after);

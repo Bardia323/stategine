@@ -162,7 +162,7 @@ struct TransitionAst {
     bool pop = false;
     std::string carry;
     std::string name;
-    std::vector<ParamAst> with;  // what the state entered is told (Transition::action)
+    std::vector<ParamAst> with;  // what the state entered is told (Transition::enter)
 };
 
 struct SeamAst {

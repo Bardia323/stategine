@@ -659,7 +659,7 @@ private:
                     continue;
                 }
                 if (values(w.value, w.key, vs, file))
-                    for (auto& kv : vs) step.enter.set(Key{kv.first}, std::move(kv.second));
+                    for (auto& kv : vs) step.t.enter.set(Key{kv.first}, std::move(kv.second));
             }
             relation_steps_.push_back(std::move(step));
         }

@@ -154,7 +154,8 @@ private:
             o << lit(a.trigger) << ", std::move(a));\n" << I() << "}\n";
             return;
         }
-        const std::string handler = a.body == plan::Arrow::Body::Native ? "natives.arrow(" + lit(a.native) + ")" : "nullptr";
+        const bool native = a.body == plan::Arrow::Body::Native;
+        const std::string handler = (native ? "natives.arrow(" + lit(a.native) + ")" : std::string("nullptr")) + (native ? ", " + lit(a.native) : std::string());
         if (loop) o << I() << s << ".loop(" << lit(a.name) << ", " << lit(a.from) << ", " << lit(a.trigger) << ", " << handler << ");\n";
         else o << I() << s << ".arrow(" << lit(a.name) << ", " << lit(a.from) << ", " << lit(a.to) << ", " << lit(a.trigger) << ", " << handler << ");\n";
     }
@@ -195,7 +196,7 @@ private:
                 affine_lines(o, ob.affine, "        ");
                 o << "    " << head << ", sg::transport::affine(std::move(a)));\n" << I() << "}\n";
                 break;
-            case plan::Object::Transport::Native: o << head << ", natives.transport(" << lit(ob.native) << "));\n"; break;
+            case plan::Object::Transport::Native: o << head << ", natives.transport(" << lit(ob.native) << "), " << lit(ob.native) << ");\n"; break;
         }
     }
     void step(std::ostream& o, const plan::EventMap& m) {
@@ -221,11 +222,7 @@ private:
         if (t.kind == TransitionKind::Pop) o << "        t.kind = sg::TransitionKind::Pop;\n";
         if (!t.functor.empty()) o << "        t.functor = " << lit(t.functor) << ";\n";
         if (!t.name.empty()) o << "        t.name = " << lit(t.name) << ";\n";
-        if (!c.enter.empty()) {
-            o << "        t.action = [](sg::State&, const sg::Event&, sg::Params& args) {";
-            for (const auto& kv : c.enter) o << " args.set(" << lit(kv.first) << ", " << value(kv.second) << ");";
-            o << " };\n";
-        }
+        for (const auto& kv : t.enter) o << "        t.enter.set(" << lit(kv.first) << ", " << value(kv.second) << ");\n";
         o << "        graph.connect(std::move(t));\n" << I() << "}\n";
     }
     void step(std::ostream& o, const plan::Embed& em) {
@@ -269,7 +266,7 @@ private:
     void step(std::ostream& o, const plan::Initial& i) { o << I() << "graph.set_initial(" << lit(i.state) << ");\n"; }
     void step(std::ostream& o, const plan::Edit& e) {
         o << I() << "{\n        sg::Edit e;\n        e.state = " << lit(e.state) << ";\n        e.event = " << lit(e.event)
-          << ";\n        e.reply = " << lit(e.reply) << ";\n        e.apply = natives.edit(" << lit(e.native) << ");\n        graph.edit(std::move(e));\n"
+          << ";\n        e.reply = " << lit(e.reply) << ";\n        e.apply = natives.edit(" << lit(e.native) << ");\n        e.native = " << lit(e.native) << ";\n        graph.edit(std::move(e));\n"
           << I() << "}\n";
     }
     void step(std::ostream& o, const plan::Bind& b) {

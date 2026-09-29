@@ -58,12 +58,12 @@ const Morphism& State::add_morphism(Morphism m) {
     return morphisms_.back();
 }
 
-const Morphism& State::arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn) {
-    return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}, nullptr});
+const Morphism& State::arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn, Key native) {
+    return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}, nullptr, native});
 }
 
-const Morphism& State::loop(Key name, Key on, Key trigger, Morphism::Handler fn) {
-    return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}, nullptr});
+const Morphism& State::loop(Key name, Key on, Key trigger, Morphism::Handler fn, Key native) {
+    return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}, nullptr, native});
 }
 
 const Morphism& State::affine(Key name, Key from, Key to, Key trigger, Affine a) {

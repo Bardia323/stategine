@@ -5,12 +5,24 @@
 // inside of one already declared: an arrow's handler, an object's transport,
 // an edit's rewrite. It is looked up by name, once, when the graph is built.
 //
-// What a native can hold is what its type gives it: an arrow's handler is
-// handed its own state and the elements of its arrow; a transport, the two
-// elements it carries between. Neither is handed the graph, a clock, an
-// engine or another state, so neither can make a state, rewrite the graph,
-// keep a timer or call into another state. (An edit is the graph's lawful
-// way to rewrite itself: it is applied by the engine at the start of a frame.)
+// Natives are trusted extensions with restricted declared interfaces. They are
+// not a security sandbox. What a native is handed is what its type gives it: an
+// arrow's handler its own state and the elements of its arrow; a transport, the
+// two elements it carries between. Neither is handed the graph, a clock, an
+// engine or another state, so ordinary code written to that interface has no
+// way to make a state, rewrite the graph, or call into another state. But it
+// is C++: a closure can capture whatever its author gave it (a pointer to the
+// graph, a file, a thread), and nothing here stops that. What contains a
+// native is the engine's own checking - the laws re-run it on restored data, the
+// graph is sealed while they do - review of what is registered, and the fact
+// that a source can only *name* a native the host registered. (An edit is the
+// graph's lawful way to rewrite itself: it is applied by the engine at the
+// start of a frame.)
+//
+// The name a source bound a native by is kept where the engine holds it
+// (Morphism::native, Functor::native_of, Edit::native), so two declarations that
+// name different natives are different declarations. That is a binding, not a
+// proof: two C++ functions of one name are not shown to be equivalent.
 #pragma once
 
 #include <functional>

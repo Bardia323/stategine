@@ -635,7 +635,8 @@ What the ontology forbids has no syntax, and the compiler says why: a private
 timer (`elapsed`), a write from one state into another, IO in a transport, a
 callback, `on_update`. C++ is for devices and for *native* computations - the
 inside of an arrow, a transport or an edit that is already declared, named in
-the notation and handed only its own elements (`sg::dsl::Natives`).
+the notation and handed only its own elements (`sg::dsl::Natives`): trusted
+extensions with restricted interfaces, not a sandbox.
 
 ```cmake
 stategine_compile_dsl(game NAME world SOURCES src/world.sg)   # -> sgen::build_world(graph, natives, bindings)

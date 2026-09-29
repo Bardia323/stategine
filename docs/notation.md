@@ -32,7 +32,7 @@ Every construct, and the primitive it becomes (`sg/dsl/Plan.hpp`):
 | `extern functor f : A -> B` | nothing made: the graph must hold it |
 | `compose f = g ; h ; ...` | `graph.compose_functors` |
 | `lens get <-> put` | `graph.lens` |
-| `transition a -[e]-> b [carry f] [name n] [push] [with k = v]` | `graph.connect`; `* ` for any source; `-[e]-> pop`; `with` is `Transition::action` telling the entered state constants |
+| `transition a -[e]-> b [carry f] [name n] [push] [with k = v]` | `graph.connect`; `* ` for any source; `-[e]-> pop`; `with` is `Transition::enter`, constants the entered state is told (data, not a lambda) |
 | `embed h.p -> g [in f] [out f] [subject s] [sync live/commit/view] [propagate ...] [focus b] [follows b] [name n]` | `graph.embed` |
 | `seam a.p <-> b.q [also x <-> y] [name n]` | `sg::glue_doorway` (the boundaries identified both ways; its `<name>.ab` / `.ba` travel functors are named for `carry`) |
 | `drive clock -> s.event` / `drive clock -> s event e [keeps ...] [additive]` | `sg::drive` on a `Temporal` |
@@ -72,10 +72,19 @@ and `sg::verify` says it when it is broken.
 `native name` is the inside of an arrow, transport or edit whose declaration
 (ends, trigger, arguments) is written here. It is registered in C++
 (`sg::dsl::Natives`) and given only what its type gives it: an arrow's own
-state and elements, a transport's two elements. It is not a place for a hidden
-state, a private timer or a call into another state; the laws re-run it on
-restored data, the graph is sealed while they do, and an edit is the only way a
-native rewrites the graph, applied by the engine at the start of a frame.
+state and elements, a transport's two elements.
+
+**Natives are trusted extensions with restricted declared interfaces, not a
+security sandbox.** The signatures keep ordinary code from being handed the
+graph, the engine, a clock or an unrelated state; but a C++ closure can still
+capture an external capability, and nothing here prevents that. What contains a
+native is the engine's own checking (the laws re-run it on restored data, and
+the graph is sealed while they do), the review of what a host registers, and
+the rule that a source can only *name* what the host registered. The name
+`native foo` is kept in the graph (`Morphism::native`, `Functor::native_of`,
+`Edit::native`) so a comparison sees it, but two C++ functions called `foo` are
+not proven equivalent. An edit is the only way a native rewrites the graph,
+applied by the engine at the start of a frame.
 
 ## The world compiling itself
 
@@ -88,6 +97,22 @@ the plan on the running graph at the start of the next frame, and the answer
 returns as `compiler.change.done`. A program compiled from inside does no IO
 (`file(...)` is refused) and may name only the natives the host registered.
 
+**Applying a plan is all or nothing.** `sg::dsl::apply` refuses at once what
+names alone can tell (a name taken, a state or native that is not there, a
+graph that is being checked). Then it takes a `StateGraph::Checkpoint`, keeps
+the states the plan touches inside (a host that gains a look slot, a clock that
+gains a timeline), makes the plan, and asks `graph.validate()` whether the
+graph it made is as valid as the graph it found. If any step throws, or the
+graph has a problem it did not have, `rollback` takes away what was added and
+puts back what was replaced, and the touched states are restored - the same
+graph, its states not copied or replaced. Nothing runs between the first step
+and the last (an edit is applied at the start of a frame; no arrow or listener
+is called), so no one sees a half-made ontology. A self-compiling world obeys
+the same: a bad source, whether it fails to compile or compiles into a graph
+that would not validate, leaves the graph as it was and the compiler says why.
+What this does not do: it does not run `sg::verify` (the laws are the tests'
+and the engine's watch), and out-of-memory in the middle is not made atomic.
+
 ## Holding a declaration beside the C++ it replaces
 
 `sg::dsl::facts(graph)` is one line for each thing the graph is made of,
@@ -96,3 +121,19 @@ same functions. `missing(plan, graph)` is what the program declares that the
 graph does not have. Port a declaration in this order: write it, compile it,
 check `missing` is empty while the C++ is still there, run the laws and tests,
 remove the C++, and check the graph's facts are as they were.
+
+Facts are faithful to everything the engine holds as data. A transition's
+constants are `Transition::enter`, so `with person = 1` and `with person = 2`
+are different facts (`enter=[person=d:1]`); an arrow's affine rows, a
+transport's stages, a composite's chain, an embedding's every field, a drive's
+line and keeps, and an edit's reply are all in them. A native computation is in
+its fact by name (`body=native:exit_won`, `object f x -> y native:copy_pose`,
+`apply=native:compile_apply`), so `native foo` against `native bar` fails. C++
+built by hand names no native: a plan fact with a native name is met by the
+graph's unnamed one and reported by `unverified(plan, graph)` - not an error,
+because a lambda cannot be told more, but not proven either. What canonical
+lines cannot say, because a set has no order (the order embedded guests tick in,
+the order time is kept in), is tested separately: the lab's golden file carries
+`order drives`, `order embeddings` and `order transitions`. What a doorway's
+glue bakes in from the portals' poses at declaration is in the portals' own
+params, which are facts too.

@@ -136,6 +136,8 @@ public:
     Functor& on_object(Key src_element, Key dst_element, Transport t = nullptr);
     // A transport that says what it does: kept with what it says.
     Functor& on_object(Key src_element, Key dst_element, transport::Declared t);
+    // A native transport, and the name a source bound it by (`native_of`).
+    Functor& on_object(Key src_element, Key dst_element, Transport t, Key native);
 
     // --- arrow map ----------------------------------------------------------
     Functor& on_morphism(Key src_morphism, Key dst_morphism);
@@ -148,6 +150,9 @@ public:
     }
 
     Key image_object(Key id) const;
+
+    // The native computation a source bound to carry this object, if it did.
+    Key native_of(Key src) const;
 
     Key image_morphism(Key id) const;
 
@@ -268,6 +273,7 @@ private:
         Key dst;
         Transport transport;
         std::shared_ptr<const Stages> declared;  // what it says it does; null: nothing said
+        Key native;                              // the native computation a source bound it to
     };
 
     void build(const State& src, State& dst, Memo& m) const;

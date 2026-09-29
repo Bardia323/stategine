@@ -134,9 +134,10 @@ public:
     // notices.
     const Morphism& add_morphism(Morphism m);
 
-    const Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn);
+    // `native`: which native computation the handler is, if a source said (Morphism::native).
+    const Morphism& arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn, Key native = Key{});
 
-    const Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn);
+    const Morphism& loop(Key name, Key on, Key trigger, Morphism::Handler fn, Key native = Key{});
 
     // An arrow that says what it does (Declared.hpp): its handler is made
     // from what it says, so the two are one. On one element, or from one to

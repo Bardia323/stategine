@@ -38,6 +38,9 @@ struct Transition {
     Guard guard;    // optional: the transition is taken only if this passes
     Action action;  // optional: fills the Params handed to on_enter
     Key functor;    // optional: carries the source's data into the target
+    // What the state entered is told, as data: set in the Params handed to
+    // on_enter before `action` runs. What is a constant is not a lambda.
+    Params enter;
 };
 
 // A seam: two states that meet as one place - two rooms and the doorway
@@ -115,6 +118,20 @@ struct Edit {
     Key event;  // what it says to ask
     Apply apply;
     Key reply;  // what it hears back; `<event>.done` when empty
+    Key native;  // the native computation `apply` is, when a source declared one (Morphism::native)
+};
+
+// What a graph was made of at a moment, to go back to (StateGraph::checkpoint,
+// rollback). Opaque: it is the graph's own to read.
+class Checkpoint {
+private:
+    friend class StateGraph;
+    std::set<Key> states, functors, composites, defaults;
+    std::size_t transitions = 0, embeddings = 0, lenses = 0, ports = 0, kept = 0;
+    std::deque<Seam> seams;
+    std::deque<Drive> drives;
+    std::deque<Edit> edits;
+    Key initial;
 };
 
 // Who may change what. Whoever holds the graph itself - the code that builds
@@ -360,6 +377,22 @@ public:
     // The same, for the interfaces alone - states, functors, embeddings,
     // seams, transitions: what joins states, not what is in them.
     uint64_t topology() const { return rev_.topology; }
+
+    // Whether a law's trial is running: the graph cannot be changed now.
+    bool sealed() const { return rev_.sealed > 0; }
+
+    // --- all or nothing ------------------------------------------------------------
+    // A change made of many - a whole construction from a source - is made all
+    // or not at all: take a checkpoint, make it, and if any of it fails, or the
+    // graph it made does not validate, `rollback` puts back what was there. The
+    // graph is the same graph (its states are not copied or replaced): what was
+    // added since is taken away, and what was replaced by name comes back.
+    // Everything reads and counts as a change of structure, so whatever the
+    // engine derived from the graph is derived again. Refused while sealed.
+    // The states a change touched *inside* (a look slot added to a host, a
+    // timeline added to a clock) are theirs to put back: State::snapshot / restore.
+    Checkpoint checkpoint() const;
+    void rollback(const Checkpoint& c);
 
     // While a Sealed lives, the interfaces cannot change: a law's trial runs
     // arrows and functors on the live graph, and one that tried to rewrite

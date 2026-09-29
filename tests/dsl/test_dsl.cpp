@@ -273,7 +273,7 @@ functor f : a -> b {
 )");
         check(c.ok(), "a named native transport compiles: " + c.report());
         bool native = false;
-        for (const auto& l : sg::dsl::facts(c.plan)) native = native || l == "object f x -> y native";
+        for (const auto& l : sg::dsl::facts(c.plan)) native = native || l == "object f x -> y native:euclidean_to_hyperbolic";
         check(native, "the alias is gone: only the native is left");
     }
 
@@ -536,9 +536,11 @@ void scenario() {
     check(forth == 1 && back == 0, "and one transition, room to annex: no way back is declared");
     {
         const sg::Transition* crossing = graph.transition(sg::Key{"room-cross->annex"});
+        check(crossing && crossing->enter.num("arrived") == 1.0 && !crossing->action,
+              "`with` is the transition's `enter`, data, not a lambda: what the state entered is told");
         sg::Params told;
-        if (crossing && crossing->action) crossing->action(graph.state("room"), sg::Event{sg::Key{"cross"}}, told);
-        check(crossing && told.num("arrived") == 1.0, "`with` is the transition's action: what the state entered is told");
+        if (crossing) graph.cross(*crossing, graph.state("room"), &graph.state("annex"), sg::Event{sg::Key{"cross"}}, told);
+        check(told.num("arrived") == 1.0, "and the engine's own crossing tells it");
     }
     engine.fire(sg::Key{"cross"});
     engine.tick(0.1);

@@ -14,6 +14,9 @@ While the major version is 0, a minor bump may break the API.
   - A world may compile from inside: a source is an ordinary state, a compiler a state with native arrows, and what it makes it asks of the graph by `graph.edit` (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`).
   - `Functor::for_each_event`; `doorway_seam`, `wear_embedding`, `film_embedding`: the declarations `glue_doorway`, `wear` and `film` make, as data, so that what reads them and what makes them are one.
   - `SG_BUILD_DSL` (default on) builds `stategine::dsl` and `sgc`.
+  - **Applying a plan is all or nothing.** `sg::dsl::apply` refuses what names can tell, then checkpoints the graph, makes the plan, and validates: a step that throws, or a graph with a problem it did not have, is rolled back and the states touched inside (a look slot, a timeline) restored. The same graph throughout. `StateGraph::checkpoint()` / `rollback(cp)` (what was added is taken away, what was replaced by name comes back; refused while sealed) and `StateGraph::sealed()`. A world compiling from inside obeys it: a bad source leaves the graph as it was.
+  - **Facts keep what the engine holds as data.** `Transition::enter` - the constants a state entered is told - is data (`with person = 1` is `enter=[person=d:1]`, no longer an opaque action); `Morphism::native`, `Functor::native_of`, `Edit::native` keep the name a source bound a native by, and `State::arrow` / `loop` / `Functor::on_object` take it. `native foo` and `native bar` are different facts; C++ that names none is met by an unnamed native and reported by `sg::dsl::unverified`. Transition guards and actions read `opaque`. Wear, film and glue facts carry the slot, the rig and the glue functors.
+  - Natives are documented as trusted extensions with restricted declared interfaces, not a sandbox.
 
 ## v0.3.0
 

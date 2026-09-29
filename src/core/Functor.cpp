@@ -99,16 +99,28 @@ auto Functor::on_object(Key src_element, Key dst_element, Transport t) -> Functo
     refuse_if_identity("on_object");
     // No transport is every parameter, as it is: said so.
     const bool said = !t;
-    obj_[src_element] = ObjMap{dst_element, std::move(t), said ? transport::copy_all.stages : nullptr};
+    obj_[src_element] = ObjMap{dst_element, std::move(t), said ? transport::copy_all.stages : nullptr, Key{}};
     remapped("on_object");
     return *this;
 }
 
 auto Functor::on_object(Key src_element, Key dst_element, transport::Declared t) -> Functor& {
     refuse_if_identity("on_object");
-    obj_[src_element] = ObjMap{dst_element, Transport(t), t.stages};
+    obj_[src_element] = ObjMap{dst_element, Transport(t), t.stages, Key{}};
     remapped("on_object");
     return *this;
+}
+
+auto Functor::on_object(Key src_element, Key dst_element, Transport t, Key native) -> Functor& {
+    refuse_if_identity("on_object");
+    obj_[src_element] = ObjMap{dst_element, std::move(t), nullptr, native};
+    remapped("on_object");
+    return *this;
+}
+
+Key Functor::native_of(Key src) const {
+    auto it = obj_.find(src);
+    return it == obj_.end() ? Key{} : it->second.native;
 }
 
 auto Functor::on_morphism(Key src_morphism, Key dst_morphism) -> Functor& {
