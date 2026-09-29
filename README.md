@@ -1,6 +1,4 @@
 # stategine
-#### as above; so below
-*Quod est inferius est sicut quod est superius, et quod est superius est sicut quod est inferius.*
 
 <p align="center"><img src="docs/images/as-above.svg" width="700" alt="An inverted triangle: the graph of states above, one state below, the same laws at every level"></p>
 
