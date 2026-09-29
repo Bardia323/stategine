@@ -149,6 +149,39 @@ one says so in a comment above it (`// inline: every frame reaches for it`).
 on a module that includes what it does not use, or a header with a body that
 has no reason to be there.
 
+## What already exists - reach for it before writing your own
+
+A new state that needs a thing one of these already is does not grow its own:
+it **meets that state through the graph** (a functor, a lens, an embedding, a
+drive) and carries only what it needs across. Before adding a param, a field,
+a counter or a helper inside a state, look here first. Need something a state
+does not quite give? Extend that state, or find the functor (`sg::kan` can work
+one out), never a private copy.
+
+| State (header) | It is | Use it instead of |
+| --- | --- | --- |
+| `Temporal` (`core/Temporal.hpp`) | time: a timeline per element, `time` and `frame` as params, one arrow that advances by `dt` | a `dt` argument used as a clock, a tick or frame counter, a timer param, `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its line on the clock |
+| `Spatial2D` / `Spatial3D` (`domains/Spatial.hpp`) | things with a pose that integrate; a 3D room, its `fixture`s and `mesh`es, `model`s | your own position / velocity / integrator |
+| `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
+| `LookState` (`domains/Look.hpp`) | how a state is shown: passes and uniforms, worn by `sg::wear`, faded by `fade` | shader params, tint, fog, grade kept in a state's own params |
+| `Camera` (`domains/Camera.hpp`) | a lens that sees a world by filming it (`sg::film`), its feed shown by a screen | a hand-made eye, a second view matrix, a render-to-texture written by hand |
+| `ConsoleState` (`domains/Console.hpp`) | scrollback, an input line, `submit` and `clear` | your own log buffer or command line |
+| `Atlas` / `Cover` (`domains/Atlas.hpp`, `core/Sheaf.hpp`) | charts glued by doorways; local pieces that must agree to glue | rooms placed by absolute coordinates; agreement checked by hand |
+| `TextStore` (`core/Store.hpp`) | texts kept in files, read once, re-read only when the stamp moves | file reads and writes of your own |
+| `Rigid`, `Rope` (`physics/`) | rigid bodies and a rope, stepped as a state's cache (pure in its params) | a hand-rolled collision, gravity or cord |
+| `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; extruded and lathed models | lighting maths or mesh code inside a game |
+
+And what carries between them, all declared in the graph:
+
+| To do | Use | Never |
+| --- | --- | --- |
+| carry data from one state to another | a functor / lens (`add_functor`, `add_lens`); `sg::kan::left` / `right` finds one from two others | copying params in a game loop or an arrow |
+| put one state inside another | `graph.embed` | holding a pointer to it |
+| change with time | `sg::drive` on a `Temporal` | a timer, a tick, a `dt` kept in a param |
+| change what is active | `graph.connect` / `push` / `pop` on what a state `says` | a flag one state sets and another polls |
+| rewrite the graph from inside | `graph.edit` | editing it from the game loop |
+| hear the world outside | `graph.port` | a thread or callback that writes into a state |
+
 ## Adding a state, a room, an interface - checklist
 
 1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above. In a project, the module is `stategine_module(<name> USES ...)`, and `stategine_check_modules()` holds every module to this (see `cmake/StategineModules.cmake`).

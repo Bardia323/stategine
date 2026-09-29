@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## v0.3.0 (unreleased)
 
+- **A folder per state for the files it owns** (`sg/core/Assets.hpp`, in `sg.hpp`). `sg::Assets(root)` keeps `<root>/<owner>/<name>`: `folder(owner)` and `file(owner, name)` make what they name, and refuse - `std::invalid_argument` - an owner that is not one plain name and a name that climbs out (`..`) or starts from a root or drive, so one state cannot reach another's files by the path it is given. `owners()` lists them; `adopt(from, owner, rename)` moves an older flat folder in, once, never over a file already there. `TextStore::bind(key, assets, owner, name, initial)` keeps a text in an owner's folder. What a run writes (pictures, dumps) is kept the same way, in an `Assets` rooted at `<build>/out`.
+
 - **A look that cuts in is cut from.** Leaving a look whose `fade` is 0 is immediate too: the new room is no longer drawn for a while through the old look's shader (a painting's compensation darkening the room it is left for).
 - **A world keeps its own time in every pass.** A state with `own_time` among its params is drawn by it: its shaders' `uTime` (water, clouds, stars, grain) is the world's time, not the renderer's clock - so a world whose time stands still stands still on screen too.
 - **`Keeps::WhileEntered`: a state whose time goes on only while it is where one is** - the active state itself, not a guest open in another (a world shown in a painting stays still on the wall, and goes on once someone is in it).

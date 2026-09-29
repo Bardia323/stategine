@@ -1170,6 +1170,36 @@ void test_text_and_store() {
     fs::remove_all(dir);
 }
 
+void test_assets_a_folder_per_state() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("sg_assets_" + std::to_string(std::rand()));
+    const sg::Assets assets(root);
+    check(assets.folder("hall") == root / "hall" && fs::is_directory(root / "hall"), "a state's folder is named by the state, and made");
+    check(assets.folder("hall") != assets.folder("vale"), "two states never share a folder");
+    auto refused = [](auto&& f) {
+        try {
+            f();
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
+        return false;
+    };
+    check(refused([&] { assets.folder("../hall"); }) && refused([&] { assets.folder("a/b"); }) && refused([&] { assets.folder(""); }),
+          "an owner that is not one plain name is refused");
+    check(refused([&] { assets.file("hall", "../vale/x"); }) && refused([&] { assets.file("hall", "/etc/x"); }),
+          "a name that leaves the folder is refused: a state cannot reach another's files");
+    sg::TextStore store;
+    store.bind("p", assets, "hall", "papers/p.txt", "words");
+    check(fs::exists(root / "hall" / "papers" / "p.txt"), "a text bound to an owner is kept in the owner's folder");
+    std::ofstream(root / "loose.txt") << "old";
+    std::ofstream(root / "keep.txt") << "old";
+    std::ofstream(root / "hall" / "keep.txt") << "new";
+    check(assets.adopt(root, "hall") == 1 && fs::exists(root / "hall" / "loose.txt") && fs::exists(root / "keep.txt"),
+          "an older flat folder is moved in, and never over what is there");
+    check(fs::exists(root), "and the root stays");
+    fs::remove_all(root);
+}
+
 void test_the_graph_is_watched() {
     // States meet only through what the graph declares; the engine keeps
     // checking, and says when one floats free.
@@ -1865,6 +1895,7 @@ int main() {
     test_light();
     test_the_graph_is_watched();
     test_text_and_store();
+    test_assets_a_folder_per_state();
     test_rooms_are_adjacent();
     test_a_camera_is_a_state();
     test_the_view_crosses_seams();

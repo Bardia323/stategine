@@ -17,6 +17,11 @@ const std::string& TextStore::bind(const std::string& key, const std::filesystem
     return e.text;
 }
 
+const std::string& TextStore::bind(const std::string& key, const Assets& assets, const std::string& owner,
+                                    const std::string& name, const std::string& initial) {
+    return bind(key, assets.file(owner, name), initial);
+}
+
 const std::string* TextStore::get(const std::string& key) const {
     auto it = entries_.find(key);
     return it == entries_.end() ? nullptr : &it->second.text;

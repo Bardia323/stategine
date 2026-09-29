@@ -6,6 +6,7 @@
 #pragma once
 
 #include "sg/core/Adjunction.hpp"
+#include "sg/core/Assets.hpp"
 #include "sg/core/Core.hpp"
 #include "sg/core/Embedding.hpp"
 #include "sg/core/Engine.hpp"

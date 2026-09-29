@@ -26,6 +26,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sg/core/Assets.hpp"
+
 namespace sg {
 
 class TextStore {
@@ -33,6 +35,10 @@ public:
     // Keep `key` in `file`: what is there if there is one (the file wins -
     // it may have been written by hand), else `initial`, written there.
     const std::string& bind(const std::string& key, const std::filesystem::path& file, const std::string& initial = {});
+
+    // The same, in the folder `owner` keeps its files in (sg::Assets).
+    const std::string& bind(const std::string& key, const Assets& assets, const std::string& owner,
+                            const std::string& name, const std::string& initial = {});
 
     bool has(const std::string& key) const { return entries_.count(key) != 0; }
     const std::string* get(const std::string& key) const;
