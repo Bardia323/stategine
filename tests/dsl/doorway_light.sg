@@ -1,0 +1,5 @@
+# These views are presentation bindings for the graph's declared overlap.
+extern state near
+extern state far
+seam near.pa <-> far.pb
+    name doorway

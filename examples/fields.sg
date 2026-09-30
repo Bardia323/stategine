@@ -1,0 +1,134 @@
+# A projected portal is owned by the host. Its embedding exists before the
+# projector arrow runs. Projection grants no transition or traversable seam.
+state clock : temporal
+initial host
+state host : spatial3d {
+    element camera : camera {
+        x = 0.0
+        y = 2.0
+        z = 8.0
+        yaw = -1.5707963267948966
+        pitch = 0.0
+    }
+    element projector : light {
+        x = 0.0
+        y = 2.0
+        z = 4.0
+        target_x = 0.0
+        target_y = 2.0
+        target_z = 0.0
+        half_x = 0.35
+        half_y = 0.2
+        intensity = 0.5
+    }
+    element wall : wall {
+        x = 0.0
+        y = 2.0
+        z = -0.05
+        sx = 6.0
+        sy = 4.0
+        sz = 0.1
+    }
+    element projection : portal {
+        x = 0.0
+        y = 2.0
+        z = 0.01
+        yaw = 1.5707963267948966
+        w = 1.0
+        h = 1.0
+        open = false
+        feed = 1
+        frame = 0
+        glow = 1.0
+        feed_w = 320
+        feed_h = 180
+    }
+    element machinery : portal { open = true }
+    projector -> projector : aim on host.aim native aim_projector
+    projection -> projection : project on host.project native projected_portal
+}
+state physics {
+    element field : field {
+        kind = "radial"
+        strength = -2.0
+        x = 0.0
+        y = 0.0
+        z = 0.0
+    }
+    element ball : body {
+        x = 2.0
+        y = 1.0
+        z = 0.0
+        vx = 0.0
+        vy = 0.0
+        vz = 0.0
+        mass = 1.0
+    }
+    ball -> ball : step on physics.step native field_motion
+}
+embed host.machinery -> physics
+    focus false
+    follows true
+drive clock -> physics.step
+    keeps always
+
+# An independently meaningful 3D domain inside the projected picture, and
+# another inside its globe. Capabilities remain elements in their own state.
+state realm : spatial3d {
+    element camera : camera {
+        x = 0.0
+        y = 2.0
+        z = 6.0
+        yaw = -1.5707963267948966
+    }
+    element globe : mesh {
+        x = 0.0
+        y = 2.0
+        z = 0.0
+        sx = 3.0
+        sy = 2.0
+        sz = 0.1
+        r = 0.3
+        g = 0.2
+        b = 0.1
+    }
+    element globe_view : portal {
+        x = 0.0
+        y = 2.0
+        z = 0.1
+        w = 2.5
+        h = 1.5
+        yaw = 1.5707963267948966
+        open = true
+        feed = 1
+        feed_w = 160
+        feed_h = 90
+    }
+}
+state inside : spatial3d {
+    element camera : camera {
+        x = 0.0
+        y = 2.0
+        z = 6.0
+        yaw = -1.5707963267948966
+    }
+    element cube : mesh {
+        x = 0.0
+        y = 2.0
+        z = 0.0
+        sx = 1.0
+        sy = 1.0
+        sz = 1.0
+        r = 0.1
+        g = 0.7
+        b = 0.3
+    }
+}
+embed host.projection -> realm
+    name projected
+    follows true
+    focus false
+embed realm.globe_view -> inside
+    name nested
+    follows true
+    focus false

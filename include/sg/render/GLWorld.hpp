@@ -95,6 +95,7 @@
 #include "sg/domains/Surface.hpp"
 #include "sg/gl/Renderer.hpp"
 #include "sg/gl/Shaders.hpp"
+#include "sg/render/Visibility.hpp"
 
 namespace sg::render {
 
@@ -455,7 +456,7 @@ private:
 
     // A doorway (a portal bound to another room) has no solid frame in the
     // shadow pass: light should pass between the rooms.
-    bool is_doorway(const Element& e) const;
+    bool is_doorway(const State& host, const Element& e) const;
 
     // A mesh is a box unless it says otherwise: `shape` = "cylinder" (standing
     // on y; sx and sz are its diameters) or "sphere". All three share the same
@@ -503,15 +504,39 @@ private:
     // implicit box, which is all a single-room scene needs.
     // What the camera can see: the six planes of its view, each as ax + by +
     // cz + d >= 0 inside (read off the view-projection's rows).
-    struct Frustum {
-        float plane[6][4];
-    };
+    using Frustum = spatial::ConvexVolume;
     static Frustum frustum_of(const gl::Mat4& vp);
     // Whether anything of a box - the unit cube `local` places, in this
     // room's frame - can be in view. A ball round it, a little generous, is
     // tested: what is wholly outside the view is not drawn, which is most of
     // a room when you lean into a screen.
-    bool sees(const Frustum& f, const RoomMatrix& local) const;
+    struct DrawBound {
+        const Element* element=nullptr;
+        uint64_t stamp=0;
+        spatial::Aabb bounds;
+        gl::Vec3 centre;
+        float radius=0;
+    };
+    struct DrawPlan {
+        Visibility visibility;
+        std::vector<std::size_t> unbounded, portals;
+        std::vector<DrawBound> bounds;
+        gl::Mat4 frame;
+        bool framed=false;
+    };
+    std::unordered_map<const Spatial3D*, DrawPlan> draw_plans_;
+    std::vector<std::size_t> plan_draws(const Spatial3D& room, const Frustum& view);
+    DrawBound query_bounds(const RoomMatrix& local) const;
+    bool declared_world(const State& host, const Element& portal, const Spatial3D& guest) const;
+    bool declared_feed(Key portal, const Spatial3D& guest) const;
+    bool declared_surface(const Element& portal, const Surface2D& surface) const;
+    struct SurfaceAccess {
+        const StateGraph* graph=nullptr;
+        const Surface2D* surface=nullptr;
+        uint64_t revision=0, stamp=0;
+        bool allowed=false;
+    };
+    mutable std::unordered_map<const Element*, SurfaceAccess> surface_access_;
 
     // The one place a room's placement is applied.
     void set_model(const RoomMatrix& local);

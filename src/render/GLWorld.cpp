@@ -155,7 +155,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
         for (bool more = true; more;) {
             more = false;
             for (auto& [id, f] : feeds_) {
-                if (!f.world || !f.view || (!f.live && f.drawn)) continue;
+                if (!f.world || !f.view || !declared_feed(id, *f.world) || (!f.live && f.drawn)) continue;
                 if (std::find(due.begin(), due.end(), &f) != due.end()) continue;
                 bool here = false;
                 for (const PlacedRoom& placed : rooms)
@@ -254,7 +254,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive) continue;
         auto it = worlds_.find(e.id);
-        if (it == worlds_.end() || !it->second.world) continue;
+        if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         WorldPortal& wp = it->second;
         wp.shared = nullptr;
         if (!in_view(world, e, eye_cam)) continue;
@@ -336,50 +336,12 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
     highlight_ = Key{};
 }
 
-bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera& cam) const {
-    const Pose p = pose_of(world, e);
-    const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
-    const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
-    const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across(p.yaw));
-    const float far = static_cast<float>(world.params().num(Key{"far"}, 120.0));
-    const gl::Vec3 f = gl::normalize(cam.forward);
-    for (float a : {-1.0f, 1.0f})
-        for (float b : {-1.0f, 1.0f}) {
-            const gl::Vec3 corner = c + side * (a * w) + gl::Vec3{0, b * h, 0};
-            const float along = gl::dot(corner - cam.eye, f);
-            if (along > 0.0f && along < far) return true;
-        }
-    return false;
-}
-
-HalfSpace GLWorldView::far_side(const Spatial3D& host, const Element& portal, const Element& gc) const {
-    const Pose p = world_pose(host, portal);
-    const Vec3d n = heading(p.yaw);
-    const double inset = portal.params.num(Key{"inset"}, 0.06);
-    const Vec3d at{p.position.x + n.x * inset, p.position.y, p.position.z + n.z * inset};
-    const Element& hc = eye_of(host);
-    const double turn = gc.params.num(keys::yaw) - hc.params.num(keys::yaw);
-    const Vec3d he = position_of(hc), ge = position_of(gc);
-    const Vec3d off = rotate_xz({at.x - he.x, at.y - he.y, at.z - he.z}, turn);
-    const Vec3d q{ge.x + off.x, ge.y + off.y, ge.z + off.z};
-    const Vec3d m = rotate_xz(n, turn);
-    return HalfSpace{{-m.x, -m.y, -m.z}, m.x * q.x + m.y * q.y + m.z * q.z};
-}
-
-void GLWorldView::set_frame(const Pose& p) {
-    frame_ = p;
-    frame_matrix_ = gl::Mat4::translate({static_cast<float>(p.position.x),
-                                         static_cast<float>(p.position.y),
-                                         static_cast<float>(p.position.z)}) *
-                    gl::Mat4::rotate_y(static_cast<float>(p.yaw));
-}
-
 bool GLWorldView::has_surface(const Element& e) const {
     auto it = surfaces_.find(e.id);
-    if (it != surfaces_.end() && it->second.surface != nullptr) return true;
+    if (it != surfaces_.end() && it->second.surface != nullptr && declared_surface(e, *it->second.surface)) return true;
     const auto& feeds = shared_feeds();
     auto f = feeds.find(signal_of(e));
-    return f != feeds.end() && f->second.world != nullptr;
+    return f != feeds.end() && f->second.world != nullptr && declared_feed(signal_of(e), *f->second.world);
 }
 
 Key GLWorldView::signal_of(const Element& e) const {
@@ -387,28 +349,6 @@ Key GLWorldView::signal_of(const Element& e) const {
     if (!graph_ || !e.params.has(shows)) return Key{e.id.str()};
     const Embedding* em = graph_->embedding(Key{e.params.get_or<std::string>(shows, "")});
     return em ? Key{em->portal.str()} : Key{e.id.str()};
-}
-
-const Element* GLWorldView::shown_in(const State& room, Key id) const {
-    static const Key shows{"shows"};
-    if (!graph_) return nullptr;
-    for (const Element& e : room.elements())
-        if (e.kind == kinds::portal && e.params.has(shows) && signal_of(e) == id && e.id != id) return &e;
-    return nullptr;
-}
-
-auto GLWorldView::camera_of(const Element& cam) -> Camera {
-    Camera c;
-    c.eye = to_vec3(position_of(cam));
-    c.forward = to_vec3(forward_of(cam));
-    c.fov = static_cast<float>(cam.params.num(keys::fov, 70.0)) * 3.14159265f / 180.0f;
-    // `roll`: the head tipped about the line of sight (radians).
-    if (const float roll = static_cast<float>(cam.params.num(keys::roll, 0.0)); roll != 0.0f) {
-        const gl::Vec3 side = gl::normalize(gl::cross(c.forward, gl::Vec3{0, 1, 0}));
-        const gl::Vec3 up = gl::cross(side, c.forward);
-        c.up = up * std::cos(roll) + side * std::sin(roll);
-    }
-    return c;
 }
 
 gl::Vec3 GLWorldView::to_vec3(const Vec3d& v) {
@@ -537,7 +477,7 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
     for (const auto& e : room.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
         const auto it = worlds_.find(e.id);
-        if (it == worlds_.end() || !it->second.world || !it->second.carry) continue;
+        if (it == worlds_.end() || !it->second.world || !it->second.carry || !declared_world(room,e,*it->second.world)) continue;
         const Spatial3D& far = *it->second.world;
         const Pose door = pose_of(room, e);
         const float half_w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f;
@@ -635,7 +575,7 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
             if (count >= 4) break;
             if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
             const auto it = worlds_.find(e.id);
-            if (it == worlds_.end() || !it->second.world) continue;
+            if (it == worlds_.end() || !it->second.world || !declared_world(*placed.room,e,*it->second.world)) continue;
             const Pose door = pose_of(*placed.room, e);
             // A door shut in it: nothing of the other side here.
             bool shut = false;
@@ -744,7 +684,7 @@ const Element* GLWorldView::back_portal(const Spatial3D& guest, const Spatial3D&
     for (const auto& e : guest.elements()) {
         if (e.kind != kinds::portal || !e.alive) continue;
         auto it = worlds_.find(e.id);
-        if (it != worlds_.end() && it->second.world == &host) return &e;
+        if (it != worlds_.end() && it->second.world == &host && declared_world(guest,e,host)) return &e;
     }
     return nullptr;
 }
@@ -863,7 +803,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
                     if (t == terrains_.end() || !t->second.mesh.valid()) continue;
                     caster.set("uModel", frame_matrix_);
                     t->second.mesh.draw();
-                } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
+                } else if (e.kind == kinds::portal && !is_doorway(*placed.room,e) && has_surface(e)) {
                     caster.set("uModel",
                                frame_matrix_ * portal_frame_model(*placed.room, e).m);
                     cube_.draw();
@@ -991,17 +931,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
         } else {
             draw_room(room);
         }
-        for (const auto& e : room.elements()) {
-            if (!e.alive) continue;
+        for (const auto i : plan_draws(room, view)) {
+            const auto& e=room.elements()[i];
             if (e.kind == terrain_kind()) {
                 draw_terrain(e);
             } else if (e.kind == kinds::mesh) {
-                if (!sees(view, box_matrix(room, e))) continue;
                 if (is_sprite(e)) draw_sprite(room, e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
-                if (!sees(view, box_matrix(room, e))) continue;
                 if (q_.instancing && e.id != highlight_)
                     batch(cube_, box_matrix(room, e).m, color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f,
                           static_cast<float>(e.params.num(Key{"surface"}, 2.0)), 0, 0, 0);
@@ -1012,8 +950,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
             }
         }
         flush_batches(*scene_, true);
-        for (const auto& e : room.elements()) {
-            if (e.kind != kinds::portal || !e.alive) continue;
+        for (const auto i : draw_plans_.at(&room).portals) {
+            const auto& e=room.elements()[i];
             // The doorway being looked through keeps its frame; only its
             // view is left out - seen from its own far side it would fill
             // the whole picture.
@@ -1175,9 +1113,10 @@ void GLWorldView::draw_terrain(const Element& e) {
     it->second.mesh.draw();
 }
 
-bool GLWorldView::is_doorway(const Element& e) const {
+bool GLWorldView::is_doorway(const State& host,const Element& e) const {
     auto it = worlds_.find(e.id);
-    return it != worlds_.end() && it->second.world != nullptr;
+    if(it==worlds_.end() || !it->second.world) return false;
+    return declared_world(host,e,*it->second.world);
 }
 
 const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
@@ -1285,35 +1224,6 @@ bool GLWorldView::has_walls(const State& st) {
     for (const auto& e : st.elements())
         if (e.kind == kinds::wall && e.alive) return true;
     return false;
-}
-
-auto GLWorldView::frustum_of(const gl::Mat4& vp) -> Frustum {
-    Frustum f{};
-    const auto row = [&](int i, int k) { return vp.m[k * 4 + i]; };
-    for (int p = 0; p < 6; ++p) {
-        const int axis = p / 2;
-        const float sign = p % 2 ? -1.0f : 1.0f;
-        float len = 0;
-        for (int k = 0; k < 4; ++k) {
-            f.plane[p][k] = row(3, k) + sign * row(axis, k);
-            if (k < 3) len += f.plane[p][k] * f.plane[p][k];
-        }
-        len = std::sqrt(len);
-        if (len > 0)
-            for (int k = 0; k < 4; ++k) f.plane[p][k] /= len;
-    }
-    return f;
-}
-
-bool GLWorldView::sees(const Frustum& f, const RoomMatrix& local) const {
-    const gl::Mat4 w = frame_matrix_ * local.m;
-    const float cx = w.m[12], cy = w.m[13], cz = w.m[14];
-    float r2 = 0;
-    for (int c = 0; c < 3; ++c) r2 += w.m[c * 4] * w.m[c * 4] + w.m[c * 4 + 1] * w.m[c * 4 + 1] + w.m[c * 4 + 2] * w.m[c * 4 + 2];
-    const float r = 0.5f * std::sqrt(r2) * 1.5f + 0.05f;
-    for (const auto& p : f.plane)
-        if (p[0] * cx + p[1] * cy + p[2] * cz + p[3] < -r) return false;
-    return true;
 }
 
 void GLWorldView::set_model(const RoomMatrix& local) {
@@ -1592,7 +1502,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // A portal with nothing bound to it is a marker for a plain opening -
     // the gap between wall segments is the doorway, and it needs no
     // geometry of its own.
-    if (!has_surface(e) && !is_doorway(e)) return;
+    if (!has_surface(e) && !is_doorway(st,e)) return;
 
     const Pose pose = pose_of(st, e);
     const gl::Vec3 pos = to_vec3(pose.position);
@@ -1603,7 +1513,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     const gl::Vec3 n = to_vec3(heading(yaw));  // the domain decides what yaw means
 
     auto world_it = worlds_.find(e.id);
-    const bool is_window = world_it != worlds_.end() && world_it->second.world != nullptr;
+    const bool is_window = world_it != worlds_.end() && world_it->second.world != nullptr && declared_world(st, e, *world_it->second.world);
 
     // An open panel's frame lights up - unless the panel states its own
     // glow, as a blackboard does: then only when pointed at.
@@ -1734,7 +1644,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // The picture: a world's feed, or a 2D state's pixels.
     int tex_w = 0, tex_h = 0;
     const auto& feeds = shared_feeds();
-    if (auto f = feeds.find(signal_of(e)); f != feeds.end() && f->second.world && f->second.shown().valid()) {
+    if (auto f = feeds.find(signal_of(e)); f != feeds.end() && f->second.world && declared_feed(signal_of(e), *f->second.world) && f->second.shown().valid()) {
         f->second.shown().bind_color(0);
         tex_w = f->second.w, tex_h = f->second.h;
         scene_->set("uTexFlip", 1.0f);
@@ -2225,7 +2135,7 @@ uint64_t GLWorldView::caster_signature(const std::vector<PlacedRoom>& rooms) {
                 h = mix_bits(h, static_cast<float>(t->second.cx));
                 h = mix_bits(h, static_cast<float>(t->second.cz));
                 h = mix_bits(h, static_cast<float>(t->second.rev));
-            } else if (e.kind == kinds::portal && !is_doorway(e) && has_surface(e)) {
+            } else if (e.kind == kinds::portal && !is_doorway(*placed.room,e) && has_surface(e)) {
                 for (float f : portal_frame_model(*placed.room, e).m.m) h = mix_bits(h, f);
             }
         }

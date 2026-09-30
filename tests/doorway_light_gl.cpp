@@ -14,6 +14,9 @@
 #include "sg/gl/Window.hpp"
 #include "sg/render/GLWorld.hpp"
 #include "sg/sg.hpp"
+#include "sg/dsl/Runtime.hpp"
+#include "sg/dsl/Natives.hpp"
+namespace sgen { void build_doorway_light(sg::StateGraph&, const sg::dsl::Natives&, sg::dsl::Bindings&); }
 
 namespace {
 
@@ -76,6 +79,8 @@ int main() {
     eye.params.set(sg::keys::x, 7.0).set(sg::keys::y, 1.6).set(sg::keys::z, 3.5).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, -0.55);
 
     sg::render::GLWorldView view;
+    sg::dsl::Bindings bindings;
+    sgen::build_doorway_light(g, {}, bindings);
     view.prepare(g);
     view.bind_world("pa", &far, sg::portal_carry(near.element("pa"), far.element("pb")), "pb");
     view.bind_world("pb", &near, sg::portal_carry(far.element("pb"), near.element("pa")), "pa");

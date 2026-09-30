@@ -4,6 +4,7 @@
 #include "sg/physics/Rigid.hpp"
 
 namespace rigid = sg::rigid;
+namespace field = sg::field;
 
 #include <chrono>
 #include <cstdio>
@@ -216,7 +217,7 @@ int main() {
         };
         {
             World w;
-            w.gravity = {0, -9.81, 0};
+            w.fields = {field::Source::directional("gravity", {0, -9.81, 0})};
             door(w);
             // Pushed open: turning about its hinges, as a door does.
             w.find("leaf")->w = {0, -2.0, 0}, w.find("leaf")->v = {0, 0, 0.9};
@@ -345,7 +346,7 @@ int main() {
         for (const Throw t : {Throw{10, 0, 0, 1 / 60.0}, Throw{30, 0, 0, 1 / 60.0}, Throw{60, 0, 0, 1 / 60.0}, Throw{30, 0.6, 0, 1 / 60.0},
                               Throw{30, 0, 40, 1 / 60.0}, Throw{15, 0, 0, 1 / 20.0}, Throw{40, 0.4, 20, 1 / 20.0}}) {
             World w;
-            w.gravity = {0, 0, 0};
+            w.fields.clear();
             Body wall;
             wall.id = "wall";
             wall.hulls.push_back(Hull::box({}, {0.01, 1.0, 1.0}));  // two centimetres thick

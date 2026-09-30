@@ -15,7 +15,7 @@
 //             touch - the face of one clipped by the other's, up to four
 //             points (a manifold). Kept from step to step, so what was
 //             pushed last time is pushed again at once (warm starting).
-//   solve     in substeps: gravity; impulses at every point of contact, over
+//   solve     in substeps: field responses; impulses at every point of contact, over
 //             and over, each one's total kept within its limits - never
 //             pulling, friction within mu of the push - with soft springs
 //             to undo what has sunk in; the bodies moved; the same impulses
@@ -61,6 +61,8 @@
 // Coordinates are the world's: y up, metres, seconds, kilograms. Turns are
 // the renderer's (from_euler): yaw about y, then pitch, then roll.
 #pragma once
+#include "sg/spatial/Math.hpp"
+#include "sg/physics/Field.hpp"
 
 #include <algorithm>
 #include <array>
@@ -75,52 +77,26 @@
 
 namespace sg::rigid {
 
-// --- vectors and turns ---------------------------------------------------------------
-struct V3 {
-    double x = 0, y = 0, z = 0;
-};
-inline V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-inline V3 operator-(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-inline V3 operator-(V3 a) { return {-a.x, -a.y, -a.z}; }
-inline V3 operator*(V3 a, double k) { return {a.x * k, a.y * k, a.z * k}; }
-inline V3 operator*(double k, V3 a) { return a * k; }
-inline V3& operator+=(V3& a, V3 b) { return a = a + b; }
-inline V3& operator-=(V3& a, V3 b) { return a = a - b; }
-inline double dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-inline V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
-inline double length(V3 a) { return std::sqrt(dot(a, a)); }
-V3 normalize(V3 a);
-
-// Row-major 3x3.
-struct M3 {
-    std::array<double, 9> a{1, 0, 0, 0, 1, 0, 0, 0, 1};
-    double operator()(int r, int c) const { return a[static_cast<std::size_t>(r * 3 + c)]; }
-    double& operator()(int r, int c) { return a[static_cast<std::size_t>(r * 3 + c)]; }
-    V3 col(int c) const { return {(*this)(0, c), (*this)(1, c), (*this)(2, c)}; }
-};
-V3 operator*(const M3& m, V3 v);
-M3 operator*(const M3& p, const M3& q);
-M3 operator+(const M3& p, const M3& q);
-M3 operator*(const M3& p, double k);
-M3 transpose(const M3& m);
-inline M3 zero3() {
-    M3 z;
-    z.a.fill(0.0);
-    return z;
-}
-M3 outer(V3 u, V3 v);
-M3 skew(V3 v);
-M3 inverse(const M3& m);
-// A turn of `angle` about the unit `axis` (Rodrigues).
-M3 axis_angle(V3 k, double angle);
-// Back to a rotation, after many small turns have been multiplied in.
-M3 orthonormal(const M3& m);
-// The turn that takes the identity to `r`, as axis times angle.
-V3 log_map(const M3& r);
-
-// The renderer's turn: R = Ry(-yaw) Rz(pitch) Rx(roll), as a mesh is turned.
-M3 from_euler(double yaw, double pitch, double roll);
-void to_euler(const M3& m, double& yaw, double& pitch, double& roll);
+// Compatibility names; the implementation belongs to shared spatial math.
+using spatial::V3;
+using spatial::M3;
+using spatial::dot;
+using spatial::cross;
+using spatial::length;
+using spatial::normalize;
+using spatial::transpose;
+using spatial::zero3;
+using spatial::outer;
+using spatial::skew;
+using spatial::inverse;
+using spatial::axis_angle;
+using spatial::orthonormal;
+using spatial::log_map;
+using spatial::from_euler;
+using spatial::to_euler;
+using spatial::operator*;
+using spatial::operator+;
+using spatial::operator-;
 
 // --- hulls -------------------------------------------------------------------------
 // A convex solid: its corners, its faces (each a plane and its corners in
@@ -155,6 +131,9 @@ struct Hull {
 // --- bodies ------------------------------------------------------------------------
 struct Body {
     std::string id;
+    // Independent capabilities. Sources are in this body's local frame.
+    std::vector<field::Source> fields;
+    std::vector<field::Receiver> receives{{"gravity", field::Response::Acceleration, 1}};
     std::vector<Hull> hulls;  // in the body's own frame
     V3 x;                     // where its frame is
     M3 r;                     // how its frame is turned
@@ -304,7 +283,8 @@ void across_of(V3 n, V3& p1, V3& p2);
 // --- the world ------------------------------------------------------------------------
 class World {
 public:
-    V3 gravity{0, -9.81, 0};
+    // State-derived field data; ordinary gravity is just one analytic source.
+    std::vector<field::Source> fields{field::Source::directional("gravity", {0, -9.81, 0})};
     int substeps = 4;
     int iterations = 2;        // per substep, with springs; and as many again without
     double margin = 0.012;     // how far apart two things may be and still count as touching
@@ -312,8 +292,8 @@ public:
     double contact_hertz = 30; // how stiff the springs that push things apart are
     double max_push = 2.0;     // and how fast they may push, m/s
     double sleep_after = 0.5;  // s still before an island sleeps
-    // Pairs found by sweeping along x; false: every awake body against every
-    // other, as it was (to compare - the same pairs either way).
+    // Spatial broadphase: sweep along x for small worlds, BVH for 64 or more
+    // bodies. False: exhaustive pairs, to verify identical behavior.
     bool sweep = true;
 
     std::vector<Body> bodies;
@@ -377,7 +357,7 @@ public:
     // sliding along what they meet, the bottom `step` of them passing over
     // what is lower (a stair) - then down onto the ground, if it is within
     // a stride below and not too steep, or falling.
-    void walk(Walker& w, V3 move, double dt);
+    void walk(Walker& w, V3 move, double dt, double time = 0);
 
     // Whatever holds `id` to anything, let go.
     void unjoin(const std::string& id);
@@ -423,7 +403,8 @@ public:
     V3 walk_into(V3 p, double radius, double y0, double y1, V3 moved, double dt, std::vector<std::string>* shoved = nullptr);
 
     // --- a step ------------------------------------------------------------------------
-    void step(double dt);
+    // Time at the beginning of this step, supplied by the state's drive.
+    void step(double dt, double time = 0);
 
 private:
     struct Point {
@@ -530,6 +511,8 @@ private:
     // ended yet are open; a body meets only the open ones, and a body at
     // rest only the open ones that move.
     void sweep_pairs();
+    void indexed_pairs();
+    spatial::Index broadphase_;
     std::vector<std::size_t> order_, open_moving_, open_still_;  // the sweep's scratch
     std::vector<double> span_lo_, span_hi_;
 
@@ -541,7 +524,10 @@ private:
     // What gives when pushed: free, awake, and not being driven.
     static bool moves(const Body& b) { return b.dynamic() && b.awake && !b.driven; }
 
-    void integrate_velocities(double h);
+    void integrate_velocities(double h, double time);
+    void sample_fields(double time);
+    field::Solver field_solver_;
+    std::vector<field::Result> responses_;
 
     void apply(Body& a, Body& b, V3 ra, V3 rb, V3 j);
 
