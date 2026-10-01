@@ -1,0 +1,62 @@
+# Disconnected components exercise the numerical representation in one ordinary state.
+initial samples
+state samples {
+    lambda = 1.0
+    iterations = 512
+    relaxation = 0.9
+    element control
+    element agree.a : participant { observation = 3.0 }
+    element agree.b : participant { observation = 3.0 }
+    element agree : constraint { left = "agree.a" right = "agree.b" }
+    element disagree.a : participant { observation = 2.0 unit = 1.0 }
+    element disagree.b : participant { observation = 10.0 }
+    element disagree : constraint { left = "disagree.a" right = "disagree.b" }
+    element cycle.a : participant { observation = 0.0 weight = 0.0 }
+    element cycle.b : participant { observation = 6.0 weight = 0.0 }
+    element cycle.c : participant { observation = 12.0 weight = 0.0 }
+    element cycle.ab : constraint { left = "cycle.a" right = "cycle.b" }
+    element cycle.bc : constraint { left = "cycle.b" right = "cycle.c" }
+    element cycle.ca : constraint { left = "cycle.c" right = "cycle.a" }
+    element pinned.a : participant { observation = 1.0 pinned = true pin = 7.0 }
+    element pinned.b : participant { observation = 10.0 weight = 0.0 }
+    element pinned : constraint { left = "pinned.a" right = "pinned.b" }
+    element coordinate.pin : participant {
+        dim = 2
+        observation_0 = 1.0
+        observation_1 = 5.0
+        pinned_0 = true
+        pin_0 = -3.0
+    }
+    element block.a : participant {
+        dim = 2
+        observation_0 = 4.0
+        observation_1 = 2.0
+        weight_0 = 3.0
+        weight_1 = 4.0
+    }
+    element block.b : participant { observation = 7.0 weight = 5.0 }
+    element block : constraint {
+        left = "block.a"
+        right = "block.b"
+        dim = 1
+        left_0_0 = 1.0
+        left_0_1 = 2.0
+        right_0_0 = 1.0
+        weight = 2.0
+        unit = 1.0
+    }
+    disagree.a -> disagree.a : receive(sample) on samples.receive { observation = unit * sample }
+    disagree.a -> disagree.a : confidence(sample) on samples.confidence { weight = unit * sample }
+    block -> block : restrict(sample) on samples.restrict { left_0_1 = unit * sample }
+    control -> control : join on samples.join native request_join
+    control -> control : leave on samples.leave native request_leave
+    say samples.join.edit
+    say samples.leave.edit
+}
+port samples.receive
+port samples.confidence
+port samples.restrict
+port samples.join
+port samples.leave
+edit samples on samples.join.edit native add_sample
+edit samples on samples.leave.edit native remove_sample

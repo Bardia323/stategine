@@ -33,6 +33,13 @@ add_library(stategine::stategine ALIAS stategine)
 target_include_directories(stategine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(stategine PUBLIC cxx_std_17)
 
+# Derived networking machinery above core. The network is an ordinary State;
+# no transport or reconciliation capability is added to the engine.
+add_library(stategine_net STATIC src/net/Cellular.cpp src/net/Reconcile.cpp src/net/CpuBackend.cpp)
+add_library(stategine::net ALIAS stategine_net)
+target_link_libraries(stategine_net PUBLIC stategine)
+include(cmake/network_gpu.cmake)
+
 # Drawing (sg/gl, sg/render): a library of its own on top, for what shows a
 # world. It needs no window: GL is loaded through the window's own
 # glfwGetProcAddress, and sg/gl/Window.hpp - GLFW's - stays a header.
@@ -236,6 +243,7 @@ if(SG_BUILD_TESTS)
     "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains:sg/core"
     "sg/spatial=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/spatial:"
     "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/physics:sg/core,sg/spatial"
+    "sg/net=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/net:sg/core"
     "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gl:"
     "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render:sg/core,sg/domains,sg/gl,sg/spatial"
     "sg/gpu=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gpu:sg/core,sg/algebra"
@@ -247,6 +255,15 @@ if(SG_BUILD_TESTS)
   # run by the engine, one construction read three ways, and a world that
   # compiles from inside (its source and its compiler states, its change an edit).
   if(SG_BUILD_DSL)
+    add_executable(sg_net tests/test_net.cpp)
+    target_link_libraries(sg_net PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)
+    stategine_compile_dsl(sg_net NAME network SOURCES tests/dsl/network.sg)
+    add_test(NAME sg_net COMMAND sg_net)
+    add_executable(sg_net_numerics tests/test_net_numerics.cpp)
+    target_link_libraries(sg_net_numerics PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)
+    stategine_compile_dsl(sg_net_numerics NAME network_numerics SOURCES tests/dsl/network_numerics.sg)
+    add_test(NAME sg_net_numerics COMMAND sg_net_numerics)
+
     add_executable(sg_projected tests/projected.cpp examples/Fields.cpp)
     target_link_libraries(sg_projected PRIVATE stategine_dev stategine_dsl)
     stategine_compile_dsl(sg_projected NAME fields SOURCES examples/fields.sg)

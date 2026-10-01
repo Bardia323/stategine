@@ -142,7 +142,7 @@ The build follows the same separation: the machine is a state, the compiler
 its interface. Headers hold declarations, types, templates, one-line/constexpr
 bodies and justified hot bodies (`// inline: every frame reaches for it`).
 Implementation belongs in `.cpp`. Modules and engine libraries (`stategine`,
-`stategine_render`, `stategine_dsl`) compile files independently; the linker
+`stategine_render`, `stategine_dsl`, `stategine_net`) compile files independently; the linker
 joins them. A changed body recompiles only its own file.
 `sg_shape` (the engine's) and `stategine_check_modules()` (a project's) fail
 on a module that includes what it does not use, or a header with a body that
@@ -168,6 +168,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `spatial` (`spatial/Math.hpp`, `Geometry.hpp`, `Index.hpp`) | pure transforms, bounds, rays, convex volumes, finite-surface projection and BVH | duplicated geometry or semantic ownership in a query cache |
 | `rigid::World`, `rope` (`physics/Rigid.hpp`, `Rope.hpp`) | bodies and cords, stepped as a state's cache, pure in restored params | hand-rolled collision or cords |
 | `field` (`physics/Field.hpp`) | named scalar/vector sources, receivers and pure query solver; directional/radial/plane or specialized const backend | private gravity/field logic, another clock or mutable captured state |
+| `net::Cellular`, `net::Reconcile` (`net/Cellular.hpp`, `Reconcile.hpp`) | stalks, overlaps, restrictions and CPU/CUDA reconciliation derived from an ordinary state's data | network entities, a second world, private reconciliation ticks or GPU-owned reality |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; extruded and lathed models | lighting maths or mesh code inside a game |
 
 Solvers and renderers are machinery inside the owning state, not new semantic
@@ -176,6 +177,48 @@ field support and render visibility keep separate derived indices. Field edits
 affecting sleeping bodies must wake them through an owning arrow. See
 [fields-and-views.md](docs/fields-and-views.md) and README's *Layout* for the
 current APIs and layers.
+
+## Networking is derived machinery above core
+
+`sg/net` is linked as `stategine::net`. The network is an ordinary `State`:
+its elements and params hold participants, observations, constraints and
+results. Author that state and its graph interfaces in the DSL. Keep networking
+out of State, Functor, StateGraph, Engine, Cover and the existing algebra API.
+
+- Local game data reaches the network through declared functors, lenses or
+  kept carries. Remote input enters a declared port through `Engine::send`.
+  Outgoing traffic is what the network `says`; an external observer may
+  serialize and send bytes, but cannot change the world.
+- Reconciliation is the network's own arrow, driven by `Temporal`. Its native
+  gathers its own state, evaluates `Reconcile`, writes its own results and says
+  they are ready; declared functors/events return corrections to game states.
+  Zero elapsed time is the identity. No private tick, callback or `on_update`.
+- Joining and leaving change structure through `graph.edit`, never through
+  the reconciliation arrow. Cellular overlaps can have noninvertible
+  restrictions; they do not change Cover's exact invertible descent semantics.
+- `Cellular` owns only derived layouts. Recompile when topology or restriction
+  operators change; gather fresh observations, confidence, overlap weights
+  and pins without rebuilding for value-only changes. Restored state data must
+  reproduce the same solution regardless of previous evaluations.
+- `LinearSystem` contains flat numerical buffers; `Backend` consumes those
+  buffers, never semantic objects. CPU and GPU caches are disposable execution
+  data. Neither warm starts nor cache history may become hidden state.
+- Apply `delta`, W and `delta*` matrix-free; use bounded iteration counts.
+  Hard pins are fixed variables or boundary conditions throughout the solve.
+  Finite lambda minimizes the confidence/disagreement objective and can leave
+  disagreement: report it separately from the free equation residual.
+- Keep the CPU implementation as the reference. GPU topology and restrictions
+  stay resident; upload changed inputs and download changed solutions. Report
+  an unavailable GPU explicitly rather than counting a CPU fallback as GPU
+  equivalence. A backend change must not change state or graph structure.
+
+No participant is intrinsically authoritative. Distribution and distributed
+consensus remain later execution work. See [networking.md](docs/networking.md)
+for the data schema, numerical contract, backend build options and limitations.
+`tests/dsl/network.sg` and `network_numerics.sg` author the test graphs. Run
+`sg_net` and `sg_net_numerics` for agreement, disagreement, cycles, pins,
+CPU/GPU equivalence, topology changes and value-only reuse; both must pass
+strict graph validation and `sg::verify` without unchecked equations.
 
 ## Adding a state, a room, an interface - checklist
 

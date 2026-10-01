@@ -1,0 +1,72 @@
+# Two incompatible local views, carried into one ordinary state, reconciled
+# on its Temporal line, and carried back. Neither participant is a leader.
+state time : temporal
+initial game.a
+
+state game.a {
+    element view {
+        value = 2.0
+    }
+    view -> view : corrected on game.a.corrected
+}
+state game.b {
+    element view {
+        value = 10.0
+    }
+    view -> view : corrected on game.b.corrected
+}
+
+state network {
+    residual = 0.0
+    equation_residual = 0.0
+    lambda = 1.0
+    iterations = 128
+    relaxation = 0.9
+    element computation
+    element a : participant {
+        observation = 0.0
+        weight = 1.0
+        result = 0.0
+        correction = 0.0
+    }
+    element b : participant {
+        observation = 0.0
+        unit = 1.0
+        weight = 1.0
+        result = 0.0
+        correction = 0.0
+    }
+    element agreement : constraint {
+        left = "a"
+        right = "b"
+        left_scale = 1.0
+        right_scale = 1.0
+    }
+    computation -> computation : reconcile(dt) on network.reconcile native reconcile
+    b -> b : receive(sample) on network.receive {
+        observation = unit * sample
+    }
+    say network.agreed
+}
+
+functor publish.a : game.a -> network {
+    object view -> a swizzle(observation = value)
+}
+functor publish.b : game.b -> network {
+    object view -> b swizzle(observation = value)
+}
+keep publish.a
+keep publish.b
+
+functor correct.a : network -> game.a {
+    object a -> view swizzle(value = result)
+    event network.agreed -> game.a.corrected
+}
+functor correct.b : network -> game.b {
+    object b -> view swizzle(value = result)
+    event network.agreed -> game.b.corrected
+}
+
+port network.receive
+drive time -> network.reconcile
+    keeps always

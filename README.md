@@ -18,6 +18,7 @@ into is a world of states.
 C++17. `stategine::stategine` contains core, domains, spatial, physics and
 compiled laws; `stategine::render` adds GL/ASCII; `stategine::dsl` and `sgc`
 compile the notation. `stategine::gpu` exposes optional algebra backends.
+`stategine::net` adds sparse matrix-free CPU/CUDA reconciliation and an external byte transport interface.
 The libraries need no window dependency; `sg/gl/Window.hpp` uses your GLFW,
 and OpenGL examples fetch it on demand.
 
@@ -786,6 +787,9 @@ include/sg/
     Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)
     Rope.hpp  (sg::rope: cords that hang, lie over edges, never pass through)
     Field.hpp (sg::field: sources, channels, receivers, pure query solver)
+  net/       Cellular.hpp, LinearSystem.hpp, Backend.hpp, Reconcile.hpp,
+    Transport.hpp (uses core;
+    derived networking machinery, built as stategine::net)
   render/    Ascii, GLWorld, Visibility; ViewPlan.cpp prepares GL drawing
     (uses core, domains, gl, spatial)
   gl/        the GL backend
@@ -797,9 +801,12 @@ include/sg/
 
 Rigid implementation is split into broadphase, collision, queries, ray queries,
 joints and solving. Physics, fields and rendering each keep their own derived
-spatial index. `sg.hpp` includes core/common domains; physics, render, DSL and
+spatial index. `sg.hpp` includes core/common domains; physics, net, render, DSL and
 algebra headers are opt-in. `cmake/` holds module, DSL and GPU build helpers;
 `examples/` and `tests/` demonstrate and check them.
+
+A network remains an ordinary state. [networking.md](docs/networking.md)
+describes vector stalks, sparse restrictions, CPU/CUDA backends and the DSL examples.
 
 Fields are computations inside an owning state: its arrows derive sources and
 receivers from params and write responses. Ordinary gravity is
