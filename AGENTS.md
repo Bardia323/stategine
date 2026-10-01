@@ -12,16 +12,16 @@ arrows. A room, a computer's desktop, a sheet of paper, a whiteboard, a realm
 seen on a television: each is a **state of its own**, and could exist with
 none of the others. States are connected **only** by the graph:
 
-| Interface | Declared with | What it is |
-| --- | --- | --- |
-| Transition | `graph.connect` / `push` / `pop`, on what a state `says` | the active state changes |
-| Functor / lens | `add_functor`, `add_lens` | data carried across, by object and arrow - written by hand, or found by `sg::kan` (a Kan extension, compiled to an ordinary functor; not another kind of thing) |
-| Embedding | `graph.embed` | a state lives in a portal of another (with `in`/`out` functors, a `subject`, a sync, focus) |
-| Seam | `add_seam`, `glue_doorway` | two states glued along a boundary - a doorway, a door hanging in it |
-| Drive | `graph.drive` | a state changes with the time a clock (`Temporal`) keeps: its arrows on a trigger fire with `{dt, time, frame}` |
-| Adjunction | `Adjunction` | a pair of functors with unit and counit, checked |
-| Port | `graph.port(state, event)` | the world outside (a program, a device) speaks to a state: `engine.send`, next frame |
-| Edit | `graph.edit(state, event, fn)` | what a state says rewrites the graph: applied by the engine at the start of the next frame, answered back to the state |
+| Interface | Declared with | What it is | Avoid |
+| --- | --- | --- | --- |
+| Transition | `graph.connect` / `push` / `pop`, on what a state `says` | directed change of active state | flags one state sets and another polls |
+| Functor / lens | `add_functor`, `add_lens` | object/arrow/data transport; `sg::kan::left` / `right` can derive an ordinary functor, not a new kind of thing | copying params in a game loop or another state's arrow |
+| Embedding | `graph.embed` | guest in a host portal, with `in`/`out`, subject, sync and focus | holding a guest pointer as the interface |
+| Seam | `add_seam`, `glue_doorway` | bidirectional boundary identification, including a doorway and its door | hand-placed global room coordinates |
+| Drive | `graph.drive` / `sg::drive` | a `Temporal` timeline fires arrows with `{dt, time, frame}`; additive drives omit `frame` | private timers, ticks or accumulated `dt` |
+| Adjunction | `Adjunction` | paired functors with checked unit and counit | treating a lossy adjunction as an isomorphism |
+| Port | `graph.port(state, event)` | external program/device input through `engine.send`, next frame | threads/callbacks writing into a state |
+| Edit | `graph.edit(state, event, fn)` | a state's request rewrites the graph next frame and receives a reply | in-world graph rewrites from the game loop |
 
 Anything else that moves data or control between two states is a bug, however
 convenient.
@@ -69,10 +69,11 @@ from what it says, and the laws can check it without running it
 (`sg::algebra`, `LawOptions::accelerate`). Never write a description beside a
 handler that does something else: what is said is what runs.
 
-A state's time is its line on the clock and nothing else: what shows or plays
-it takes that time too - a world that keeps its own time says so
-(`own_time`), and the renderer moves its shaders by it, not by its own
-clock. Nothing that presents a state runs a clock of its own for it.
+Time comes from the `Temporal` drive in the table below. Behaviour, shader
+animation (`own_time`) and sound use the same timeline; presentation keeps no
+second clock. Choose `Keeps` explicitly: `WhileActive` includes open active
+guests; `WhileShown` runs wherever shown; `WhileFocused` requires input;
+`WhileEntered` requires the current state; `Always` runs elsewhere.
 
 **4. Every state is reachable, and the engine keeps checking.**
 `graph.validate()` refuses a state no interface reaches (seams count). The
@@ -86,7 +87,8 @@ frame it appears - link it, don't silence it.
 state's initial conditions when it starts (`StateGraph::keep_defaults`);
 `restore_default(id, guests)` puts a state - and what lives in its portals -
 back; `keep_default(id)` makes how it is now its start (a room built at runtime
-keeps its default as made). Build states so this works: what a state is must be
+keeps its default as made). Build it fully in its constructor or before
+`engine.start`; call `keep_default` after deliberate setup. What a state is must be
 in its elements and params. Override `State::on_restored()` to refresh anything
 derived (a surface repaints).
 
@@ -136,29 +138,23 @@ in a frame's path. What the frame runs is the declared model looked up by
 index: arrows by trigger, transitions by trigger and by name, drives and
 routes by state, rebuilt only when the graph's revision moves.
 
-The build keeps the same rules. A machine is a state too, and the compiler
-is the interface to it: a header is what a thing is - its declarations, its
-types, its templates, its one-line bodies, and what every frame reaches for;
-its `.cpp` is what it does. Each module (and the engine: `stategine`,
-`stategine_render`) is a library; the compiler takes each file on its own
-and all at once, and the linker is the one pass that brings them together.
-A changed body recompiles its own file, never every file that includes it.
-A body goes in a header only if it is a line, a template, or hot - and a hot
-one says so in a comment above it (`// inline: every frame reaches for it`).
+The build follows the same separation: the machine is a state, the compiler
+its interface. Headers hold declarations, types, templates, one-line/constexpr
+bodies and justified hot bodies (`// inline: every frame reaches for it`).
+Implementation belongs in `.cpp`. Modules and engine libraries (`stategine`,
+`stategine_render`, `stategine_dsl`) compile files independently; the linker
+joins them. A changed body recompiles only its own file.
 `sg_shape` (the engine's) and `stategine_check_modules()` (a project's) fail
 on a module that includes what it does not use, or a header with a body that
 has no reason to be there.
 
 ## What already exists - reach for it before writing your own
 
-A new state that needs a thing one of these already is does not grow its own:
-it **meets that state through the graph** (a functor, a lens, an embedding, a
-drive) and carries only what it needs across. Before adding a param, a field,
-a counter or a helper inside a state, look here first. Need something a state
-does not quite give? Extend that state, or find the functor (`sg::kan` can work
-one out), never a private copy.
+Before adding a param, field, counter or helper, check this table. Carry only
+what is needed through a declared interface; extend the existing implementation
+or derive a functor when necessary, rather than keeping a private copy.
 
-| State (header) | It is | Use it instead of |
+| State or machinery (header) | It is | Use it instead of |
 | --- | --- | --- |
 | `Temporal` (`core/Temporal.hpp`) | time: a timeline per element, `time` and `frame` as params, one arrow that advances by `dt` | a `dt` argument used as a clock, a tick or frame counter, a timer param, `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its line on the clock |
 | `Spatial2D` / `Spatial3D` (`domains/Spatial.hpp`) | things with a pose that integrate; a 3D room, its `fixture`s and `mesh`es, `model`s | your own position / velocity / integrator |
@@ -168,31 +164,31 @@ one out), never a private copy.
 | `ConsoleState` (`domains/Console.hpp`) | scrollback, an input line, `submit` and `clear` | your own log buffer or command line |
 | `Atlas` / `Cover` (`domains/Atlas.hpp`, `core/Sheaf.hpp`) | charts glued by doorways; local pieces that must agree to glue | rooms placed by absolute coordinates; agreement checked by hand |
 | `TextStore` (`core/Store.hpp`) | texts kept in files, read once, re-read only when the stamp moves | file reads and writes of your own |
-| `Rigid`, `Rope` (`physics/`) | rigid bodies and a rope, stepped as a state's cache (pure in its params) | a hand-rolled collision, gravity or cord |
+| `Assets` (`core/Assets.hpp`) | files in `<root>/<owner>/`, with owner/path checks and legacy adoption | loose files or private asset paths; runs use `<build>/out/<state>/` |
+| `spatial` (`spatial/Math.hpp`, `Geometry.hpp`, `Index.hpp`) | pure transforms, bounds, rays, convex volumes, finite-surface projection and BVH | duplicated geometry or semantic ownership in a query cache |
+| `rigid::World`, `rope` (`physics/Rigid.hpp`, `Rope.hpp`) | bodies and cords, stepped as a state's cache, pure in restored params | hand-rolled collision or cords |
+| `field` (`physics/Field.hpp`) | named scalar/vector sources, receivers and pure query solver; directional/radial/plane or specialized const backend | private gravity/field logic, another clock or mutable captured state |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; extruded and lathed models | lighting maths or mesh code inside a game |
 
-And what carries between them, all declared in the graph:
-
-| To do | Use | Never |
-| --- | --- | --- |
-| carry data from one state to another | a functor / lens (`add_functor`, `add_lens`); `sg::kan::left` / `right` finds one from two others | copying params in a game loop or an arrow |
-| put one state inside another | `graph.embed` | holding a pointer to it |
-| change with time | `sg::drive` on a `Temporal` | a timer, a tick, a `dt` kept in a param |
-| change what is active | `graph.connect` / `push` / `pop` on what a state `says` | a flag one state sets and another polls |
-| rewrite the graph from inside | `graph.edit` | editing it from the game loop |
-| hear the world outside | `graph.port` | a thread or callback that writes into a state |
+Solvers and renderers are machinery inside the owning state, not new semantic
+worlds. Derive their inputs from its params; its arrows write results. Physics,
+field support and render visibility keep separate derived indices. Field edits
+affecting sleeping bodies must wake them through an owning arrow. See
+[fields-and-views.md](docs/fields-and-views.md) and README's *Layout* for the
+current APIs and layers.
 
 ## Adding a state, a room, an interface - checklist
 
-1. Its own header (and module) - what it is - and the header's own `.cpp` - what it does. Includes: the engine, modules under it. Nothing above. In a project, the module is `stategine_module(<name> USES ...)`, and `stategine_check_modules()` holds every module to this (see `cmake/StategineModules.cmake`).
-2. Its data in elements and params; its behaviour as arrows on them; no hidden state. Written in the notation (*The DSL*, `docs/notation.md`) wherever the notation can say it; C++ only for what is native.
-3. Its look (if it is seen) worn by it (`wear`).
-4. How it is reached: which interface, from which state, at which portal. Declare it in the graph (`embed`, `transition`, `seam`, ...).
-5. How it is acted on from outside: an event, through a focused embedding - not a method call from the game loop.
-6. Its default holds (build it fully in its constructor or before `engine.start`; `keep_default` after deliberate setup).
-7. Its content (if any) in a `TextStore` file, apart from its form.
-8. A test that builds its graph **alone** and runs `sg::verify`, plus one that it is reached through its interface in the whole.
-9. `CHANGELOG.md`: what changed, in plain words; **Breaking** where a project must change.
+1. Register `stategine_module(<name> USES ...)` and `stategine_check_modules()`
+   (`cmake/StategineModules.cmake`); follow the ownership/build rules above.
+2. Author the construction under *The DSL* below, applying rules 2-7 for
+   behaviour, reachability, appearance, input, defaults and content.
+3. Test the graph **alone** with `sg::verify`, then test its interface in the
+   assembled world. Use meaningful event args; inspect `unchecked` and `bounded`
+   as well as counterexamples. `ok()` is no structure problem/counterexample;
+   `holds()` also requires no unchecked equation; `complete()` excludes bounded
+   search. Check covers, adjunctions and interface defects where declared.
+4. Write `CHANGELOG.md` in plain words, with **Breaking** for consumer changes.
 
 ## The DSL: the construction, written as notation
 
@@ -206,11 +202,20 @@ engine's own calls.
 - **Sugar must disappear during lowering.** `wear`, `film`, `when`, input bindings and any other convenience syntax are legal only when they lower mechanically to existing Stategine primitives. No sugar construct may introduce runtime semantics of its own. Every construct names the primitive it becomes (`sg/dsl/Plan.hpp`: one step is one call of the engine's API); if you cannot name it, the syntax does not go in.
 - **Seams and transitions are different.** A seam identifies two boundaries bidirectionally. A transition is a directed change of active state. A seam does not imply two-way traversal. One-way traversal across a shared boundary is expressed as a seam plus only the permitted directed transition (`seam a.door <-> b.door` and `transition a -[cross]-> b`; if the transition carries anything between like states, it carries the seam's own travel functor - the engine's seam law allows nothing else). A seam never makes a transition; two transitions never make a seam.
 - **Port before removing.** For every existing C++ declaration migrated into the DSL, first reproduce it in the DSL, verify equivalence and run the laws/tests, and only then remove the old declaration. Never delete first and reconstruct afterward. Equivalence is `sg::dsl::facts` (`sg/dsl/Facts.hpp`): everything the DSL declares is in the C++-built graph's facts (`missing(plan, graph)` is empty); then the C++ goes, and the graph's facts are as they were.
-- **The notation is not a state; a source document may be one.** The DSL grammar is notation. A DSL program is a textual presentation of a StateGraph, and compiling it interprets that presentation into ordinary structure: the same objects the C++ API would have made. If source lives in the world (a terminal, a file, a sheet, a book, an editor) it is an ordinary state, and a compiler that reads it is a state whose arrows are native computations. Compiling into the running graph is never a mutation from an arrow or a callback: the compiler says a change, the graph declares it an `edit`, and the engine applies it at the start of the next frame (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`). Keep the levels apart - grammar is notation; the source document may be a state; the compiler may be a state with native computation; the result is plain StateGraph structure. Nothing here is a privileged meta-runtime.
+- **Notation is not a state; its source document may be.** A terminal, file, sheet, book or editor can hold source as an ordinary state; its compiler is another state with native arrows. Compilation produces ordinary StateGraph structure. The compiler requests a `graph.edit`, applied next frame, rather than mutating from an arrow/callback (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`). Grammar, source state, compiler state and resulting graph remain distinct; there is no privileged meta-runtime.
 
 What the compiler refuses is the ontology, as errors with the reason: a private timer (use a Temporal drive), a direct write from one state into another (target an arrow through a declared interface), IO in a transport (external effects cross a declared device or port), a callback that changes another state, `on_update`, `emit` as orchestration, a mode duplicating focus, input that writes a state. There is no syntax for any of them, and none to make migrating them easier: a migration repairs them (a `camera.params().set("fov", ...)` becomes the arrow `lens -> lens : zoom(fov)` and a functor to it).
 
-A native computation implements the inside of a declared arrow, transport or edit and nothing else (`sg/dsl/Natives.hpp`): its type gives it its own state and elements, never the graph, a clock, an engine or another state. The declaration stays the semantic source of truth. Natives are trusted extensions with restricted declared interfaces, **not a security sandbox**: the signature keeps ordinary code from being handed the graph, but a C++ closure can still capture an outside capability, and no stronger containment is claimed. Applying a plan is **all or nothing** (`sg::dsl::apply`: checkpoint, make, validate, roll back), and **facts are faithful**: any value the engine holds as data (a transition's `enter`, affine rows, transport stages, chains, embedding, seam, drive and edit configuration) and any native binding by name is in them, so `person = 1` is not `person = 2` and `native foo` is not `native bar`.
+A native implements only the inside of a declared arrow, transport or edit
+(`sg/dsl/Natives.hpp`). Arrows receive their own state/elements; transports their
+two endpoints, never a graph, clock, engine or unrelated state. Edits receive
+the graph as the declared rewrite capability. The declaration remains the
+semantic source of truth. Natives are trusted C++ with restricted interfaces,
+**not a sandbox**: closures can capture outside capabilities and must be reviewed.
+Applying a plan is **all or nothing** (`dsl::apply`: checkpoint, make, validate,
+roll back). **Facts are faithful**: transition `enter`, affine rows, transport
+stages/chains, embedding/seam/drive/edit configuration and native binding names
+are preserved. `person = 1` differs from `person = 2`; `native foo` from `native bar`.
 
 ## Before you finish
 

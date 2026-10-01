@@ -10,14 +10,16 @@ element of another, so an interface in one domain edits the world in another.
 The engine holds all of it to its laws - at compile time where it can, on live
 data where it must.
 
-Physics and a renderer come with it: bodies, ropes, light, GL and ASCII. Each
-is a state like any other, met through the graph. What you build on it - a
-game, a desktop, a painting you walk into - is a world of states.
+Physics and renderers come with it: bodies, ropes, fields, light, GL and ASCII.
+Solvers and views are machinery used by states; their data and connections
+belong to the owning states and graph. A game, desktop or painting you walk
+into is a world of states.
 
-C++17, no dependencies. Two libraries: `stategine::stategine` (the core, the
-domains, physics, the compiled laws) and `stategine::render` (GL and the ASCII
-renderer); `sg/gl/Window.hpp` is a header over your own GLFW. The OpenGL example
-fetches GLFW on demand.
+C++17. `stategine::stategine` contains core, domains, spatial, physics and
+compiled laws; `stategine::render` adds GL/ASCII; `stategine::dsl` and `sgc`
+compile the notation. `stategine::gpu` exposes optional algebra backends.
+The libraries need no window dependency; `sg/gl/Window.hpp` uses your GLFW,
+and OpenGL examples fetch it on demand.
 
 Building on it, or changing it? [AGENTS.md](AGENTS.md) is the short version of
 how: standalone states, joined only through interfaces the graph declares and
@@ -36,8 +38,8 @@ floor, in the same frame:
 | --- | --- | --- | --- |
 | ![Approaching the map](docs/images/approach.png) | ![The map in use](docs/images/open.png) | ![The crate near the camera](docs/images/before.png) | ![The crate moved with its token](docs/images/after.png) |
 
-The renderer knows nothing about this. It is one functor, `stamp`, running every
-frame because the portal is `Live`:
+The renderer does not move the crate. The `stamp` functor carries the map's
+edits because its embedding is `Live`:
 
 ```cpp
 graph.add_lens("collapse", "stamp", "room", "wallmap", objects,
@@ -49,10 +51,9 @@ graph.embed("wall_map", "room", "wall_map", "wallmap", "collapse", "stamp",
 
 ## Two rooms, and a map that moves the doorway
 
-Neither room has a position. The only thing relating them is a **doorway**: a
-portal element in each, the same doorway seen from either side. The renderer
-roots the world at whichever room you stand in and composes the doorway to place
-the other.
+Rooms have local coordinates, related by a **doorway**: one portal on each
+side of the same boundary. The renderer roots the view in the current room
+and composes doorway travel to place the other.
 
 The second room's map has one token: the doorway itself. Moving it walks the
 doorway around the hall - from inside the annex the hall swings round, from the
@@ -78,10 +79,9 @@ graph.embed("door_map", "annex", "door_map", "doormap",     // mounted in the an
 
 ## Time
 
-Time is a state too. A `sg::Temporal` holds timelines - an element each, with a
-`time` and a `frame`, moved by its own `advance` arrow. A state that changes
-with time says so with a drive, which gives it a line on the clock, and its
-arrows do the changing:
+`sg::Temporal` holds timelines: elements with `time` and `frame`, moved by an
+`advance` arrow. A drive gives each state its own timeline and fires its
+behaviour arrows:
 
 ```cpp
 auto& clock = graph.add<sg::Temporal>("clock");
@@ -91,31 +91,33 @@ pond.loop("spread", "ripple", "tick", [](sg::State&, sg::Element& e, sg::Element
 sg::drive(graph, clock, "pond", "tick", /*additive=*/true);   // the drive "clock>pond"
 ```
 
-Each frame the pond steps, its line on the clock advances by `dt` and the
-pond's `tick` arrows run with `{dt, time, frame}`, sent by the clock. A line
-keeps one state's time and moves only when that state steps, so `time` is
-always the sum of the steps the state has taken: paused under a menu and
-resumed, it finds no time missing and no jump. One clock can keep a whole
-world's time, a line per state (`validate` refuses a line kept for two).
-Within a frame, states step in the order the graph declares: the active state,
-then its open embeddings' guests, in the order they were embedded - so which of
-two driven states moves first is never left to chance. Time is a monoid of durations and a drive is its
-action, so the laws hold it to one: `step(0)` is the identity, and a drive that
-claims `additive` keeps `step(a) ; step(b) == step(a + b)` - which an exact
-flow does and a compounding or Euler step does not. An additive drive is not
-handed `frame` - a step count cannot keep that claim, so there is none to read:
+When the pond steps, its timeline advances by `dt` and its `tick` arrows receive
+`{dt, time, frame}`. Paused states lose no time and resume without a jump.
+One clock holds a timeline per state; `validate` rejects a line shared by two.
+The current state steps first, then open guests in embedding order.
+
+Time is a monoid of durations and a drive its action: `step(0)` is identity.
+An `additive` drive also claims `step(a); step(b) == step(a + b)`: an exact flow
+can keep this, Euler integration or compounding cannot. Additive drives omit
+`frame`, since counting steps would break the claim:
 
 ```
 drive @ drive clock>pond: pond.money.v was 100; pond [!tick(dt=0.5)@clock ; !tick(dt=0.5)@clock] leaves 225, pond [!tick(dt=1)@clock] leaves 200
 ```
 
-A drive keeps time `WhileActive` (the default: the room you are in and what is
-open in it), `Keeps::WhileShown` (while any embedding shows it open - a game on
-a set), `Keeps::WhileFocused` (only while it has the input - a game on a
-computer, which waits while another window is in front) or `Keeps::Always`: a record still turning, a door still swinging in
-a room you stepped out of. The engine steps such a state once a frame if the
-active state did not, with what is open in it, and carries its Live embeddings
-back out - so nothing needs stepping by hand from the game loop.
+A drive chooses when its timeline advances:
+
+| `Keeps` | When |
+| --- | --- |
+| `WhileActive` (default) | Current state or a guest open in an active host |
+| `WhileShown` | While any embedding shows it open, including elsewhere: a game on a set |
+| `WhileFocused` | While it receives input: a game behind another window waits |
+| `WhileEntered` | Only while it is current: a world in a painting waits on the wall |
+| `Always` | Every frame: a record turning or door swinging in another room |
+
+The engine steps each due state once per frame, including its open guests,
+and carries Live results back to hosts. The game loop never steps it by hand.
+Pictures (`own_time`) and sound use that same driven time.
 
 `on_update` still runs. `engine.set_watch_hooks(true)` reports any state whose
 hook - `on_update`, `on_event`, `on_render`, `on_enter`, `on_exit`, `on_pause`,
@@ -204,8 +206,8 @@ queue is dispatched in that order). Two paths that queue `damage(5)` and
 `damage(500)` do not agree, nor do `a, b` and `b, a`.
 
 A report keeps apart what it found, what it could not check and where it
-stopped looking: `ok()` is no counterexample; `holds()` is that and every
-equation run (`unchecked` empty); `complete()` is no search cut short by a
+stopped looking: `ok()` is no structure problem or counterexample; `holds()`
+also requires no unchecked equation; `complete()` is no search cut short by a
 `LawOptions` budget (`bounded` empty). `sg::enforce` throws unless `holds()`.
 
 Functoriality here is the square `f ; F == F ; F(f)` for each arrow `F` maps:
@@ -230,11 +232,9 @@ at `dt = 0` passes every law vacuously, so give it a `dt`. Only elements, state
 parameters and queued events are undone after a check; side effects a handler
 has elsewhere are not.
 
-Turning the laws on found three core bugs every earlier check had passed: the
-identity functor dropped objects created after it was built, a composite ending
-in a loop was registered with the wrong type, and a rebuilt part could leave its
-composite behind unnoticed. It also found the demo's 2D/3D "isomorphism" held
-only on scratch data.
+The laws caught bugs earlier checks missed: identity functors dropping newly
+created objects, mistyped composites ending in loops, stale composites after
+rebuilds, and a demo "isomorphism" that held only on scratch data.
 
 ### The laws, compiled
 
@@ -276,13 +276,14 @@ after.
 
 ## Using stategine in a project
 
-Pin a release; none of the engine's examples, tests or downloads come along.
+Pin a release tag or commit; examples, tests and GLFW downloads default off
+when included in a project. This example pins the implementation described here:
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(stategine
   GIT_REPOSITORY https://github.com/Bardia323/stategine.git
-  GIT_TAG        v0.2.0)
+  GIT_TAG        5bf45e6cc5e6a2f7b678343a7d0a18e58e21fe15)
 FetchContent_MakeAvailable(stategine)
 
 target_link_libraries(my_game PRIVATE stategine::stategine
@@ -297,6 +298,10 @@ sets this up, with a ctest that runs every law on the game's world. What each
 release breaks is in `CHANGELOG.md`.
 
 ## Writing a world
+
+The examples below show the C++ API and what DSL declarations lower to.
+Author new structure in the [notation](#the-notation) wherever it can express
+it; keep C++ for runtime implementation, devices and native computations.
 
 | Concept | In the engine | Category theory |
 | --- | --- | --- |
@@ -350,11 +355,11 @@ engine.fire(sg::Event{"attack", sg::Params{}.set("dmg", int64_t{8})});
 engine.run(60.0);
 ```
 
-A state's events stay in the state, except those it `says`: the engine hands
-those to the graph's transitions (and to nothing else - one no transition takes
-is dropped). Nothing in between: no listener, no `engine.fire` from inside an
-arrow. A state sees its engine const, so it cannot move the stack itself; what
-it said is part of what an arrow did, and a law's trial keeps it to itself.
+A state's events stay local except those it `says`. The engine routes these
+through transitions, declared functor event maps and edits. A state sees its
+engine const and cannot move the stack itself; no listener or `engine.fire`
+inside an arrow orchestrates the change. A law's trial keeps emitted events
+local to the trial.
 **Subscribers may observe the world; only the world may change it.** A
 listener (`bus().subscribe`) reads the event and does what is outside the
 world - draws, prints, plays a sound, logs. While it runs, firing the engine,
@@ -371,8 +376,10 @@ back to the state as `<event>.done`, for its own arrows to show:
 
 ```cpp
 editor.says("cmd");
+editor.says("enter");
 graph.edit("editor", "cmd", [&](sg::StateGraph& g, const sg::Event& asked) {
-    g.add<sg::State>(sg::Key{asked.args.get_or<std::string>("name", "")});
+    auto& made = g.add<sg::State>(sg::Key{asked.args.get_or<std::string>("name", "")});
+    g.connect("editor", "enter", made.id());  // the new state is reachable
     return sg::Params{}.set("text", std::string("made"));
 });
 ```
@@ -389,8 +396,9 @@ graph.embed("board", "desk", "board_portal", "board", "desk.to.board", {}, sg::E
 desk.says("chalk");   // an arrow of the desk emits chalk; the board's arrows on write run
 ```
 
-Transitions take an optional `guard`, an `action` (fills the `Params` handed to
-`on_enter`) and a `functor`. `"*"` as the source matches any state. A
+Transitions take an optional `guard`, constant `enter` params, an `action`
+and a carrying `functor`; entry params/actions supply `on_enter` arguments.
+`"*"` as the source matches any state. A
 transition's name is its identity: a name given twice is refused, and a made-up
 one (`from-trigger->to`) gets `#2`, `#3` for alternatives on the same event; an
 arrow's name is unique in its state. In a law, `Path::transition(name)` is the
@@ -413,7 +421,7 @@ graph.connect("world2d", "toggle", "world3d", "lift");   // a switch that carrie
 graph.compose_functors("roundtrip", {"lift", "flatten"});   // g * f, checked at the seam
 ```
 
-`Adjunction` is `F -| G` witnessed properly: declare a unit arrow
+`Adjunction` is `F -| G`: declare a unit arrow
 `a -> G(F(a))` and a counit arrow `F(G(b)) -> b` per object (`unit`,
 `counit`, with `identity` marking no-op loops that stand for identities), and
 `check` verifies both naturality squares and both triangle identities, on the
@@ -424,10 +432,8 @@ isomorphism. What a round trip loses is still reported (`unit_defects`,
 `counit_defects`, `data_defects`, `is_isomorphism`): those measure whether the
 pair is an isomorphism, not whether it is adjoint.
 
-A **Kan extension** is a functor found, not a thing added. `sg::kan` is a
-compiler: given `K : A -> B` (a known piece `A` of a world `B`) and
-`F : A -> C`, it works out what `F` must do on all of `B` that the piece
-forces, and hands back an ordinary `Functor`:
+A **Kan extension** derives an ordinary functor. Given `K : A -> B` and
+`F : A -> C`, `sg::kan` finds what `F` must do on the part of `B` forced by `K`:
 
 ```cpp
 sg::kan::Result r = sg::kan::left(graph, "K", "F", "extended");   // or kan::right
@@ -435,12 +441,11 @@ if (r.ok()) graph.add_functor(std::move(*r.functor));             // nothing can
 else std::puts(r.str().c_str());                                  // defects, holes
 ```
 
-At each object `b` it searches `C`'s own elements and arrows for the colimit
-of `F(a)` over every `K(a) -> b` (for `right`, the limit over every
-`b -> K(a)`) - `Lan_K F (b) = colim (K | b)`, `Ran_K F (b) = lim (b | K)` -
-an element every other cocone passes through by exactly one arrow. Nothing is
-invented: no colimit object, no new arrow, no guessed code. A result is one
-of three, and says which:
+At `b`, it searches existing `C` elements/arrows for
+`Lan_K F(b) = colim(K | b)` over `K(a) -> b` (or `Ran_K F(b) = lim(b | K)`
+over `b -> K(a)`): an apex every
+other (co)cone factors through uniquely. It invents no object, arrow or code.
+The result distinguishes:
 
 - **it exists**: `functor`, an ordinary `Functor`;
 - **it cannot exist**: `defects` - `C` has no (co)limit at some `b`, and the
@@ -457,16 +462,14 @@ only with `complete`; with `complete == false`, neither existence nor
 nonexistence. `complete` is about search alone - an `Unsupported` hole may
 stand with it true.
 
-A transport is `F . K^-1` from declared stages only. At `b = K(a)`, the leg
-there the identity, `K`'s transport at `a` is undone where its stages prove
-it invertible - a whole copy (the identity), or a one to one renaming with
-`F` reading only what it carries - and then `F`'s runs. A rename with a
-collision, a parameter dropped that `F` reads, arithmetic, a copy with
-renames on top: `Transport` holes. `F` the identity gives the identity
-transport only where `K` carries `a` whole - the same representation. Or a
-transport is supplied (`kan::Options::supply(b, transport)`). Never a copy
-of everything, never guessed code. An edit adds what is missing, and the
-compiler runs again.
+Transport is derived as `F . K^-1` from declared stages. At `b = K(a)`, the
+identity leg permits undoing `K` only where its stages prove invertibility:
+a whole copy or one-to-one rename carrying everything `F` reads. Collisions,
+dropped inputs, arithmetic and copy-plus-renames leave `Transport` holes.
+Identity `F` gives identity transport only when `K` carries the whole object.
+Alternatively supply transport with `kan::Options::supply(b, transport)`.
+Never guess code or copy everything as a fallback; an edit can add missing
+structure, then compilation can retry.
 
 A state is read as the category its arrows generate: a composite is the word
 of its parts, a loop that does nothing is an identity. For now `K` is an
@@ -474,10 +477,9 @@ inclusion, and the extension covers what `K`'s image reaches (for `right`,
 what reaches it). Hom-sets and cones are searched within `Options` budgets,
 and a search cut short says so (`Hole::Budget`, `complete`).
 
-The cost is paid once. The result is materialised; `r.current(graph)` says
-whether the structure it read - the three states, the two functors' maps - is
-as it was. Data moving under the same structure leaves it current; compile
-again only when it is not.
+`r.current(graph)` checks the three states' structure and two functors' maps.
+Data changes alone leave the result current; recompile only after structure
+changes.
 
 ### Embeddings
 
@@ -486,7 +488,12 @@ A transition replaces the active state; an embedding nests one inside an element
 
 * `EmbedSync::Live` - `out` runs every frame: the map moves the crate at once.
 * `EmbedSync::Commit` - `out` runs on close; `close_embed(name, false)` cancels.
-* `EmbedSync::View` - `in` runs every frame, nothing comes back.
+* `EmbedSync::View` - `in` runs during frames, with no automatic frame-time return.
+
+An explicitly committed close applies a declared `out`; closing with
+`close_embed(name, false)` cancels. With `set_follows(name, true)`, host arrows
+own the portal's `open`: the engine follows it, including a noncommitting
+close. Guest return events map through a functor to the host's close arrow.
 
 "Every frame" is as the embedding's `Propagation` says (`graph.set_propagation`):
 
@@ -499,11 +506,8 @@ A transition replaces the active state; an embedding nests one inside an element
 * `OnEvent` - only in a frame in which an event crossed into the guest through it.
 * `Manual` - only when `engine.sync_embed(name)` says so.
 
-An embedding is declared, then read: `embed` hands back a const view, and what
-it joins changes only through the graph (`set_sync`, `set_propagation`,
-`drop_embedding`), each counted. `set_focus(name, on)` says whether it takes
-input when opened. The subject need not be the host - a panel hanging in one
-room can act on another.
+`set_focus(name, on)` says whether the embedding takes input when opened.
+Configuration changes use counted graph setters (see *Who may change what*).
 
 Open and close with `engine.open_embed(name)` / `close_embed(name)`, or fire
 `embed.open` / `embed.close` with a `name`. A focused portal receives the
@@ -516,12 +520,19 @@ anything speaking the shared vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`,
 `w/h/yaw`, in `sg::keys`) can be drawn. So one `Spatial3D` can be a lit room, a
 terminal sketch and a texture on a wall at once.
 
-`sg::render::GLWorldView` draws any `Spatial3D`: portal passes into other
-states, shadow maps for the two nearest lamps, up to four spot lights with PCF
-shadows, procedural materials and fog, then bloom, ACES tonemapping and FXAA.
+`sg::render::GLWorldView` draws any `Spatial3D`: portal passes, lights and
+PCF shadows (four own shadow casters plus doorway light), procedural materials,
+fog and optional ambient occlusion, then bloom, ACES tonemapping and FXAA.
 Walls are data - a state with `wall` elements gets them drawn, one without gets a
 box. Knobs are in `sg::render::GLQuality`; elements set their own look through
 parameters (`r/g/b`, `roughness`, `intensity`, ...).
+
+`ViewPlan.cpp` derives cameras, clipping and draw candidates; `Visibility`
+uses a separate BVH; `GLWorld.cpp` draws the plan. World bindings require an
+open embedding or declared seam at that boundary; feeds require an open
+embedding and `feed` portal. Bindings supply resources, never create access.
+Raster panels may retain closed pictures and show outputs reached through
+declared embeddings and functors.
 
 ![Standing in the annex, looking into the hall: both rooms lit and shadowed by their own lamps](docs/images/east.png)
 
@@ -545,7 +556,7 @@ auto& alert = graph.add<sg::LookState>("hall.alert");
 alert.uniform(sg::passes::composite, "uTint", 1.3, 0.62, 0.55)
      .uniform(sg::passes::scene, "uFogDensity", 0.035)
      .fade(0.35);                                  // seconds to fade in
-cool.shader(sg::passes::composite, my_composite);  // a pass with its own shader
+alert.shader(sg::passes::composite, my_composite); // a pass with its own shader
 
 sg::wear(graph, "hall", "hall.calm");              // the first worn is active
 sg::wear(graph, "hall", "hall.alert");
@@ -555,9 +566,9 @@ sg::set_look(hall, "hall.alert");                  // a parameter write; the ren
 Each room is drawn in its own look, so the annex keeps its fog when seen from
 the hall. The post passes follow the room the viewer stands in.
 
-What is on screen is a *blend* of looks, as weights. A change of look moves
-weight towards the look now wanted, at the rate its `fade` sets, and never
-jumps. If the change is undone half way, the blend walks back along the same
+What is on screen is a weighted blend of looks, changing over `fade` seconds.
+A look with `fade = 0` cuts both in and out. If a fade is undone half way,
+the blend walks back along the same
 path to where it started. A third look reached mid-fade starts from the blend
 on screen, not from either end. Numbers are weighted averages. The composite
 pass runs every program in the blend and averages them, so a change of shader
@@ -583,6 +594,9 @@ a graph; `sgc` reads it, holds it to the ontology, and writes the C++ that
 builds the same construction through the engine's own API. There is no
 interpreter, no script and no second runtime; the engine that runs the result
 does not know where its declarations came from.
+
+The excerpt below comes from the complete [vertical slice](tests/dsl/scenario.sg).
+That source supplies the `room` and its gate, camera and native bindings.
 
 ```
 state time : temporal
@@ -633,14 +647,19 @@ neither makes the other.
 
 What the ontology forbids has no syntax, and the compiler says why: a private
 timer (`elapsed`), a write from one state into another, IO in a transport, a
-callback, `on_update`. C++ is for devices and for *native* computations - the
-inside of an arrow, a transport or an edit that is already declared, named in
-the notation and handed only its own elements (`sg::dsl::Natives`): trusted
-extensions with restricted interfaces, not a sandbox.
+callback, `on_update`. C++ supplies devices and named *native* computations
+inside declared arrows, transports and edits (`sg::dsl::Natives`). Arrows get
+their own state/elements, transports their declared endpoints; edits get the
+graph as their rewrite capability. These are trusted extensions with restricted
+interfaces, not a sandbox.
 
 ```cmake
 stategine_compile_dsl(game NAME world SOURCES src/world.sg)   # -> sgen::build_world(graph, natives, bindings)
 ```
+
+`stategine_compile_dsl` generates `<build>/dsl/<name>.cpp` and links
+`stategine::dsl`. Call the generated builder after its external states exist.
+`SG_BUILD_DSL` controls compiler/library construction and defaults on.
 
 The same plan can be made on a running graph: a source held by an ordinary
 state, a compiler that is a state with native arrows, and the change asked of
@@ -649,13 +668,15 @@ the graph by `graph.edit` - the world rewriting itself by the one lawful way
 what a graph is made of in canonical lines, so what a DSL program declares can
 be held beside the C++ it replaces before that C++ goes.
 
+Live `dsl::apply` is atomic: failure rolls back graph and touched data.
+Facts preserve entry values, transports, relation order and named native
+bindings. See [notation.md](docs/notation.md) for the syntax and migration checks.
+
 ## A game's modules
 
-A game built on the engine is built the way the engine is: each state (or a
-few that belong together) a module, each module a library - its headers say
-what a thing is, its `.cpp` files what it does - compiled on its own and all
-at once, with the linker the one pass that brings them together. A change
-recompiles only the files that changed.
+A state or related group forms a module/library. Headers declare; `.cpp` files
+implement and compile independently. The linker joins them; a changed body
+recompiles only its own file.
 
 ```cmake
 FetchContent_MakeAvailable(stategine)
@@ -675,8 +696,8 @@ line and neither a template, constexpr, nor said why (`// inline: ...`).
 
 Names are interned once, so hot paths compare pointers; morphisms are bucketed
 by trigger; `Params` is a flat vector; queues reuse their buffers; surfaces and
-portal textures redraw only when something moved. `./build/sg_bench` here
-(512 bodies, -O2):
+portal textures redraw only when something moved. An earlier `sg_bench` run
+(512 bodies, -O2) illustrates the measurements; rerun on your current machine:
 
 ```
 element lookup                      96,000 k/s
@@ -707,8 +728,8 @@ and is thrown away and found again when what it was found on changes:
   cache, `verify` is still faster: a side's end state is taken, not copied,
   and sides that left the same stamps agree without a value compared.
 
-`./build/sg_bench_scale` measures all of it at 1K..1M objects against the
-plain way (`--quick`, `--big`, or case numbers). Some of what it shows: a Live
+`./build/sg_bench_scale` measures 1K..1M objects against the plain way
+(`--quick`, `--big`, or case numbers). In the earlier run, a Live
 portal of 100K objects costs 0.5 ms a frame idle and 1.6 ms with 1% changing,
 against 72 ms carrying everything; with every object changing, still less
 than half. A graph verified again unchanged costs about 45% of a fresh check.
@@ -745,24 +766,49 @@ unchecked (`LawReport::unchecked`), apart from the counterexamples.
 
 ## Layout
 
+Public headers are under `include/sg/`; implementations mirror them under
+`src/`. The layer dependencies below are checked by `sg_shape`.
+
 ```
 include/sg/
   core/      the engine, domain-agnostic
     Core.hpp State.hpp Functor.hpp Adjunction.hpp Kan.hpp Embedding.hpp
-    StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent)
+    StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent) Temporal.hpp
+    Assets.hpp Store.hpp Text.hpp (owner folders, content, serialization)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
     Declared.hpp (what a step does, said: affine arrows and transports)
   algebra/   the laws compiled: Operator, Program, Backend (CPU), Compile
   gpu/       the algebra's batches on a GPU: AlgebraBackend.hpp (src/gpu: CUDA, ROCm, Vulkan, Metal)
-  domains/   what a state is about: Spatial, Atlas, Console, Surface, Look
+  domains/   state vocabulary: Spatial, Atlas, Console, Surface, Look, Camera,
+    Light, Shapes (uses core)
+  spatial/   pure geometry: Math.hpp, Geometry.hpp, Index.hpp (no state ownership)
   physics/   solvers a state can step in its arrows, plain data in and out:
     Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)
     Rope.hpp  (sg::rope: cords that hang, lie over edges, never pass through)
-  render/    how a state is shown: Ascii, GLWorld
+    Field.hpp (sg::field: sources, channels, receivers, pure query solver)
+  render/    Ascii, GLWorld, Visibility; ViewPlan.cpp prepares GL drawing
+    (uses core, domains, gl, spatial)
   gl/        the GL backend
+  dsl/       parse, kinds, compile/lower, plan, emit, apply, facts, natives,
+    compiler state (uses core, domains; built as stategine::dsl)
   sg.hpp     umbrella for core + domains (renderers are opt-in)
   Version.hpp
 ```
+
+Rigid implementation is split into broadphase, collision, queries, ray queries,
+joints and solving. Physics, fields and rendering each keep their own derived
+spatial index. `sg.hpp` includes core/common domains; physics, render, DSL and
+algebra headers are opt-in. `cmake/` holds module, DSL and GPU build helpers;
+`examples/` and `tests/` demonstrate and check them.
+
+Fields are computations inside an owning state: its arrows derive sources and
+receivers from params and write responses. Ordinary gravity is
+`World::fields = {field::Source::directional("gravity", vector)}`, replacing
+`World::gravity`. Time-dependent fields use the drive interval's start in
+`world.step(dt, time - dt)`. [fields-and-views.md](docs/fields-and-views.md)
+covers channels, body-local emitters, support bounds and specialized backends;
+[examples/fields.sg](examples/fields.sg) adds a host-controlled projector and
+nested 3D embeddings without traversal.
 
 ## Build and run
 
@@ -778,12 +824,18 @@ ctest --test-dir build                     # unit tests, laws, must-not-compile 
 | `sg_room3d` | **the real one**: one lit OpenGL space, two rooms, two maps |
 | `sg_room` | the same room and lens, in the terminal |
 | `sg_demo` | console/2D/3D states, an isomorphic pair, transitions, a portal, the laws - headless |
-| `sg_tests` | 178 assertions over the core, functors, portals, rooms and looks |
+| `sg_tests` | Core, functors, portals, rooms, looks, time, defaults and stores |
 | `sg_laws` | every data law holding, then broken on purpose and read back |
 | `sg_looks_gl` | looks on a real GL context: broken shaders named, fallbacks, late compiles counted (needs a display) |
 | `compile_fail_*` | pass only if an ill-typed composition is refused with stategine's own message |
 | `sg_core_only` | the core with no domain or renderer - the layering, as a build failure |
 | `sg_bench` | hot-path throughput |
+| `sg_bench_scale` | incremental law/portal costs at larger scales |
+| `sg_spatial`, `sg_fields`, `sg_rigid`, `sg_rope` | spatial queries, field responses and solvers |
+| `sg_projected`, `sg_projected_gl` | declared projected/nested views, including GL state/fact preservation |
+| `sg_dsl`, `sg_dsl_strong`, `sgc` | notation, equivalence, atomic apply and faithful facts; compiler CLI |
+| `sg_authority`, `sg_incremental`, `sg_algebra`, `sg_shape` | ownership, cached/uncached agreement, compiled laws and layers |
+| `sg_doorway_light_gl`, `sg_instancing_gl` | light through seams and batched drawing |
 
 `sg_room3d` controls: `WASD` walk (moves the token in map mode), mouse look,
 `E` use a map, `Tab` next token, `C` cancel, `Q`/`R` slide the lamp, `F` dim,
