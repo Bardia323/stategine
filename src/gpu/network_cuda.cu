@@ -27,9 +27,7 @@ extern "C" __global__ void network_step(unsigned n, const unsigned* offsets, con
     const double ax = confidence[c] * x[c] + lambda * value;
     next[c] = x[c] - alpha * (ax - confidence[c] * y[c]);
 }
-// Small initial compactor: bounded O(n), deterministic coordinate order.
-// Only changed solved values cross back to the host; this can later become
-// a parallel scan without changing any numerical or semantic interface.
+// The small-n path avoids scan launches. Both paths produce ascending indices.
 extern "C" __global__ void network_changes(unsigned n, const double* x, double* previous, unsigned valid,
                                             unsigned* count, unsigned* indices, double* values) {
     if (blockIdx.x || threadIdx.x) return;
@@ -39,4 +37,44 @@ extern "C" __global__ void network_changes(unsigned n, const double* x, double* 
         previous[c] = x[c];
     }
     *count = size;
+}
+// Integer scans are exact and scheduling independent. Every block has 128 lanes.
+__device__ unsigned scan_block(unsigned value, unsigned* scratch) {
+    const unsigned lane = threadIdx.x;
+    scratch[lane] = value; __syncthreads();
+    for (unsigned stride = 1; stride < 128; stride *= 2) {
+        const unsigned add = lane >= stride ? scratch[lane-stride] : 0;
+        __syncthreads(); scratch[lane] += add; __syncthreads();
+    }
+    return scratch[lane]-value;
+}
+extern "C" __global__ void network_change_flags(unsigned n,const double* x,const double* previous,unsigned valid,
+                                                 unsigned* offsets,unsigned* totals) {
+    __shared__ unsigned scratch[128];
+    const unsigned c = blockIdx.x*128+threadIdx.x;
+    const unsigned flag = c < n && (!valid || x[c] != previous[c]);
+    const unsigned offset = scan_block(flag,scratch);
+    if (c < n) offsets[c] = offset;
+    if (threadIdx.x == 127) totals[blockIdx.x] = scratch[127];
+}
+extern "C" __global__ void network_scan(unsigned n,const unsigned* input,unsigned* offsets,unsigned* totals) {
+    __shared__ unsigned scratch[128];
+    const unsigned c = blockIdx.x*128+threadIdx.x;
+    const unsigned offset = scan_block(c < n ? input[c] : 0,scratch);
+    if (c < n) offsets[c] = offset;
+    if (threadIdx.x == 127) totals[blockIdx.x] = scratch[127];
+}
+extern "C" __global__ void network_scan_add(unsigned n,unsigned* offsets,const unsigned* parent) {
+    const unsigned c = blockIdx.x*128+threadIdx.x;
+    if (c < n) offsets[c] += parent[blockIdx.x];
+}
+extern "C" __global__ void network_change_scatter(unsigned n,const double* x,double* previous,unsigned valid,
+                                                   const unsigned* offsets,const unsigned* blocks,unsigned* indices,double* values) {
+    const unsigned c = blockIdx.x*128+threadIdx.x;
+    if (c >= n) return;
+    if (!valid || x[c] != previous[c]) {
+        const unsigned destination = blocks[blockIdx.x]+offsets[c];
+        indices[destination] = c; values[destination] = x[c];
+    }
+    previous[c] = x[c];
 }

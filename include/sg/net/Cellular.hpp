@@ -38,5 +38,7 @@ private:
     std::uint64_t revision_ = 0;
     bool built_ = false;
     bool compiled_ = false;
+    struct RestrictionKeys { std::vector<Key> left, right; };
+    std::vector<RestrictionKeys> restriction_keys_;
 };
 } // namespace sg::net

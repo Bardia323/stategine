@@ -4,6 +4,8 @@
 #include <iostream>
 #include <thread>
 #include <random>
+#include <memory>
+#include <stdexcept>
 namespace {
 using namespace sg::net;
 int failures = 0;
@@ -18,8 +20,23 @@ int main() {
     queue.pop(DeliveryClass::Reliable); check(queue.front(DeliveryClass::Reliable)->bytes == Bytes({5,6,7,8}) && queue.push({"peer","agreement",DeliveryClass::Reliable,{},Bytes{9}}) == SendResult::Accepted,"reliable FIFO order and backpressure recovery are explicit");
     check(queue.push({"peer","boundary",DeliveryClass::Latest,"second",Bytes{4,5}}) == SendResult::Accepted && queue.push({"peer","boundary",DeliveryClass::Latest,"third",Bytes{6}}) == SendResult::Blocked,"latest slots and byte buffering are bounded");
     check(queue.push({"peer","agreement",DeliveryClass::Reliable,{},Bytes(9)}) == SendResult::TooLarge,"oversized messages fail visibly without entering a queue");
-    const int base = 50000+static_cast<int>(std::random_device{}()%10000);
-    sg::examples::Udp a(0,{{"a","127.0.0.1"},{"b","127.0.0.1"}},base),b(1,{{"a","127.0.0.1"},{"b","127.0.0.1"}},base);
+    // Windows/Hyper-V can reserve randomly selected ports. Retry bounded setup
+    // only; no failed send/receive or correctness assertion is retried away.
+    std::unique_ptr<sg::examples::Udp> first,second;
+    std::mt19937 random{std::random_device{}()};
+    const std::vector<Peer> peers{{"a","127.0.0.1"},{"b","127.0.0.1"}};
+    for (unsigned attempt = 0; attempt < 32 && !first; ++attempt) {
+        const int base = 20000+static_cast<int>(random()%25000);
+        try {
+            auto a = std::make_unique<sg::examples::Udp>(0,peers,base);
+            auto b = std::make_unique<sg::examples::Udp>(1,peers,base);
+            first = std::move(a); second = std::move(b);
+        } catch (const std::runtime_error& e) {
+            if (std::string(e.what()) != "UDP bind failed") throw;
+        }
+    }
+    if (!first) { std::cerr << "FAIL no available UDP port pair after bounded setup retries\n"; return 1; }
+    auto& a = *first; auto& b = *second;
     const Bytes opaque{0xff,0,17,0,254};
     check(a.send({"b","opaque",DeliveryClass::Latest,"slot",opaque}) == SendResult::Accepted,"UDP routes opaque bytes without decoding application packets");
     Inbound received; const auto end = std::chrono::steady_clock::now()+std::chrono::seconds(2);

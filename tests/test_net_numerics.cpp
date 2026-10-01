@@ -114,6 +114,30 @@ int main() {
         check(gpu.solve(system) == gx && gpu.transfers().downloaded_values == transfers.downloaded_values &&
               gpu.transfers().observation_uploads == transfers.observation_uploads && gpu.transfers().topology_uploads == transfers.topology_uploads,
               "unchanged solves retain GPU buffers and download no unchanged values");
+        bool compaction = true;
+        // Partial blocks and multiple scan levels exercise stable device-only
+        // compaction. Sparse output is obtained with pins, not tiny uploads.
+        for (std::uint32_t n : {129u,257u,16385u,131073u}) {
+            sg::net::Layout layout;
+            layout.stalk_offsets = {0,n}; layout.overlap_offsets = {0}; layout.row_offsets = {0}; layout.column_offsets.assign(n+1,0);
+            sg::net::LinearSystem flat{layout}; flat.observations.assign(n,1); flat.confidence.assign(n,0);
+            flat.fixed.resize(n); flat.pins.assign(n,1); flat.iterations = 0;
+            for (std::uint32_t i = 0; i < n; ++i) flat.fixed[i] = i%3 != 0;
+            compaction &= gpu.solve(flat) == cpu.solve(flat);
+            auto before = gpu.transfers();
+            compaction &= gpu.solve(flat) == cpu.solve(flat) && gpu.transfers().downloaded_values == before.downloaded_values;
+            std::fill(flat.observations.begin(),flat.observations.end(),2);
+            const auto changed_count = (n+2)/3;
+            compaction &= gpu.solve(flat) == cpu.solve(flat) && gpu.transfers().downloaded_values-before.downloaded_values == changed_count;
+            before = gpu.transfers();
+            std::fill(flat.observations.begin(),flat.observations.end(),1);
+            compaction &= gpu.solve(flat) == cpu.solve(flat) && gpu.transfers().downloaded_values-before.downloaded_values == changed_count;
+            before = gpu.transfers();
+            std::fill(flat.fixed.begin(),flat.fixed.end(),0); std::fill(flat.observations.begin(),flat.observations.end(),3);
+            compaction &= gpu.solve(flat) == cpu.solve(flat) && gpu.transfers().downloaded_values-before.downloaded_values == n;
+        }
+        check(compaction,"CUDA parallel compaction preserves coordinate order, pins, sparse/all/zero changes and restored values across scan levels");
+        gpu.solve(system); // restore the fixture before transfer-delta checks
     } else std::printf("SKIP CUDA equivalence: backend or device unavailable (no CPU fallback counted)\n");
     engine.send("samples", {"samples.receive", sg::Params{}.set("sample", 4.0)}); engine.tick(0);
     auto changed = cellular.gather(state);

@@ -12,6 +12,16 @@
 namespace sg::examples {
 namespace {
 void assign(State& state, const Params& args, bool initial) {
+    // Reconfiguring an already evaluated numerical plan starts a new explicit
+    // execution generation. The state arrow owns this metadata, never its cache.
+    bool controls_changed = false;
+    for (const auto key : {Key{"async"}, Key{"max_staleness"}, Key{"diffusion_step"}})
+        if (args.has(key) && (!state.params().has(key) || state.params().get(key) != args.get(key))) controls_changed = true;
+    if (initial && controls_changed && state.params().has("async_active")) {
+        const auto generation = net::Exchange::step(state).generation;
+        if (generation == INT64_MAX) throw std::overflow_error("net: execution generation overflow");
+        state.params().set("generation",generation+1);
+    }
     for (const auto key : {Key{"async"}, Key{"max_staleness"}, Key{"diffusion_step"}})
         if (args.has(key)) state.params().set(key, args.get(key));
     if (const auto* peer = args.text("peer")) state.params().set("peer", *peer);
@@ -67,9 +77,10 @@ sg::dsl::Natives distributed_natives(const net::Backend* backend, std::shared_pt
         const auto changes = solver->receive(s, packet);
         for (const auto& change : changes) s.element(change.element).params = change.params;
     });
-    n.arrow("distributed", [solver, backend](State& s, Element&, Element*, const Event& e) {
+    n.arrow("distributed", [solver, backend, output = std::make_shared<net::DistributedResult>()](State& s, Element&, Element*, const Event& e) {
         if (e.args.num("dt") <= 0) return;
-        const auto result = solver->evaluate(s, backend);
+        solver->evaluate(s, *output, backend);
+        const auto& result = *output;
         s.params() = result.params;
         for (const auto& change : result.boundaries) s.element(change.element).params = change.params;
         if (result.advanced) {

@@ -629,3 +629,153 @@ test; hardware diversity depends on available devices, not CPU fallback.
 network says and send it; incoming bytes reach only a declared port through
 `Engine::send`. Cellular restrictions may be noninvertible. They do not
 repurpose Cover's exact invertible descent semantics.
+
+## Execution workspaces and verification reuse
+
+`Distributed` retains a private disposable workspace alongside the existing
+Cellular and Partition layouts. It caches dense stalk offsets, boundary packet
+metadata, the asynchronous dominance certificate and the original operator
+bound/step. Epoch, generation, layout revisions, maximum staleness, lambda,
+confidence, overlap weights, fixed mask, pins, restrictions and solver controls
+determine that plan. Changes to these values within the same numerical
+epoch/generation fail closed. An explicit reconfiguration must advance the
+problem identity; the example's own configure arrow advances its execution
+generation when replacing an already evaluated plan.
+An omitted pin takes its value from the observation; changing that observation
+therefore changes a hard constraint and also requires a new problem identity.
+
+Observations, current results, incoming projections and sender progress are
+refilled from ordinary State params each evaluation. They do not invalidate
+the certificate. A restored state produces the same numerical step regardless
+of cached history. The in-place `evaluate(state, output, backend)` overload
+reuses output capacity; the value-returning overload remains available.
+`diagnostics()` counts plan/certificate builds, structural validation and
+numeric workspace capacity growth. These counters never influence a solve.
+
+Layout validation runs when the retained layout changes, constant validation
+when the plan changes, and finite/dimension checks on dynamic values every use.
+`PreparedSystem` is an execution-only borrowed view plus the original
+precomputed step, valid for its call while its buffers remain unchanged. It
+avoids deriving the same bound again in CPU/CUDA execution. Public `solve`,
+`residual` and verification of arbitrary public Problems retain full checks,
+including transpose consistency, bounds, finite numbers, masks and exact pins.
+The gradient method, iteration count and floating-point operation order remain
+the reference method; there is no PCG/multigrid change.
+
+Each `Verify` stores at most two validated immutable problem references:
+canonical CPU values/hash, raw/reference residuals and deterministic checkpoint/hash.
+Public `Problem::validate()` succeeds before any cache lookup; a claimed epoch
+digest cannot bypass it. An identical signed input set reuses authentication.
+Changed input signatures require authentication even when statement hashes are
+unchanged. Certificate and attestation signatures remain checked. Copies of
+Verify start with empty caches so different peers independently compute.
+Discrete rules and checkpoint callbacks must be deterministic functions of the
+immutable Problem and canonical values. Mutable captured world data is outside
+that contract. Protocol owns its validated Problem and reuses its independently
+verified result for later messages and Agreement acceptance. Tests count one
+CPU reference solve/input-set authentication per peer/problem.
+
+Signed wire framing is now `sg.net.protocol.v2`: a full Proposal carries the
+values and authenticated input set; later Attestation and Finalization messages
+carry a compact signed certificate reference and vote/quorum signatures. They
+carry neither solved vectors nor input sets. A receiver with the authenticated
+Problem independently reconstructs the canonical values. Otherwise it waits
+and sends a signed, recipient-bound data request for that epoch/decision;
+another peer responds with the full proposal/input data. No unknown hash can
+finalize, and packet ordering is irrelevant. Pending recovery is limited to
+64 messages/4 MiB, with 64 request/response identities and 256 received-frame
+deduplication entries per Protocol. Excess work is reported as rejected rather
+than accepted or buffered without bound. Requests/responses use the external
+Reliable control path, whose retained retransmissions/backpressure provide
+delivery; Protocol has no retry clock. Required input availability and a live
+data holder remain necessary. Epoch, decision, receipt and durable-journal hash
+domains are unchanged, but all session peers must upgrade the wire framing
+together; v1 frames are refused.
+
+CUDA output above 128 coordinates uses device-only flags, hierarchical integer
+prefix scans and stable scatter. Each coordinate has its ascending output
+offset; scheduling cannot change order. Small systems retain the single-launch
+serial path. Host downloads remain count, changed indices and changed values
+only, with unchanged solves transferring no values. Tests cover partial blocks,
+multiple scan levels, pins, sparse/all/zero changes and restored inputs.
+
+## Networking benchmark
+
+Enable `-DSG_BUILD_NET_BENCH=ON` and build `sg_net_bench`. It is an opt-in
+measurement executable, not a CTest correctness test. Its worlds and ports are
+declared in DSL. For example:
+
+```sh
+build/sg_net_bench 32 32
+build/sg_net_bench 32 1536 cpu
+build/sg_net_bench --compaction
+```
+
+The first two arguments select coordinates and the distributed relaxation
+budget; an optional third selects `cpu` or `cuda`. It measures single-machine
+bounded solves, synchronous/asynchronous reconciliation, canonical verification
+and complete Protocol finalization independently. Logical peer counts are
+2/4/8/16, with simulated 1/10/50/100 ms delivery delays. Virtual delivery time
+is separate from measured computation and never enters solver/world semantics.
+CSV rows include coordinates, nonzeros, overlaps, partitions, cold/warm times,
+rounds and residual, coordinate/nonzero throughput, bytes, allocations, workspace
+growth after warmup, CPU reference solve time and CUDA transfers. The target
+equation residual is 1e-6; a reported target round of -1 means the bounded
+budget did not reach it. Warm measurements include packet handling/stalled
+evaluations per completed relaxation. Heap allocation counts include ordinary
+State/Params and wire materialization; zero numeric workspace growth does not
+claim zero total allocations. The allocation counter covers ordinary C++ `new`, excluding
+driver/system allocations. Allocation totals start after the first projection
+and include initial result materialization; capacity growth is sampled after
+each peer has completed two relaxations. Logical CUDA peers share one serial executor in
+this benchmark, so partition switches include resident layout replacement;
+`--compaction` isolates a resident device layout with contiguous uploads and
+one-third changed outputs. Real multi-process/backend correctness is covered
+separately by the test suite.
+
+Measured on 2026-10-01, Windows Release GCC 16/UCRT, Ryzen 5 3600 and RTX
+3090 Ti, against pre-optimization main `8f66545`. The same benchmark source was
+linked against an archived pre-change net library/header set and the optimized
+library. The 32-coordinate chain has 31 overlaps/62 restriction nonzeros;
+the short run uses 32 relaxations. Verification/finalization figures below
+are medians over the four simulated delays. Computation excludes injected
+delay. Results are one local measurement, not portable performance guarantees.
+
+| Measurement | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| CPU synchronous, 2 partitions, 1 ms, warm microseconds/relaxation | 71.94 | 31.82 | 2.26x faster |
+| CPU asynchronous, same case | 86.81 | 30.81 | 2.82x faster |
+| Repeated canonical verification, 16-member problem, microseconds | 973.22 | 169.35 | 5.75x faster |
+| Complete 16-peer CPU finalization, milliseconds | 2297.00 | 260.57 | 8.81x faster |
+| Bytes per 16-peer finalized epoch | 1,729,140 | 1,000,020 | 42.2% fewer |
+| Warm synchronous whole-fixture allocations, 2 peers/32 rounds/1 ms | 28,247 | 4,700 | 83.4% fewer |
+| Warm asynchronous whole-fixture allocations, same case | 38,695 | 4,649 | 88.0% fewer |
+| Resident CUDA, 262,145 coordinates, changed solve microseconds | 41,441 | 3,353 | 12.4x faster |
+| Resident CUDA, same size, unchanged solve microseconds | 39,026 | 2,667 | 14.6x faster |
+
+The CUDA compaction measurement uses zero solver iterations, contiguous changed
+observations and pins leaving one-third of outputs changed; both versions
+download exactly 873,820 changed values over ten samples. Small serial-path
+results remain approximately unchanged. Cold first-device setup is approximately
+110 ms and is reported separately; 16-member CPU cold proposal/verification
+was approximately 0.92 ms before and 0.51 ms after. Raw public 32-coordinate
+CPU solve time is essentially unchanged (29.53 vs 29.79 microseconds), since
+that API still validates arbitrary caller buffers. Its numerical solve is
+already small compared with authentication/control and distributed bookkeeping
+in this fixture, so there is no measured justification for changing solvers.
+Cold workspace setup can cost more: the first two-partition synchronous
+preparation measured 137.6 vs 223.8 microseconds, and asynchronous preparation
+117.8 vs 131.1. The benefit is removing that repeated work from warm rounds.
+
+All 32 before/after CPU/CUDA protocol cases retain identical receipt hashes and
+canonical result hashes, independent of virtual delay. All 64 optimized
+distributed cases report zero numeric workspace capacity growth after warmup.
+The 32-round measurement budget does not converge to 1e-6; a separate 1,536-round
+CPU run reaches that equation residual in all 32 combinations of partition
+count, synchronous/asynchronous execution and delay, after 1,052–1,080 rounds.
+For 16 partitions/100 ms, synchronous virtual completion takes 153,600 ms;
+bounded async takes 17,105 ms for the same relaxation budget. These are simulated
+schedule results, not WAN latency promises. Remaining work includes semantic
+Params copies, frame materialization, signatures/hash validation and shared
+CUDA-executor layout changes. Measurements live under `<build>/out/network/`;
+the reproducible benchmark source is `benchmarks/network.cpp`.

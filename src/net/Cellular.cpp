@@ -86,6 +86,27 @@ Key Cellular::coordinate_key(Key base, std::uint32_t dimension, std::uint32_t co
     return dimension == 1 ? base : Key{base.str() + "_" + std::to_string(coordinate)};
 }
 bool Cellular::derive(const State& state) {
+    // Check the retained metadata without allocating another candidate layout.
+    if (built_) {
+        std::size_t vertices = 0, edges = 0;
+        for (const auto& e : state.elements()) { vertices += e.kind == Key{"participant"}; edges += e.kind == Key{"constraint"}; }
+        bool same = vertices == stalks_.size() && edges == overlaps_.size();
+        for (const auto& v : stalks_) {
+            const auto* e = state.find(v.element);
+            if (!e || e->kind != Key{"participant"} || integer(e->params,"dim",1) != v.dimension) { same = false; break; }
+        }
+        for (std::size_t i = 0; same && i < overlaps_.size(); ++i) {
+            const auto& v = overlaps_[i]; const auto* e = state.find(v.element);
+            if (!e || e->kind != Key{"constraint"} || integer(e->params,"dim",1) != v.dimension || !e->params.text("left") || !e->params.text("right") || *e->params.text("left") != stalks_[v.left].element.str() || *e->params.text("right") != stalks_[v.right].element.str()) { same = false; break; }
+            const auto check = [&](const char* side,const std::vector<Key>& keys,const std::vector<double>& entries,std::uint32_t dim) {
+                const auto scale = number(e->params,Key{std::string(side)+"_scale"},1);
+                for (std::size_t j = 0; j < keys.size(); ++j) if (number(e->params,keys[j],j/dim == j%dim ? scale : 0) != entries[j]) return false;
+                return true;
+            };
+            same = check("left",restriction_keys_[i].left,v.left_restriction,stalks_[v.left].dimension) && check("right",restriction_keys_[i].right,v.right_restriction,stalks_[v.right].dimension);
+        }
+        if (same) return false;
+    }
     std::vector<Stalk> stalks;
     for (const auto& e : state.elements())
         if (e.kind == Key{"participant"}) stalks.push_back({e.id, integer(e.params, "dim", 1)});
@@ -106,6 +127,14 @@ bool Cellular::derive(const State& state) {
     std::sort(overlaps.begin(), overlaps.end(), [](const Overlap& a, const Overlap& b) { return a.element < b.element; });
     if (built_ && stalks == stalks_ && overlaps == overlaps_) return false;
     stalks_ = std::move(stalks); overlaps_ = std::move(overlaps);
+    restriction_keys_.clear(); restriction_keys_.resize(overlaps_.size());
+    for (std::size_t i = 0; i < overlaps_.size(); ++i) {
+        const auto& e = overlaps_[i];
+        const auto keys = [&](const char* side,std::uint32_t dim,std::vector<Key>& out) {
+            for (std::uint32_t r = 0; r < e.dimension; ++r) for (std::uint32_t c = 0; c < dim; ++c) out.emplace_back(std::string(side)+"_"+std::to_string(r)+"_"+std::to_string(c));
+        };
+        keys("left",stalks_[e.left].dimension,restriction_keys_[i].left); keys("right",stalks_[e.right].dimension,restriction_keys_[i].right);
+    }
     built_ = true; compiled_ = false; ++revision_;
     return true;
 }

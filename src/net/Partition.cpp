@@ -26,6 +26,15 @@ bool Boundary::operator==(const Boundary& b) const {
 bool Partition::update(const State& state, const Cellular& c) {
     const auto* name = state.params().text("peer");
     if (!name || name->empty()) throw std::invalid_argument("net: partition needs a peer id");
+    if (built_ && topology_ == c.revision() && peer_.id == *name && owners_.size() == c.stalks().size()) {
+        bool same = true;
+        for (std::size_t i = 0; i < owners_.size(); ++i) {
+            const auto& p = state.element(c.stalks()[i].element).params; const auto* owner = p.text("solver");
+            if (p.has("solver") && (!owner || owner->empty())) throw std::invalid_argument("net: solver must be a peer id");
+            same &= owners_[i] == (owner ? *owner : *name);
+        }
+        if (same) { peer_.endpoint = state.params().get_or<std::string>("endpoint",{}); return false; }
+    }
     Peer peer{*name, state.params().get_or<std::string>("endpoint", {})};
     std::vector<std::string> owners;
     std::vector<std::uint32_t> stalks, edges, offsets(c.stalks().size(), std::numeric_limits<std::uint32_t>::max());
@@ -52,6 +61,7 @@ bool Partition::update(const State& state, const Cellular& c) {
         l.stalk_offsets.push_back(index(static_cast<std::size_t>(l.stalk_offsets.back()) + overlap.dimension));
     }
     peer_.endpoint = peer.endpoint;
+    owners_ = owners;
     if (built_ && topology_ == c.revision() && peer_.id == peer.id && stalks_ == stalks && overlaps_ == edges && boundaries_ == boundaries) return false;
     topology_ = c.revision();
     for (const auto e : edges) {

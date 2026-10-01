@@ -11,12 +11,12 @@ Digest Finalization::id() const {
     detail::Writer w("sg.net.finalized.v1"); w.digest(proposal.certificate.epoch); w.digest(proposal.certificate.result); w.digest(proposal.certificate.checkpoint); return hash(w.data());
 }
 Agreement::Agreement(Committee c, Digest previous, std::uint64_t next_tick, Persist persist, std::string world) : committee_(std::move(c)),previous_(previous),next_tick_(next_tick),world_(std::move(world)),persist_(std::move(persist)) {
-    committee_.validate();
+    committee_id_ = committee_.id();
     if ((next_tick == 0) != (previous == Digest{}) || (next_tick > 0 && world_.empty())) throw std::invalid_argument("net: regional agreement needs its verified finalized predecessor and world identity");
 }
 bool Agreement::current(const VerifiedResult& r) const {
     const auto& c = r.epoch().context;
-    return handoff_ == Digest{} && (world_.empty() || world_ == c.world) && c.partition == committee_.region && c.generation == committee_.generation && c.committee == committee_.id() && c.tick == next_tick_ && c.previous == previous_;
+    return handoff_ == Digest{} && (world_.empty() || world_ == c.world) && c.partition == committee_.region && c.generation == committee_.generation && c.committee == committee_id_ && c.tick == next_tick_ && c.previous == previous_;
 }
 Attestation Agreement::attest(const VerifiedResult& r, const std::string& peer, const SigningKey& key) {
     if (!current(r) || !committee_.key(peer) || *committee_.key(peer) != key.public_key()) throw std::invalid_argument("net: attestation is not for this member's current regional step");
@@ -39,25 +39,29 @@ bool Agreement::receive(const VerifiedResult& r, const Attestation& a) {
     world_ = r.epoch().context.world; votes_[a.signer] = a; return true;
 }
 std::optional<Finalization> Agreement::finalize(const VerifiedResult& r, const Proposal& p) {
-    if (!current(r) || p.certificate.epoch != r.epoch().id() || p.certificate.result != r.result() || p.certificate.checkpoint != hash(r.checkpoint())) return std::nullopt;
+    if (!current(r) || p.certificate.epoch != r.epoch().id() || p.certificate.result != r.result() || p.certificate.checkpoint != r.checkpoint_hash()) return std::nullopt;
     Finalization out{p,{}};
     for (const auto& [peer,vote] : votes_) { (void)peer; if (vote.epoch == r.epoch().id() && vote.decision == r.decision()) out.attestations.push_back(vote); }
     if (out.attestations.size() < committee_.quorum) return std::nullopt;
     return out;
 }
 std::optional<VerifiedResult> Agreement::accept(const Problem& p, const Verify& verify, const Finalization& f) {
-    const auto result = verify.proposal(p,committee_,f.proposal);
-    if (!result || !current(*result) || f.attestations.size() > committee_.members.size()) return std::nullopt;
+    const auto result = f.proposal.values.empty() && !p.observations.empty() ? verify.certificate(p,committee_,f.proposal.certificate) : verify.proposal(p,committee_,f.proposal);
+    if (!result) return std::nullopt;
+    return accept_verified(*result,f);
+}
+std::optional<VerifiedResult> Agreement::accept_verified(const VerifiedResult& result,const Finalization& f) {
+    if (!current(result) || f.proposal.certificate.epoch != result.epoch().id() || f.proposal.certificate.result != result.result() || f.proposal.certificate.checkpoint != result.checkpoint_hash() || f.attestations.size() > committee_.members.size()) return std::nullopt;
     std::set<std::string> signers;
     for (const auto& a : f.attestations) {
         const auto* key = committee_.key(a.signer);
-        if (!key || a.epoch != result->epoch().id() || a.decision != result->decision() || !signers.insert(a.signer).second || !check_signature(*key,a.statement(),a.signature)) return std::nullopt;
+        if (!key || a.epoch != result.epoch().id() || a.decision != result.decision() || !signers.insert(a.signer).second || !check_signature(*key,a.statement(),a.signature)) return std::nullopt;
     }
     if (signers.size() < committee_.quorum || next_tick_ == UINT64_MAX) return std::nullopt;
     // A failed flush must leave the live predecessor intact so the same
     // verified receipt can be retried, rather than skipping a world step.
     auto next = *this;
-    next.world_ = result->epoch().context.world; next.previous_ = f.id(); ++next.next_tick_; next.votes_.clear(); next.locks_.clear(); next.persist();
+    next.world_ = result.epoch().context.world; next.previous_ = f.id(); ++next.next_tick_; next.votes_.clear(); next.locks_.clear(); next.persist();
     world_ = std::move(next.world_); previous_ = next.previous_; next_tick_ = next.next_tick_; votes_.clear(); locks_.clear(); return result;
 }
 Digest Agreement::previous() const { return previous_; }
@@ -65,14 +69,14 @@ std::uint64_t Agreement::next_tick() const { return next_tick_; }
 const std::vector<VoteConflict>& Agreement::evidence() const { return evidence_; }
 void Agreement::persist() const { if (persist_) persist_(snapshot()); }
 Bytes Agreement::snapshot() const {
-    detail::Writer w("sg.net.agreement-journal.v1"); w.digest(committee_.id()); w.digest(previous_); w.integer(next_tick_); w.text(world_); w.digest(handoff_); w.integer(locks_.size());
+    detail::Writer w("sg.net.agreement-journal.v1"); w.digest(committee_id_); w.digest(previous_); w.integer(next_tick_); w.text(world_); w.digest(handoff_); w.integer(locks_.size());
     for (const auto& [peer,a] : locks_) { (void)peer; w.digest(a.epoch); w.digest(a.decision); w.text(a.signer); w.signature(a.signature); }
     return w.data();
 }
 void Agreement::restore(const Bytes& bytes) {
     if (!locks_.empty() || !votes_.empty() || handoff_ != Digest{}) throw std::logic_error("net: restore needs an unused agreement instance");
     detail::Reader r(bytes,"sg.net.agreement-journal.v1");
-    if (r.digest() != committee_.id() || r.digest() != previous_ || r.integer() != next_tick_) throw std::invalid_argument("net: journal must match an independently verified predecessor");
+    if (r.digest() != committee_id_ || r.digest() != previous_ || r.integer() != next_tick_) throw std::invalid_argument("net: journal must match an independently verified predecessor");
     const auto world = r.text(); const auto handoff = r.digest(); const auto n = r.integer();
     if (!world_.empty() && world != world_) throw std::invalid_argument("net: journal belongs to another world");
     if (n > committee_.members.size()) throw std::invalid_argument("net: excessive journal locks");

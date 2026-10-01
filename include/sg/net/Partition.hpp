@@ -30,5 +30,6 @@ private:
     std::uint64_t compilations_ = 0;
     std::uint64_t topology_ = 0;
     bool built_ = false;
+    std::vector<std::string> owners_;
 };
 } // namespace sg::net

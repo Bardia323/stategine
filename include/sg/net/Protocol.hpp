@@ -4,7 +4,7 @@
 #include <set>
 
 namespace sg::net {
-enum class MessageKind : std::uint8_t { Inputs, Proposal, Attestation, Finalization };
+enum class MessageKind : std::uint8_t { Inputs, Proposal, Attestation, Finalization, Request };
 struct Message {
     MessageKind kind = MessageKind::Inputs;
     std::string from, to;
@@ -35,6 +35,7 @@ public:
     const Problem* problem() const;
     const std::vector<Observation>& observations() const;
     std::size_t rejected() const;
+    VerifyStats verification_diagnostics() const;
 private:
     Committee committee_;
     std::string peer_;
@@ -58,5 +59,11 @@ private:
     void solve();
     void finish();
     void broadcast(Message message);
+    void drain_pending();
+    void request_data(const Message& message);
+    std::vector<Message> pending_;
+    std::set<Digest> pending_frames_, requests_;
+    std::size_t pending_bytes_ = 0;
+    Digest context_id_{}, committee_id_{};
 };
 }

@@ -43,8 +43,11 @@ private:
     std::vector<VoteConflict> evidence_;
     Persist persist_;
     Digest handoff_{};
+    Digest committee_id_{};
     bool current(const VerifiedResult& result) const;
     void persist() const;
+    std::optional<VerifiedResult> accept_verified(const VerifiedResult& result, const Finalization& finalization);
+    friend class Protocol;
 };
 struct Handoff {
     Finalization finalized;

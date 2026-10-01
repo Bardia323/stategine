@@ -11,14 +11,26 @@ struct DistributedResult {
     std::vector<Packet> outgoing;
     bool advanced = false;
 };
+struct DistributedStats {
+    std::uint64_t plans = 0, certificates = 0, layout_validations = 0, workspace_growths = 0;
+};
 class Distributed {
 public:
+    Distributed();
+    ~Distributed();
+    Distributed(const Distributed& other);
+    Distributed& operator=(const Distributed& other);
     DistributedResult evaluate(const State& state, const Backend* backend = nullptr);
+    void evaluate(const State& state, DistributedResult& out, const Backend* backend = nullptr);
     std::vector<BoundaryChange> receive(const State& state, const Packet& packet);
     const Partition& partition() const { return partition_; }
     const Cellular& cellular() const { return cellular_; }
+    DistributedStats diagnostics() const;
 private:
     Cellular cellular_;
     Partition partition_;
+    struct Workspace;
+    std::unique_ptr<Workspace> workspace_;
+    void prepare(const State& state);
 };
 } // namespace sg::net

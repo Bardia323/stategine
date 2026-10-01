@@ -2,12 +2,15 @@
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/dsl/Runtime.hpp"
+#include "sg/dsl/Compile.hpp"
+#include "sg/dsl/Apply.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
 #include <stdexcept>
 #include <random>
+#include <limits>
 
 namespace sgen {
 void build_distributed(sg::StateGraph&, const sg::dsl::Natives&, sg::dsl::Bindings&);
@@ -214,6 +217,16 @@ int main() {
     check(equivalent(async.values(),expected) && async.laws(),"bounded async with seeded random delay, loss, duplicates, reordering and unequal speeds targets the synchronous objective");
     bool certified = true; for (const auto& m : async.machines) certified &= m->graph.state("network").params().get_or<bool>("async_active",false);
     check(certified,"coercive strictly dominant neighborhoods use the certified async path");
+    std::vector<sg::net::DistributedStats> warm_stats;
+    for (const auto& m : async.machines) warm_stats.push_back(m->solver->diagnostics());
+    for (int i = 0; i < 100; ++i) async.tick();
+    bool reused = true;
+    for (std::size_t i = 0; i < async.machines.size(); ++i) {
+        const auto now = async.machines[i]->solver->diagnostics(); const auto before = warm_stats[i];
+        reused &= now.plans == before.plans && now.certificates == before.certificates &&
+                  now.layout_validations == before.layout_validations && now.workspace_growths == before.workspace_growths;
+    }
+    check(reused,"warm async evaluations and receives reuse the certificate, operator, validation and numeric capacity despite changing values/progress");
     auto& fast = *async.machines[0]; const auto step = sg::net::Exchange::step(fast.graph.state("network"));
     auto newer = sg::net::Packet{"p1","p0",{step.epoch,step.generation,step.tick+10},{{"ab",step.tick+10,{123.0}}}};
     fast.engine->send("network",{"network.receive",sg::net::Exchange::arguments(sg::net::Exchange::encode(newer))}); fast.engine->tick(0);
@@ -237,6 +250,49 @@ int main() {
     World unsafe(2,{0,0,0,1,1,1}); unsafe.asynchronous(4,1.0); bool step_refused = false;
     try { unsafe.tick(); } catch (const std::invalid_argument&) { step_refused = true; }
     check(step_refused,"an async step above the actual operator/staleness bound fails closed");
+    sg::StateGraph guarded_graph; sg::dsl::Natives guarded_natives;
+    guarded_natives.arrow("configure",[](sg::State& state,sg::Element&,sg::Element*,const sg::Event& event){
+        for (auto key : {sg::Key{"epoch"},sg::Key{"lambda"},sg::Key{"diffusion_step"}})
+            if (event.args.has(key)) state.params().set(key,event.args.get(key));
+        for (auto key : {sg::Key{"weight"},sg::Key{"pinned"},sg::Key{"pin"}})
+            if (event.args.has(key)) state.element("a").params.set(key,event.args.get(key));
+        if (event.args.has("restriction")) state.element("ab").params.set("left_scale",event.args.get("restriction"));
+        if (event.args.has("observation")) state.element("a").params.set("observation",event.args.get("observation"));
+    });
+    const auto guarded_source = sg::dsl::compile_source(R"(
+initial guarded
+state guarded {
+    peer = "p0"
+    epoch = 0
+    generation = 0
+    element control
+    element a : participant { observation = 2.0 solver = "p0" }
+    element b : participant { observation = 10.0 solver = "p1" }
+    element ab : constraint { left = "a" right = "b" }
+    control -> control : configure on guarded.configure native configure
+}
+port guarded.configure
+)","<execution cache contract>");
+    if (!guarded_source.ok()) throw std::runtime_error(guarded_source.report());
+    const auto guarded_apply = sg::dsl::apply(guarded_source.plan,guarded_graph,guarded_natives);
+    if (!guarded_apply.ok) throw std::runtime_error(guarded_apply.why);
+    sg::Engine guarded_engine(guarded_graph); guarded_engine.set_strict(true); guarded_engine.start();
+    sg::net::Distributed guarded_solver; sg::net::DistributedResult guarded_output;
+    guarded_solver.evaluate(guarded_graph.state("guarded"),guarded_output);
+    const auto configure = [&](sg::Params args) { guarded_engine.send("guarded",{"guarded.configure",std::move(args)}); guarded_engine.tick(0); };
+    const auto rejected_plan = [&] { try { guarded_solver.evaluate(guarded_graph.state("guarded"),guarded_output); return false; } catch (const std::invalid_argument&) { return true; } };
+    configure(sg::Params{}.set("observation",3.0)); guarded_solver.evaluate(guarded_graph.state("guarded"),guarded_output);
+    check(guarded_solver.diagnostics().plans == 1,"changing observations refills state values without invalidating the numerical plan");
+    bool guarded = true; std::int64_t epoch = 0;
+    for (const auto& change : {sg::Params{}.set("weight",2.0),sg::Params{}.set("lambda",0.5),sg::Params{}.set("pinned",true).set("pin",4.0),sg::Params{}.set("restriction",2.0),sg::Params{}.set("diffusion_step",0.02)}) {
+        configure(change); guarded &= rejected_plan();
+        configure(sg::Params{}.set("epoch",++epoch)); guarded_solver.evaluate(guarded_graph.state("guarded"),guarded_output);
+    }
+    check(guarded && guarded_solver.diagnostics().plans == 6 && guarded_solver.diagnostics().layout_validations == 2,"confidence, penalty, pins, restrictions and controls fail closed inside an epoch; only layout changes repeat structural validation");
+    configure(sg::Params{}.set("observation",std::numeric_limits<double>::quiet_NaN()));
+    check(rejected_plan(),"warm prepared execution still rejects nonfinite dynamic observations");
+    configure(sg::Params{}.set("observation",3.0));
+    check(guarded_graph.validate().empty() && sg::verify(guarded_graph).holds(),"cache contract fixture retains declared ports, strict validation and laws");
     if (gpu.available()) {
         World mixed(2,{0,0,0,1,1,1}); mixed.asynchronous();
         // Natives hold the declared backend pointer; rebuild the second world

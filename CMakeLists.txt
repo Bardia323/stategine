@@ -19,6 +19,7 @@ endif()
 option(SG_BUILD_EXAMPLES "Build the examples and demos" ${SG_TOP_LEVEL})
 option(SG_BUILD_TESTS "Build the tests, law checks and compile-fail cases" ${SG_TOP_LEVEL})
 option(SG_BUILD_GL "Build the OpenGL room example (downloads GLFW)" ${SG_TOP_LEVEL})
+option(SG_BUILD_NET_BENCH "Build the standalone networking benchmark" OFF)
 
 # --- the library ---------------------------------------------------------------
 # A header says what a thing is; its .cpp, what it does. Each .cpp is
@@ -381,3 +382,10 @@ if(SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
 endif()
 
 include(cmake/network_ice.cmake)
+if(SG_BUILD_NET_BENCH)
+  if(NOT SG_BUILD_DSL)
+    message(FATAL_ERROR "sg_net_bench requires the DSL for its declared worlds")
+  endif()
+  add_executable(sg_net_bench benchmarks/network.cpp)
+  target_link_libraries(sg_net_bench PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)
+endif()

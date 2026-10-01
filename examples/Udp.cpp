@@ -34,6 +34,7 @@ public:
         WSADATA data;
         if (WSAStartup(MAKEWORD(2,2), &data)) throw std::runtime_error("UDP initialization failed");
 #endif
+        try {
         socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (socket_ == invalid) throw std::runtime_error("UDP socket failed");
         sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_ANY); address.sin_port = htons(static_cast<unsigned short>(base+rank));
@@ -47,7 +48,18 @@ public:
             addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
             addrinfo* found = nullptr;
             if (getaddrinfo(peers[i].endpoint.c_str(), std::to_string(base+i).c_str(), &hints, &found)) throw std::runtime_error("UDP peer lookup failed");
-            routes_[peers[i].id] = *reinterpret_cast<sockaddr_in*>(found->ai_addr); freeaddrinfo(found);
+            const auto route = *reinterpret_cast<sockaddr_in*>(found->ai_addr); freeaddrinfo(found);
+            routes_[peers[i].id] = route;
+        }
+        } catch (...) {
+            // A failed constructor has no Impl destructor. Release the socket
+            // and startup reference before a caller retries external setup.
+            if (socket_ != invalid) close_socket(socket_);
+            socket_ = invalid;
+#ifdef _WIN32
+            WSACleanup();
+#endif
+            throw;
         }
     }
     ~Impl() {

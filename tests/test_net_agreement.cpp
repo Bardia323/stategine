@@ -36,6 +36,31 @@ int main() {
     const auto proposal = verify.propose(p,f.committee,f.committee.members[0].peer,*f.keys[0],cpu);
     const auto good = verify.proposal(p,f.committee,proposal);
     check(good && good->values() == std::vector<double>({6,6}),"canonical solve preserves the zero-confidence mean");
+    check(good && good->checkpoint_hash() == hash(good->checkpoint()),"memoized deterministic checkpoint hash retains the exact signed bytes");
+    Verify cached; unsigned checkpoints = 0;
+    Verify checkpoint_cache({},[&](const Problem&,const std::vector<double>& values){ ++checkpoints; return canonical_result(values,p.solver.quantum); });
+    const auto cached_proposal = cached.propose(p,f.committee,f.committee.members[0].peer,*f.keys[0],cpu);
+    const auto cached_result = cached.proposal(p,f.committee,cached_proposal);
+    Agreement cached_agreement(f.committee);
+    for (int i = 0; i < 3; ++i) {
+        const auto another = cached.propose(p,f.committee,f.committee.members[i].peer,*f.keys[i],cpu);
+        const auto verified = cached.proposal(p,f.committee,another);
+        cached_agreement.attest(*verified,f.committee.members[i].peer,*f.keys[i]);
+        checkpoint_cache.propose(p,f.committee,f.committee.members[i].peer,*f.keys[i],cpu);
+    }
+    const auto cached_final = cached_agreement.finalize(*cached_result,cached_proposal);
+    check(cached_final && cached_agreement.accept(p,cached,*cached_final) && cached.diagnostics().reference_solves == 1 &&
+          cached.diagnostics().authenticated_input_sets == 1 && checkpoints == 1,"self/remote verification, checkpoints and finalization reuse one locally authenticated reference");
+    auto changed_problem = p; changed_problem.observations[0] = 9;
+    check(!cached.proposal(changed_problem,f.committee,cached_proposal) && cached.diagnostics().reference_solves == 1,"a warm cache never bypasses validation of mutable Problem buffers");
+    changed_problem = p; changed_problem.epoch.ordered_inputs[0].signature[0] ^= 1;
+    check(!cached.proposal(changed_problem,f.committee,cached_proposal),"unchanged input digest never bypasses changed observation signatures");
+    auto forged_certificate = cached_proposal; forged_certificate.certificate.signature[0] ^= 1;
+    check(!cached.proposal(p,f.committee,forged_certificate),"a warm reference still authenticates every new certificate");
+    Verify fresh_verifier;
+    check(!fresh_verifier.proposal(p,f.committee,forged_certificate) && fresh_verifier.diagnostics().reference_solves == 0,"forged certificates are rejected before an expensive cold reference solve");
+    Verify other_peer = cached; other_peer.proposal(p,f.committee,cached_proposal);
+    check(other_peer.diagnostics().reference_solves == 1 && cached.diagnostics().reference_solves == 1,"copying a verifier starts an independent peer reference cache");
     auto ordered = p.epoch.ordered_inputs; std::reverse(ordered.begin(),ordered.end());
     check(Problem::make(p.epoch.context,p.system(),p.solver,ordered).epoch.id() == p.epoch.id(),"canonical input order is independent of arrival order");
     const auto close = verify.propose(p,f.committee,f.committee.members[1].peer,*f.keys[1],Nearby{});
@@ -133,6 +158,71 @@ int main() {
     check(!prediction.finalized_sample(2) && !prediction.finalized_sample(3) && prediction.finalized_sample(4) == std::optional<PredictedValues>{{5,4}},"skipped speculative frames cannot masquerade as finalized history");
     Message wire; wire.from = f.committee.members[0].peer; wire.to = f.committee.members[1].peer; wire.kind = MessageKind::Finalization; wire.inputs = p.epoch.ordered_inputs; wire.finalization = *finalized;
     check(encode(decode_message(encode(wire))) == encode(wire),"signed regional wire encoding is canonical");
+    Message vote_wire = wire; vote_wire.kind = MessageKind::Attestation; vote_wire.proposal = proposal; vote_wire.attestation = finalized->attestations[0];
+    const auto small_vote = encode(vote_wire).size(), small_final = encode(wire).size();
+    Message data_wire = wire; data_wire.kind = MessageKind::Proposal; data_wire.proposal = proposal;
+    const auto small_data = encode(data_wire).size();
+    vote_wire.proposal.values.resize(4096,6); wire.finalization.proposal.values.resize(4096,6); data_wire.proposal.values.resize(4096,6);
+    check(encode(vote_wire).size() == small_vote && encode(wire).size() == small_final &&
+          encode(data_wire).size() == small_data+8*(4096-2) && decode_message(encode(wire)).finalization.proposal.values.empty(),
+          "attestation/finalization bytes exclude coordinates and inputs; only full proposal bytes grow with the solved vector");
+    // Isolate the fourth peer until the other three finalize. Deliver only a
+    // compact receipt first; it must explicitly recover authenticated data.
+    std::vector<std::unique_ptr<Agreement>> agreements;
+    std::vector<std::unique_ptr<Integrity>> integrities;
+    std::vector<std::unique_ptr<Protocol>> protocols;
+    std::vector<InputSlot> slots;
+    for (const auto& o : p.epoch.ordered_inputs) slots.push_back({o.peer,o.object,o.parameter,o.sequence,o.discrete});
+    const auto builder = [&](const std::vector<Observation>& inputs){ return Problem::make(p.epoch.context,p.system(),p.solver,inputs); };
+    for (int i = 0; i < 4; ++i) {
+        agreements.push_back(std::make_unique<Agreement>(f.committee)); integrities.push_back(std::make_unique<Integrity>(f.committee));
+        protocols.push_back(std::make_unique<Protocol>(f.committee,f.committee.members[i].peer,*f.keys[i],cpu,p.epoch.context,slots,builder,Verify{},*agreements.back(),*integrities.back()));
+    }
+    for (int i = 0; i < 2; ++i) protocols[i]->submit({p.epoch.ordered_inputs[i]});
+    std::optional<Message> receipt;
+    for (int round = 0; round < 12; ++round) {
+        std::vector<Message> messages;
+        for (auto& protocol : protocols) { auto out = protocol->outgoing(); messages.insert(messages.end(),out.begin(),out.end()); }
+        std::reverse(messages.begin(),messages.end());
+        for (const auto& message : messages) {
+            if (message.to == f.committee.members[3].peer) { if (message.kind == MessageKind::Finalization) receipt = message; continue; }
+            const auto target = std::find_if(f.committee.members.begin(),f.committee.members.end(),[&](const auto& member){return member.peer == message.to;});
+            const auto index = static_cast<std::size_t>(target-f.committee.members.begin());
+            protocols[index]->receive(decode_message(encode(message))); protocols[index]->receive(decode_message(encode(message)));
+        }
+    }
+    check(receipt && protocols[0]->accepted() && protocols[1]->accepted() && protocols[2]->accepted() && !protocols[3]->accepted(),"compact reordered/duplicate control traffic finalizes a quorum with one disconnected peer");
+    if (receipt) {
+        auto forged_reference = *receipt; forged_reference.finalization.proposal.certificate.signature[0] ^= 1;
+        protocols[3]->receive(forged_reference);
+        check(protocols[3]->outgoing().empty() && !protocols[3]->accepted(),"forged references cannot trigger data recovery or world acceptance");
+        auto unknown = *receipt; auto& cert = unknown.finalization.proposal.certificate; cert.result[0] ^= 1;
+        const auto signer = std::find_if(f.committee.members.begin(),f.committee.members.end(),[&](const auto& member){return member.peer == cert.signer;});
+        cert.signature = f.keys[static_cast<std::size_t>(signer-f.committee.members.begin())]->sign(cert.statement());
+        protocols[3]->receive(unknown); protocols[3]->receive(*receipt);
+        check(!protocols[3]->accepted() && !protocols[3]->problem(),"unknown digest references wait for authenticated full data instead of inventing inputs");
+        unsigned responses = 0;
+        for (const auto& request : protocols[3]->outgoing()) {
+            const auto target = std::find_if(f.committee.members.begin(),f.committee.members.end(),[&](const auto& member){return member.peer == request.to;});
+            auto& sender = *protocols[static_cast<std::size_t>(target-f.committee.members.begin())];
+            auto forged_request = request; forged_request.attestation.signature[0] ^= 1; sender.receive(forged_request);
+            sender.receive(decode_message(encode(request)));
+            for (const auto& response : sender.outgoing()) if (response.to == f.committee.members[3].peer && response.kind == MessageKind::Proposal) {
+                ++responses; protocols[3]->receive(decode_message(encode(response)));
+            }
+        }
+        check(responses == 1 && protocols[3]->accepted() && protocols[3]->finalized()->id() == protocols[0]->finalized()->id(),"signed bounded request/retransmission recovers a missing proposal after finalization with the identical receipt");
+    }
+    bool one_reference = true;
+    for (const auto& protocol : protocols) { const auto stats = protocol->verification_diagnostics(); one_reference &= stats.reference_solves == 1 && stats.authenticated_input_sets == 1; }
+    check(one_reference,"every active peer independently solves/authenticates its immutable epoch exactly once across all protocol messages");
+    for (unsigned tick = 1; tick <= 2; ++tick) {
+        const auto context = f.context(hash(Bytes{static_cast<std::uint8_t>(tick)}),tick);
+        const auto next_problem = Problem::make(context,f.system(),f.spec,f.inputs(context));
+        cached.propose(next_problem,f.committee,f.committee.members[0].peer,*f.keys[0],cpu);
+    }
+    cached.proposal(p,f.committee,cached_proposal);
+    check(cached.diagnostics().reference_solves == 4,"reference cache is bounded to two problems and evicted epochs require a fresh independent solve");
     auto truncated = encode(wire); truncated.pop_back(); check(refused([&]{ decode_message(truncated); }),"truncated signed frame is rejected");
     return failures ? 1 : 0;
 }

@@ -811,6 +811,11 @@ A network remains an ordinary state. [networking.md](docs/networking.md)
 describes vector stalks, sparse restrictions, CPU/CUDA backends, partitioned
 diffusion, bounded asynchronous relaxation, pure execution placement and the
 DSL examples. Singular problems retain their synchronous canonical component.
+Disposable execution workspaces retain certificates and numerical capacity;
+each peer computes its canonical reference once per validated immutable problem.
+Compact signed control messages recover missing data explicitly. Opt-in
+`SG_BUILD_NET_BENCH=ON` adds `sg_net_bench` for cold/warm CPU/CUDA, distributed,
+verification and protocol measurements; see the networking guide for results.
 `sg_net_peer` runs the same declared world on
 equal peers over external UDP sockets; `sg_net_processes` checks four processes
 against a single-machine result. Signed regional execution is demonstrated by

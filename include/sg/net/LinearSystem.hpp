@@ -26,9 +26,13 @@ struct Residual {
     double equation = 0;    // maximum free-coordinate |Ax - My|
 };
 void validate(const LinearSystem& system);
+void validate_layout(const Layout& layout);
+void validate_constants(const LinearSystem& system);
+void validate_dynamic(const LinearSystem& system);
 void coboundary(const Layout& layout, const std::vector<double>& x, std::vector<double>& out);
 void laplacian(const LinearSystem& system, const std::vector<double>& x, std::vector<double>& out);
 void apply(const LinearSystem& system, const std::vector<double>& x, std::vector<double>& out);
 double step_size(const LinearSystem& system);
+double operator_bound(const LinearSystem& system);
 Residual measure(const LinearSystem& system, const std::vector<double>& x);
 } // namespace sg::net

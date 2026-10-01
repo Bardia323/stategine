@@ -225,11 +225,38 @@ latest-neighbor bounded-staleness relaxation; validate the step against the
 actual operator and declared staleness. Singular/unproven systems retain the
 matching-round algorithm and canonical kernel component. Transport delays
 never become a private solver clock or invented boundary.
-Keep original observations and numerical controls fixed within an epoch. A
+Keep numerical weights, pins, restrictions and controls fixed within an epoch;
+verified Problems also bind their immutable observations/input set. A
 split/merge hands off moving work through declared input, changes execution
 params through an edit and refreshes the derived layout, without new game
 states. Socket retries remain external machinery. See [networking.md](docs/networking.md)
 for the data schema, numerical contract, backend build options and limitations.
+
+`Distributed` may retain one private disposable numerical workspace, never a
+second Cellular/Partition or protocol progress. Refill changing values from
+State on every evaluation. Memoize dominance certificates, operator bounds and
+dense indices only against epoch/generation, retained layout revisions and
+every weight/pin/restriction/control that determines the plan. Fail closed on
+changes within that problem; a declared reconfiguration must advance its
+epoch/generation. Validate layout on layout changes, constants on plan changes
+and dynamic values each use. Prepared backend views borrow validated buffers
+for that call only; public solver/residual entry points remain fully checked.
+
+`Verify` keeps at most two locally validated problem references. Validate a
+public Problem before using its cryptographically bound cache key; never trust
+a claimed digest. A verifier copy starts empty so each peer independently
+solves. Cache canonical values/hash/residual and deterministic checkpoint/hash only;
+the rule/checkpoint callbacks must be pure in the immutable Problem. Reuse
+authentication only for the identical signed input set; authenticate new
+certificate, vote and request signatures. Compact protocol controls may refer
+to a locally recomputed result, but missing input/proposal data needs bounded,
+authenticated request/retransmission. Unknown hashes cannot finalize, and
+predecessor chains, durable locks, quorum intersection and evidence stay intact.
+CUDA changed-value compaction uses stable flag/scan/scatter order, never atomic
+append. Run warm-capacity, cache-safety, reordered reference recovery and
+multi-level scan regressions. `SG_BUILD_NET_BENCH` is opt-in and is not a law
+test; separate measured computation from virtual transport delay and report
+remaining allocations honestly. Keep the bounded-gradient reference method.
 
 `Placement` is a pure deterministic planner over Cellular and finalized data,
 capacities and execution/traffic costs. Hysteresis counts finalized epochs.
