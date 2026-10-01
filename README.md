@@ -18,7 +18,7 @@ into is a world of states.
 C++17. `stategine::stategine` contains core, domains, spatial, physics and
 compiled laws; `stategine::render` adds GL/ASCII; `stategine::dsl` and `sgc`
 compile the notation. `stategine::gpu` exposes optional algebra backends.
-`stategine::net` adds sparse matrix-free CPU/CUDA reconciliation and an external byte transport interface.
+`stategine::net` adds sparse matrix-free CPU/CUDA reconciliation, neighboring execution partitions, signed canonical epochs, independent verification, regional quorum finalization and disposable latency prediction over external byte transport.
 The libraries need no window dependency; `sg/gl/Window.hpp` uses your GLFW,
 and OpenGL examples fetch it on demand.
 
@@ -788,7 +788,9 @@ include/sg/
     Rope.hpp  (sg::rope: cords that hang, lie over edges, never pass through)
     Field.hpp (sg::field: sources, channels, receivers, pure query solver)
   net/       Cellular.hpp, LinearSystem.hpp, Backend.hpp, Reconcile.hpp,
-    Transport.hpp (uses core;
+    Transport.hpp, Peer.hpp, Partition.hpp, Exchange.hpp, Distributed.hpp,
+    Epoch.hpp, Integrity.hpp, Verify.hpp, Agreement.hpp, Protocol.hpp,
+    Prediction.hpp (uses core;
     derived networking machinery, built as stategine::net)
   render/    Ascii, GLWorld, Visibility; ViewPlan.cpp prepares GL drawing
     (uses core, domains, gl, spatial)
@@ -806,7 +808,32 @@ algebra headers are opt-in. `cmake/` holds module, DSL and GPU build helpers;
 `examples/` and `tests/` demonstrate and check them.
 
 A network remains an ordinary state. [networking.md](docs/networking.md)
-describes vector stalks, sparse restrictions, CPU/CUDA backends and the DSL examples.
+describes vector stalks, sparse restrictions, CPU/CUDA backends, partitioned
+diffusion and the DSL examples. `sg_net_peer` runs the same declared world on
+equal peers over external UDP sockets; `sg_net_processes` checks four processes
+against a single-machine result. Signed regional execution is demonstrated by
+[verified.sg](examples/verified.sg): `sg_net_verified_processes` runs three
+independent executors in a four-member committee, including mixed CPU/CUDA,
+with one member absent. They verify the same inputs, solve independently and
+deliver only matching quorum finalizations through the declared port.
+
+`sg_net_pong` is a standalone two-peer Pong world declared in
+[pong.sg](examples/pong/pong.sg). On Windows, run
+`powershell -ExecutionPolicy Bypass -File examples/pong/run.ps1` to open both
+instances. W/S moves the left paddle and Up/Down the right while either window
+has focus; Esc closes its window. The launcher chooses free localhost UDP
+ports, generates fresh signing credentials and uses CUDA when available
+(`-Backend cpu` selects CPU; `-DelayMs 60` demonstrates latency). Each peer
+signs its paddle command and published boundary positions. Commands remain
+discrete; continuous positions go through the sheaf solver. Both peers verify
+the proposed result and deterministic next game checkpoint before finalizing.
+A bounded forecast responds to local input, replays late inputs, and smooths
+visual corrections using Temporal time; only finalized game data determines
+scores. `--hosts host0,host1 --credentials folder` also supports reachable
+IPv4 peers; see [networking.md](docs/networking.md) for key distribution.
+The `sg_net_pong` CTest checks
+real CPU/CUDA processes, delayed/duplicate packets, rallies, scoring, strict
+graph validation and `sg::verify`.
 
 Fields are computations inside an owning state: its arrows derive sources and
 receivers from params and write responses. Ordinary gravity is

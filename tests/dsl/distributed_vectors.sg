@@ -1,0 +1,40 @@
+# A kernel, a coordinate with no constraints, a pin and rectangular restrictions.
+state time : temporal
+initial network
+state network {
+    peer = "p0"
+    epoch = 0
+    generation = 0
+    round = 0
+    lambda = 1.0
+    iterations = 2048
+    diffusion_step = 0.02
+    element control
+    element a : participant { dim = 2 observation_0 = 0.0 observation_1 = 7.0 weight = 0.0 }
+    element b : participant { observation = 6.0 weight = 0.0 }
+    element c : participant { observation = 12.0 weight = 0.0 }
+    element ab : constraint { left = "a" right = "b" }
+    element bc : constraint { left = "b" right = "c" }
+    element ca : constraint { left = "c" right = "a" }
+    element anchor : participant { observation = 1.0 pinned = true pin = 7.0 }
+    element free : participant { observation = 10.0 weight = 0.0 }
+    element pinned : constraint { left = "anchor" right = "free" }
+    element u : participant { dim = 2 observation_0 = 4.0 observation_1 = 2.0 weight_0 = 3.0 weight_1 = 4.0 }
+    element v : participant { observation = 7.0 weight = 5.0 }
+    element uv : constraint { left = "u" right = "v" left_0_1 = 2.0 weight = 2.0 }
+    control -> control : configure on network.configure native configure
+    control -> control : receive on network.receive native receive
+    control -> control : solve(dt) on network.solve native distributed
+    control -> control : begin on network.begin native begin
+    control -> control : repartition on network.repartition native repartition_request
+    say network.boundary
+    say network.solved
+    say network.repartition.edit
+}
+port network.configure
+port network.receive
+port network.begin
+port network.repartition
+edit network on network.repartition.edit native repartition
+drive time -> network.solve
+    keeps always

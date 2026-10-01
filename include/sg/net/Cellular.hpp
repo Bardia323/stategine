@@ -21,18 +21,22 @@ class Cellular {
 public:
     Cellular() = default;
     explicit Cellular(const State& state);
+    bool derive(const State& state); // metadata only, for neighborhood compilation
     bool update(const State& state);
     LinearSystem gather(const State& state);
-    const Layout& layout() const { return layout_; }
+    const Layout& layout() const;
     const std::vector<Stalk>& stalks() const { return stalks_; }
     const std::vector<Overlap>& overlaps() const { return overlaps_; }
     std::uint64_t compilations() const { return compilations_; }
+    std::uint64_t revision() const { return revision_; }
     static Key coordinate_key(Key base, std::uint32_t dimension, std::uint32_t coordinate);
 private:
     std::vector<Stalk> stalks_;
     std::vector<Overlap> overlaps_;
     Layout layout_;
     std::uint64_t compilations_ = 0;
+    std::uint64_t revision_ = 0;
     bool built_ = false;
+    bool compiled_ = false;
 };
 } // namespace sg::net

@@ -1,0 +1,71 @@
+# Every process builds this same ordinary world. Solver params select work.
+state time : temporal
+initial game
+state game {
+    element control
+    element a { value = 2.0 }
+    element b { value = 10.0 }
+    element c { value = -4.0 }
+    element d { value = 8.0 }
+    element e { value = 3.0 }
+    element f { value = 11.0 }
+    control -> control : publish on game.publish native publish_request
+    control -> control : corrected on game.corrected
+    say game.published
+}
+state network {
+    peer = "p0"
+    epoch = 0
+    generation = 0
+    round = 0
+    lambda = 1.0
+    iterations = 512
+    relaxation = 0.9
+    diffusion_step = 0.1
+    element control
+    element a : participant { observation = 2.0 }
+    element b : participant { observation = 10.0 }
+    element c : participant { observation = -4.0 }
+    element d : participant { observation = 8.0 }
+    element e : participant { observation = 3.0 }
+    element f : participant { observation = 11.0 }
+    element ab : constraint { left = "a" right = "b" }
+    element bc : constraint { left = "b" right = "c" }
+    element cd : constraint { left = "c" right = "d" }
+    element de : constraint { left = "d" right = "e" }
+    element ef : constraint { left = "e" right = "f" }
+    control -> control : configure on network.configure native configure
+    control -> control : published on network.published
+    control -> control : receive on network.receive native receive
+    control -> control : solve(dt) on network.solve native distributed
+    control -> control : begin on network.begin native begin
+    control -> control : repartition on network.repartition native repartition_request
+    say network.boundary
+    say network.solved
+    say network.repartition.edit
+}
+functor publish : game -> network {
+    object a -> a native publish
+    object b -> b native publish
+    object c -> c native publish
+    object d -> d native publish
+    object e -> e native publish
+    object f -> f native publish
+    event game.published -> network.published
+}
+functor correct : network -> game {
+    object a -> a native correct
+    object b -> b native correct
+    object c -> c native correct
+    object d -> d native correct
+    object e -> e native correct
+    object f -> f native correct
+    event network.solved -> game.corrected
+}
+port network.configure
+port network.receive
+port network.begin
+port network.repartition
+edit network on network.repartition.edit native repartition
+drive time -> network.solve
+    keeps always

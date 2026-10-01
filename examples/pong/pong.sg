@@ -1,0 +1,95 @@
+# The same independent Pong world on both peers. No server or remote entity.
+state time : temporal
+initial game
+state game : spatial2d {
+    player = 0
+    epoch = 0
+    left_score = 0
+    right_score = 0
+    hits = 0
+    element control
+    element p0 { publishes = true value_0 = 0.0 value_1 = 0.0 }
+    element p1 { publishes = false value_0 = 0.0 value_1 = 0.0 }
+    element left : sprite { x = -0.88 y = 0.0 vy = 0.0 sx = 0.025 sy = 0.22 }
+    element right : sprite { x = 0.88 y = 0.0 vy = 0.0 sx = 0.025 sy = 0.22 }
+    element ball : sprite { x = 0.0 y = 0.0 vx = 0.68 vy = 0.27 sx = 0.022 sy = 0.022 }
+    control -> control : configure on game.configure native configure_game
+    control -> control : input on game.input native input
+    control -> control : publish on game.publish native publish_request
+    control -> control : corrected on game.corrected native corrected
+    control -> control : step(dt) on game.step native step
+    control -> control : commands on game.motion native commands
+    left -> left : move_left(duration) on game.motion { y = y + vy * duration }
+    right -> right : move_right(duration) on game.motion { y = y + vy * duration }
+    ball -> ball : move_ball(duration) on game.motion { x = x + vx * duration y = y + vy * duration }
+    control -> control : bounce on game.motion native bounce
+    say game.published
+    say game.ready
+    say game.input.changed
+}
+state network {
+    peer = "p0"
+    epoch = 0
+    generation = 0
+    round = 0
+    lambda = 1.0
+    diffusion_step = 0.5
+    iterations = 32
+    relaxation = 0.9
+    solver_rules = "pong-declared-affine-bounce-v1"
+    quantum = 0.00000001
+    solve_tolerance = 0.000001
+    residual_tolerance = 0.000001
+    equation_tolerance = 0.000001
+    settle_rounds = 8
+    element control
+    element p0 : participant {
+        dim = 2 solver = "p0" computes = true
+        observation_0 = 0.0 observation_1 = 0.0
+        weight = 0.0 pinned_0 = true pinned_1 = false
+    }
+    element p1 : participant {
+        dim = 2 solver = "p1" computes = false
+        observation_0 = 0.0 observation_1 = 0.0
+        weight = 0.0 pinned_0 = false pinned_1 = true
+    }
+    element shared : constraint { left = "p0" right = "p1" dim = 2 }
+    control -> control : configure on network.configure native configure_network
+    control -> control : begin on network.begin native begin
+    control -> control : receive on network.receive native receive
+    control -> control : preview on network.preview
+    control -> control : finalized on network.finalized native finalized
+    control -> control : dispatch on network.dispatch native dispatch
+    control -> control : solve(dt) on network.solve native reconcile
+    say network.boundary
+    say network.committed
+    say network.observation
+    say network.forecast
+    say network.outgoing
+}
+functor publish : game -> network {
+    object p0 -> p0 native publish
+    object p1 -> p1 native publish
+    event game.published -> network.begin
+    event game.input.changed -> network.preview
+}
+functor correct : network -> game {
+    object p0 -> p0 native correct
+    object p1 -> p1 native correct
+    event network.committed -> game.corrected
+}
+functor motion : game -> game {
+    object control -> control
+    event game.ready -> game.motion
+}
+port game.configure
+port game.input
+port game.publish
+port network.configure
+port network.receive
+port network.finalized
+port network.dispatch
+drive time -> network.solve
+    keeps always
+drive time -> game.step
+    keeps always

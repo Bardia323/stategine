@@ -1,0 +1,40 @@
+# A regional problem, independently executed by every committee member.
+initial a
+state time : temporal
+state a {
+    element value { x = 2.0 }
+    value -> value : accepted on a.accepted
+}
+state b {
+    element value { x = 10.0 }
+    value -> value : accepted on b.accepted
+}
+state network {
+    epoch = 0
+    element control
+    element p0 : participant { dim = 1 observation = 2.0 weight = 0.0 }
+    element p1 : participant { dim = 1 observation = 10.0 weight = 0.0 }
+    element shared : constraint { left = "p0" right = "p1" dim = 1 }
+    control -> control : request(dt) on network.step native request
+    control -> control : finalized on network.finalized native finalized
+    control -> control : dispatch on network.dispatch native dispatch
+    say network.request
+    say network.committed
+    say network.outgoing
+}
+functor publish_a : a -> network { object value -> p0 { observation = x } }
+functor publish_b : b -> network { object value -> p1 { observation = x } }
+keep publish_a
+keep publish_b
+functor correct_a : network -> a {
+    object p0 -> value { x = result }
+    event network.committed -> a.accepted
+}
+functor correct_b : network -> b {
+    object p1 -> value { x = result }
+    event network.committed -> b.accepted
+}
+port network.finalized
+port network.dispatch
+drive time -> network.step
+    keeps always

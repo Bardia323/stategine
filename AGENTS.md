@@ -212,13 +212,64 @@ out of State, Functor, StateGraph, Engine, Cover and the existing algebra API.
   an unavailable GPU explicitly rather than counting a CPU fallback as GPU
   equivalence. A backend change must not change state or graph structure.
 
-No participant is intrinsically authoritative. Distribution and distributed
-consensus remain later execution work. See [networking.md](docs/networking.md)
+No participant is intrinsically authoritative. `Peer`, `Partition`, `Exchange`
+and `Distributed` select and coordinate numerical work over the same ordinary
+world. Participant `solver` params select execution; exchanged values are
+restriction projections on touching overlaps. Epoch, partition generation,
+round, received boundaries and sent-value records live in NetworkState params.
+Only a Temporal-driven arrow advances a round, using matching neighbor rounds;
+transport delays never become a private solver clock or invented boundary.
+Keep original observations and numerical controls fixed within an epoch. A
+split/merge hands off moving work through declared input, changes execution
+params through an edit and refreshes the derived layout, without new game
+states. Socket retries remain external machinery. See [networking.md](docs/networking.md)
 for the data schema, numerical contract, backend build options and limitations.
 `tests/dsl/network.sg` and `network_numerics.sg` author the test graphs. Run
 `sg_net` and `sg_net_numerics` for agreement, disagreement, cycles, pins,
-CPU/GPU equivalence, topology changes and value-only reuse; both must pass
-strict graph validation and `sg::verify` without unchecked equations.
+CPU/GPU equivalence, topology changes and value-only reuse. Also run
+`sg_net_distributed` and `sg_net_processes` for chained peers, delayed and
+duplicate packets, partition handoff and real separate-process CPU/CUDA
+execution. Every graph must pass strict validation and `sg::verify` without
+unchecked equations. Report unavailable GPU checks explicitly.
+
+`examples/pong/pong.sg` declares the independent two-instance Pong test world.
+Keep its controls at declared ports, its publication/correction at functors,
+and its motion and reconciliation on Temporal drives. A settled boundary
+admits one ordinary game motion event; its protocol epoch is not a private
+clock. `examples/Udp.*` and Pong's const view are external machinery. The
+`sg_net_pong` test compares whole local game results, including rallies and
+scores, across separate CPU/CUDA peers and delayed/duplicate delivery.
+
+`Epoch`, `Integrity`, `Verify`, `Agreement` and `Protocol` are external
+execution/evidence machinery. A driven network arrow says which work it
+requests; proposed solutions never mutate a state. Canonical epochs bind the
+world step, region/generation, named topology, ordered signed inputs,
+constraints, solver/tolerances, committee and finalized predecessor. Check
+signatures before any remote-origin port delivery, retain signed
+equivocation evidence, redundantly recompute the CPU acceptance cells, and
+check equation/disagreement residuals and exact hard pins. Never hash GPU
+intermediates. Only independently verified, matching regional quorum
+finalizations enter the declared port through `Engine::send`.
+
+Committees use distinct pinned public keys and intersecting quorums beyond
+their explicit fault budget. Persist vote locks before broadcasting and seal
+an old generation before endorsing its replacement; verify a handoff's exact
+checkpoint, old quorum and new committee before continuing. Availability
+still requires the epoch's declared inputs. Signatures identify suppliers;
+game rules validate their claims. Discrete controls/transfers/deaths stay
+deterministically ordered events, never numerical averages. Cross-region
+inputs come from independently checked finalized boundaries, not a global
+ledger or a privileged machine.
+
+`Prediction` owns disposable numeric forecasts and an input replay history;
+it has no world-write capability or private clock. Reuse the game's existing
+declared motion/rules. Bound the lead, replay pending inputs after a finalized
+correction, smooth only continuous presentation using supplied Temporal
+time, and expose confirmed history separately for read-only latency queries.
+Predicted scores or collision outcomes never become accepted reality. Run
+`sg_net_agreement`, `sg_net_verified_processes` and `sg_net_pong`, plus the
+existing authority suite, when changing this acceptance path. Demonstrate
+actual available GPU checks and describe hardware limitations accurately.
 
 ## Adding a state, a room, an interface - checklist
 

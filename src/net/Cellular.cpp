@@ -85,7 +85,7 @@ Cellular::Cellular(const State& state) { update(state); }
 Key Cellular::coordinate_key(Key base, std::uint32_t dimension, std::uint32_t coordinate) {
     return dimension == 1 ? base : Key{base.str() + "_" + std::to_string(coordinate)};
 }
-bool Cellular::update(const State& state) {
+bool Cellular::derive(const State& state) {
     std::vector<Stalk> stalks;
     for (const auto& e : state.elements())
         if (e.kind == Key{"participant"}) stalks.push_back({e.id, integer(e.params, "dim", 1)});
@@ -105,10 +105,19 @@ bool Cellular::update(const State& state) {
     }
     std::sort(overlaps.begin(), overlaps.end(), [](const Overlap& a, const Overlap& b) { return a.element < b.element; });
     if (built_ && stalks == stalks_ && overlaps == overlaps_) return false;
-    auto layout = compile(stalks, overlaps);
-    stalks_ = std::move(stalks); overlaps_ = std::move(overlaps); layout_ = std::move(layout);
-    built_ = true; ++compilations_;
+    stalks_ = std::move(stalks); overlaps_ = std::move(overlaps);
+    built_ = true; compiled_ = false; ++revision_;
     return true;
+}
+bool Cellular::update(const State& state) {
+    derive(state);
+    if (compiled_) return false;
+    layout_ = compile(stalks_, overlaps_); compiled_ = true; ++compilations_;
+    return true;
+}
+const Layout& Cellular::layout() const {
+    if (!compiled_) throw std::logic_error("net: metadata-only cellular topology has no compiled numerical layout");
+    return layout_;
 }
 LinearSystem Cellular::gather(const State& state) {
     update(state);
