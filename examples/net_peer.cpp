@@ -35,7 +35,10 @@ int main(int argc, char** argv) {
         auto solver = std::make_shared<sg::net::Distributed>();
         sgen::build_distributed(graph, sg::examples::distributed_natives(backend.get(), solver), bindings);
         sg::set_observers(sg::Observers::Strict);
-        graph.state("network").bus().subscribe("network.boundary", [&](const sg::Event& e) { transport.send(sg::net::Exchange::bytes(e.args)); });
+        graph.state("network").bus().subscribe("network.boundary", [&](const sg::Event& e) {
+            const auto bytes = sg::net::Exchange::bytes(e.args); const auto packet = sg::net::Exchange::decode(bytes);
+            if (transport.send({packet.to,"boundary",sg::net::DeliveryClass::Latest,std::to_string(packet.step.tick%2),bytes}) != sg::net::SendResult::Accepted) throw std::runtime_error("UDP boundary backpressure");
+        });
         sg::Engine engine(graph); engine.set_strict(true); engine.start();
         engine.fire("game.publish"); engine.tick(0);
         sg::Params configuration; configuration.set("peer", peers[rank].id).set("omit_remote", true);
@@ -44,8 +47,8 @@ int main(int argc, char** argv) {
         engine.send("network", {"network.configure", configuration}); engine.tick(0);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
         while (graph.state("network").params().num("round") < rounds) {
-            sg::net::Bytes bytes;
-            while (transport.try_receive(bytes)) engine.send("network", {"network.receive", sg::net::Exchange::arguments(bytes)});
+            sg::net::Inbound received;
+            while (transport.try_receive(received)) if (received.channel == "boundary") engine.send("network", {"network.receive", sg::net::Exchange::arguments(received.bytes)});
             engine.tick(0.01); transport.retry();
             if (std::chrono::steady_clock::now() > deadline) throw std::runtime_error("neighbor boundary timeout");
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

@@ -217,13 +217,44 @@ and `Distributed` select and coordinate numerical work over the same ordinary
 world. Participant `solver` params select execution; exchanged values are
 restriction projections on touching overlaps. Epoch, partition generation,
 round, received boundaries and sent-value records live in NetworkState params.
-Only a Temporal-driven arrow advances a round, using matching neighbor rounds;
-transport delays never become a private solver clock or invented boundary.
+Only a Temporal-driven arrow advances local progress. Explicit epoch/generation
+identify the problem, sender sequence identifies progress, and boundary basis
+identifies a projection version. An older basis never overwrites a newer one;
+duplicates are idempotent. Certified strictly dominant free systems can use
+latest-neighbor bounded-staleness relaxation; validate the step against the
+actual operator and declared staleness. Singular/unproven systems retain the
+matching-round algorithm and canonical kernel component. Transport delays
+never become a private solver clock or invented boundary.
 Keep original observations and numerical controls fixed within an epoch. A
 split/merge hands off moving work through declared input, changes execution
 params through an edit and refreshes the derived layout, without new game
 states. Socket retries remain external machinery. See [networking.md](docs/networking.md)
 for the data schema, numerical contract, backend build options and limitations.
+
+`Placement` is a pure deterministic planner over Cellular and finalized data,
+capacities and execution/traffic costs. Hysteresis counts finalized epochs.
+It proposes assignments and application-supplied interest changes, with no
+graph capability. Apply only through `network.repartition` / `graph.edit`:
+actual constraint elements are the only interest topology, generation changes
+refresh Cellular/Partition, and verified `Agreement::Handoff` carries moving
+checkpoints. Neither predicted data nor telemetry is world authority.
+
+External `Transport` routes opaque bytes using explicit peer/channel/delivery/
+supersession metadata. Latest coalesces bounded unsent slots; Reliable channels
+preserve ordered control and report bounded backpressure. The UDP reference
+honestly reports Reliable as unsupported. Optional `stategine::net_ice` delegates
+ICE/STUN/TURN, DTLS and SCTP to libdatachannel; callbacks fill bounded external
+queues, never touch State. Authenticate external signaling and replay signed
+idempotent frontiers on delivery uncertainty after reconnect. Socket timing
+and RTT remain execution metrics. Relay/rendezvous services have no world role.
+The optional fetched ICE target is refused with Windows MinGW GCC 16/UCRT:
+its RTC teardown use-after-free remains unresolved; use a tested Clang/libc++
+build for that target. MSVC uses an installed native LibDataChannel package.
+Do not hide reconnection/teardown failures by skipping tests. `relay_only`
+restricts advertised candidates; ICE may find a peer-reflexive LAN shortcut.
+Check actual faulty-route byte flow, not only a candidate's type label.
+Agreement still requires the exact finalized predecessor before attesting any
+successor; asynchronous numerical substeps do not require quorum.
 `tests/dsl/network.sg` and `network_numerics.sg` author the test graphs. Run
 `sg_net` and `sg_net_numerics` for agreement, disagreement, cycles, pins,
 CPU/GPU equivalence, topology changes and value-only reuse. Also run

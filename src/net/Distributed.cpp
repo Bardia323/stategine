@@ -8,6 +8,53 @@
 
 namespace sg::net {
 namespace {
+struct AsyncPolicy { bool enabled = false; std::int64_t staleness = 0; double bound = 0; };
+AsyncPolicy asynchronous(const State& state, const Cellular& c, const Partition& p) {
+    const auto b = detail::integer(state.params(), "max_staleness", 0);
+    if (b < 0 || b > 65536) throw std::invalid_argument("net: invalid maximum boundary staleness");
+    if (!detail::flag(state.params(), "async", b > 0) || p.boundaries().empty()) return {};
+    // A sufficient, deliberately narrow certificate: the free operator is
+    // strictly diagonally dominant. No global matrix or remote y is needed.
+    std::vector<std::size_t> offsets{0};
+    std::vector<double> diagonal, off;
+    std::vector<bool> pinned;
+    for (const auto& v : c.stalks()) {
+        const auto& data = state.element(v.element).params;
+        for (std::uint32_t col = 0; col < v.dimension; ++col) {
+            const double m = detail::number(data, detail::field("weight", v.dimension, col), detail::number(data, "weight", 1));
+            if (m < 0) throw std::invalid_argument("net: negative confidence in async certificate");
+            diagonal.push_back(m); off.push_back(0);
+            pinned.push_back(detail::flag(data, detail::field("pinned", v.dimension, col), detail::flag(data, "pinned", false)));
+        }
+        offsets.push_back(diagonal.size());
+    }
+    const double lambda = detail::number(state.params(), "lambda", 1);
+    if (lambda < 0) throw std::invalid_argument("net: negative penalty");
+    for (const auto& e : c.overlaps()) {
+        const auto& data = state.element(e.element).params;
+        for (std::uint32_t row = 0; row < e.dimension; ++row) {
+            const auto w = lambda*detail::number(data, detail::field("weight", e.dimension, row), detail::number(data, "weight", 1));
+            if (w < 0 || !std::isfinite(w)) throw std::invalid_argument("net: invalid async overlap weight");
+            std::map<std::size_t,double> entries;
+            for (std::uint32_t col = 0; col < c.stalks()[e.left].dimension; ++col) entries[offsets[e.left]+col] -= e.left_restriction[row*c.stalks()[e.left].dimension+col];
+            for (std::uint32_t col = 0; col < c.stalks()[e.right].dimension; ++col) entries[offsets[e.right]+col] += e.right_restriction[row*c.stalks()[e.right].dimension+col];
+            double sum = 0; for (const auto& [i,a] : entries) if (!pinned[i]) sum += std::fabs(a);
+            for (const auto& [i,a] : entries) if (!pinned[i]) {
+                diagonal[i] += w*a*a;
+                off[i] += w*std::fabs(a)*std::max(0.0,sum-std::fabs(a));
+            }
+        }
+    }
+    for (std::size_t i = 0; i < diagonal.size(); ++i)
+        if (!pinned[i] && (!std::isfinite(diagonal[i]+off[i]) || !(diagonal[i]-off[i] > 64*std::numeric_limits<double>::epsilon()*std::max(1.0,diagonal[i]+off[i])))) return {};
+    double bound = 0;
+    for (auto v : p.stalks()) for (auto i = offsets[v]; i < offsets[v+1]; ++i)
+        if (!pinned[i]) bound = std::max(bound, diagonal[i]+off[i]);
+    const double maximum = bound == 0 ? 0 : 1/(static_cast<double>(b+1)*bound);
+    const double alpha = detail::number(state.params(), "diffusion_step", 0.05);
+    if (alpha <= 0 || (bound != 0 && alpha > maximum)) throw std::invalid_argument("net: diffusion_step exceeds the bounded asynchronous contraction bound");
+    return {true,b,maximum};
+}
 struct Gathered {
     LinearSystem system;
     std::vector<double> y, confidence, weights, current;
@@ -100,19 +147,24 @@ std::vector<double> project(const Cellular& c, const Partition& p, const Boundar
 }
 }
 std::vector<BoundaryChange> Distributed::receive(const State& s, const Packet& p) {
-    cellular_.derive(s); partition_.update(s, cellular_); return Exchange::receive(s, partition_, p);
+    cellular_.derive(s); partition_.update(s, cellular_);
+    return Exchange::receive(s, partition_, p, asynchronous(s, cellular_, partition_).enabled);
 }
 DistributedResult Distributed::evaluate(const State& state, const Backend* backend) {
     cellular_.derive(state); partition_.update(state, cellular_);
     auto g = gather(state, cellular_, partition_);
     auto step = Exchange::step(state);
+    const auto policy = asynchronous(state, cellular_, partition_);
     bool ready = true, published = true;
     for (const auto& b : partition_.boundaries()) {
         const auto& p = state.element(b.overlap).params;
-        ready &= detail::same_step(p, "remote", step) && detail::integer(p, "remote_tick", -1) == step.tick && detail::flag(p, "remote_ready", false);
+        const auto sequence = detail::integer(p, "remote_tick", -1);
+        ready &= detail::same_step(p, "remote", step) && detail::flag(p, "remote_ready", false) &&
+            (policy.enabled ? (sequence >= 0 && (sequence >= step.tick || step.tick-sequence <= policy.staleness)) : sequence == step.tick);
         published &= detail::same_step(p, "sent", step) && detail::integer(p, "sent_tick", -1) == step.tick;
     }
     DistributedResult out; out.params = state.params();
+    out.params.set("async_active", policy.enabled).set("async_step_bound", policy.bound);
     auto x = g.current;
     if (ready && published) {
         const CpuBackend cpu;
@@ -147,7 +199,7 @@ DistributedResult Distributed::evaluate(const State& state, const Backend* backe
     std::map<std::string, std::size_t> packets;
     for (const auto& b : partition_.boundaries()) {
         auto p = state.element(b.overlap).params;
-        if (out.advanced && detail::same_step(p, "remote", step) && detail::integer(p, "next_tick", -1) == step.tick && detail::flag(p, "next_ready", false)) {
+        if (!policy.enabled && out.advanced && detail::same_step(p, "remote", step) && detail::integer(p, "next_tick", -1) == step.tick && detail::flag(p, "next_ready", false)) {
             detail::projection(p, "remote", detail::projection(p, "next_remote", b.dimension));
             p.set("remote_tick", step.tick).set("remote_basis", detail::integer(p, "next_basis", -1)).set("remote_ready", true).set("next_tick", std::int64_t{-1}).set("next_ready", false);
         }
@@ -158,7 +210,9 @@ DistributedResult Distributed::evaluate(const State& state, const Backend* backe
             if (!packets.count(b.neighbor)) {
                 packets[b.neighbor] = out.outgoing.size(); out.outgoing.push_back({partition_.peer().id, b.neighbor, step, {}});
             }
-            out.outgoing[packets.at(b.neighbor)].boundaries.push_back({b.overlap.str(), basis, changed ? values : std::vector<double>{}});
+            // Latest traffic is self-contained: losing a changed basis cannot
+            // strand later progress records behind a missing packet.
+            out.outgoing[packets.at(b.neighbor)].boundaries.push_back({b.overlap.str(), basis, (policy.enabled || changed) ? values : std::vector<double>{}});
             p.set("sent_epoch", step.epoch).set("sent_generation", step.generation).set("sent_tick", step.tick).set("sent_basis", basis);
             detail::projection(p, "sent", values);
         }

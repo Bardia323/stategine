@@ -57,6 +57,11 @@ int main() {
     const auto alternate_result = verify.proposal(alternate_problem,f.committee,alternate_proposal);
     check(alternate_result && alternate_problem.epoch.id() != p.epoch.id() && alternate_result->result() == good->result() && !verify.proposal(p,f.committee,alternate_proposal),"same result with different inputs cannot attest to the same epoch");
     Agreement a(f.committee);
+    const auto speculative_context = f.context(hash(Bytes{9}),1);
+    const auto speculative_problem = Problem::make(speculative_context,f.system(),f.spec,f.inputs(speculative_context));
+    const auto speculative_proposal = verify.propose(speculative_problem,f.committee,f.committee.members[0].peer,*f.keys[0],cpu);
+    const auto speculative = verify.proposal(speculative_problem,f.committee,speculative_proposal);
+    check(speculative && refused([&]{a.attest(*speculative,f.committee.members[0].peer,*f.keys[0]);}),"speculative computation cannot attest a successor before its finalized predecessor is known");
     for (int i = 0; i < 3; ++i) a.attest(*good,f.committee.members[i].peer,*f.keys[i]);
     check(refused([&]{ a.attest(*alternate_result,f.committee.members[0].peer,*f.keys[0]); }),"executor refuses a second decision at the same world step");
     Agreement restarted(f.committee); restarted.restore(a.snapshot());
@@ -71,6 +76,7 @@ int main() {
     disk_failure = false;
     check(transactional.accept(p,verify,*finalized).has_value() && transactional.next_tick() == 1,"verified finalization retries after storage recovers without skipping a step");
     check(!a.accept(p,verify,*finalized),"replayed finalization has no effect");
+    check(refused([&]{a.attest(*speculative,f.committee.members[0].peer,*f.keys[0]);}),"a known next tick still requires the exact finalized predecessor hash");
     auto alternate = *finalized; alternate.proposal = close; check(alternate.id() == finalized->id(),"receipt is independent of proposer and sufficient attestation subset");
     integrity.retire_before(1); check(integrity.receive(first,p.epoch.context.id(),0) == Delivery::Replay,"old signed observations have no effect");
     auto late = first; late.payload = {9}; late.sign(*f.keys[0]);

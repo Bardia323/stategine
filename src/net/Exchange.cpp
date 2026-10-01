@@ -82,7 +82,7 @@ void check(const Packet& p) {
     if (p.step.epoch < 0 || p.step.generation < 0 || p.step.tick < 0 || p.boundaries.size() > 65536) throw std::invalid_argument("net: invalid boundary step or count");
     std::set<std::string> ids;
     for (const auto& b : p.boundaries) {
-        if (!ids.insert(b.overlap).second || b.basis < 0 || b.basis > p.step.tick || (!b.values.empty() && b.basis != p.step.tick) || b.values.size() > 1000000)
+        if (!ids.insert(b.overlap).second || b.basis < 0 || b.basis > p.step.tick || b.values.size() > 1000000)
             throw std::invalid_argument("net: invalid boundary basis or duplicate overlap");
         for (auto v : b.values) if (!std::isfinite(v)) throw std::invalid_argument("net: nonfinite boundary value");
     }
@@ -142,11 +142,11 @@ Step Exchange::step(const Params& p) {
     if (s.epoch < 0 || s.generation < 0 || s.tick < 0) throw std::invalid_argument("net: negative distributed step");
     return s;
 }
-std::vector<BoundaryChange> Exchange::receive(const State& state, const Partition& partition, const Packet& packet) {
+std::vector<BoundaryChange> Exchange::receive(const State& state, const Partition& partition, const Packet& packet, bool asynchronous) {
     check(packet);
     const auto step = Exchange::step(state);
-    if (packet.to != partition.peer().id || packet.step.epoch != step.epoch || packet.step.generation != step.generation || packet.step.tick < step.tick ||
-        (packet.step.tick > step.tick && packet.step.tick - step.tick > 1)) return {};
+    if (packet.to != partition.peer().id || packet.step.epoch != step.epoch || packet.step.generation != step.generation) return {};
+    if (!asynchronous && (packet.step.tick < step.tick || (packet.step.tick > step.tick && packet.step.tick - step.tick > 1))) return {};
     std::vector<BoundaryChange> changes;
     for (const auto& b : packet.boundaries) {
         const auto match = std::find_if(partition.boundaries().begin(), partition.boundaries().end(), [&](const Boundary& edge) { return edge.overlap.str() == b.overlap && edge.neighbor == packet.from; });
@@ -155,6 +155,21 @@ std::vector<BoundaryChange> Exchange::receive(const State& state, const Partitio
         auto p = state.element(match->overlap).params;
         if (!detail::same_step(p, "remote", step))
             p.set("remote_epoch", step.epoch).set("remote_generation", step.generation).set("remote_tick", std::int64_t{-1}).set("remote_basis", std::int64_t{-1}).set("next_tick", std::int64_t{-1}).set("next_ready", false);
+        if (asynchronous) {
+            const auto basis = detail::integer(p, "remote_basis", -1), sequence = detail::integer(p, "remote_tick", -1);
+            if (b.basis < basis || packet.step.tick < sequence) continue;
+            auto values = b.values;
+            if (b.basis == basis && detail::flag(p, "remote_ready", false)) {
+                const auto known = detail::projection(p, "remote", match->dimension);
+                if (!values.empty() && values != known) throw std::invalid_argument("net: conflicting values for one boundary basis");
+                values = known;
+            }
+            if (values.empty() || (packet.step.tick == sequence && b.basis == basis)) continue;
+            detail::projection(p, "remote", values);
+            p.set("remote_tick", packet.step.tick).set("remote_basis", b.basis).set("remote_ready", true);
+            changes.push_back({match->overlap, std::move(p)});
+            continue;
+        }
         const bool next = packet.step.tick != step.tick;
         const Key tick_key = next ? Key{"next_tick"} : Key{"remote_tick"};
         if (detail::integer(p, tick_key, -1) == packet.step.tick) continue;

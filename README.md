@@ -790,7 +790,7 @@ include/sg/
   net/       Cellular.hpp, LinearSystem.hpp, Backend.hpp, Reconcile.hpp,
     Transport.hpp, Peer.hpp, Partition.hpp, Exchange.hpp, Distributed.hpp,
     Epoch.hpp, Integrity.hpp, Verify.hpp, Agreement.hpp, Protocol.hpp,
-    Prediction.hpp (uses core;
+    Prediction.hpp, Placement.hpp, IceTransport.hpp (uses core;
     derived networking machinery, built as stategine::net)
   render/    Ascii, GLWorld, Visibility; ViewPlan.cpp prepares GL drawing
     (uses core, domains, gl, spatial)
@@ -809,13 +809,23 @@ algebra headers are opt-in. `cmake/` holds module, DSL and GPU build helpers;
 
 A network remains an ordinary state. [networking.md](docs/networking.md)
 describes vector stalks, sparse restrictions, CPU/CUDA backends, partitioned
-diffusion and the DSL examples. `sg_net_peer` runs the same declared world on
+diffusion, bounded asynchronous relaxation, pure execution placement and the
+DSL examples. Singular problems retain their synchronous canonical component.
+`sg_net_peer` runs the same declared world on
 equal peers over external UDP sockets; `sg_net_processes` checks four processes
 against a single-machine result. Signed regional execution is demonstrated by
 [verified.sg](examples/verified.sg): `sg_net_verified_processes` runs three
 independent executors in a four-member committee, including mixed CPU/CUDA,
 with one member absent. They verify the same inputs, solve independently and
 deliver only matching quorum finalizations through the declared port.
+Optional `SG_NET_ICE=ON` builds an external libdatachannel transport with encrypted
+ICE/STUN/TURN sessions, bounded queues and separate control/boundary channels.
+Transport routing is explicit; application payloads stay opaque. Placement and
+application interest policies return plans; actual overlaps change through
+`graph.edit` and migrations retain verified handoffs.
+The optional ICE target currently rejects Windows MinGW GCC 16/UCRT because
+its RTC teardown crashes; use Clang/libc++ for that target. CPU/CUDA and UDP
+remain supported with the existing compiler. See the [networking limitations](docs/networking.md).
 
 `sg_net_pong` is a standalone two-peer Pong world declared in
 [pong.sg](examples/pong/pong.sg). On Windows, run

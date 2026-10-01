@@ -9,9 +9,8 @@ class Udp final : public net::Transport {
 public:
     Udp(int rank, const std::vector<net::Peer>& peers, int base);
     ~Udp() override;
-    void send(const net::Bytes& bytes) override;
-    void send_to(const std::string& peer, const net::Bytes& bytes, const std::string& slot);
-    bool try_receive(net::Bytes& bytes) override;
+    net::SendResult send(net::Outbound message) override;
+    bool try_receive(net::Inbound& message) override;
     void retry();
 private:
     struct Impl;

@@ -8,6 +8,6 @@ struct Peer {
     std::string id, endpoint;
 };
 struct Step {
-    std::int64_t epoch = 0, generation = 0, tick = 0;
+    std::int64_t epoch = 0, generation = 0, tick = 0; // tick is sender's local sequence, never wall time
 };
 } // namespace sg::net

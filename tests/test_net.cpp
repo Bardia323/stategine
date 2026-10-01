@@ -38,8 +38,8 @@ sg::dsl::Natives natives(const sg::net::Backend* backend) {
 class Sink final : public sg::net::Transport {
 public:
     sg::net::Bytes sent;
-    void send(const sg::net::Bytes& bytes) override { sent = bytes; }
-    bool try_receive(sg::net::Bytes&) override { return false; }
+    sg::net::SendResult send(sg::net::Outbound message) override { sent = std::move(message.bytes); return sg::net::SendResult::Accepted; }
+    bool try_receive(sg::net::Inbound&) override { return false; }
 };
 
 bool near(double a, double b) { return std::fabs(a - b) < 1e-10; }
@@ -73,7 +73,7 @@ int scenario(const sg::net::Backend* executor) {
     network.bus().subscribe("network.agreed", [&](const sg::Event& event) {
         // The codec is outside the world; this observer serializes said data.
         const auto text = sg::to_string(event.args.get("a"));
-        sink.send(sg::net::Bytes(text.begin(), text.end()));
+        sink.send({"peer","result",sg::net::DeliveryClass::Reliable,{},sg::net::Bytes(text.begin(), text.end())});
     });
 
     engine.tick(0);

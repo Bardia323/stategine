@@ -1,6 +1,7 @@
 // External regional executor. Only a verified quorum crosses the DSL port.
 #include "Signed.hpp"
 #include "Udp.hpp"
+#include "NetIo.hpp"
 #include "sg/net/Cellular.hpp"
 #include "sg/net/Protocol.hpp"
 #include "sg/core/Engine.hpp"
@@ -20,7 +21,7 @@ double number(const sg::net::Bytes& bytes) { sg::net::detail::Reader r(bytes,"ve
 }
 int main(int argc,char** argv) {
     try {
-        if (argc != 6) throw std::invalid_argument("usage: sg_net_verified_peer rank base-port credentials cpu|cuda output.json");
+        if (argc < 6 || argc > 9) throw std::invalid_argument("usage: sg_net_verified_peer rank base-port credentials cpu|cuda output.json [wss://rendezvous [stun:host|turn:user:pass@host [ca.pem]]]");
         const int rank = std::stoi(argv[1]), base = std::stoi(argv[2]); const std::filesystem::path folder(argv[3]), output(argv[5]);
         const auto committee = sg::examples::read_committee(folder); const auto peer = "p"+std::to_string(rank);
         const auto key = sg::examples::read_signing_key(folder,peer);
@@ -30,7 +31,11 @@ int main(int argc,char** argv) {
         else if (std::string(argv[4]) == "cpu") backend = std::make_unique<sg::net::CpuBackend>();
         else throw std::invalid_argument("invalid backend");
         std::vector<sg::net::Peer> peers; for (const auto& m : committee.members) peers.push_back({m.peer,"127.0.0.1"});
-        sg::examples::Udp transport(rank,peers,base);
+        sg::examples::NetIoConfig io{rank,base,peers,{},{},{},false};
+        if (argc >= 7) io.signaling = argv[6];
+        if (argc >= 8 && std::string(argv[7]) != "-") io.ice_servers.push_back(argv[7]);
+        if (argc >= 9) io.ca_file = argv[8];
+        sg::examples::NetIo transport(io,committee,*key);
         sg::dsl::Natives natives;
         natives.arrow("dispatch",[](sg::State& s,sg::Element&,sg::Element*,const sg::Event& e) {
             if (e.args.has("packet")) s.emit({"network.outgoing",e.args});
@@ -50,7 +55,7 @@ int main(int argc,char** argv) {
         sg::set_observers(sg::Observers::Strict); bool requested = false;
         graph.state("network").bus().subscribe("network.request",[&](const sg::Event&) { requested = true; });
         graph.state("network").bus().subscribe("network.outgoing",[&](const sg::Event& e) {
-            transport.send_to(e.args.get_or<std::string>("to",{}),sg::net::unhex(e.args.get_or<std::string>("packet",{})),e.args.get_or<std::string>("slot",{}));
+            if (transport.send({e.args.get_or<std::string>("to",{}),"signed",io.signaling.empty() ? sg::net::DeliveryClass::Latest : sg::net::DeliveryClass::Reliable,e.args.get_or<std::string>("slot",{}),sg::net::unhex(e.args.get_or<std::string>("packet",{}))}) != sg::net::SendResult::Accepted) throw std::runtime_error("signed transport backpressure");
         });
         sg::Engine engine(graph); engine.set_strict(true); engine.start();
         // Ordinary game data publishes only through these declared functors.
@@ -88,8 +93,10 @@ int main(int argc,char** argv) {
                 ++forged;
                 protocol->submit(local);
             }
-            sg::net::Bytes bytes;
-            while (transport.try_receive(bytes)) {
+            sg::net::Inbound incoming;
+            while (transport.try_receive(incoming)) {
+                if (incoming.channel != "signed") continue;
+                const auto& bytes = incoming.bytes;
                 std::optional<sg::net::Message> message;
                 try { message = sg::net::decode_message(bytes); } catch (const std::exception&) { }
                 if (protocol && message) { protocol->receive(*message); protocol->receive(*message); }
@@ -104,11 +111,11 @@ int main(int argc,char** argv) {
                     engine.send("network",{"network.finalized",args}); delivered = true;
                 }
             }
-            transport.retry(); if (std::chrono::steady_clock::now() > deadline) throw std::runtime_error("verified region did not finalize");
+            transport.poll(); if (std::chrono::steady_clock::now() > deadline) throw std::runtime_error("verified region did not finalize");
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         const auto flush = std::chrono::steady_clock::now()+std::chrono::milliseconds(200);
-        while (std::chrono::steady_clock::now() < flush) { transport.retry(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+        while (std::chrono::steady_clock::now() < flush) { transport.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         const auto laws = sg::verify(graph); if (!graph.validate().empty() || !laws.holds()) throw std::runtime_error(laws.str());
         std::ofstream out(output); out << "{\"a\":" << graph.state("a").element("value").params.num("x") << ",\"b\":" << graph.state("b").element("value").params.num("x") << ",\"forged_rejected\":" << forged << ",\"receipts\":[";
         for (std::size_t i = 0; i < receipts.size(); ++i) out << (i ? "," : "") << '"' << receipts[i] << '"';

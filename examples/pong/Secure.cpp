@@ -36,7 +36,7 @@ Work work(const State& network, const net::Cellular& cellular, net::Prediction::
     const auto checkpoint = net::unhex(published.get_or<std::string>("snapshot",{}));
     const auto baseline = read_frame(checkpoint);
     const auto layout = cellular.layout(); const auto topology = net::topology_description(cellular);
-    net::LinearSystem base(layout); base.observations = {baseline[4],baseline[6],baseline[4],baseline[6]};
+    net::LinearSystem base{layout}; base.observations = {baseline[4],baseline[6],baseline[4],baseline[6]};
     base.confidence.assign(4,1); base.overlap_weights.assign(2,1); base.fixed.assign(4,0); base.pins.assign(4,0);
     net::SolverSpec spec; spec.rules = network.params().get_or<std::string>("solver_rules",{});
     const auto iterations = network.params().num("iterations");
@@ -55,7 +55,7 @@ Work work(const State& network, const net::Cellular& cellular, net::Prediction::
     }
     const auto context = w.context;
     w.build = [layout,spec,baseline,checkpoint,context,topology](const std::vector<net::Observation>& inputs) {
-        net::LinearSystem s(layout); s.confidence.assign(4,1); s.overlap_weights.assign(2,1); s.fixed.assign(4,0); s.pins.assign(4,0);
+        net::LinearSystem s{layout}; s.confidence.assign(4,1); s.overlap_weights.assign(2,1); s.fixed.assign(4,0); s.pins.assign(4,0);
         s.observations.assign(4,0); s.lambda = spec.lambda; s.iterations = spec.iterations; s.relaxation = spec.relaxation;
         if (inputs.size() != 4) throw std::invalid_argument("incomplete Pong epoch");
         for (const auto& o : inputs) {

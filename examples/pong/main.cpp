@@ -2,6 +2,7 @@
 #include "Secure.hpp"
 #include "../Signed.hpp"
 #include "../Udp.hpp"
+#include "../NetIo.hpp"
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/dsl/Runtime.hpp"
@@ -54,6 +55,9 @@ struct Options {
     bool headless = false, scripted = false;
     std::string backend = "auto";
     std::string hosts = "127.0.0.1,127.0.0.1";
+    std::string signaling, ca_file;
+    std::vector<std::string> ice_servers;
+    bool relay_only = false;
     std::filesystem::path out, shot, credentials;
 };
 Options options(int argc, char** argv) {
@@ -67,6 +71,10 @@ Options options(int argc, char** argv) {
         else if (arg == "--delay-ms") o.delay = std::stoi(value());
         else if (arg == "--backend") o.backend = value();
         else if (arg == "--hosts") o.hosts = value();
+        else if (arg == "--signaling") o.signaling = value();
+        else if (arg == "--ca-file") o.ca_file = value();
+        else if (arg == "--ice-server") o.ice_servers.push_back(value());
+        else if (arg == "--relay-only") o.relay_only = true;
         else if (arg == "--credentials") o.credentials = value();
         else if (arg == "--out") o.out = value();
         else if (arg == "--shot") o.shot = value();
@@ -114,7 +122,7 @@ int main(int argc, char** argv) {
         sg::examples::Journal journal(o.credentials,peer);
         const auto comma = o.hosts.find(',');
         if (comma == std::string::npos || comma == 0 || comma+1 == o.hosts.size()) throw std::invalid_argument("--hosts requires the addresses of p0,p1");
-        sg::examples::Udp transport(o.player, {{"p0",o.hosts.substr(0,comma)},{"p1",o.hosts.substr(comma+1)}}, o.port);
+        sg::examples::NetIo transport({o.player,o.port,{{"p0",o.hosts.substr(0,comma)},{"p1",o.hosts.substr(comma+1)}},o.signaling,o.ca_file,o.ice_servers,o.relay_only},committee,*key);
         sg::StateGraph graph; sg::dsl::Bindings bindings;
         auto solver = std::make_shared<sg::net::Distributed>();
         sgen::build_pong(graph, sg::examples::pong::natives(backend.get(),solver), bindings);
@@ -125,7 +133,7 @@ int main(int argc, char** argv) {
         graph.state("network").bus().subscribe("network.observation", [&](const sg::Event& e) { requested = static_cast<std::uint64_t>(e.args.num("epoch")); });
         graph.state("network").bus().subscribe("network.forecast", [&](const sg::Event& e) { forecasts.push_back(e.args); });
         graph.state("network").bus().subscribe("network.outgoing", [&](const sg::Event& e) {
-            transport.send_to(e.args.get_or<std::string>("to",{}),sg::net::unhex(e.args.get_or<std::string>("packet",{})),e.args.get_or<std::string>("slot",{})); ++sent;
+            if (transport.send({e.args.get_or<std::string>("to",{}),"signed",o.signaling.empty() ? sg::net::DeliveryClass::Latest : sg::net::DeliveryClass::Reliable,e.args.get_or<std::string>("slot",{}),sg::net::unhex(e.args.get_or<std::string>("packet",{}))}) != sg::net::SendResult::Accepted) throw std::runtime_error("Pong transport backpressure"); ++sent;
         });
         sg::Engine engine(graph); engine.set_strict(true); engine.start();
         auto config = sg::examples::pong::configuration(o.player);
@@ -165,8 +173,10 @@ int main(int argc, char** argv) {
             if (view && o.scripted) open = view->poll();
 #endif
             engine.send("game", {"game.input",input});
-            sg::net::Bytes bytes;
-            while (transport.try_receive(bytes)) {
+            sg::net::Inbound incoming;
+            while (transport.try_receive(incoming)) {
+                if (incoming.channel != "signed") continue;
+                const auto& bytes = incoming.bytes;
                 // A test can delay and duplicate packets without touching the world.
                 delivery.push_back({now+std::chrono::milliseconds(o.delay),bytes}); ++received;
             }
@@ -224,7 +234,7 @@ int main(int argc, char** argv) {
                     submitted_final = true;
                 }
             }
-            transport.retry();
+            transport.poll();
 #ifdef SG_PONG_GL
             if (view && now >= next_picture) { const auto picture = prediction.display(temporal_time); view->draw(graph.state("game"),graph.state("network"),&picture,prediction.predicted_tick()-prediction.finalized_tick()); next_picture = now+std::chrono::microseconds(16667); }
 #endif
@@ -235,7 +245,7 @@ int main(int argc, char** argv) {
         }
         if (o.steps) {
             const auto flush = Clock::now()+std::chrono::milliseconds(400+2*o.delay);
-            while (Clock::now() < flush) { transport.retry(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+            while (Clock::now() < flush) { transport.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         }
         sg::LawOptions probes; probes.args_for["network.solve"].set("dt",1.0/60.0); probes.args_for["game.motion"].set("duration",1.0/60.0);
         const auto laws = sg::verify(graph,{},probes);

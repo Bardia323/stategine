@@ -125,23 +125,51 @@ apply those changes to their own network state. Observers serialize said
 packets; an external receive loop queues `Engine::send("network", event)` at
 the declared receive port. No backend, socket or observer writes a world.
 
-Each world step has an integer `epoch`. `generation` identifies the execution
-partition within that epoch. `round` is a protocol work count, not a clock:
-only a Temporal drive runs the reconciliation arrow. Every boundary packet
-names sender, recipient and `(epoch, generation, tick)`. Tick is the round of
-the projected section. A peer advances from r to r+1 only after receiving all
-neighbor projections for r and publishing its own. Two slots per crossing
-edge retain r and r+1, so arrival order does not change arithmetic. Duplicates,
-old ticks, other epochs/generations and non-neighbor messages are ignored.
-Missing packets wait for delivery; they are never replaced by invented values.
+Each world step has an integer `epoch`; `generation` identifies its execution
+assignment/topology. Packet `tick` is the sender's local progress sequence,
+while each projection's `basis` identifies its last changed value. They are
+distinct: an unchanged value can have an old basis and a new sender sequence.
+`round` stores local progress in ordinary params, advanced only by the
+Temporal-driven arrow. Neither value is a wall clock.
 
-Only changed projections carry numeric values. An unchanged projection sends
+The synchronous fallback sends numeric values for changed projections. An unchanged projection sends
 a progress record naming the tick of its last changed value (`basis`); it
 still participates in the round boundary. A progress record arriving before
 its basis waits for that basis. Receive and send records live in the owning
 constraint's ordinary `remote_*`, `next_*` and `sent_*` params. Restoring the
 state restores protocol progress too; the numerical classes keep no packet
-history, clocks or hidden solution trajectory.
+history, clocks or hidden solution trajectory. It retains matching rounds and
+two receive slots, so zero-confidence/kernel fixtures keep their original
+initial component and arithmetic.
+
+Set `async = true` and an integer `max_staleness = B` (1 through 65536) through
+the declared configure port to request bounded asynchronous relaxation.
+The default without a staleness declaration remains synchronous. Async uses
+the latest accepted touching-neighbor projection, immediately eligible on the
+next Temporal solve; a missing boundary or `round - remote_tick > B` stalls
+only that execution neighborhood. A faster neighbor has age zero. A smaller
+basis cannot overwrite a larger one; a repeated basis is idempotent, and a
+conflicting payload for the same basis is refused. Old sender progress cannot
+replace newer progress either. Epoch/generation mismatches are ignored.
+Each async packet carries a self-contained value, including unchanged values,
+so losing a basis packet does not make its successors depend on retransmitting
+an implicit stale value. Transport may coalesce unsent projections by overlap.
+
+The initial proof certificate is deliberately sufficient rather than complete.
+For the fixed free operator A, derive diagonal `d_i` and a conservative absolute
+off-diagonal row bound `o_i` from published restrictions, M, W and pins. Async
+requires `d_i > o_i` for **every** free coordinate, with a roundoff margin.
+For the locally owned rows let `R = max(d_i + o_i)`; require
+`0 < diffusion_step <= 1 / ((B+1)*R)`, as well as the existing backend and
+neighborhood bounds. An excessive step fails closed. No Laplacian is formed.
+With this certificate `I - alpha*A` is a strict infinity-norm contraction;
+bounded stale reads, fair repeated updates and eventual boundary delivery
+converge to the unique minimizer of the original objective. Coercivity alone
+does not prove this particular asynchronous iteration: a system failing the
+certificate, including unanchored kernels, retains the synchronous algorithm.
+Disconnected regions can progress independently. Inputs/weights/pins and
+restrictions must stay fixed during an epoch. A partition that groups unrelated
+components shares its own local progress; use connected placement regions.
 
 With a crossing boundary the local backend takes one bounded gradient step:
 
@@ -149,7 +177,7 @@ With a crossing boundary the local backend takes one bounded gradient step:
 x_I[r+1] = x_I[r] - alpha * (M_I*(x_I[r]-y_I) + lambda*(delta* W delta x[r])_I)
 ```
 
-All peers use the same positive `diffusion_step` (default 0.05). Each validates
+Synchronous peers use the same positive `diffusion_step` (default 0.05). Each validates
 it against its original neighborhood bound and local numerical backend bound.
 Choose a step safe for every partition; excessive steps are refused. Because
 rounds match, this is the global gradient evaluated by neighborhoods. It also
@@ -197,7 +225,144 @@ There is no server. Its transport retries the last two said packets per
 neighbor; wall time paces socket delivery only. UDP datagrams are limited to
 64 KB in this example. Larger boundaries need an external framing/reliable
 transport. A lost connection stalls touching work; recovery, automatic world
-step negotiation and partition load balancing are not implemented here.
+step negotiation remain application responsibilities. The optional Internet
+adapter and pure placement planner below replace those execution limitations
+without changing this unsigned UDP reference fixture.
+
+## Derived placement and declared interest
+
+`Placement::plan` reads a `FinalizedPlacementView`, the current Cellular
+topology, available peer capacities, measured stalk execution/migration costs,
+boundary traffic costs and current `solver` assignments. It returns sorted
+assignments, generation, loads, cut cost, migrations and optional interest
+proposals. It cannot mutate a State. The view names a verified receipt and
+finalized epoch/generation; the application must bind the read-only snapshot to
+that exact checkpoint, rather than prediction. A nonzero digest alone cannot
+prove that binding to this generic numerical planner.
+
+The deterministic connected greedy heuristic minimizes approximately maximum
+load/capacity plus `cut_penalty * cut_cost + migration_penalty * migration_cost`.
+Stable peer/stalk/overlap IDs break ties. Connected moves and adjacent-region
+merges improve the candidate without crossing declared capacity limits.
+`hold_epochs` and `minimum_improvement` retain a valid current assignment near
+a threshold; unavailable/overloaded peers require immediate feasible repair.
+History is supplied as the last placement's finalized epoch, never remembered
+in a planner clock. An infeasible greedy result is explicit; this small
+heuristic is not a guarantee to find every feasible or optimal partition.
+
+A pure application `InterestPolicy` sees read-only published participant params
+and the actual Cellular overlaps. It returns add/remove/keep proposals with
+ordinary constraint params and traffic costs; sg/net has no spatial-distance
+rule and no invisible interest graph. Placement uses the existing graph in
+this pass; proposed edges affect a subsequent plan only after being declared.
+`examples::placement_arguments` authors expressible additions/updates as DSL,
+and the existing `network.repartition` arrow requests the existing graph edit.
+That edit applies/removes actual `constraint` elements, changes assignment and
+increments generation. Cellular and Partition then re-derive their layouts.
+Planning and requesting an edit alone create no overlap.
+
+Applications verify the existing `Agreement::Handoff` and checkpoint before
+applying migrations or replacing a committee, and feed moving values through
+the existing handoff params/ports. The unsigned scalar fixture remains an edit
+adapter, not a substitute for signed handoff verification. Hot splits, cold
+merges, peer replacement and interest changes are execution/declared structural
+work; no game-level server-transfer event is added.
+
+## Opaque external transport
+
+`Transport::send(Outbound)` takes explicit peer, channel, delivery class,
+supersession slot and opaque bytes. `Inbound` supplies peer, channel and bytes.
+Routing never decodes an Exchange or signed protocol payload. `Latest` is
+unordered and permits loss/supersession; same peer/channel/slot replaces the
+older **unsent** value. `Reliable` preserves ordered control messages within
+its logical channel. Bounded queues report `Blocked`, `TooLarge` or
+`Unsupported` explicitly. A caller keeps blocked work outside the world and
+retries; `Accepted` is queue admission, not proof of peer application receipt.
+Separate budgets prevent boundary traffic consuming the control queue.
+
+`examples::Udp` is the small IPv4 reference adapter: opaque datagrams, bounded
+latest-value retry slots, explicit routes and a datagram-size limit. It reports
+`Reliable` as unsupported. Existing UDP signed demos deliberately repeat a
+bounded application frontier; they do not claim reliable Internet sessions.
+Socket retries and latency measurements are external wall-time machinery,
+never simulation progress or a reason to change finalized values.
+
+Build `-DSG_NET_ICE=ON` for optional `stategine::net_ice` / `IceTransport`.
+Its public header contains no vendor types. Pinned upstream libdatachannel
+provides ICE, DTLS encryption and SCTP framing/reliability, with STUN/TURN
+server URIs and `relay_only` to advertise only relay candidates. ICE can still
+discover a peer-reflexive shortcut on a shared LAN; this option is not a privacy
+guarantee that every subsequent packet crosses TURN. Each peer has separate
+control and latest-value associations, avoiding agreement head-of-line blocking
+behind large boundary messages. Logical control channels are reliable/ordered;
+latest channels are unordered with zero retransmissions. Defaults bound
+messages to 4 MB, the application receive queue to 16 MB/512 messages and
+logical streams to 64. SCTP socket buffers and libdatachannel's bounded
+per-channel receive queues are additional buffers, not part of that 16 MB
+application limit. The fetched target bounds each vendor data channel to four
+messages (16 MB per physical lane at the default maximum message size), plus
+SCTP's socket buffers. Installed packages retain their vendor queue limits;
+deployment must account for those separately.
+The fetched TLS library enables upstream thread safety for RTC workers.
+
+The application routes opaque `signals()` through an **authenticated external
+rendezvous/signaling service**, and supplies the authenticated sender to
+`signal(peer, signal)`. Authentication protects exchanged DTLS fingerprints;
+application signatures still establish observation/committee identity and
+agreement. Neither a rendezvous nor TURN relay becomes a world participant.
+Public transport methods are serialized on the application's IO thread;
+vendor callbacks fill bounded external queues only. `poll` restarts failed
+sessions; `disconnect` pauses and `reconnect` explicitly resumes them. Stale
+session signals cannot reset a newer session. Unsent reliable work survives
+replacement; already handed-off traffic can be uncertain after an association
+break, reported as `DeliveryUncertain` (and receive overflow as `ReceiveBlocked`).
+The application must replay its idempotent signed frontier/checkpoint on that
+notice. This does not promise exactly-once application delivery across a new
+connection and does not implement a second retransmission protocol.
+
+`telemetry` reports RTT, bytes, queue depth and selected direct/relay path only
+as execution metrics. It may inform Placement; it cannot update world data.
+Offline or package-managed builds may set `SG_NET_ICE_FETCH=OFF` and supply
+LibDataChannel 0.24 or newer, or point FetchContent at the pinned sources.
+Internet traversal depends on reachable signaling/STUN/TURN services and local
+firewall policy; these are supplied by the application, never discovered as
+world truth. No public service or secret credential is hard-coded.
+
+The fetched target uses pinned libdatachannel 0.24.6 and Mbed TLS 3.6.7, with
+small checked patches for callback replacement, raw SCTP callback retirement,
+concurrent SCTP initialization and an explicit standard-library include.
+It also bounds vendor receive queues and wakes them on close; no wire protocol
+or world behavior is implemented in these patches.
+Windows MinGW GCC 16/UCRT is **refused for this optional target**: repeated
+release and debug teardown tests reproduce a queued task using an already
+freed SCTP socket. Disabling optimization, static linking and new standard
+library fast paths did not eliminate it. Native Clang/libc++ and Linux builds
+run the same fixtures. This is an unresolved vendor/toolchain compatibility
+limitation, not a claim that the upstream lifetime defect has been repaired.
+The ordinary CPU/CUDA/UDP targets continue to build with GCC 16. Fetched Mbed
+TLS uses pthreads; MSVC builds must supply a native LibDataChannel package
+with `SG_NET_ICE_FETCH=OFF`.
+
+The examples select ICE with `--signaling wss://...`. `NetIo` signs each SDP,
+candidate and restart signal with the application's pinned committee key;
+the rendezvous broadcasts opaque bounded signaling frames. TLS certificate
+verification stays enabled. `--ca-file` supplies a private deployment CA,
+repeated `--ice-server` options supply STUN/TURN URIs, and `--relay-only`
+restricts advertised candidates. Loopback `ws://` is allowed for local tests;
+Internet signaling requires WSS. The example retains a bounded idempotent
+protocol frontier for explicit delivery-uncertainty recovery. Full process
+replacement still requires the existing verified handoff/checkpoint.
+
+```sh
+# Install Python websockets to run this example-only rendezvous.
+python examples/ice_rendezvous.py --host 0.0.0.0 --cert tls.pem --key tls.key
+build/sg_net_pong --player 0 --credentials session --backend cuda --signaling wss://rendezvous.example:49280 --ice-server stun:stun.example:3478 --ice-server turn:user:password@turn.example:3478
+```
+
+Supply your own reachable endpoints and credentials. The fetched libjuice
+backend supports TURN over UDP; TURN TCP/TLS-only or UDP-blocked networks
+need a suitable installed mature backend/package or route. No rendezvous or
+relay deployment is created by the engine.
 
 ## Signed regional epochs and independently verified agreement
 
@@ -290,6 +455,13 @@ silently restarting a used identity at tick zero; their launchers create fresh
 sessions. General crash recovery must restore the declared world through its
 port/checkpoint and these execution locks together.
 
+Numerical relaxations need no quorum. Quorum finalizes regional world steps,
+not diffusion substeps. The predecessor chain remains strict: an executor may
+compute a speculative successor, but may not attest it before knowing the
+exact finalized predecessor. Independent regions and external input/proposal/
+attestation transport can run concurrently; only finalized candidates cross
+the declared world port.
+
 Verification is regional: create a Protocol over only the affected region's
 declared input slots and comparison spaces, not the whole world. A neighboring
 finalization must be independently verified against that neighbor's committee,
@@ -312,7 +484,8 @@ consensus. Key membership and fault bounds are explicit assumptions; distinct
 keys do not prove physical independence. Losing a required input producer can
 stall even when enough executors remain. Divergent canonical input sets refuse
 finalization; automatic view changes/input-set recovery, committee discovery,
-NAT traversal and larger-message framing are not implemented. No executor's
+and committee recovery are not implemented by Agreement. NAT traversal and
+larger-message framing belong to the optional external ICE adapter. No executor's
 proposed result is intrinsically authoritative.
 
 ## Prediction and latency compensation
@@ -380,7 +553,8 @@ Copy `committee.txt` and only that machine's own `p0.seed` or `p1.seed` to its
 credential folder over a trusted channel. Never distribute all private seeds
 to other participants. Allow reachable UDP ports 49270/49271 on the respective
 hosts; NAT/firewall forwarding or a relay is external transport setup. This
-implements IPv4 transport, not automatic Internet connectivity. The same-PC
+is the reference IPv4 UDP path. The optional authenticated ICE/WSS path above
+adds Internet traversal without changing this world or its protocol. The same-PC
 launcher defaults to loopback and generates both local identities.
 It also runs without a display using
 `--headless --steps 600 --out <build>/out/pong/p0.json` (choose each peer's
@@ -419,6 +593,25 @@ law trials and cached layout reuse. `sg_net_processes` (when Python is present)
 launches four separate CPU peers and four CUDA peers when available, over real
 UDP sockets, and compares their combined owned results with one peer. The DSL
 graphs, strict validation and `sg::verify` are checked in every process.
+The distributed fixture also injects randomized delay/loss, reordering,
+duplicates, unequal executor speeds and disconnected neighborhoods, checks
+basis monotonicity/staleness/unsafe steps, and preserves the synchronous
+singular component with real mixed CPU/CUDA execution.
+
+`sg_net_placement` checks deterministic connected plans, capacities, hotspots,
+finalized-epoch hysteresis/merging, unavailable-peer replacement, verified
+handoff and real interest edits/removal/rollback. `sg_net_transport` checks
+opaque UDP routes, honest unsupported reliability and bounded scheduling.
+With ICE enabled, `sg_net_ice` checks >64 KB framing, reconnection, retained
+unsent reliable work, coalescing, backpressure, separate control/boundary
+associations and actual faulty relay-route traffic. Its receipt is independently
+verified and committed through the declared port, with strict laws. The optional
+`sg_net_ice_processes` fixture requires Python websockets and openssl to generate
+a temporary test CA; it runs an actual authenticated WSS rendezvous, independent
+CPU/CUDA/mixed regional processes and delayed Pong, comparing finalized
+world/receipt chains. Relay fault fixtures use a bounded packet-loss burst with
+continuing duplication/reordering/delay and require eventual reliable delivery;
+an indefinitely unavailable route cannot promise progress.
 
 `sg_net_agreement` checks canonical inputs/results, real CPU/CUDA and simulated
 small numerical perturbations, forgery, signed equivocation, invalid proposals,

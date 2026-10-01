@@ -11,10 +11,11 @@
 #include <unistd.h>
 #endif
 #include "Udp.hpp"
-#include "sg/net/Exchange.hpp"
 #include <chrono>
 #include <deque>
 #include <map>
+#include <tuple>
+#include <algorithm>
 #include <stdexcept>
 namespace sg::examples {
 #ifdef _WIN32
@@ -26,7 +27,7 @@ using Socket = int;
 constexpr Socket invalid = -1;
 void close_socket(Socket s) { close(s); }
 #endif
-struct Udp::Impl final : public sg::net::Transport {
+struct Udp::Impl {
 public:
     Impl(int rank, const std::vector<sg::net::Peer>& peers, int base) {
 #ifdef _WIN32
@@ -49,52 +50,62 @@ public:
             routes_[peers[i].id] = *reinterpret_cast<sockaddr_in*>(found->ai_addr); freeaddrinfo(found);
         }
     }
-    ~Impl() override {
+    ~Impl() {
         if (socket_ != invalid) close_socket(socket_);
 #ifdef _WIN32
         WSACleanup();
 #endif
     }
-    void send(const sg::net::Bytes& bytes) override {
-        const auto packet = sg::net::Exchange::decode(bytes);
-        auto& recent = recent_[packet.to]; recent.push_back(bytes); if (recent.size() > 2) recent.pop_front();
-        transmit(packet.to, bytes);
+    net::SendResult send(net::Outbound m) {
+        if (m.delivery == net::DeliveryClass::Reliable) return net::SendResult::Unsupported;
+        if (!routes_.count(m.peer) || m.channel.empty() || m.channel.size() > 128 || m.slot.empty()) throw std::invalid_argument("UDP routing is invalid");
+        if (m.bytes.size()+m.channel.size()+1 > 64000) return net::SendResult::TooLarge;
+        const auto key = std::make_tuple(m.peer,m.channel,m.slot);
+        const auto found = recent_.find(key);
+        const auto old = found == recent_.end() ? 0 : found->second.bytes.size();
+        if ((found == recent_.end() && recent_.size() >= 64) || bytes_-old+m.bytes.size() > 4*1024*1024) return net::SendResult::Blocked;
+        bytes_ = bytes_-old+m.bytes.size(); recent_[key] = m; transmit(m); return net::SendResult::Accepted;
     }
-    bool try_receive(sg::net::Bytes& bytes) override {
-        char buffer[65536]; const auto n = recvfrom(socket_, buffer, sizeof(buffer), 0, nullptr, nullptr);
-        if (n <= 0) return false;
-        bytes.assign(buffer, buffer+n); return true;
+    bool try_receive(net::Inbound& m) {
+        for (;;) {
+            char buffer[65536]; sockaddr_in from{};
+#ifdef _WIN32
+            int length = sizeof(from);
+#else
+            socklen_t length = sizeof(from);
+#endif
+            const auto n = recvfrom(socket_, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &length);
+            if (n <= 0) return false;
+            const auto route = std::find_if(routes_.begin(),routes_.end(),[&](const auto& p){return p.second.sin_addr.s_addr == from.sin_addr.s_addr && p.second.sin_port == from.sin_port;});
+            const auto size = static_cast<unsigned char>(buffer[0]);
+            if (route == routes_.end() || size == 0 || size > 128 || n < size+1) continue;
+            m = {route->first,std::string(buffer+1,buffer+1+size),net::Bytes(buffer+1+size,buffer+n)}; return true;
+        }
     }
     void retry() {
         // Wall time paces external retransmission only, never world behavior.
         const auto now = std::chrono::steady_clock::now();
         if (now - last_ < std::chrono::milliseconds(2)) return;
         last_ = now;
-        for (const auto& [to, packets] : recent_) for (const auto& bytes : packets) transmit(to, bytes);
-        for (const auto& [to, packets] : signed_) for (const auto& [slot, bytes] : packets) { (void)slot; transmit(to,bytes); }
-    }
-    void send_to(const std::string& to, const sg::net::Bytes& bytes, const std::string& slot) {
-        if (slot.empty() || slot.size() > 128) throw std::invalid_argument("UDP retry slot is invalid");
-        auto& packets = signed_[to]; if (!packets.count(slot) && packets.size() >= 8) throw std::length_error("UDP retry slots must remain bounded");
-        packets[slot] = bytes; transmit(to,bytes);
+        for (const auto& [key, m] : recent_) { (void)key; transmit(m); }
     }
 private:
-    void transmit(const std::string& to, const sg::net::Bytes& bytes) {
-        if (bytes.size() > 64000) throw std::length_error("UDP example requires a smaller boundary datagram");
-        const auto& route = routes_.at(to);
+    void transmit(const net::Outbound& m) {
+        net::Bytes bytes{static_cast<std::uint8_t>(m.channel.size())};
+        bytes.insert(bytes.end(),m.channel.begin(),m.channel.end()); bytes.insert(bytes.end(),m.bytes.begin(),m.bytes.end());
+        const auto& route = routes_.at(m.peer);
         const auto n = sendto(socket_, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0, reinterpret_cast<const sockaddr*>(&route), sizeof(route));
         if (n < 0 || static_cast<std::size_t>(n) != bytes.size()) throw std::runtime_error("UDP boundary send failed");
     }
     Socket socket_ = invalid;
     std::map<std::string, sockaddr_in> routes_;
-    std::map<std::string, std::deque<sg::net::Bytes>> recent_;
-    std::map<std::string, std::map<std::string,sg::net::Bytes>> signed_;
+    std::map<std::tuple<std::string,std::string,std::string>,net::Outbound> recent_;
+    std::size_t bytes_ = 0;
     std::chrono::steady_clock::time_point last_{};
 };
 Udp::Udp(int rank, const std::vector<net::Peer>& peers, int base) : impl_(std::make_unique<Impl>(rank, peers, base)) {}
 Udp::~Udp() = default;
-void Udp::send(const net::Bytes& bytes) { impl_->send(bytes); }
-void Udp::send_to(const std::string& peer, const net::Bytes& bytes, const std::string& slot) { impl_->send_to(peer,bytes,slot); }
-bool Udp::try_receive(net::Bytes& bytes) { return impl_->try_receive(bytes); }
+net::SendResult Udp::send(net::Outbound message) { return impl_->send(std::move(message)); }
+bool Udp::try_receive(net::Inbound& message) { return impl_->try_receive(message); }
 void Udp::retry() { impl_->retry(); }
 } // namespace sg::examples
