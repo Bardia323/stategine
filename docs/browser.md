@@ -19,18 +19,18 @@ committee, participant structure or world data.
 Use an activated Emscripten SDK and a native C++17 toolchain:
 
 ```sh
-cmake -S . -B build/native
-cmake --build build/native
-ctest --test-dir build/native --output-on-failure
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
 emcmake cmake -S . -B build/wasm \
-  -DSTATEGINE_SGC_EXECUTABLE=/absolute/path/build/native/sgc
+  -DSTATEGINE_SGC_EXECUTABLE=/absolute/path/build/sgc
 cmake --build build/wasm
 ctest --test-dir build/wasm --output-on-failure
 ```
 
 On Windows the host executable is `sgc.exe`. `SG_BUILD_SGC` defaults off for
 cross builds; a Wasm compiler is never run as a build tool. Tests also consume
-the adjacent native `stategine_shape` executable (or `STATEGINE_SHAPE_EXECUTABLE`).
+the native `laws/stategine_shape` executable (or `STATEGINE_SHAPE_EXECUTABLE`).
 Emscripten automatically excludes native GL/GLFW, CUDA, ROCm, Vulkan, Metal
 and libdatachannel probing. Validation, exceptions and rollback stay enabled.
 Generated JS/Wasm and preloaded filesystem data remain in `build/wasm`.
@@ -43,7 +43,7 @@ into Emscripten's filesystem rather than adding URL-owned world data.
 and signed protocol. Make fresh credentials with the native tool:
 
 ```sh
-build/native/sg_net_keys credentials 2 2 0 pong
+build/sg_net_keys credentials 2 2 0 pong
 python examples/ice_rendezvous.py --port 49280
 python -m http.server 8080 --directory build/wasm
 ```
@@ -105,7 +105,7 @@ solver or weaken numerical tolerance.
 Run the real integration harness with a native libdatachannel build:
 
 ```sh
-python tests/browser.py --native build/native --wasm build/wasm \
+python tests/browser.py --native build --wasm build/wasm \
   --ice-build build/ice --node node --browser /path/to/chromium
 ```
 

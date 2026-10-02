@@ -273,7 +273,7 @@ o.accelerate = &fast;
 sg::LawReport r = sg::verify(graph, {}, o);     // the same report, faster
 ```
 
-`./build/sg_algebra` holds every backend to the verifier's report, lawful and
+`./build/laws/sg_algebra` holds every backend to the verifier's report, lawful and
 broken. At 400 bodies: plain 0.9 s, compiled 0.3 s the first time and 35 ms
 after.
 
@@ -869,6 +869,9 @@ covers channels, body-local emitters, support bounds and specialized backends;
 nested 3D embeddings without traversal.
 
 ## Build and run
+
+Native programs are directly in `build/`; static libraries are in `build/lib/`. Checks are in
+`build/laws/`, logs in `build/logs/`, and the browser build in `build/wasm/`.
 
 ```sh
 cmake -S . -B build -G "MinGW Makefiles"   # or any generator; -DSG_BUILD_GL=OFF skips GLFW

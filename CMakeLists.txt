@@ -6,6 +6,7 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/sg/Version.hpp" _sg_version_li
 string(REGEX REPLACE "^#define SG_VERSION_STRING \"([^\"]+)\".*" "\\1" _sg_version
        "${_sg_version_line}")
 project(stategine VERSION ${_sg_version} LANGUAGES CXX)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lib")
 
 # Built on its own, stategine builds its examples and tests. Pulled into a
 # project (FetchContent, add_subdirectory), it is only a library: no demos, no
@@ -445,4 +446,19 @@ if(SG_BUILD_NET_BENCH)
   endif()
   add_executable(sg_net_bench benchmarks/network.cpp)
   target_link_libraries(sg_net_bench PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)
+endif()
+
+# Native programs stay at the build root; archives and checks have their folders.
+if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_spatial sg_fields
+      sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl
+      sg_instancing_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
+      sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
+      sg_browser_render stategine_shape)
+    if(TARGET ${_check})
+      set_target_properties(${_check} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+    endif()
+  endforeach()
 endif()

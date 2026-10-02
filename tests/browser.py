@@ -20,6 +20,8 @@ from playwright.sync_api import sync_playwright
 
 ROOT=Path(__file__).resolve().parents[1]
 def executable(build,name):
+    if name in ('sg_cross_platform', 'sg_browser_render', 'sg_web_rtc_peer'):
+        build = build/'laws'
     return str(build/(name+('.exe' if os.name=='nt' else '')))
 class Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self,*args):pass

@@ -384,6 +384,9 @@ are preserved. `person = 1` differs from `person = 2`; `native foo` from `native
 
 ## Before you finish
 
+Keep native programs at the build root, static libraries in `lib/`, law checks in `laws/`,
+logs in `logs/`, and Wasm in `build/wasm`. Do not add nested packaging layers.
+
 ```sh
 cmake --build build && ctest --test-dir build        # engine tests: laws, graph watch, defaults, text, the DSL
 ```
