@@ -1,0 +1,54 @@
+# Ordinary worlds and interfaces; both native and browser executors read this.
+state time : temporal
+extern state board
+initial room
+state room : spatial3d {
+    room_w = 14.0 room_h = 4.0 room_d = 12.0
+    element camera : camera { x = 7.0 y = 1.8 z = 10.0 yaw = -1.5707963267948966 pitch = -0.08 }
+    element box : mesh { x = 5.0 z = 5.0 sx = 1.0 sy = 1.0 sz = 1.0 r = 0.8 g = 0.3 b = 0.1 bevel = 0.06 }
+    element ball : mesh { x = 8.0 z = 4.0 sx = 1.0 sy = 1.0 sz = 1.0 shape = "sphere" surface = 5.0 }
+    element column : mesh { x = 3.0 z = 5.0 sx = 0.8 sy = 2.0 sz = 0.8 shape = "cylinder" }
+    element lamp : light { x = 7.0 y = 3.6 z = 6.0 intensity = 1.0 dx = 0.0 dy = -1.0 dz = 0.0 inner = 0.8 outer = 1.4 }
+    element screen : portal { x = 10.0 y = 2.0 z = 3.0 yaw = 1.5707963267948966 w = 2.0 h = 1.4 open = true feed = 1 crt = 1 halo = 0.2 shows = "" }
+    element feed : portal { x = 3.0 y = 2.0 z = 2.0 yaw = 1.5707963267948966 w = 2.0 h = 1.4 open = true feed = 1 feed_w = 320 feed_h = 180 }
+    element monitor : portal { x = 7.0 y = 3.4 z = 2.0 yaw = 1.5707963267948966 w = 1.7 h = 0.7 shows = "recorder.film.room" crt = 1 }
+    element door : portal { x = 7.0 y = 1.5 z = 0.0 yaw = 1.5707963267948966 w = 3.0 h = 3.0 }
+    element left : wall { x = 0.0 z = 6.0 sx = 0.25 sy = 4.0 sz = 12.0 }
+    element right : wall { x = 14.0 z = 6.0 sx = 0.25 sy = 4.0 sz = 12.0 }
+    element back : wall { x = 7.0 z = 12.0 sx = 14.0 sy = 4.0 sz = 0.25 }
+    element front_left : wall { x = 2.75 z = 0.0 sx = 5.5 sy = 4.0 sz = 0.25 }
+    element front_right : wall { x = 11.25 z = 0.0 sx = 5.5 sy = 4.0 sz = 0.25 }
+    element lintel : wall { x = 7.0 y = 3.0 z = 0.0 sx = 3.0 sy = 1.0 sz = 0.25 }
+    camera -> camera : step on room.step
+}
+state guest : spatial3d {
+    element camera : camera { x = 7.0 y = 1.8 z = 10.0 yaw = -1.5707963267948966 }
+    element door : portal { x = 7.0 y = 1.5 z = 12.0 yaw = -1.5707963267948966 w = 3.0 h = 3.0 }
+    element cube : mesh { x = 7.0 z = 6.0 sx = 2.0 sy = 2.0 sz = 2.0 r = 0.1 g = 0.3 b = 0.8 }
+    element lamp : light { x = 7.0 y = 3.5 z = 6.0 intensity = 0.8 }
+    element left : wall { x = 0.0 z = 6.0 sx = 0.25 sy = 4.0 sz = 12.0 }
+    element right : wall { x = 14.0 z = 6.0 sx = 0.25 sy = 4.0 sz = 12.0 }
+    element back : wall { x = 7.0 z = 0.0 sx = 14.0 sy = 4.0 sz = 0.25 }
+    element front_left : wall { x = 2.75 z = 12.0 sx = 5.5 sy = 4.0 sz = 0.25 }
+    element front_right : wall { x = 11.25 z = 12.0 sx = 5.5 sy = 4.0 sz = 0.25 }
+    element lintel : wall { x = 7.0 y = 3.0 z = 12.0 sx = 3.0 sy = 1.0 sz = 0.25 }
+    camera -> camera : step on guest.step
+}
+state room.look : look {
+    fade = 0.0
+    element composite : pass { ao = 0.7 "ao.radius" = 0.4 uGrain = 0.0 }
+    composite -> composite : shader(source) on room.look.shader native shader_source
+}
+state recorder : camera {
+    element lens : portal { x = 7.0 y = 1.8 z = 10.0 yaw = -1.5707963267948966 pitch = -0.08 open = true feed_w = 320 feed_h = 180 }
+}
+film recorder -> room
+port room.look.shader
+wear room <- room.look
+seam room.door <-> guest.door name doorway
+functor screen_refresh : room -> board { }
+functor skin_source : board -> room { object camera -> box only(fov) }
+embed room.feed -> guest name feed in doorway.ab sync view focus false follows true
+embed room.screen -> board name screen in screen_refresh sync view focus false follows true
+drive time -> room event room.step
+drive time -> guest event guest.step keeps always

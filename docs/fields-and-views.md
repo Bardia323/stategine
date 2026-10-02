@@ -63,7 +63,7 @@ the state, not to cache invalidation.
 `ViewPlan.cpp` constructs camera/clipping data, queries graph declarations and
 builds draw candidates. `Visibility` uses its own BVH for mesh/wall candidates;
 the original conservative sphere test remains the final test, preserving draw
-order and edge behavior. `GLWorld.cpp` draws the plan. The implicit room,
+order and edge behavior. `src/gl/World.cpp` draws the plan. The implicit room,
 terrain, lamps and portal panels retain their existing drawing behavior.
 
 World bindings require an open graph embedding or a declared seam at that
@@ -87,3 +87,10 @@ Run `ctest --test-dir build -R 'sg_fields|sg_spatial|sg_projected|sg_rigid'` for
 the analytic fields, specialized backend, composition, supports, many bodies,
 projection and nested views. `sg_projected_gl` additionally verifies that real
 GL rendering does not change any state or graph facts.
+
+The backend-neutral view functions also serve `sg/web/WebGPU.hpp`. Shared
+geometry, portal framing, lights, shadow projections and spatial math remain
+discardable answers to queries on StateGraph. GPU resources and stale bindings
+cannot create relationships. Shader time reads declared `own_time` or the
+state's Temporal drive; a state without either stays still. Frame intervals
+only move transient Look blend weights. See [browser.md](browser.md).

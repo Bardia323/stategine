@@ -6,6 +6,14 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+EM_JS(int, sg_random_bytes, (unsigned char* destination, unsigned size), {
+    if (!globalThis.crypto || !globalThis.crypto.getRandomValues) return 0;
+    globalThis.crypto.getRandomValues(HEAPU8.subarray(destination,destination+size));
+    return 1;
+});
+#endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -34,7 +42,9 @@ std::string hex(const Digest& digest) { return hex(Bytes(digest.begin(),digest.e
 Digest digest_from_hex(const std::string& text) { const auto bytes = unhex(text); if (bytes.size() != 32) throw std::invalid_argument("net: wrong digest size"); Digest out; std::copy(bytes.begin(),bytes.end(),out.begin()); return out; }
 Seed random_seed() {
     Seed seed;
-#ifdef _WIN32
+#ifdef __EMSCRIPTEN__
+    if (!sg_random_bytes(seed.data(),seed.size())) throw std::runtime_error("net: browser cryptographic randomness unavailable");
+#elif defined(_WIN32)
     if (BCryptGenRandom(nullptr,seed.data(),static_cast<ULONG>(seed.size()),BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) throw std::runtime_error("net: operating-system randomness unavailable");
 #else
     std::ifstream random("/dev/urandom",std::ios::binary); random.read(reinterpret_cast<char*>(seed.data()),seed.size()); if (!random) throw std::runtime_error("net: operating-system randomness unavailable");

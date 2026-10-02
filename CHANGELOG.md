@@ -8,6 +8,9 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- The same core, domains, physics, DSL and signed networking build through Emscripten, retaining C++ exceptions and canonical double-precision CPU verification. A native host `sgc` compiles the same notation for both targets. Browser DOM input, WebRTC sessions and WebGPU resources are external, discardable executors; callbacks have no world capability.
+- **Breaking:** native GL drawing is now `stategine::gl`, with `sg/gl/World.hpp`. `stategine::render` contains backend-neutral derived view/geometry machinery and ASCII. Emscripten's `stategine::web` consumes that machinery. Renderer shader time now comes only from declared `own_time` or a Temporal drive; applications supply transient frame intervals for fades rather than using a renderer wall clock.
+
 - Networking execution reuses distributed numerical workspaces, dense indices, certified bounds and call-scoped prepared CPU/CUDA systems. Epoch/generation changes are required for changed numerical plans; dynamic state/boundary values are always refilled. Each peer caches two independently validated canonical references, including deterministic checkpoints. CUDA changed-value output uses stable parallel scan/scatter, with the small-coordinate serial path retained.
 - **Breaking:** signed protocol framing is now `sg.net.protocol.v2`. Full proposals carry data once; attestations/finalizations carry signed compact certificate references, with bounded authenticated missing-data recovery independent of ordering. Receipt, epoch, decision and durable journal hashes retain their existing encodings. All peers in a session must upgrade together. Opt-in `SG_BUILD_NET_BENCH` measures cold/warm reconciliation, verification, finalization and transfers without changing the reference method.
 

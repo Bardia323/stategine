@@ -88,7 +88,8 @@ int main() {
         (void)edges; Params constraint; constraint.set("left",data.front().stalk.str()).set("right",data.back().stalk.str()).set("weight",1.0);
         return std::vector<InterestChange>{{InterestAction::Add,"interest",constraint,2}};
     });
-    const auto revision = c.revision(), elements = state.elements().size();
+    const auto revision = c.revision();
+    const auto elements = state.elements().size();
     engine.send("network",{"network.repartition",examples::placement_arguments(add,transfer)}); engine.tick(0);
     check(!state.find("interest"),"pure interest policy and requested arrow cannot create a hidden overlap");
     engine.tick(0); c.derive(state); neighborhood.update(state,c);

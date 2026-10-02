@@ -2,7 +2,7 @@
 # Its host code is compiled by the project's compiler, including MinGW;
 # no C++ ABI crosses between the project's compiler and a vendor compiler.
 option(SG_NET_CUDA "Build the network CUDA backend when the toolkit is found" ON)
-if(NOT SG_NET_CUDA)
+if(EMSCRIPTEN OR NOT SG_NET_CUDA)
   return()
 endif()
 find_package(CUDAToolkit QUIET)

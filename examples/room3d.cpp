@@ -42,7 +42,7 @@
 #include "sg/core/Sheaf.hpp"
 #include "sg/domains/Atlas.hpp"
 #include "sg/gl/Window.hpp"
-#include "sg/render/GLWorld.hpp"
+#include "sg/gl/World.hpp"
 #include "sg/sg.hpp"
 
 namespace {
@@ -724,6 +724,7 @@ int main(int argc, char** argv) {
             }
         }
 
+        view.set_frame_delta(dt);
         view.render(rooms, window.width(), window.height());
         window.swap();
 

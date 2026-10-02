@@ -779,3 +779,23 @@ schedule results, not WAN latency promises. Remaining work includes semantic
 Params copies, frame materialization, signatures/hash validation and shared
 CUDA-executor layout changes. Measurements live under `<build>/out/network/`;
 the reproducible benchmark source is `benchmarks/network.cpp`.
+
+## Browser execution
+
+Emscripten builds the same double-precision `CpuBackend`, canonical encodings,
+Monocypher signatures/hashes, Verify, Agreement and Protocol. Browser seed
+generation uses `crypto.getRandomValues`; GPU rendering never changes numerical
+acceptance or tolerance. Native/Wasm fixtures compare canonical values,
+signatures, graph facts and finalized receipts byte for byte.
+
+`sg/web/WebRtc.hpp` implements the existing opaque `Transport` API. The shared
+`IceSession` contract keeps native libdatachannel and browser RTCPeerConnection
+on the same `_sg` framing, Reliable/Latest lanes, stable offerer and session
+generation/signaling rules. Callbacks own bounded byte queues/handles only;
+application polling authenticates signatures and delivers through existing
+ports. Connect/disconnect cannot create participants or committee members.
+Queue pressure, encrypted sessions, signaling and reconnect retries remain
+external machinery. The browser example replays signed idempotent frontiers
+on delivery uncertainty and persists vote evidence before broadcast. See
+[browser.md](browser.md) for builds, real interoperability checks and recovery
+limitations.

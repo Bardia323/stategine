@@ -20,6 +20,12 @@ option(SG_BUILD_EXAMPLES "Build the examples and demos" ${SG_TOP_LEVEL})
 option(SG_BUILD_TESTS "Build the tests, law checks and compile-fail cases" ${SG_TOP_LEVEL})
 option(SG_BUILD_GL "Build the OpenGL room example (downloads GLFW)" ${SG_TOP_LEVEL})
 option(SG_BUILD_NET_BENCH "Build the standalone networking benchmark" OFF)
+if(EMSCRIPTEN)
+  # Driver probing is native only; validation and rollback retain exceptions.
+  set(SG_BUILD_GL OFF)
+  add_compile_options(-fexceptions)
+  add_link_options(-fexceptions -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1)
+endif()
 
 # --- the library ---------------------------------------------------------------
 # A header says what a thing is; its .cpp, what it does. Each .cpp is
@@ -38,7 +44,7 @@ target_compile_features(stategine PUBLIC cxx_std_17)
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.
 add_library(stategine_net STATIC src/net/Cellular.cpp src/net/Reconcile.cpp src/net/CpuBackend.cpp
-    src/net/Partition.cpp src/net/Exchange.cpp src/net/Distributed.cpp src/net/Placement.cpp src/net/Transport.cpp
+    src/net/Partition.cpp src/net/Exchange.cpp src/net/Distributed.cpp src/net/Placement.cpp src/net/Transport.cpp src/net/IceSession.cpp
     src/net/Canonical.cpp src/net/Integrity.cpp src/net/Epoch.cpp src/net/Verify.cpp src/net/Agreement.cpp src/net/Protocol.cpp src/net/Prediction.cpp)
 add_library(stategine::net ALIAS stategine_net)
 target_link_libraries(stategine_net PUBLIC stategine)
@@ -49,10 +55,16 @@ include(cmake/network_gpu.cmake)
 # world. It needs no window: GL is loaded through the window's own
 # glfwGetProcAddress, and sg/gl/Window.hpp - GLFW's - stays a header.
 file(GLOB _sg_render_sources CONFIGURE_DEPENDS
-     ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp)
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/render/*.cpp)
 add_library(stategine_render STATIC ${_sg_render_sources})
 add_library(stategine::render ALIAS stategine_render)
 target_link_libraries(stategine_render PUBLIC stategine)
+if(NOT EMSCRIPTEN)
+  file(GLOB _sg_gl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp)
+  add_library(stategine_gl STATIC ${_sg_gl_sources})
+  add_library(stategine::gl ALIAS stategine_gl)
+  target_link_libraries(stategine_gl PUBLIC stategine_render)
+endif()
 
 # A game's modules, built the same way: stategine_module(), and
 # stategine_check_modules() to hold them to it.
@@ -85,6 +97,9 @@ include(cmake/gpu.cmake OPTIONAL)
 add_library(stategine_dev INTERFACE)
 target_link_libraries(stategine_dev INTERFACE stategine stategine_render stategine_warnings
                       stategine_static_runtime)
+if(TARGET stategine_gl)
+  target_link_libraries(stategine_dev INTERFACE stategine_gl)
+endif()
 
 # The DSL (sg/dsl): a notation for the construction the engine already has, and
 # its compiler, sgc. The library reads a source, holds it to the ontology and
@@ -92,13 +107,30 @@ target_link_libraries(stategine_dev INTERFACE stategine stategine_render stategi
 # `apply` makes them on a live graph (a world rewriting itself by graph.edit).
 # There is no runtime here: the one that runs the result is the engine.
 option(SG_BUILD_DSL "Build the DSL compiler (sgc) and its library" ON)
+if(CMAKE_CROSSCOMPILING)
+  set(_sg_build_sgc OFF)
+else()
+  set(_sg_build_sgc ON)
+endif()
+option(SG_BUILD_SGC "Build the native host DSL executable" ${_sg_build_sgc})
+set(STATEGINE_SGC_EXECUTABLE "" CACHE FILEPATH "Native sgc used when cross compiling")
 if(SG_BUILD_DSL)
   file(GLOB _sg_dsl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/dsl/*.cpp)
   add_library(stategine_dsl STATIC ${_sg_dsl_sources})
   add_library(stategine::dsl ALIAS stategine_dsl)
   target_link_libraries(stategine_dsl PUBLIC stategine)
-  add_executable(sgc tools/sgc.cpp)
-  target_link_libraries(sgc PRIVATE stategine_dsl stategine_warnings stategine_static_runtime)
+  if(SG_BUILD_SGC)
+    if(CMAKE_CROSSCOMPILING)
+      message(FATAL_ERROR "sgc is a host tool: disable SG_BUILD_SGC and supply STATEGINE_SGC_EXECUTABLE")
+    endif()
+    add_executable(sgc tools/sgc.cpp)
+    target_link_libraries(sgc PRIVATE stategine_dsl stategine_warnings stategine_static_runtime)
+  elseif(STATEGINE_SGC_EXECUTABLE AND EXISTS "${STATEGINE_SGC_EXECUTABLE}")
+    add_executable(sgc IMPORTED GLOBAL)
+    set_target_properties(sgc PROPERTIES IMPORTED_LOCATION "${STATEGINE_SGC_EXECUTABLE}")
+  elseif(SG_BUILD_TESTS OR SG_BUILD_EXAMPLES)
+    message(FATAL_ERROR "Supply an existing native STATEGINE_SGC_EXECUTABLE")
+  endif()
   include(cmake/StategineDsl.cmake)
 endif()
 
@@ -167,6 +199,9 @@ if(SG_BUILD_TESTS)
   enable_testing()
   add_executable(sg_tests tests/test_engine.cpp)
   target_link_libraries(sg_tests PRIVATE stategine_dev)
+  if(EMSCRIPTEN)
+    target_sources(sg_tests PRIVATE src/gl/Shaders.cpp)
+  endif()
   add_test(NAME sg_tests COMMAND sg_tests)
 
   # The laws, compiled (sg/algebra) - the same reports as the verifier's, on
@@ -249,10 +284,23 @@ if(SG_BUILD_TESTS)
     "sg/spatial=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/spatial:"
     "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/physics:sg/core,sg/spatial"
     "sg/net=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/net:sg/core"
-    "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gl:"
-    "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render:sg/core,sg/domains,sg/gl,sg/spatial"
+    "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gl:sg/core,sg/domains,sg/render,sg/spatial"
+    "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render:sg/core,sg/domains,sg/spatial"
+    "sg/web=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/web:sg/core,sg/domains,sg/render,sg/net,sg/dsl,sg/spatial"
     "sg/gpu=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/gpu:sg/core,sg/algebra"
     "sg/dsl=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/dsl:sg/core,sg/domains")
+  # Check implementation includes too: renderer executors may depend on the
+  # neutral plan, while no world/numerical/notation module may depend on web.
+  set_property(GLOBAL APPEND PROPERTY STATEGINE_MODULES
+    "sg/core=${CMAKE_CURRENT_SOURCE_DIR}/src/core:"
+    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/src/domains:sg/core,sg/spatial"
+    "sg/spatial=${CMAKE_CURRENT_SOURCE_DIR}/src/spatial:sg/core"
+    "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/src/physics:sg/core,sg/spatial"
+    "sg/net=${CMAKE_CURRENT_SOURCE_DIR}/src/net:sg/core"
+    "sg/render=${CMAKE_CURRENT_SOURCE_DIR}/src/render:sg/core,sg/domains,sg/spatial"
+    "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/src/gl:sg/core,sg/domains,sg/render,sg/spatial"
+    "sg/dsl=${CMAKE_CURRENT_SOURCE_DIR}/src/dsl:sg/core,sg/domains"
+    "sg/web=${CMAKE_CURRENT_SOURCE_DIR}/src/web:sg/core,sg/domains,sg/render,sg/net,sg/dsl,sg/spatial")
   stategine_check_modules(NAME sg_shape)
   set_property(GLOBAL PROPERTY STATEGINE_MODULES "")
 
@@ -284,6 +332,7 @@ if(SG_BUILD_TESTS)
     target_link_libraries(sg_net_agreement PRIVATE stategine_net stategine_warnings stategine_static_runtime)
     add_test(NAME sg_net_agreement COMMAND sg_net_agreement)
 
+    if(NOT EMSCRIPTEN)
     add_executable(sg_net_transport tests/test_net_transport.cpp examples/Udp.cpp)
     target_link_libraries(sg_net_transport PRIVATE stategine_net stategine_warnings stategine_static_runtime)
     if(WIN32)
@@ -304,6 +353,8 @@ if(SG_BUILD_TESTS)
       set_tests_properties(sg_net_processes PROPERTIES TIMEOUT 180)
     endif()
 
+    endif() # native socket/process fixtures
+
     add_executable(sg_projected tests/projected.cpp examples/Fields.cpp)
     target_link_libraries(sg_projected PRIVATE stategine_dev stategine_dsl)
     stategine_compile_dsl(sg_projected NAME fields SOURCES examples/fields.sg)
@@ -323,7 +374,12 @@ if(SG_BUILD_TESTS)
     stategine_compile_dsl(sg_dsl NAME scenario SOURCES tests/dsl/scenario.sg)
     stategine_compile_dsl(sg_dsl NAME world SOURCES src/dsl/compiler.sg tests/dsl/desk.sg)
     stategine_compile_dsl(sg_dsl NAME kitchen SOURCES tests/dsl/kitchen.sg)
-    target_compile_definitions(sg_dsl PRIVATE SG_DSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/dsl")
+    if(EMSCRIPTEN)
+      target_compile_definitions(sg_dsl PRIVATE SG_DSL_DIR="/tests/dsl")
+      target_link_options(sg_dsl PRIVATE "--preload-file" "${CMAKE_CURRENT_SOURCE_DIR}/tests/dsl@/tests/dsl")
+    else()
+      target_compile_definitions(sg_dsl PRIVATE SG_DSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/dsl")
+    endif()
     add_test(NAME sg_dsl COMMAND sg_dsl)
 
     # Two invariants held hard: applying a plan is all or nothing (and so is a
@@ -346,7 +402,7 @@ if(SG_BUILD_TESTS)
 endif()
 
 # A standalone DSL world, with the same peer protocol and optional GL view.
-if(SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
+if(NOT EMSCRIPTEN AND SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
   add_executable(sg_net_keys examples/net_keys.cpp examples/Signed.cpp)
   target_link_libraries(sg_net_keys PRIVATE stategine_net stategine_warnings stategine_static_runtime)
   add_executable(sg_net_verified_peer examples/net_verified_peer.cpp examples/Signed.cpp examples/Udp.cpp examples/NetIo.cpp)
@@ -369,7 +425,7 @@ if(SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
   if(TARGET glfw)
     target_sources(sg_net_pong PRIVATE examples/pong/View.cpp)
     target_compile_definitions(sg_net_pong PRIVATE SG_PONG_GL)
-    target_link_libraries(sg_net_pong PRIVATE stategine_render glfw)
+    target_link_libraries(sg_net_pong PRIVATE stategine_gl glfw)
     if(WIN32)
       target_link_libraries(sg_net_pong PRIVATE opengl32)
     endif()
@@ -382,6 +438,7 @@ if(SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
 endif()
 
 include(cmake/network_ice.cmake)
+include(cmake/web.cmake)
 if(SG_BUILD_NET_BENCH)
   if(NOT SG_BUILD_DSL)
     message(FATAL_ERROR "sg_net_bench requires the DSL for its declared worlds")

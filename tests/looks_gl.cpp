@@ -7,7 +7,7 @@
 #include <iostream>
 
 #include "sg/gl/Window.hpp"
-#include "sg/render/GLWorld.hpp"
+#include "sg/gl/World.hpp"
 #include "sg/sg.hpp"
 
 int main() {

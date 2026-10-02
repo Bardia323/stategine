@@ -5,7 +5,7 @@
 # sg/gpu/AlgebraBackend.hpp. Where none is found, the target is empty and
 # every backend runs on the CPU (and says it is not here).
 option(SG_GPU "Build the algebra's GPU backends where their toolchains are found" ON)
-if(NOT SG_GPU)
+if(EMSCRIPTEN OR NOT SG_GPU)
   return()
 endif()
 

@@ -1,41 +1,6 @@
-#include "sg/render/GLWorld.hpp"
+#include "sg/gl/World.hpp"
 
 namespace sg::render {
-
-void standard_look(LookState& l, const GLQuality& q) {
-    l.uniform(passes::scene, "uFogColor", 0.05, 0.06, 0.09)
-        .uniform(passes::scene, "uFogDensity", 0.018)
-        .uniform(passes::scene, "uSky", 0.10, 0.13, 0.20)
-        .uniform(passes::scene, "uGround", 0.14, 0.10, 0.07)
-        .uniform(passes::scene, "uAmbient", 0.55)
-        .uniform(passes::scene, "uShadowSoft", 1.0)
-        .uniform(passes::scene, "uShadowFloor", 0.0)
-        .uniform(passes::scene, "uWind", 0.0)
-        .uniform(passes::scene, "uStars", 0.0)
-        .uniform(passes::scene, "uClouds", 0.0)
-        .uniform(passes::scene, "uCloudColor", 1.0, 0.95, 0.92)
-        .uniform(passes::scene, "uCloudShade", 0.55, 0.52, 0.62)
-        .uniform(passes::scene, "uSkyTop", 0.20, 0.40, 0.75)
-        .uniform(passes::scene, "uSkyHorizon", 0.72, 0.78, 0.84)
-        .setting(passes::scene, "clear.x", 0.012)
-        .setting(passes::scene, "clear.y", 0.014)
-        .setting(passes::scene, "clear.z", 0.022)
-        .uniform(passes::bright, "uThreshold", q.bloom_threshold)
-        .setting(passes::blur, "passes", q.bloom_passes)
-        .uniform(passes::composite, "uBloomStrength", q.bloom_strength)
-        .uniform(passes::composite, "uExposure", q.exposure)
-        .uniform(passes::composite, "uTint", 1.0, 1.0, 1.0)
-        .uniform(passes::composite, "uSaturation", 1.0)
-        .uniform(passes::composite, "uVignette", 0.55)
-        .uniform(passes::composite, "uGrain", 0.015)
-        .uniform(passes::composite, "uRays", 0.0)
-        .uniform(passes::composite, "uRayCut", 1.0)
-        .uniform(passes::composite, "uRaySpread", 0.3)
-        .uniform(passes::composite, "uRayColor", 1.0, 1.0, 1.0)
-        .uniform(passes::composite, "uRayDir", 0.0, 1.0, 0.0)
-        .uniform(passes::composite, "uCamFwd", 0.0, 0.0, -1.0)
-        .uniform(passes::composite, "uTanHalf", 0.7);
-}
 
 std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     graph_ = &g;
@@ -91,13 +56,11 @@ void GLWorldView::bind_feed(Key portal_element, const Spatial3D* world, int w, i
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
     const LookFader fader = fader_;
     const Mix post = post_;
-    const double time = time_;
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
     gl::glFinish();
     fader_ = fader;
     post_ = post;
-    time_ = time;
 }
 
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
@@ -105,13 +68,18 @@ void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
     render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
 }
 
-void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_h) {
-    if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
-    {
-        static const Key own{"own_time"};
-        const Params& p = rooms.front().room->params();
-        world_time_ = p.has(own) ? p.num(own) : time_;
+void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    auto rooms=requested;
+    const StateGraph* declared=graph_?graph_:(root_?root_->graph_:nullptr);
+    if(rooms.size()>1){
+        if(!declared)rooms.resize(1);
+        else if(rooms.front().room){
+            const auto plan=view_plan(*declared,*rooms.front().room,rooms);
+            rooms.erase(std::remove_if(rooms.begin(),rooms.end(),[&](const PlacedRoom& placed){return std::none_of(plan.rooms.begin(),plan.rooms.end(),[&](const RoomDraw& draw){return draw.room==placed.room;});}),rooms.end());
+        }
     }
+    if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
+    world_time_ = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
     ease_spills(rooms);
     aim_rays(*rooms.front().room);
     // Feeds the graph declares: an open embedding of a 3D state in a
@@ -126,10 +94,11 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
             const State* host = graph_->find(em.host);
             const Element* panel = host ? host->find(em.portal) : nullptr;
             if (!guest || !panel || panel->params.num(Key{"feed"}, 0.0) < 0.5) continue;
-            bind_feed(em.portal, guest, static_cast<int>(panel->params.num(Key{"feed_w"}, 640.0)),
+            const Key resource=panel->params.num(Key{"eye"},0)>.5?em.name:em.portal;
+            bind_feed(resource, guest, static_cast<int>(panel->params.num(Key{"feed_w"}, 640.0)),
                       static_cast<int>(panel->params.num(Key{"feed_h"}, 480.0)),
                       panel->params.num(Key{"live"}, 1.0) > 0.5);
-            Feed& f = feeds_[em.portal];
+            Feed& f = feeds_[resource];
             f.seen = true;
             f.from_graph = true;
             // An `eye` portal - a camera's lens - is where the world is
@@ -190,7 +159,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& rooms, int fb_w, int fb_
         timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
     ensure_resources();
     ensure_targets(fb_w, fb_h);
-    advance_clock();
+    advance_fades();
 
     const Spatial3D& world = *rooms.front().room;
     // The post passes belong to the viewer, so they wear the look of the
@@ -345,10 +314,7 @@ bool GLWorldView::has_surface(const Element& e) const {
 }
 
 Key GLWorldView::signal_of(const Element& e) const {
-    static const Key shows{"shows"};
-    if (!graph_ || !e.params.has(shows)) return Key{e.id.str()};
-    const Embedding* em = graph_->embedding(Key{e.params.get_or<std::string>(shows, "")});
-    return em ? Key{em->portal.str()} : Key{e.id.str()};
+    return graph_ ? render::signal_of(*graph_,e) : Key{e.id.str()};
 }
 
 gl::Vec3 GLWorldView::to_vec3(const Vec3d& v) {
@@ -447,23 +413,11 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
     std::vector<Light> out;
     for (const auto& e : room.elements()) {
         if (e.kind != kinds::light || !e.alive) continue;
-        Light l;
-        l.pos = to_vec3(compose_pose(pose, pose_of(room, e)).position);
-        l.color = color_of(e, l.color);
-        l.power = static_cast<float>(e.params.num(keys::intensity, 1.0)) * 26.0f;
+        Light l=light_of(room,e,pose);
         if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
             l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
             l.power = static_cast<float>(sp->second.intensity) * 26.0f;
         }
-        l.dir = gl::normalize(to_vec3(rotate_xz(
-            {e.params.num(Key{"dx"}, 0.0), e.params.num(Key{"dy"}, -1.0), e.params.num(Key{"dz"}, 0.0)}, pose.yaw)));
-        l.inner = static_cast<float>(e.params.num(Key{"inner"}, 0.55));
-        l.outer = static_cast<float>(e.params.num(Key{"outer"}, 1.15));
-        l.sun = e.params.num(Key{"sun"}, 0.0) > 0.5;
-        l.extent = static_cast<float>(e.params.num(Key{"extent"}, 40.0));
-        l.floor = static_cast<float>(e.params.num(Key{"shadow_floor"}, -1.0));
-        l.indirect = e.params.num(Key{"indirect"}, 0.0) > 0.5;
-        l.falloff = static_cast<float>(std::clamp(e.params.num(Key{"falloff"}, 0.0), 0.0, 1.0));
         if (l.power <= 0.0f) continue;  // switched off
         out.push_back(l);
     }
@@ -601,35 +555,8 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
     scene_->set("uDoorCount", count);
 }
 
-float GLWorldView::covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h, bool& shut) const {
-    const Vec3d a = across(door.yaw), n = heading(door.yaw);
-    float most = 0.0f;
-    shut = false;
-    for (const auto& e : room.elements()) {
-        if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.id == portal.id) continue;
-        if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
-        const Vec3d c = pose_of(room, e).position;  // in the room, not off its anchor
-        const double dx = c.x - door.position.x, dz = c.z - door.position.z;
-        if (dx * dx + dz * dz > (half_w + 1.5) * (half_w + 1.5)) continue;
-        const gl::Mat4& m = box_matrix(room, e).m;
-        float u0 = 1e9f, u1 = -1e9f, v0 = 1e9f, v1 = -1e9f, d0 = 1e9f, d1 = -1e9f;
-        for (int k = 0; k < 8; ++k) {
-            const gl::Vec3 q = m.transform_point({k & 1 ? 0.5f : -0.5f, k & 2 ? 0.5f : -0.5f, k & 4 ? 0.5f : -0.5f});
-            const double rx = q.x - door.position.x, ry = q.y - door.position.y, rz = q.z - door.position.z;
-            const float u = static_cast<float>(rx * a.x + rz * a.z), v = static_cast<float>(ry);
-            const float d = static_cast<float>(rx * n.x + rz * n.z);
-            u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, v), v1 = std::max(v1, v);
-            d0 = std::min(d0, d), d1 = std::max(d1, d);
-        }
-        // Only what is in the opening, not a thing across the room.
-        if (d1 < -0.25f || d0 > 0.25f) continue;
-        const float w = std::max(0.0f, std::min(u1, half_w) - std::max(u0, -half_w));
-        const float h = std::max(0.0f, std::min(v1, half_h) - std::max(v0, -half_h));
-        const float part = w * h / (4.0f * half_w * half_h);
-        most = std::max(most, part);
-        if (part > 0.95f && d1 - d0 < 0.1f) shut = true;
-    }
-    return std::clamp(most, 0.0f, 1.0f);
+float GLWorldView::covered(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut) const {
+    return portal_occlusion(room,portal,door,half_w,half_h,shut);
 }
 
 auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed) -> std::vector<Light> {
@@ -703,33 +630,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
     float bias[kShadowMaps] = {1.0f, 1.0f, 1.0f, 1.0f};
     for (std::size_t i = 0; i < kShadowMaps; ++i) {
         const Light& l = lights[std::min(i, lights.size() - 1)];
-        if (l.sun) {
-            // A box of shadow round the viewer, a little ahead of them,
-            // moved in whole texels so the edges do not crawl. The sun's
-            // way is taken in steps of about a fifth of a degree: it
-            // creeps across the sky, and its map is drawn again when it
-            // has moved that far, not every frame of the day.
-            gl::Vec3 d = gl::normalize(l.dir);
-            d = gl::normalize({std::round(d.x * 300.0f) / 300.0f, std::round(d.y * 300.0f) / 300.0f,
-                               std::round(d.z * 300.0f) / 300.0f});
-            const float e = l.extent, reach = e * 4.0f;
-            const float texel = 2.0f * e / static_cast<float>(q_.shadow_size);
-            gl::Vec3 c = cam.eye + gl::normalize({cam.forward.x, 0.0f, cam.forward.z}) * (e * 0.4f);
-            c = {std::floor(c.x / texel) * texel, std::floor(c.y / texel) * texel,
-                 std::floor(c.z / texel) * texel};
-            const gl::Vec3 up = std::fabs(d.y) > 0.99f ? gl::Vec3{0, 0, 1} : gl::Vec3{0, 1, 0};
-            light_vp[i] = gl::Mat4::ortho(-e, e, -e, e, 1.0f, reach * 2.0f) *
-                          gl::Mat4::look_at(c - d * reach, c, up);
-            bias[i] = 45.0f / (reach * 2.0f);
-        } else {
-            // A wide lamp spreads its map thin, so each texel covers more
-            // of a wall at a slant: its bias grows with the width, or the
-            // walls stripe with acne.
-            const float fov = std::min(l.outer * 2.05f, 2.7f);
-            light_vp[i] = gl::Mat4::perspective(fov, 1.0f, 0.1f, 40.0f) *
-                          gl::Mat4::look_at(l.pos, l.pos + l.dir, std::fabs(l.dir.y) > 0.99f ? gl::Vec3{0, 0, 1} : gl::Vec3{0, 1, 0});
-            bias[i] = std::max(1.0f, std::tan(fov * 0.5f) / std::tan(0.6f)) * 1.5f;
-        }
+        const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
+        light_vp[i]=shadow_projection(l,eye,q_.shadow_size,bias[i]);
     }
     const gl::Mat4 view_proj =
         gl::Mat4::perspective(cam.fov, aspect, znear, zfar) *
@@ -901,6 +803,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& rooms, const Camera&
         }
         apply_uniforms(*scene_, look, passes::scene);
         apply_attended(*scene_, passes::scene);
+        scene_->set("uTime",static_cast<float>(semantic_time(graph_?graph_:(root_?root_->graph_:nullptr),room)));
 
         // This room's side of each doorway, from the portals as they are now,
         // and whatever the caller cuts away besides.
@@ -1166,18 +1069,7 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
 }
 
 RoomMatrix GLWorldView::box_model(const State& st, const Element& e) const {
-    const gl::Vec3 s{static_cast<float>(e.params.num(keys::sx, 1.0)),
-                     static_cast<float>(e.params.num(keys::sy, 1.0)),
-                     static_cast<float>(e.params.num(keys::sz, 1.0))};
-    const Pose w = pose_of(st, e);
-    const gl::Vec3 p{static_cast<float>(w.position.x),
-                     static_cast<float>(w.position.y) + s.y * 0.5f,
-                     static_cast<float>(w.position.z)};
-    const float pitch = static_cast<float>(e.params.num(keys::pitch));
-    const float roll = static_cast<float>(e.params.num(keys::roll));
-    gl::Mat4 turn = gl::Mat4::rotate_y(static_cast<float>(w.yaw));
-    if (pitch != 0.0f || roll != 0.0f) turn = turn * gl::Mat4::rotate_z(pitch) * gl::Mat4::rotate_x(roll);
-    return room_local(gl::Mat4::translate(p) * turn * gl::Mat4::scale(s));
+    return room_local(box_transform(st,e));
 }
 
 gl::Mat4 GLWorldView::panel_turn(const Pose& pose, const Element& e) {
@@ -1232,61 +1124,8 @@ void GLWorldView::set_model(const RoomMatrix& local) {
 }
 
 void GLWorldView::draw_room(const Spatial3D& world) {
-    const float w = static_cast<float>(world.params().num(Key{"room_w"}, 14.0));
-    const float d = static_cast<float>(world.params().num(Key{"room_d"}, 12.0));
-    const float h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
-    const float t = 0.25f;
-    const gl::Vec3 floor_c{static_cast<float>(world.params().num(Key{"floor_r"}, 0.42)),
-                           static_cast<float>(world.params().num(Key{"floor_g"}, 0.39)),
-                           static_cast<float>(world.params().num(Key{"floor_b"}, 0.36))};
-    const gl::Vec3 wall_c{static_cast<float>(world.params().num(Key{"wall_r"}, 0.52)),
-                          static_cast<float>(world.params().num(Key{"wall_g"}, 0.50)),
-                          static_cast<float>(world.params().num(Key{"wall_b"}, 0.48))};
-
-    // `floor_surface` and `ceiling_surface` pick their materials (tiles
-    // and plaster if not said); `ceiling_r/g/b` its colour.
-    const float floor_s = static_cast<float>(world.params().num(Key{"floor_surface"}, 1.0));
-    const float ceil_s = static_cast<float>(world.params().num(Key{"ceiling_surface"}, 2.0));
-    const gl::Vec3 ceil_c = world.params().has(Key{"ceiling_r"})
-                                ? gl::Vec3{static_cast<float>(world.params().num(Key{"ceiling_r"})),
-                                           static_cast<float>(world.params().num(Key{"ceiling_g"})),
-                                           static_cast<float>(world.params().num(Key{"ceiling_b"}))}
-                                : wall_c * 0.5f;
-    draw_solid(room_local(gl::Mat4::translate({w / 2, -t / 2, d / 2}) *
-                   gl::Mat4::scale({w, t, d})),
-               floor_c, 0.55f, floor_s);
-    draw_solid(room_local(gl::Mat4::translate({w / 2, h + t / 2, d / 2}) *
-                   gl::Mat4::scale({w, t, d})),
-               ceil_c, 0.95f, ceil_s);
-
-    if (has_walls(world)) return;  // the state places its own walls
-
-    draw_wall(room_local(gl::Mat4::translate({-t / 2, h / 2, d / 2}) * gl::Mat4::scale({t, h, d})),
-              wall_c);
-    draw_wall(room_local(gl::Mat4::translate({w + t / 2, h / 2, d / 2}) *
-                  gl::Mat4::scale({t, h, d})),
-              wall_c);
-    draw_wall(room_local(gl::Mat4::translate({w / 2, h / 2, -t / 2}) * gl::Mat4::scale({w, h, t})),
-              wall_c);
-    draw_wall(room_local(gl::Mat4::translate({w / 2, h / 2, d + t / 2}) *
-                  gl::Mat4::scale({w, h, t})),
-              wall_c);
-
-    // Skirting board: cheap, and it sells the scale.
-    const float sh = 0.16f;
-    const gl::Vec3 trim{0.20f, 0.18f, 0.17f};
-    draw_solid(room_local(gl::Mat4::translate({w / 2, sh / 2, 0.06f}) *
-                   gl::Mat4::scale({w, sh, 0.12f})),
-               trim, 0.7f, 0.0f);
-    draw_solid(room_local(gl::Mat4::translate({w / 2, sh / 2, d - 0.06f}) *
-                   gl::Mat4::scale({w, sh, 0.12f})),
-               trim, 0.7f, 0.0f);
-    draw_solid(room_local(gl::Mat4::translate({0.06f, sh / 2, d / 2}) *
-                   gl::Mat4::scale({0.12f, sh, d})),
-               trim, 0.7f, 0.0f);
-    draw_solid(room_local(gl::Mat4::translate({w - 0.06f, sh / 2, d / 2}) *
-                   gl::Mat4::scale({0.12f, sh, d})),
-               trim, 0.7f, 0.0f);
+    for(const auto& draw:enclosure(world))
+        draw_solid(room_local(draw.model),{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)},static_cast<float>(draw.roughness),static_cast<float>(draw.surface));
 }
 
 void GLWorldView::draw_wall_element(const State& st, const Element& e) {
@@ -1451,7 +1290,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     }
     // A surface bound to a mesh is its skin: an atlas, a cell a face.
     auto skin = surfaces_.find(e.id);
-    if (skin != surfaces_.end() && skin->second.surface) {
+    if (skin != surfaces_.end() && skin->second.surface && declared_surface(e,*skin->second.surface)) {
         BoundSurface& bound = skin->second;
         Surface2D& surf = *bound.surface;
         const auto& pixels = surf.raster();
@@ -1519,42 +1358,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // glow, as a blackboard does: then only when pointed at.
     const bool says_glow = e.params.has(Key{"glow"});
     const float hi = ((open && !says_glow) || e.id == highlight_) ? 1.0f : 0.0f;
-    if (is_window) {
-        // A doorway is cased on four sides, never backed: the opening has to
-        // stay clear or there is nothing to see through. `casing` is how
-        // wide the frame is, `depth` how deep, r/g/b its colour.
-        const gl::Vec3 casing = color_of(e, {0.24f, 0.22f, 0.20f});
-        const float t = static_cast<float>(e.params.num(Key{"casing"}, 0.22));
-        const float d = static_cast<float>(e.params.num(Key{"depth"}, 0.34));
-        const gl::Vec3 tangent = to_vec3(across(yaw));
-        const gl::Mat4 rot = gl::Mat4::rotate_y(yaw);
-        if (t > 0.0f) {
-        draw_solid(room_local(gl::Mat4::translate(pos + tangent * (w * 0.5f + t * 0.5f)) * rot *
-                       gl::Mat4::scale({d, h + 2 * t, t})),
-                   casing, 0.6f, 0.0f, 0.0f, hi);
-        draw_solid(room_local(gl::Mat4::translate(pos - tangent * (w * 0.5f + t * 0.5f)) * rot *
-                       gl::Mat4::scale({d, h + 2 * t, t})),
-                   casing, 0.6f, 0.0f, 0.0f, hi);
-        draw_solid(room_local(gl::Mat4::translate(pos + gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
-                       gl::Mat4::scale({d, t, w + 2 * t})),
-                   casing, 0.6f, 0.0f, 0.0f, hi);
-        draw_solid(room_local(gl::Mat4::translate(pos - gl::Vec3{0, h * 0.5f + t * 0.5f, 0}) * rot *
-                       gl::Mat4::scale({d, t, w + 2 * t})),
-                   casing, 0.6f, 0.0f, 0.0f, hi);
-        }
-    } else if (framed(e)) {
-        // A panel hangs on the wall, so it keeps its backing frame.
-        // `border` is how far the board shows round the panel.
-        const float border = static_cast<float>(e.params.num(Key{"border"}, 0.15));
-        draw_solid(room_local(gl::Mat4::translate(pos) * panel_turn(pose, e) *
-                       gl::Mat4::scale({0.12f, h + 2 * border, w + 2 * border})),
-                   {0.14f, 0.11f, 0.08f}, 0.6f, 0.0f, 0.0f, hi);
-    } else {
-        // A bare sheet: its own body, so it has an edge and a back.
-        draw_solid(room_local(gl::Mat4::translate(pos) * panel_turn(pose, e) *
-                       gl::Mat4::scale({sheet_thickness(e), h, w})),
-                   color_of(e, {0.92f, 0.90f, 0.86f}), 0.85f, 0.0f, 0.0f, hi);
-    }
+    for(const auto& draw:portal_body(st,e,is_window))
+        draw_solid(room_local(draw.model),{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)},static_cast<float>(draw.roughness),0,0,hi);
 
     if (is_window) {
         if (frame_only) return;
@@ -1893,18 +1698,8 @@ void GLWorldView::composite(int fb_w, int fb_h) {
     gl::glEnable(gl::GL_DEPTH_TEST);
 }
 
-void GLWorldView::advance_clock() {
-    const auto now = std::chrono::steady_clock::now();
-    if (fixed_step_ > 0.0) {
-        dt_ = fixed_step_;
-    } else {
-        dt_ = clock_started_
-                  ? std::min(0.25, std::chrono::duration<double>(now - last_frame_).count())
-                  : 0.0;
-    }
-    clock_started_ = true;
-    last_frame_ = now;
-    time_ += dt_;
+void GLWorldView::advance_fades() {
+    dt_ = std::max(0.0, fixed_step_);
     fader_.advance(dt_);
 }
 

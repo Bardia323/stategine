@@ -374,7 +374,7 @@ int main(int argc, char** argv) {
             const std::string file = entry.path().generic_string();
             for (const auto& [line, inc] : sc.includes) {
                 const Module* o = owner(inc);
-                if (o && o != &m && !m.uses.count(o->name)) {
+                if (o && o->name != m.name && !m.uses.count(o->name)) {
                     std::printf("%s:%d: %s reaches into %s, which it does not use\n", file.c_str(), line, m.name.c_str(),
                                 o->name.c_str());
                     ++problems;

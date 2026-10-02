@@ -2,7 +2,7 @@
 #include "Udp.hpp"
 #ifdef SG_EXAMPLE_ICE
 #include "sg/net/IceTransport.hpp"
-#include "../src/net/Canonical.hpp"
+#include "IceSignals.hpp"
 #include <rtc/rtc.hpp>
 #include <chrono>
 #include <algorithm>
@@ -43,10 +43,6 @@ struct NetIo::Impl : std::enable_shared_from_this<Impl> {
         }
         transport = std::make_unique<Udp>(config.rank,config.peers,config.port);
     }
-    net::Bytes statement(const std::string& from,const net::IceSignal& s) const {
-        net::detail::Writer w("example.ice.signal.v1"); w.digest(committee.id()); w.text(from); w.text(s.peer);
-        w.integer(s.lane == net::DeliveryClass::Reliable ? 0 : 1); w.integer(s.session); w.integer(static_cast<unsigned>(s.kind)); w.text(s.value); w.text(s.type); return w.data();
-    }
     void open() {
         if (socket) { socket->resetCallbacks(); socket->forceClose(); }
         rtc::WebSocketConfiguration c; c.maxMessageSize = 128*1024; if (!config.ca_file.empty()) c.caCertificatePemFile = config.ca_file;
@@ -61,14 +57,10 @@ struct NetIo::Impl : std::enable_shared_from_this<Impl> {
         socket->open(config.signaling); retry = std::chrono::steady_clock::now()+std::chrono::seconds(1);
     }
     void receive_signal(const net::Bytes& bytes,net::IceTransport& ice) {
-        net::detail::Reader envelope(bytes,"example.ice.envelope.v1"); const auto body = envelope.bytes(70000); const auto signature = envelope.signature(); envelope.end();
-        net::detail::Reader r(body,"example.ice.signal.v1"); if (r.digest() != committee.id()) return;
-        const auto from = r.text(), to = r.text(); const auto lane = r.integer(), session = r.integer(), kind = r.integer();
-        net::IceSignal s{to,lane == 0 ? net::DeliveryClass::Reliable : net::DeliveryClass::Latest,session,static_cast<net::IceSignalKind>(kind),r.text(),r.text()}; r.end();
-        const auto* identity = committee.key(from); if (!identity || to != peer || from == peer || lane > 1 || kind > 2 || !net::check_signature(*identity,body,signature)) return;
+        const auto accepted = verify_signal(committee,peer,bytes); if (!accepted) return;
         const auto id = net::hash(bytes); if (seen.count(id)) return;
         if (seen.size() >= 4096) throw std::length_error("signaling deduplication bound exceeded; start a fresh external session");
-        ice.signal(from,s); seen.insert(id);
+        ice.signal(accepted->from,accepted->signal); seen.insert(id);
     }
     void poll_ice(net::IceTransport& ice) {
         const auto now = std::chrono::steady_clock::now();
@@ -77,8 +69,8 @@ struct NetIo::Impl : std::enable_shared_from_this<Impl> {
         { std::lock_guard<std::mutex> lock(mutex); input.swap(incoming); if (overflow) throw std::length_error("external signaling receive backpressure"); }
         for (const auto& bytes : input) { try { receive_signal(bytes,ice); } catch (const std::invalid_argument&) {} }
         for (const auto& s : ice.signals()) {
-            const auto body = statement(peer,s); net::detail::Writer w("example.ice.envelope.v1"); w.bytes(body); w.signature(key.sign(body));
-            if (signaling.size() >= 256) throw std::length_error("external signaling frontier full"); signaling.emplace(net::hash(w.data()),w.data());
+            auto bytes = sign_signal(committee,peer,s,key);
+            if (signaling.size() >= 256) throw std::length_error("external signaling frontier full"); signaling.emplace(net::hash(bytes),std::move(bytes));
         }
         if (socket->isOpen() && now >= retry) {
             for (const auto& [id,bytes] : signaling) { (void)id; if (socket->bufferedAmount() > 1024*1024) break; socket->send(reinterpret_cast<const rtc::byte*>(bytes.data()),bytes.size()); }

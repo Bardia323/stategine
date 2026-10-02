@@ -42,7 +42,7 @@
 // walls, and may carry a `terrain` element: ground that goes on for ever,
 // sampled from a height function bound with bind_terrain and rebuilt around
 // the viewer as they walk. A state with `own_time` among its params keeps its own
-// time: its shaders move by it (`uTime`), not by the renderer's clock - still
+// time: its shaders move by it (`uTime`), or its declared Temporal line - still
 // when it is still. A light with `sun` = 1 is parallel light with an
 // orthographic shadow that follows the viewer. How far anything is drawn is
 // the state's `far` (120 m unless it says otherwise).
@@ -96,6 +96,8 @@
 #include "sg/gl/Renderer.hpp"
 #include "sg/gl/Shaders.hpp"
 #include "sg/render/Visibility.hpp"
+#include "sg/render/ViewPlan.hpp"
+#include "sg/render/Defaults.hpp"
 
 namespace sg::render {
 
@@ -114,22 +116,7 @@ struct RoomMatrix {
 
 inline RoomMatrix room_local(const gl::Mat4& m) { return RoomMatrix{m}; }
 
-struct GLQuality {
-    int shadow_size = 2048;
-    int msaa = 4;
-    float bloom_strength = 0.55f;
-    float bloom_threshold = 1.05f;
-    float exposure = 1.15f;
-    int bloom_passes = 3;  // horizontal+vertical pairs
-    // Things of the same shape drawn in one call, each with its own place and
-    // material, rather than one call each. Off: one call each (to compare).
-    bool instancing = true;
-};
-
-// The standard look: every value the built-in shaders read, and the fallback
-// for anything a look leaves unset. A look therefore only states how it
-// differs, and two looks always have a value to fade between.
-void standard_look(LookState& l, const GLQuality& q = {});
+using GLQuality = Quality;
 
 class GLWorldView {
 public:
@@ -169,9 +156,10 @@ public:
     void attend(const State* s) { attend_ = s; }
     const FrameTimes& times() const { return times_; }
 
-    // Advance fades by a fixed step per frame instead of real time: headless
-    // renders then show the same moment of a fade on every machine. 0 = real time.
+    // Supply a transient interpolation interval. No interval accumulates into
+    // shader time. Zero keeps fades still; world time is declared by Temporal.
     void set_fixed_step(double seconds) { fixed_step_ = seconds; }
+    void set_frame_delta(double seconds) { fixed_step_ = seconds; }
 
     // Compile every look the graph can show - those worn by the states
     // reachable from its initial one - and check each against what this
@@ -267,26 +255,7 @@ private:
         float fov = 1.2f;
     };
 
-    struct Light {
-        gl::Vec3 pos{0, 3, 0};
-        gl::Vec3 dir{0, -1, 0};
-        gl::Vec3 color{1.0f, 0.93f, 0.82f};
-        float power = 26.0f;
-        float inner = 0.55f;  // radians
-        float outer = 1.15f;
-        bool sun = false;      // parallel, from `dir`; its shadow is a box round the viewer
-        float extent = 40.0f;  // a sun's shadow reaches this far either side of the viewer
-        float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
-        bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
-        float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
-        // Light from beyond a doorway comes in only through its opening: the
-        // opening's middle, which way across it is, and half its width and
-        // height. Such a light casts no shadow of its own.
-        bool gated = false;
-        gl::Vec3 gate_at{0, 0, 0}, gate_across{1, 0, 0}, gate_in{0, 0, 1};
-        float gate_w = 0.0f, gate_h = 0.0f;
-        float open = 1.0f;  // how much of the opening is clear, for a gated light with no shadow map
-    };
+    using Light = DrawLight;
 
     struct BoundSurface {
         Surface2D* surface = nullptr;
@@ -611,7 +580,7 @@ private:
     static Key view_key() { return Key{"<view>"}; }
 
     // Real time by default; a fixed step makes headless frames reproducible.
-    void advance_clock();
+    void advance_fades();
 
     const LookState& look_of(const State& s) const { return fader_.look_of(graph_, s); }
     Mix mix(Key who, const LookState& target) { return fader_.mix(who, target); }
@@ -689,12 +658,9 @@ private:
     std::vector<VectorUniform> vectors_;
     LookStats stats_;
     bool preparing_ = false;
-    std::chrono::steady_clock::time_point last_frame_{};
-    bool clock_started_ = false;
-    double dt_ = 0.0, time_ = 0.0;
+    double dt_ = 0.0;
     // The time its shaders move by (`uTime`: water, clouds, stars, grain):
-    // the renderer's own, unless the world drawn keeps its own (`own_time` on
-    // the state) - then the world's, so a world whose time stands still
+    // declared own_time or the world's Temporal line, so time that stands still
     // stands still in every pass too.
     double world_time_ = 0.0;
     double fixed_step_ = 0.0;

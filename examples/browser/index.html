@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8"><title>Stategine — the same Pong world</title>
+<style>body{background:#10151f;color:#cde;font:16px system-ui;margin:2em}canvas{width:min(90vw,1000px);aspect-ratio:16/9;background:#000;display:block;margin:1em 0}input,select,button{font:inherit;margin:.4em}pre{white-space:pre-wrap}</style>
+<h1>Stategine Pong</h1>
+<p>Choose the credential folder made by <code>sg_net_keys folder 2 2 0 pong</code>. Each instance reads only its own seed and the shared pinned committee. W/S or ↑/↓ moves your paddle.</p>
+<input id="files" type="file" webkitdirectory multiple><select id="player"><option value="0">Peer 0</option><option value="1">Peer 1</option></select>
+<input id="url" value="ws://127.0.0.1:49280" size="30"><button id="start">Start</button>
+<canvas id="canvas" tabindex="0" width="960" height="540"></canvas><pre id="status">Loading Wasm…</pre>
+<script src="sg_browser.js"></script>
+<script>
+let engine,playing=false,last=0;
+const status=document.querySelector('#status');
+createStategine().then(m=>{engine=m;status.textContent='Ready. Use the native ice_rendezvous.py signaling relay, or a WSS endpoint.';}).catch(e=>status.textContent=String(e));
+document.querySelector('#start').onclick=async()=>{
+  try{
+    engine.FS.mkdirTree('/credentials');
+    for(const file of document.querySelector('#files').files){if(['committee.txt','p'+document.querySelector('#player').value+'.seed'].includes(file.name))engine.FS.writeFile('/credentials/'+file.name,new Uint8Array(await file.arrayBuffer()));}
+    if(!engine.ccall('sg_start','number',['number','string','string'],[+document.querySelector('#player').value,'/credentials',document.querySelector('#url').value]))throw Error(engine.ccall('sg_error','string',[],[]));
+    playing=true;last=0;document.querySelector('#canvas').focus();requestAnimationFrame(frame);
+  }catch(e){status.textContent=String(e);}
+};
+function frame(schedule){
+  if(!playing)return;
+  const dt=last?Math.min(.1,(schedule-last)/1000):0;last=schedule;
+  try{
+    for(const [name,args] of [['sg_poll',[schedule]],['sg_step',[dt,0]],['sg_draw',[960,540,dt]]]){
+      if(!engine.ccall(name,'number',args.map(()=> 'number'),args))throw Error(engine.ccall('sg_error','string',[],[]));
+    }
+    status.textContent=engine.ccall('sg_status','string',[],[]);requestAnimationFrame(frame);
+  }catch(e){playing=false;status.textContent=String(e);}
+}
+</script>

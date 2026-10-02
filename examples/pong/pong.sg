@@ -93,3 +93,16 @@ drive time -> network.solve
     keeps always
 drive time -> game.step
     keeps always
+
+# Device adapters use the same declared input event on either executor.
+bind keyboard {
+    KeyW -> game.input(move: 1.0)
+    ArrowUp -> game.input(move: 1.0)
+    KeyS -> game.input(move: -1.0)
+    ArrowDown -> game.input(move: -1.0)
+    KeyW.up -> game.input(move: 0.0)
+    ArrowUp.up -> game.input(move: 0.0)
+    KeyS.up -> game.input(move: 0.0)
+    ArrowDown.up -> game.input(move: 0.0)
+    blur -> game.input(move: 0.0)
+}

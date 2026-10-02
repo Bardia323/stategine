@@ -35,7 +35,7 @@ struct IceTransport::Impl : std::enable_shared_from_this<IceTransport::Impl> {
     std::size_t receive_bytes = 0;
     bool closing = false;
     explicit Impl(IceConfig c) : config(std::move(c)) {
-        if (config.peer.empty() || config.maximum_message == 0 || config.maximum_message > 16*1024*1024 || config.receive_bytes < config.maximum_message || config.receive_messages == 0 || config.channels == 0 || config.channels > 1024) throw std::invalid_argument("net: invalid ICE transport bounds");
+        validate_ice(config);
     }
     static std::size_t lane(DeliveryClass d) { return d == DeliveryClass::Reliable ? 0 : 1; }
     void notify(const std::string& peer, const std::string& channel, TransportEventKind kind) {
@@ -233,10 +233,7 @@ void IceTransport::poll() {
             if (message.bytes.size()+1+message.channel.size() > dc->maxMessageSize()) throw std::length_error("net: message exceeds the negotiated ICE framing limit");
             try {
                 // Routing is transport framing; application payload stays opaque.
-                Bytes frame; frame.reserve(message.bytes.size()+1+message.channel.size());
-                frame.push_back(static_cast<std::uint8_t>(message.channel.size()));
-                frame.insert(frame.end(),message.channel.begin(),message.channel.end());
-                frame.insert(frame.end(),message.bytes.begin(),message.bytes.end());
+                const Bytes frame = ice_frame(message.channel,message.bytes);
                 dc->send(reinterpret_cast<const rtc::byte*>(frame.data()),frame.size()); // false means buffered, still accepted by SCTP
                 std::lock_guard<std::mutex> lock(impl_->mutex); s->queue.pop(s->lane); s->sent = true;
             } catch (const std::exception&) { std::lock_guard<std::mutex> lock(impl_->mutex); session->failed = true; break; }

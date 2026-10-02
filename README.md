@@ -10,13 +10,15 @@ element of another, so an interface in one domain edits the world in another.
 The engine holds all of it to its laws - at compile time where it can, on live
 data where it must.
 
-Physics and renderers come with it: bodies, ropes, fields, light, GL and ASCII.
+Physics and renderers come with it: bodies, ropes, fields, light, GL, WebGPU and ASCII.
 Solvers and views are machinery used by states; their data and connections
 belong to the owning states and graph. A game, desktop or painting you walk
 into is a world of states.
 
 C++17. `stategine::stategine` contains core, domains, spatial, physics and
-compiled laws; `stategine::render` adds GL/ASCII; `stategine::dsl` and `sgc`
+compiled laws; `stategine::render` adds derived view machinery and ASCII;
+`stategine::gl` draws natively and Emscripten's `stategine::web` draws through
+WebGPU and adapts DOM input/WebRTC. `stategine::dsl` and native `sgc`
 compile the notation. `stategine::gpu` exposes optional algebra backends.
 `stategine::net` adds sparse matrix-free CPU/CUDA reconciliation, neighboring execution partitions, signed canonical epochs, independent verification, regional quorum finalization and disposable latency prediction over external byte transport.
 The libraries need no window dependency; `sg/gl/Window.hpp` uses your GLFW,
@@ -528,12 +530,18 @@ Walls are data - a state with `wall` elements gets them drawn, one without gets 
 box. Knobs are in `sg::render::GLQuality`; elements set their own look through
 parameters (`r/g/b`, `roughness`, `intensity`, ...).
 
-`ViewPlan.cpp` derives cameras, clipping and draw candidates; `Visibility`
-uses a separate BVH; `GLWorld.cpp` draws the plan. World bindings require an
+`ViewPlan.cpp` derives cameras, clipping, room/portal geometry and draw candidates;
+`Visibility` uses a separate BVH. `sg/gl/World.hpp` and `sg/web/WebGPU.hpp`
+execute those derived answers. World bindings require an
 open embedding or declared seam at that boundary; feeds require an open
 embedding and `feed` portal. Bindings supply resources, never create access.
 Raster panels may retain closed pictures and show outputs reached through
 declared embeddings and functors.
+
+The browser adds no world. The same source, `.sg` files, graph laws and
+double-precision CPU networking build through Emscripten; native `sgc` remains
+the host compiler. Shader time comes from declared state/Temporal data, never
+a renderer wall clock. See [the browser build and interoperability guide](docs/browser.md).
 
 ![Standing in the annex, looking into the hall: both rooms lit and shadowed by their own lamps](docs/images/east.png)
 
@@ -792,9 +800,10 @@ include/sg/
     Epoch.hpp, Integrity.hpp, Verify.hpp, Agreement.hpp, Protocol.hpp,
     Prediction.hpp, Placement.hpp, IceTransport.hpp (uses core;
     derived networking machinery, built as stategine::net)
-  render/    Ascii, GLWorld, Visibility; ViewPlan.cpp prepares GL drawing
-    (uses core, domains, gl, spatial)
-  gl/        the GL backend
+  render/    Ascii, Visibility, ViewPlan, Geometry, Defaults
+    (uses core, domains, spatial; no GPU or window dependency)
+  gl/        native OpenGL executor (World.hpp; uses render)
+  web/       browser WebGPU, WebRTC and DOM adapters (uses render/net/DSL)
   dsl/       parse, kinds, compile/lower, plan, emit, apply, facts, natives,
     compiler state (uses core, domains; built as stategine::dsl)
   sg.hpp     umbrella for core + domains (renderers are opt-in)

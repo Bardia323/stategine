@@ -1,0 +1,28 @@
+state time : temporal
+initial room
+state room : spatial3d {
+    element box : mesh { sx = 1.0 sy = 2.0 sz = 1.0 vx = 1.0 }
+    element panel : portal { x = 0.0 y = 0.0 z = 0.0 yaw = 0.0 w = 3.0 h = 2.0 feed = 1 open = 1 }
+    element retained : portal { x = 0.0 y = 0.0 z = 0.0 yaw = 0.0 w = 3.0 h = 2.0 }
+    camera -> camera : step on room.step
+    box -> box : animate(dt) on room.step { x = x + vx * dt }
+    box -> box : move(dx) on room.move { x = x + vx * dx }
+    element lamp : light { x = 1.0 y = 3.0 z = 1.0 }
+}
+state guest : spatial3d {
+    element cube : mesh { x = 2.0 }
+    element other : portal { x = 0.0 y = 0.0 z = 0.0 yaw = 3.14159265358979 w = 3.0 h = 2.0 feed = 1 open = 1 }
+    element retained : portal { x = 0.0 y = 0.0 z = 0.0 yaw = 3.14159265358979 w = 3.0 h = 2.0 }
+    camera -> camera : step on guest.step
+}
+seam room.panel <-> guest.other
+    name doorway
+seam room.retained <-> guest.retained
+    name retained
+embed room.panel -> guest
+    name picture
+    in doorway.ab
+    sync view
+drive time -> room event room.step
+port guest.step
+port room.move

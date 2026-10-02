@@ -5,7 +5,7 @@
 #include <cstdio>
 #ifdef SG_PROJECTED_GL
 #include "sg/gl/Window.hpp"
-#include "sg/render/GLWorld.hpp"
+#include "sg/gl/World.hpp"
 #endif
 namespace sgen { void build_fields(sg::StateGraph&,const sg::dsl::Natives&,sg::dsl::Bindings&); }
 

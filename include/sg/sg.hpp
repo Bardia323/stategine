@@ -1,7 +1,7 @@
 // Stategine - umbrella header for the engine core and the built-in domains.
 //
 // Renderers are deliberately not included here: pull in sg/render/Ascii.hpp or
-// sg/render/GLWorld.hpp where you need one, so a headless build never pays for
+// sg/gl/World.hpp where you need one, so a headless build never pays for
 // a backend it does not use.
 #pragma once
 
