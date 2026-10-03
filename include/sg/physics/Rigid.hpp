@@ -351,6 +351,15 @@ public:
     const Body* cast(const Hull& shape, const M3& turn, V3 from, V3 to, double* at = nullptr, V3* normal = nullptr,
                      const std::string& skip = {}) const;
 
+    // --- what lies on what -----------------------------------------------------------
+    // The bodies lying on `host` (which stands where it is placed; it need not
+    // be one of this world's), and on those in turn: any part of one whose
+    // lowest point is within `within` of the host's top where it is. Found by
+    // where things are, not by contacts: a thing at rest keeps none, so this is
+    // as true of what sleeps as of what moves. For whoever moves a thing from
+    // outside, and must take with it what lies on it.
+    std::vector<std::size_t> resting_on(const Body& host, double within = 0.02) const;
+
     // --- walkers ---------------------------------------------------------------------
     // One step of a walker wanting to go `move` (across the ground; its
     // height is the ground's): carried by what they stand on, then across -

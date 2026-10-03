@@ -136,4 +136,33 @@ void World::walk(Walker& w, V3 move, double dt, double time) {
     }
 }
 
+std::vector<std::size_t> World::resting_on(const Body& host, double within) const {
+    std::vector<std::size_t> out;
+    std::vector<char> taken(bodies.size(), 0);
+    std::vector<const Body*> below{&host};
+    while (!below.empty()) {
+        const Body& h = *below.back();
+        below.pop_back();
+        for (std::size_t i = 0; i < bodies.size(); ++i) {
+            const Body& o = bodies[i];
+            if (taken[i] || &o == &host || &o == &h || !o.dynamic() || o.sensor) continue;
+            if (o.hi.x < h.lo.x || o.lo.x > h.hi.x || o.hi.z < h.lo.z || o.lo.z > h.hi.z || o.lo.y > h.hi.y + within || o.hi.y < h.lo.y) continue;
+            bool lies = false;
+            for (const Body::Placed& p : o.world) {
+                const double top = surface_at(h, p.centre.x, p.centre.z, p.lo.y + within);
+                if (top > -0.5 && std::fabs(p.lo.y - top) <= within) {
+                    lies = true;
+                    break;
+                }
+            }
+            if (!lies) continue;
+            taken[i] = 1;
+            out.push_back(i);
+            below.push_back(&o);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 } // namespace sg::rigid

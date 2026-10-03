@@ -41,6 +41,12 @@ struct DrawLight {
         float outer = 1.15f;
         bool sun = false;      // parallel, from `dir`; its shadow is a box round the viewer
         float extent = 40.0f;  // a sun's shadow reaches this far either side of the viewer
+        // ...or of `focus`, if it is pinned: light let in at a doorway needs its
+        // shadows where it falls, within a room's reach of the opening, not over
+        // the whole of the world it comes from - a box the size of a desert
+        // would give each texel the width of a hand.
+        bool pinned = false;
+        spatial::projection::Vec3 focus{0, 0, 0};
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
         float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
@@ -51,6 +57,10 @@ struct DrawLight {
         spatial::projection::Vec3 gate_at{0, 0, 0}, gate_across{1, 0, 0}, gate_in{0, 0, 1};
         float gate_w = 0.0f, gate_h = 0.0f;
         float open = 1.0f;  // how much of the opening is clear, for a gated light with no shadow map
+        // Let through only onto what hangs in the doorway (a door's leaf): a
+        // bounce of the far room's, or any of its light while the door is shut.
+        // What is half in that room is lit by its light, whatever else is not.
+        bool hung_only = false;
     };
 
 

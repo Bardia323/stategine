@@ -193,6 +193,14 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_instancing_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_instancing_gl COMMAND sg_instancing_gl)
+
+    # What is not seen is not drawn: shadow maps hold what their lamp sees, and specks are left out.
+    add_executable(sg_culling_gl tests/culling_gl.cpp)
+    target_link_libraries(sg_culling_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_culling_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_culling_gl COMMAND sg_culling_gl)
   endif()
 endif()
 
@@ -452,7 +460,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl
-      sg_instancing_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_culling_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape)

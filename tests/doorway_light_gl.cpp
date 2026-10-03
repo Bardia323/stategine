@@ -112,6 +112,29 @@ int main() {
     }
     near.element("door_hinge").params.set(sg::keys::z, 30.0);
 
+    // The edge of the lit patch, seen from above: light through an opening
+    // has a penumbra, not a knife edge. How many pixels the patch takes to go
+    // from a tenth to nine tenths of its brightness, across its side, on a
+    // row near the opening (where it is sharpest).
+    near.element("hinge").params.set(sg::keys::z, 30.0);
+    eye.params.set(sg::keys::x, 7.0).set(sg::keys::y, 2.7).set(sg::keys::z, 1.6).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, -1.5);
+    for (int i = 0; i < 3; ++i) view.render(near, W, H);
+    std::vector<unsigned char> top(static_cast<std::size_t>(W) * H * 3);
+    sg::gl::glReadPixels(0, 0, W, H, sg::gl::GL_RGB, sg::gl::GL_UNSIGNED_BYTE, top.data());
+    const auto lum = [&](int x, int y) {
+        const unsigned char* q = &top[(static_cast<std::size_t>(y) * W + x) * 3];
+        return 0.2126 * q[0] + 0.7152 * q[1] + 0.0722 * q[2];
+    };
+    const int row = 70;
+    double floor_dark = 1e9, floor_bright = 0;
+    for (int x = 0; x < W; ++x) floor_dark = std::min(floor_dark, lum(x, row)), floor_bright = std::max(floor_bright, lum(x, row));
+    int x10 = -1, x90 = -1;
+    for (int x = 0; x < W / 2; ++x) {
+        if (x10 < 0 && lum(x, row) > floor_dark + 0.1 * (floor_bright - floor_dark)) x10 = x;
+        if (x90 < 0 && lum(x, row) > floor_dark + 0.9 * (floor_bright - floor_dark)) x90 = x;
+    }
+    const int edge = x90 - x10;
+
     std::printf("floor by the doorway: open %.1f, light = 0 %.1f, shut %.1f; half shut: left %.1f right %.1f\n", through,
                 none, shut, left, right);
     bool ok = true;
@@ -123,6 +146,8 @@ int main() {
     check(shut < none + 2.0, "a slab shut in the opening keeps it out, hung off a hinge as a door is");
     check(std::abs(right - left) > 40.0 && std::min(left, right) < none + 20.0,
           "half shut, it throws a shadow the shape of what is in the way");
+    std::printf("the lit patch's side takes %d px to go from a tenth to nine tenths of its light\n", edge);
+    check(edge >= 35, "the light through an opening fades at its edges over a good way, not on a line");
     std::printf("a door swung open 0..90 degrees:");
     for (double b : swing) std::printf(" %.1f", b);
     std::printf("\n");

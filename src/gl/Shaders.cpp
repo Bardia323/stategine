@@ -73,6 +73,12 @@ uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
 uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
 uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
+uniform float uStraddle;                  // 1: a door's leaf, drawn by the room beyond the doorway it hangs in
+uniform float uSeamMix;                   // 1: a door's leaf on the viewer's side: blend into the far picture near the plane
+uniform vec4  uSeamAt;                    // a point of that plane, and how far into this room the blend reaches
+uniform vec3  uSeamIn;                    // the way into this room
+uniform sampler2D uSeamTex;               // the far side's picture, as the doorway shows it
+uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
 // Light from beyond a doorway, let in only through its opening: its middle
 // and half its width, then which way across it is (x, z), half its height,
 // and whether the light is gated at all.
@@ -106,7 +112,7 @@ uniform vec3  uSunColor;
 // The first `uShadowCount` lights each have a depth map, a layer each of one
 // array: where it sees from (`uShadowVP`), and how much its depth is let slip
 // (`uShadowBias` - a sun's range is far longer than a lamp's).
-const int MAX_SHADOWS = 8;
+const int MAX_SHADOWS = 10;
 uniform sampler2DArrayShadow uShadowMaps;
 uniform mat4 uShadowVP[MAX_SHADOWS];
 uniform float uShadowBias[MAX_SHADOWS];
@@ -305,6 +311,7 @@ void around_at(vec3 p, out vec3 sky, out vec3 ground) {
     ground = uGround * uAmbient;
     for (int i = 0; i < MAX_DOORS; ++i) {
         if (i >= uDoorCount) break;
+        if (uDoorIn[i].z > 0.5) continue;  // shut: only its leaf is in both rooms
         vec3 d = p - uDoorAt[i].xyz;
         float s = dot(d.xz, uDoorIn[i].xy);
         float u = abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w, v = abs(d.y) - uDoorAxis[i].z;
@@ -319,21 +326,31 @@ void around_at(vec3 p, out vec3 sky, out vec3 ground) {
 // How much of light `i` comes through its doorway to `p`: the way to it
 // (towards a lamp, the whole way; towards a sun, a direction) must pass
 // through the opening. The edge softens with the distance from it, as a
-// penumbra does.
+// penumbra does - wide, since a lamp is not a point and an opening is not a
+// knife edge. And there is no line where the opening's plane is crossed: a
+// point on the lamp's own side of it, within a hand's breadth of the opening
+// (a door's leaf half in each room, the jamb), is lit as nothing stands in the
+// way, fading with its depth - and only there: the rest of that side is not
+// this room's, whatever lies beyond the plane.
 float through_gate(int i, vec3 p, vec3 way, bool parallel) {
     vec4 g = uLightGateAxis[i];
-    if (g.w < 0.5) return 1.0;
+    if (g.w < 0.5 || uStraddle > 0.5) return 1.0;  // (a door's leaf stands in the opening)
+    if (g.w > 1.5) return 0.0;                      // only onto a door's leaf
     vec4 at = uLightGate[i];
     vec3 a = vec3(g.x, 0.0, g.y);
     vec3 n = vec3(-a.z, 0.0, a.x);
     float dn = dot(way, n);
     if (abs(dn) < 1e-5) return 0.0;
     float t = dot(at.xyz - p, n) / dn;
-    if (t < 0.0 || (!parallel && t > 1.0)) return 0.0;
-    vec3 q = p + way * t;
-    float soft = 0.02 + 0.04 * t * length(way);
+    bool lamp_side = t < 0.0 || (!parallel && t > 1.0);
+    // Where the way crosses the opening's plane - or, on the lamp's side, where
+    // p itself stands over it.
+    vec3 q = lamp_side ? p : p + way * t;
+    float soft = 0.06 + 0.12 * max(t * length(way), 0.0);
     float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
-    return (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v));
+    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v));
+    if (!lamp_side) return opening;
+    return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
 }
 
 // Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
@@ -342,13 +359,22 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
 // reaches `uShadowSoft` times two texels, with a slope-scaled bias. What is
 // left in the darkest shadow is `uShadowFloor`.
 float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
-    vec4 light_space = uShadowVP[layer] * vec4(vWorld, 1.0);
-    float bias_scale = uShadowBias[layer];
+    float spread = max(uShadowSoft, 0.5);
+    // Looked up a little off the surface, along its normal, by about as many
+    // texels as the filter reaches - measured in metres where the point is
+    // (`uShadowBias`: a texel's width at a unit's distance from a lamp, or a
+    // sun's whole), not in depth: so a shadow meets what casts it - a table's
+    // foot, the bottom of a bin - with no gap and no light under it, and a lit
+    // face does not shadow itself.
+    vec4 here = uShadowVP[layer] * vec4(vWorld, 1.0);
+    float texel = uShadowBias[layer] * max(here.w, 1e-5);
+    float ndl = clamp(dot(n, l), 0.0, 1.0);
+    float slope = sqrt(max(1.0 - ndl * ndl, 0.0));
+    vec4 light_space = uShadowVP[layer] * vec4(vWorld + n * texel * (0.6 + 1.6 * slope) * spread, 1.0);
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
-    float spread = max(uShadowSoft, 0.5);
-    float bias = max(0.0016 * (1.0 - dot(n, l)), 0.0006) * bias_scale * (0.6 + 0.4 * spread);
+    float bias = 0.00006;
     float turn = ign(gl_FragCoord.xy) * 6.2831853;
     vec2 reach = 2.4 * spread * uShadowTexel;
     float sum = 0.0;
@@ -362,6 +388,22 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     // not, and far off is where it would show.
     float edge = smoothstep(0.82, 0.98, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
     return mix(mix(floor_, 1.0, sum / 16.0), 1.0, edge);
+}
+
+// A sun's shadow, close up and far: its wide map reaches over the whole of
+// what it lights and has texels the width of a hand, so a second, small one
+// round the viewer takes over where they are looking at something near (a
+// door, the leaf's edge, a chair's legs), the two blended before the near
+// one's own edge begins to fade.
+float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
+    float wide = shadow_factor(i, n, l, floor_);
+    if (uLightNear[i] < -0.5) return wide;
+    int near = int(uLightNear[i] + 0.5);
+    vec4 light_space = uShadowVP[near] * vec4(vWorld, 1.0);
+    vec3 proj = light_space.xyz / max(light_space.w, 1e-5) * 0.5 + 0.5;
+    float edge = smoothstep(0.55, 0.8, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
+    if (edge >= 1.0 || proj.z > 1.0) return wide;
+    return mix(shadow_factor(near, n, l, floor_), wide, edge);
 }
 
 // How much a surface reflects of light arriving from all round, by angle and
@@ -618,6 +660,10 @@ void main() {
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
 
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
+    // A door's leaf, drawn here for a viewer in the room beyond its doorway:
+    // that room's light (far_*: let in through the doorway, shut or not) where
+    // it is at the plane - all of it, shut - and this room's own further out.
+    vec3 far_direct = vec3(0.0), far_bounced = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
         vec3 l;
@@ -646,8 +692,8 @@ void main() {
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
         if (ndl > 0.0 && i < uShadowCount) {
-            float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
-            shadow = shadow_factor(i, n, l, fl);
+            float fl = uLightFloor[i] < 0.0 || uStraddle > 0.5 ? uShadowFloor : uLightFloor[i];
+            shadow = shadow_cascade(i, n, l, fl);
         }
 
         // Cook-Torrance: GGX for the spread of the highlight, Smith's
@@ -663,8 +709,14 @@ void main() {
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
 
-        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * atten * cone * shadow;
-        else direct += lobe * ndl * uLightColor[i] * atten * cone * shadow;
+        bool far_side = uStraddle > 0.5 && uLightGateAxis[i].w > 0.5;
+        if (uLightIndirect[i] > 0.5) {
+            vec3 b = diffuse * ndl * uLightColor[i] * atten * cone * shadow;
+            if (far_side) far_bounced += b; else bounced += b;
+        } else {
+            vec3 d = lobe * ndl * uLightColor[i] * atten * cone * shadow;
+            if (far_side) far_direct += d; else direct += d;
+        }
     }
 
     // Light from all round: the sky's colour from above, the floor's bounce
@@ -677,6 +729,27 @@ void main() {
     float up = mix(r.y, n.y, roughness * roughness);
     vec3 sky_here, ground_here;
     around_at(vWorld, sky_here, ground_here);
+    if (uStraddle > 0.5) {
+        // Which doorway it hangs in, and how far into this room each point is.
+        int k = -1;
+        float s_in = 0.0, best = 1e9;
+        for (int i = 0; i < MAX_DOORS; ++i) {
+            if (i >= uDoorCount) break;
+            vec3 d = vWorld - uDoorAt[i].xyz;
+            float s = dot(d.xz, uDoorIn[i].xy), off = abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w;
+            float score = abs(s) + max(off, 0.0) * 4.0;
+            if (score < best) best = score, k = i, s_in = s;
+        }
+        if (k >= 0) {
+            float here = smoothstep(0.0, 0.6, s_in);
+            direct = mix(far_direct, direct, here);
+            bounced = mix(far_bounced, bounced, here);
+            sky_here = mix(uDoorSky[k], uSky * uAmbient, here);
+            ground_here = mix(uDoorGround[k], uGround * uAmbient, here);
+        } else {
+            direct += far_direct, bounced += far_bounced;
+        }
+    }
     vec3 around = mix(ground_here, sky_here, n.y * 0.5 + 0.5);
     vec3 mirrored = mix(ground_here, sky_here, smoothstep(-0.35, 0.35, up));
     // Under an open sky a glossy surface reflects the sky itself - its
@@ -701,6 +774,14 @@ void main() {
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
+    // A door's leaf is drawn by both sides, each its own half. Near the plane
+    // between them this side's colour gives way to the other side's picture of
+    // the same point, so the two halves of it are one.
+    if (uSeamMix > 0.5) {
+        float into = dot(vWorld - uSeamAt.xyz, uSeamIn);
+        vec3 there = texture(uSeamTex, gl_FragCoord.xy / uViewport).rgb;
+        color = mix(there, color, smoothstep(0.0, uSeamAt.w, into));
+    }
     FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - clamp(fog, 0.0, 0.85)));
 })";
     return source.c_str();

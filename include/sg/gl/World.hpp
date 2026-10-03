@@ -121,8 +121,8 @@ using GLQuality = Quality;
 class GLWorldView {
 public:
     static constexpr std::size_t kMaxLights = 24;   // matches the scene shader
-    static constexpr std::size_t kShadowMaps = 8;  // layers of the shadow array; matches the scene shader
-    static constexpr std::size_t kOwnShadows = 4;  // a room's own strongest four cast; the rest are for doorways
+    static constexpr std::size_t kShadowMaps = 10;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
 
@@ -146,6 +146,7 @@ public:
         int portal_views = 0, feed_views = 0;
         int draws = 0, instanced = 0;  // scene draw calls, and how many things were drawn in batches
         int shadow_maps = 0;           // shadow layers drawn again (most frames, none)
+        int shadow_casters = 0;        // and the casters they were drawn with, summed
         double signature = 0;          // ms spent seeing whether anything that casts has moved
     };
     void set_timing(bool on) { timing_ = on; }
@@ -288,8 +289,9 @@ private:
         double job_cx = 0, job_cz = 0, job_rev = -1;
     };
 
-    // Is any of the portal in front of the camera, and near enough to draw?
-    bool in_view(const Spatial3D& world, const Element& e, const Camera& cam) const;
+    // Is any of the portal in front of the camera, inside what it sees (at
+    // `aspect`, width to height), and near enough to draw?
+    bool in_view(const Spatial3D& world, const Element& e, const Camera& cam, float aspect = 0.0f) const;
 
     // The plane of `portal` (in `host`) as seen on the far side, facing away
     // from it: the far side is drawn only beyond it. The turn and shift are
@@ -390,6 +392,10 @@ private:
         uint64_t stamp = 0;
         bool posed = false, boxed = false, recorded = false, hashed = false;
         uint64_t where = 0;  // its box and its shape, as a shadow map sees it
+        // The sphere that holds it in the world, kept while its room stands where it did.
+        uint64_t held_in = 0;
+        gl::Vec3 held_at;
+        float held_r = 0;
         Pose pose;
         RoomMatrix box;
         std::array<float, gl::Mesh::kInstanceFloats> record{};  // as a batch carries it
@@ -688,9 +694,22 @@ private:
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
     static uint64_t mix_bits(uint64_t h, float f);
-    // Everything that casts a shadow, where it is now: its matrix, bit for
-    // bit. Equal from one frame to the next, the maps from last frame stand.
-    uint64_t caster_signature(const std::vector<PlacedRoom>& rooms);
+    // Everything that casts a shadow, and where it is now: its matrix, bit for
+    // bit, and the sphere that holds it in the world being drawn. Terrain and
+    // the like (`bounded` false) are held by nothing: they are in every map.
+    struct Caster {
+        std::size_t room = 0;  // which of the rooms being drawn
+        const Element* element = nullptr;
+        gl::Vec3 centre;
+        float radius = 0;
+        bool bounded = false;
+        uint64_t where = 0;
+    };
+    std::vector<Caster> casters_of(const std::vector<PlacedRoom>& rooms);
+    // Whether a caster can lie across the rays of a map: inside the volume the
+    // light sees (a thing outside it shades nothing in it), and, for light let
+    // in through a doorway, on this side of the opening.
+    static bool shades(const Caster& c, const Frustum& sees, const Light& light);
     // Which mesh a box is drawn with (its shape, rounding and taper).
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
     // Where the composite writes: the screen, or a feed's picture.
@@ -699,7 +718,10 @@ private:
     struct Feed {
         const Spatial3D* world = nullptr;
         const Element* eye = nullptr;  // seen from this (a camera's lens), not the world's camera
-        int w = 0, h = 0;
+        int w = 0, h = 0;      // as the screen asks for it
+        int rw = 0, rh = 0;    // as it is drawn: a fraction of that, while the screen is small
+        int div = 1;           // that fraction's denominator (1, 2, 4 or 8)
+        int slack = 0;         // frames a smaller picture would have done
         bool live = true, drawn = false;
         bool from_graph = false, seen = false;
         gl::RenderTarget out[2];
@@ -708,6 +730,11 @@ private:
         std::unique_ptr<GLWorldView> view;
     };
     std::unordered_map<Key, Feed> feeds_;
+    // The denominator of the fraction of a `declared` pixels tall picture that
+    // is enough for a screen `shown` pixels tall: a pixel and six tenths of the
+    // picture to each of the screen's, so it is never seen coarser than it is
+    // made, and never smaller than a few dozen.
+    static int feed_detail(float shown, int declared);
     // The view on the screen, for a view it draws a feed or a far room with:
     // the feeds are that one's, and every view shows the same pictures.
     GLWorldView* root_ = nullptr;
@@ -737,6 +764,16 @@ private:
     std::unordered_map<Key, WorldPortal> worlds_;
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn
+    // Drawing a world seen through a doorway (not the viewer's own), and how
+    // many planes cut this room's geometry: what hangs in a doorway is drawn
+    // whole there, for the viewer's side to blend into (draw_crate).
+    bool guest_pass_ = false;
+    int clip_count_ = 0;
+    // How many pixels a thing one metre across takes at a metre's distance,
+    // on the picture being drawn; and the least a thing may take (its
+    // radius, in pixels) to be drawn at all: smaller, it is a speck nobody
+    // could tell, and costs a draw. A room's `lod_px` sets it; 0 draws all.
+    float lod_px_ = 0.0f, lod_least_ = 0.0f;
     Key highlight_;
     bool timing_ = false;
     const State* attend_ = nullptr;

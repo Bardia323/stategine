@@ -1,19 +1,31 @@
 #include "sg/gl/World.hpp"
 namespace sg::render {
-bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera& cam) const {
+bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
     const Pose p = pose_of(world, e);
     const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
     const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
     const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across(p.yaw));
     const float far = static_cast<float>(world.params().num(Key{"far"}, 120.0));
     const gl::Vec3 f = gl::normalize(cam.forward);
+    bool ahead = false;
     for (float a : {-1.0f, 1.0f})
         for (float b : {-1.0f, 1.0f}) {
             const gl::Vec3 corner = c + side * (a * w) + gl::Vec3{0, b * h, 0};
             const float along = gl::dot(corner - cam.eye, f);
-            if (along > 0.0f && along < far) return true;
+            ahead = ahead || (along > 0.0f && along < far);
         }
-    return false;
+    if (!ahead) return false;
+    // And inside what the eye sees, not only in front of it: a screen well off
+    // to one side is not looked at.
+    if (aspect <= 0.0f) return true;
+    const Frustum sees = frustum_of(gl::Mat4::perspective(cam.fov, aspect, kNear, far) * gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up));
+    return sees.intersects_sphere({c.x, c.y, c.z}, std::sqrt(w * w + h * h));
+}
+
+int GLWorldView::feed_detail(float shown, int declared) {
+    for (int d : {8, 4, 2})
+        if (static_cast<float>(declared) / static_cast<float>(d) >= shown * 1.6f && declared / d >= 64) return d;
+    return 1;
 }
 
 HalfSpace GLWorldView::far_side(const Spatial3D& host,const Element& portal,const Element& guest) const {
@@ -91,6 +103,13 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
     // Preserve the original float sphere test after conservative BVH pruning.
     visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) {
         const auto& b=plan.bounds[i];
+        // A speck: less than a pixel or so across at this distance on this
+        // picture. (What is highlighted is never one.)
+        if(lod_least_>0.0f && elements[i].id!=highlight_) {
+            const gl::Vec3 away=b.centre-cam_eye_;
+            const float d2=gl::dot(away,away),r=(b.radius-0.05f)/1.5f;
+            if(r*lod_px_*r*lod_px_<lod_least_*lod_least_*d2) return true;
+        }
         for(const auto& p:view.planes)
             if(static_cast<float>(p.normal.x)*b.centre.x+static_cast<float>(p.normal.y)*b.centre.y+static_cast<float>(p.normal.z)*b.centre.z+static_cast<float>(p.offset)<-b.radius) return true;
         return false;

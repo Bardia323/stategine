@@ -132,6 +132,12 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.outer = static_cast<float>(e.params.num("outer", 1.15));
     l.sun = e.params.num("sun") > .5;
     l.extent = static_cast<float>(e.params.num("extent", 40));
+    // A sun that lights one room (a window's) keeps its shadow box on the room,
+    // not on whoever walks about in it: `pin_x/y/z`, where its box is centred.
+    if (e.params.has(Key{"pin_x"})) {
+        l.pinned = true;
+        l.focus = vec(Vec3d{e.params.num("pin_x"), e.params.num("pin_y"), e.params.num("pin_z")});
+    }
     l.floor = static_cast<float>(e.params.num("shadow_floor", -1));
     l.indirect = e.params.num("indirect") > .5;
     l.falloff = static_cast<float>(std::clamp(e.params.num("falloff"), 0.0, 1.0));
@@ -217,7 +223,8 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
             {std::round(d.x * 300.0f) / 300.0f, std::round(d.y * 300.0f) / 300.0f, std::round(d.z * 300.0f) / 300.0f});
         const float e = l.extent, reach = e * 4.0f;
         const float texel = 2.0f * e / static_cast<float>(size);
-        spatial::projection::Vec3 c = eye + spatial::projection::normalize({forward.x, 0.0f, forward.z}) * (e * 0.4f);
+        spatial::projection::Vec3 c =
+            l.pinned ? l.focus : eye + spatial::projection::normalize({forward.x, 0.0f, forward.z}) * (e * 0.4f);
         c = {std::floor(c.x / texel) * texel, std::floor(c.y / texel) * texel, std::floor(c.z / texel) * texel};
         const spatial::projection::Vec3 up =
             std::fabs(d.y) > 0.99f ? spatial::projection::Vec3{0, 0, 1} : spatial::projection::Vec3{0, 1, 0};

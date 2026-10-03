@@ -85,6 +85,21 @@ int main() {
         const Body& top = *w.find("c4");
         check(std::fabs(top.x.x) < 0.03 && top.x.y > 1.7, "a stack of five stands (top at " + std::to_string(top.x.x) + ", " + std::to_string(top.x.y) + ")");
         check(!top.awake, "and sleeps");
+        // What lies on what is found by where things are: asleep, they keep
+        // no contacts.
+        w.add(box_body("beside", {1.5, 0.2, 0}, {0.2, 0.2, 0.2}, 5));
+        run(w, 3);
+        const std::vector<std::size_t> on_base = w.resting_on(*w.find("c0"));
+        const std::vector<std::size_t> on_floor = w.resting_on(*w.find("floor"));
+        const auto has = [&](const std::vector<std::size_t>& v, const char* id) {
+            return std::find(v.begin(), v.end(), static_cast<std::size_t>(w.find(id) - w.bodies.data())) != v.end();
+        };
+        check(on_base.size() == 4 && has(on_base, "c1") && has(on_base, "c4") && !has(on_base, "beside") && !has(on_base, "floor"),
+              "what lies on the bottom crate is the four above it, and not the one beside it");
+        check(on_floor.size() == 6 && has(on_floor, "c0") && has(on_floor, "beside"), "and on the floor, all six, however they are stacked");
+        Body away = box_body("away", {5, 0.2, 0}, {0.2, 0.2, 0.2}, 5);
+        away.place();
+        check(w.resting_on(away).empty(), "a host standing where nothing lies has no riders");
     }
     {
         // A box dropped on its edge falls onto a face.
