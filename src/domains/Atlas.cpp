@@ -70,9 +70,9 @@ bool Atlas::placement(const StateGraph& g, Key root, Key other, Pose& out, int m
     return false;
 }
 
-Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also) {
+Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also, bool wraps) {
     Seam seam{name, a, b, Key{name.str() + ".ab"}, Key{name.str() + ".ba"}, Key{name.str() + ".glue.ab"},
-              Key{name.str() + ".glue.ba"}, {pa}, {pb}};
+              Key{name.str() + ".glue.ba"}, {pa}, {pb}, wraps};
     for (const auto& [x, y] : also) {
         seam.boundary_a.push_back(x);
         seam.boundary_b.push_back(y);
@@ -80,22 +80,38 @@ Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std:
     return seam;
 }
 
-const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also) {
-    const Element& here = g.state(a).element(pa);
-    const Element& there = g.state(b).element(pb);
+namespace {
+// A carry made from the two boundary elements where they are when it is used,
+// not where they were when glued: it moves with them, and cannot drift from
+// them. (It reads its two boundaries besides its own two elements.)
+template <class Make>
+Transport between(const StateGraph& g, Key a, Key pa, Key b, Key pb, Make make) {
+    const StateGraph* graph = &g;
+    return [graph, a, pa, b, pb, make](const Element& src, Element& dst) {
+        const State* A = graph->find(a);
+        const State* B = graph->find(b);
+        const Element* here = A ? A->find(pa) : nullptr;
+        const Element* there = B ? B->find(pb) : nullptr;
+        if (here && there) make(*here, *there)(src, dst);
+    };
+}
+}  // namespace
+
+const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also, bool wraps) {
+    (void)g.state(a).element(pa), (void)g.state(b).element(pb);  // both sides are there
     const Key ab{name.str() + ".ab"}, ba{name.str() + ".ba"};
     const Key gab{name.str() + ".glue.ab"}, gba{name.str() + ".glue.ba"};
     Functor to_b(ab, a, b), to_a(ba, b, a);
-    to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(), portal_carry(here, there));
-    to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(), portal_carry(there, here));
+    to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(), between(g, a, pa, b, pb, portal_carry));
+    to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(), between(g, b, pb, a, pa, portal_carry));
     Functor glue_b(gab, a, b), glue_a(gba, b, a);
-    glue_b.on_object(pa, pb, seam_carry(here, there));
-    glue_a.on_object(pb, pa, seam_carry(there, here));
+    glue_b.on_object(pa, pb, between(g, a, pa, b, pb, seam_carry));
+    glue_a.on_object(pb, pa, between(g, b, pb, a, pa, seam_carry));
     // The boundary on each side: the doorway, and whatever hangs in it.
-    Seam seam = doorway_seam(name, a, pa, b, pb, also);
+    Seam seam = doorway_seam(name, a, pa, b, pb, also, wraps);
     for (const auto& [x, y] : also) {
-        glue_b.on_object(x, y, pose_carry(here, there));
-        glue_a.on_object(y, x, pose_carry(there, here));
+        glue_b.on_object(x, y, between(g, a, pa, b, pb, pose_carry));
+        glue_a.on_object(y, x, between(g, b, pb, a, pa, pose_carry));
     }
     g.set_functor(std::move(to_b));
     g.set_functor(std::move(to_a));
@@ -125,9 +141,9 @@ Cover as_cover(const Atlas& atlas, StateGraph& g) {
         // carrying the near doorway onto the far one would move the far room's
         // own door every time somebody walked through it. The doorway itself
         // is the seam's glue, which is checked, never applied in passing.
-        glue_doorway(g, d.name, d.room_a, d.portal_a, d.room_b, d.portal_b);
+        glue_doorway(g, d.name, d.room_a, d.portal_a, d.room_b, d.portal_b, {}, d.wraps);
 
-        cover.add(d.name, d.room_a, d.room_b, fwd, back);
+        cover.add(d.name, d.room_a, d.room_b, fwd, back).wraps = d.wraps;
     }
     return cover;
 }
@@ -160,25 +176,42 @@ std::vector<std::string> adjacency_defects(const Atlas& atlas, const StateGraph&
             const State* room = g.find(side.first);
             const Element* portal = room ? room->find(side.second) : nullptr;
             if (!portal) continue;  // descent_defects names a missing side
-            const HalfSpace own = room_side(*room, *portal, Pose{});
+            const Pose at = world_pose(*room, *portal);
+            const bool ball = portal->params.has(Key{"ball"});
+            const double r = portal->params.num(Key{"ball"}), hw = portal->params.num(keys::w, 1.0) * 0.5,
+                         hh = portal->params.num(keys::h, 2.0) * 0.5;
+            const bool inside = portal->params.num(Key{"ball_out"}, 0.0) > 0.5;
             for (const Element& e : room->elements()) {
                 if (!e.alive || (e.kind != kinds::wall && e.kind != kinds::mesh)) continue;
-                // A box sits on the floor at its pose, sx by sz, turned by yaw.
+                // A box: its eight corners, however it is turned.
                 const Pose p = world_pose(*room, e);
-                const double hx = e.params.num(keys::sx, 1.0) * 0.5;
-                const double hz = e.params.num(keys::sz, 1.0) * 0.5;
-                double deepest = 0.0;
-                for (const double cx : {-hx, hx})
-                    for (const double cz : {-hz, hz}) {
-                        const Vec3d c = rotate_xz({cx, 0.0, cz}, p.yaw);
-                        deepest = std::min(
-                            deepest,
-                            own.at({p.position.x + c.x, p.position.y, p.position.z + c.z}));
-                    }
-                if (deepest < -tolerance)
-                    out.push_back(side.first.str() + "." + e.id.str() + " reaches " +
-                                  std::to_string(-deepest) + " m past doorway " + d.name.str() +
-                                  ", into the room on the other side");
+                const double sx = e.params.num(keys::sx, 1.0) * 0.5, sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0) * 0.5;
+                double lo[3] = {1e18, 1e18, 1e18}, hi[3] = {-1e18, -1e18, -1e18}, far = 0.0, near = 1e18;
+                for (const double cx : {-sx, sx})
+                    for (const double cy : {0.0, sy})
+                        for (const double cz : {-sz, sz}) {
+                            const Vec3d c = place_in(p, {cx, cy, cz});
+                            const double dist = distance(c, at.position);
+                            far = std::max(far, dist), near = std::min(near, dist);
+                            const Vec3d l = local_of(at, c);
+                            const double v[3] = {l.x, l.y, l.z};
+                            for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], v[k]), hi[k] = std::max(hi[k], v[k]);
+                        }
+                double reach = 0.0;
+                if (ball) {
+                    // A ball's inner world keeps within its sky; the outer keeps out of it.
+                    reach = inside ? far - r : r - near;
+                } else if (lo[0] < -tolerance && hi[0] > tolerance && hi[1] > -hh + tolerance && lo[1] < hh - tolerance && hi[2] > -hw + tolerance &&
+                           lo[2] < hw - tolerance) {
+                    // From the room's side past a doorway's plane, in its opening:
+                    // in the way of what is seen through it. (What lies wholly
+                    // behind it - the wall a doorway hangs on - is the other
+                    // side of a surface the doorway opens.)
+                    reach = -lo[0];
+                }
+                if (reach > tolerance)
+                    out.push_back(side.first.str() + "." + e.id.str() + " reaches " + std::to_string(reach) + " m past doorway " +
+                                  d.name.str() + ", into the room on the other side");
             }
         }
     }
@@ -206,8 +239,13 @@ std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g) {
         if (pa->kind != kinds::portal || pb->kind != kinds::portal)
             out.push_back("doorway " + d.name.str() + ": a side is not a portal element");
 
+        // Placed by the shortest way - which, for a doorway whose rings are the
+        // space's shape, is across that doorway itself.
         Pose placement;
-        if (!atlas.placement(g, d.room_b, d.room_a, placement)) continue;
+        if (d.wraps)
+            placement = through_portal(world_pose(*a, *pa), world_pose(*b, *pb), Vec3d{0, 0, 0}, 0.0);
+        else if (!atlas.placement(g, d.room_b, d.room_a, placement))
+            continue;
         const Pose landed = compose_pose(placement, world_pose(*a, *pa));
         const Pose target = world_pose(*b, *pb);
         if (!same_number(keys::x, landed.position.x, target.position.x, 1e-6) ||
@@ -216,6 +254,36 @@ std::vector<std::string> descent_defects(const Atlas& atlas, StateGraph& g) {
         // Back to back: the far side faces the way you came from.
         if (!same_number(keys::yaw, landed.yaw, target.yaw + 3.14159265358979, 1e-6))
             out.push_back("doorway " + d.name.str() + ": the two sides do not face each other");
+    }
+    return out;
+}
+
+std::vector<PlacedRoom> nests(const StateGraph& g, Key root, int max_depth) {
+    std::vector<PlacedRoom> out;
+    std::vector<std::pair<Key, Pose>> todo{{root, Pose{}}};
+    std::vector<Key> seen{root};
+    for (int depth = 0; depth < max_depth && !todo.empty(); ++depth) {
+        std::vector<std::pair<Key, Pose>> next;
+        for (const auto& [here, at] : todo)
+            for (const Seam& s : g.seams()) {
+                if (s.boundary_a.empty() || s.boundary_b.empty() || s.a == s.b) continue;
+                const bool forward = s.a == here;
+                if (!forward && s.b != here) continue;
+                const Key there = forward ? s.b : s.a;
+                if (std::find(seen.begin(), seen.end(), there) != seen.end()) continue;
+                const State* hs = g.find(here);
+                const auto* ts = dynamic_cast<const Spatial3D*>(g.find(there));
+                const Element* hp = hs ? hs->find(forward ? s.boundary_a[0] : s.boundary_b[0]) : nullptr;
+                const Element* tp = ts ? ts->find(forward ? s.boundary_b[0] : s.boundary_a[0]) : nullptr;
+                if (!ts || !hp || !tp || !hp->params.has(Key{"ball"})) continue;
+                // Where the far world's origin is, carried back across the
+                // boundary into this one's frame - as Atlas::step places a room.
+                const Pose placed = compose_pose(at, through_portal(world_pose(*ts, *tp), world_pose(*hs, *hp), Pose{}));
+                out.push_back(PlacedRoom{ts, placed, {}});
+                seen.push_back(there);
+                next.push_back({there, placed});
+            }
+        todo = std::move(next);
     }
     return out;
 }

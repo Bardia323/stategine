@@ -31,6 +31,10 @@ std::string crt_glsl_constants() {
 const char* scene_fs() {
     static const std::string source = std::string(R"(#version 330 core
 in vec3 vWorld;
+// Where a fragment is lit as being: where it is - or, for a copy of a space
+// that wraps, where its original is (uLatticeShift), lit and shadowed as that is.
+uniform vec3 uLatticeShift;
+vec3 vLit;
 in vec3 vRoom;
 in vec3 vNormal;
 in vec2 vUV;
@@ -142,6 +146,7 @@ uniform float uUntone;        // 1: the picture is already developed (a world's 
 // rendered with the matching virtual camera, so the quad becomes a window
 // rather than a picture hanging on the wall.
 uniform float uScreenUV;
+uniform vec4 uScreenRect;                // (uScreenUV) the part of the picture the quad shows, 0..1: all of it is 0,0,1,1
 uniform vec2  uViewport;
 
 // A panel can be a screen: its texture is what the tube shows, and the glass
@@ -366,11 +371,11 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     // sun's whole), not in depth: so a shadow meets what casts it - a table's
     // foot, the bottom of a bin - with no gap and no light under it, and a lit
     // face does not shadow itself.
-    vec4 here = uShadowVP[layer] * vec4(vWorld, 1.0);
+    vec4 here = uShadowVP[layer] * vec4(vLit, 1.0);
     float texel = uShadowBias[layer] * max(here.w, 1e-5);
     float ndl = clamp(dot(n, l), 0.0, 1.0);
     float slope = sqrt(max(1.0 - ndl * ndl, 0.0));
-    vec4 light_space = uShadowVP[layer] * vec4(vWorld + n * texel * (0.6 + 1.6 * slope) * spread, 1.0);
+    vec4 light_space = uShadowVP[layer] * vec4(vLit + n * texel * (0.6 + 1.6 * slope) * spread, 1.0);
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
@@ -399,7 +404,7 @@ float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
     float wide = shadow_factor(i, n, l, floor_);
     if (uLightNear[i] < -0.5) return wide;
     int near = int(uLightNear[i] + 0.5);
-    vec4 light_space = uShadowVP[near] * vec4(vWorld, 1.0);
+    vec4 light_space = uShadowVP[near] * vec4(vLit, 1.0);
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5) * 0.5 + 0.5;
     float edge = smoothstep(0.55, 0.8, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
     if (edge >= 1.0 || proj.z > 1.0) return wide;
@@ -581,6 +586,7 @@ vec3 surface_albedo(out float rough_mod) {
 }
 
 void main() {
+    vLit = vWorld + uLatticeShift;
     if (vInstanced > 0.5) {
         mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
         mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w;
@@ -596,7 +602,8 @@ void main() {
     float rough_mod;
     vec3 albedo = surface_albedo(rough_mod);
     if (uTexMix > 0.0) {
-        vec2 uv = uScreenUV > 0.5 ? gl_FragCoord.xy / uViewport : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
+        vec2 uv = uScreenUV > 0.5 ? (gl_FragCoord.xy / uViewport - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4))
+                : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
         vec4 texel = texture(uTex, uv);
@@ -670,10 +677,10 @@ void main() {
         float atten, cone;
         if (uLightSun[i] > 0.5) {
             l = normalize(-uLightDir[i]);
-            atten = uLightPower[i] * through_gate(i, vWorld, l, true);
+            atten = uLightPower[i] * through_gate(i, vLit, l, true);
             cone = 1.0;
         } else {
-            vec3 toLight = uLightPos[i] - vWorld;
+            vec3 toLight = uLightPos[i] - vLit;
             float dist = length(toLight);
             l = toLight / max(dist, 1e-4);
             // Spot cone, smooth at the rim.
@@ -684,7 +691,7 @@ void main() {
             // finite at the lamp itself.
             float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
             float square = 1.0 / (1.0 + 2.0 * dist * dist);
-            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, vWorld, toLight, false);
+            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, vLit, toLight, false);
         }
         if (atten <= 0.0) continue;
         vec3 h = normalize(l + v);
@@ -728,14 +735,14 @@ void main() {
     vec3 r = reflect(-v, n);
     float up = mix(r.y, n.y, roughness * roughness);
     vec3 sky_here, ground_here;
-    around_at(vWorld, sky_here, ground_here);
+    around_at(vLit, sky_here, ground_here);
     if (uStraddle > 0.5) {
         // Which doorway it hangs in, and how far into this room each point is.
         int k = -1;
         float s_in = 0.0, best = 1e9;
         for (int i = 0; i < MAX_DOORS; ++i) {
             if (i >= uDoorCount) break;
-            vec3 d = vWorld - uDoorAt[i].xyz;
+            vec3 d = vLit - uDoorAt[i].xyz;
             float s = dot(d.xz, uDoorIn[i].xy), off = abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w;
             float score = abs(s) + max(off, 0.0) * 4.0;
             if (score < best) best = score, k = i, s_in = s;

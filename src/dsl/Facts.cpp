@@ -87,7 +87,7 @@ std::string list_text(const std::vector<Key>& ks) {
 std::string seam_fact(const Seam& s) {
     return "seam " + s.name.str() + " a=" + s.a.str() + " b=" + s.b.str() + " a_to_b=" + s.a_to_b.str() + " b_to_a=" + s.b_to_a.str() +
            " glue_ab=" + s.glue_ab.str() + " glue_ba=" + s.glue_ba.str() + " boundary_a=" + list_text(s.boundary_a) +
-           " boundary_b=" + list_text(s.boundary_b);
+           " boundary_b=" + list_text(s.boundary_b) + (s.wraps ? " wraps=1" : "");
 }
 
 std::string drive_fact(const Drive& d) {
@@ -225,7 +225,7 @@ std::vector<std::string> facts(const Plan& plan) {
                 } else if constexpr (std::is_same_v<S, plan::Embed>) {
                     out.push_back(embed_fact(st.e));
                 } else if constexpr (std::is_same_v<S, plan::Glue>) {
-                    const Seam seam = doorway_seam(st.name, st.a, st.pa, st.b, st.pb, st.also);
+                    const Seam seam = doorway_seam(st.name, st.a, st.pa, st.b, st.pb, st.also, st.wraps);
                     out.push_back(seam_fact(seam));
                     // what it makes with it: the travel and the glue, each carrying its objects by a computation
                     // that reads the doorways' poses (opaque: those are the portals' own params)

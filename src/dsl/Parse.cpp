@@ -625,6 +625,8 @@ struct Parser {
                 s.also.push_back({std::move(x), name("an element of the second side")});
             } else if (accept_word("name")) {
                 s.name = name("a name");
+            } else if (accept_word("wraps")) {
+                s.wraps = true;
             } else {
                 break;
             }

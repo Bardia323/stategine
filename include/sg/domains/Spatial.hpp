@@ -138,11 +138,46 @@ Vec3d forward_of(const Element& camera);
 
 double distance(const Vec3d& a, const Vec3d& b);
 
-// A position plus a heading: what an anchor, a doorway or a camera carries.
+// Where a thing is and which way it is turned: what an anchor, a doorway, a
+// camera or a whole room seen from another carries. The turn is the engine's
+// one rotation - yaw, then pitch, then roll (R = Ry Rz Rx, as a renderer turns
+// a mesh and as spatial::from_euler builds it) - so a pose faces along R x,
+// its up is R y and its across is R z. Upright (pitch and roll nothing) it is
+// a heading and nothing more, and every rule below reduces to the heading's.
 struct Pose {
     Vec3d position;
-    double yaw = 0.0;
+    double yaw = 0.0, pitch = 0.0, roll = 0.0;
 };
+
+inline bool upright(const Pose& p) { return p.pitch == 0.0 && p.roll == 0.0; }
+// `v` turned as the pose turns, and back again.
+Vec3d turn(const Pose& p, const Vec3d& v);
+Vec3d unturn(const Pose& p, const Vec3d& v);
+// The way it faces, its up, and its across (to the left of its facing).
+inline Vec3d facing(const Pose& p) { return turn(p, {1.0, 0.0, 0.0}); }
+inline Vec3d up_of(const Pose& p) { return turn(p, {0.0, 1.0, 0.0}); }
+inline Vec3d across_of(const Pose& p) { return turn(p, {0.0, 0.0, 1.0}); }
+// A point given in the pose's own frame, in the frame the pose is in - and back.
+Vec3d place_in(const Pose& p, const Vec3d& local);
+Vec3d local_of(const Pose& p, const Vec3d& at);
+// The frame the pose is in, seen from the pose: compose_pose(p, inverse(p))
+// is where you started.
+Pose inverse(const Pose& p);
+// The turn that takes `from` to `to`, smallest first: what a standing frame is
+// carried by as the ground it stands on tilts.
+Pose pose_between(const Vec3d& from, const Vec3d& to);
+
+// --- standing: the ground a viewer's look is measured from -------------------
+// A camera looks by its yaw, pitch and roll, measured from the ground it
+// stands on - level ground, unless it says otherwise. `stand_w/x/y/z` is that
+// ground's turn, a unit quaternion (absent: level). On the wall of a cube, on
+// the far side of a planet, out of a portal in the floor, the look is the same
+// look; the ground under it has turned.
+Pose standing(const Element& camera);
+void set_standing(Element& camera, const Pose& ground);
+// Its whole turn, as the eye sees: the ground's, then the look's.
+Pose eye_pose(const Element& camera);
+Vec3d up_of(const Element& camera);
 
 // --- anchors: a group of elements with a frame of its own -----------------------
 // An element may carry `parent`, naming another element it is placed relative
@@ -154,6 +189,10 @@ Pose local_pose(const Element& e);
 
 Pose compose_pose(const Pose& parent, const Pose& local);
 
+// A box (a mesh, a wall) is placed by its base and turns about its middle:
+// its frame is where its base would be were the turn taken about its middle.
+// Upright, that is its position.
+//
 // The pose of an element in the state's own coordinates, following the parent
 // chain as far as it goes. A chain that comes back on itself stops where it
 // would go round again, so a cycle cannot hang the frame - and a long chain is
@@ -185,7 +224,26 @@ struct PlacedRoom {
     const Spatial3D* room = nullptr;
     Pose pose;
     std::vector<Key> doorways;
+    // A copy of a room across its own period (a space that wraps): drawn
+    // where it is seen, lighting nothing and casting nothing, its doorways
+    // only frames - the light and the ways are the room's own, once.
+    bool image = false;
 };
+
+// --- a space that wraps -------------------------------------------------------
+// A space may be a torus in any of its axes: `period_x`, `period_y`,
+// `period_z` - go that far one way and you are back where you were, a space
+// with no edge and no end. Everything that reads where things are reads it
+// the same way: a walker is kept in its cell round the origin, the pulls and
+// the solids round a point are the cell's and its neighbours', and a view
+// draws every copy it can see. One fact, and every part of the engine that
+// meets it agrees.
+Vec3d period_of(const State& s);
+// Where the copies of the space are, as offsets, within `reach` of `at`
+// (its own first: no offset).
+std::vector<Vec3d> images(const State& s, const Vec3d& at, double reach);
+// `p` put back in the cell round the origin.
+Vec3d wrapped(const State& s, const Vec3d& p);
 
 // A half-space: the points where `at(p) >= 0`.
 struct HalfSpace {
@@ -228,16 +286,25 @@ inline double portal_delta(double here_yaw, double there_yaw) {
 
 double portal_delta(const Element& here, const Element& there);
 
-// One rotation, applied to the position and the heading alike - getting those
-// two out of step is what makes a portal look subtly wrong. Height is carried
-// as height above the doorway, so a door in a floor at one level can open onto
-// ground at another.
+// One rotation, applied to the position and the turn alike - getting those
+// two out of step is what makes a portal look subtly wrong. A doorway is the
+// same doorway seen from either side: carried across, a pose keeps where it
+// is relative to `here` - turned half round about the doorway's up, since it
+// leaves `there` along its facing - relative to `there`. Upright doorways
+// carry height as height above the doorway, so a door in a floor at one level
+// opens onto ground at another; a doorway in a floor, a wall or a ceiling
+// carries the whole turn.
+Pose through_portal(const Pose& here, const Pose& there, const Pose& p);
 Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, double yaw);
 
 inline Pose through_portal(const Element& here, const Element& there, const Vec3d& pos,
                            double yaw) {
     return through_portal(local_pose(here), local_pose(there), pos, yaw);
 }
+
+// Carry a camera across: its ground turned with it - unless the turn is about
+// the up of level ground, which is a heading and nothing more.
+void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst);
 
 // The same transform as a transport, ready to hang on a functor: it carries a
 // camera (or anything with a pose) from one room's frame into the other's.
@@ -258,7 +325,10 @@ std::function<void(const Element&, Element&)> seam_carry(const Element& here, co
 std::function<void(const Element&, Element&)> pose_carry(const Element& here, const Element& there);
 
 // Did the step from `from` to `to` pass through the doorway's opening, front to
-// back? Used to fire the transition that actually changes state.
+// back? Used to fire the transition that actually changes state. A doorway
+// that is a ball (`ball` = its radius) is crossed going into it - or, if it
+// says `ball_out`, going out of it: the boundary of a world inside another
+// (a planet in its system), seen from outside and from within.
 bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to);
 
 }  // namespace sg

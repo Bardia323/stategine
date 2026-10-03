@@ -46,6 +46,8 @@ struct Overlap {
     Key u, v;
     Key u_to_v;  // functor registered in the graph
     Key v_to_u;
+    // Its rings are the space's own shape (Seam::wraps): not held to closing.
+    bool wraps = false;
 };
 
 // How far a composite may stray from the identity before it counts as a seam.
@@ -111,6 +113,11 @@ public:
     // and every loop of the cover is made of these. So when each of them is
     // the identity (and separatedness makes going there and back cancel),
     // every loop is: one check per overlap, not one per path.
+    //
+    // The trees grow only along overlaps that do not wrap, so every loop made
+    // of those alone is held to closing; an overlap that wraps is the space's
+    // own shape - a generator of its loops - and is held only to going across
+    // and back being the identity.
     std::vector<std::string> cocycle_defects(const StateGraph& g) const;
 
     // --- gluing -------------------------------------------------------------------

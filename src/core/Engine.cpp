@@ -663,6 +663,10 @@ void Engine::take(const Transition& t, State& from, const Event& ev) {
     // sees it (StateGraph::cross - the laws take it the same way).
     graph_.cross(t, from, target, ev, args);
 
+    // Across a seam that joins a state to itself (one that wraps), whoever
+    // crossed is carried within it: nothing is left, nothing entered.
+    if (t.kind == TransitionKind::Switch && target == &from) return;
+
     switch (t.kind) {
         case TransitionKind::Switch:
             hook(from, "on_exit", [&] { from.on_exit(); });

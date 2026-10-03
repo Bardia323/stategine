@@ -254,7 +254,13 @@ private:
         gl::Vec3 forward{0, 0, -1};
         gl::Vec3 up{0, 1, 0};
         float fov = 1.2f;
+        // Seen square on, with no depth to it: half the height of the view,
+        // in metres (the camera's `ortho`); 0 sees in perspective.
+        float ortho = 0.0f;
     };
+    // How a camera's view is projected onto the screen: in perspective, or
+    // square on.
+    static gl::Mat4 projection_of(const Camera& cam, float aspect, float znear, float zfar);
 
     using Light = DrawLight;
 
@@ -269,8 +275,8 @@ private:
         Carry carry;
         Key back;
         WorldPortal* shared = nullptr;  // this frame, showing another screen's view
-        gl::RenderTarget ms;      // drawn into, multisampled
-        gl::RenderTarget target;  // resolved, and sampled by the portal's quad
+        uint64_t drawn = 0;       // the frame its view was last drawn
+        const gl::RenderTarget* shown = nullptr;  // that frame's picture of it (a view of the frame's own)
         int width = 0, height = 0;
         // `own_look`: the far side drawn whole, in its own look, from the
         // carried eye - as it will be seen once through (its picture, and
@@ -298,6 +304,22 @@ private:
     // read off the two cameras - the guest's was carried from the host's by
     // the portal's own functor, so the pair of them is that functor.
     HalfSpace far_side(const Spatial3D& host, const Element& portal, const Element& gc) const;
+    // Where a doorway is on the view, in -1..1 each way, and what of it a
+    // view through another leaves open.
+    struct Rect {
+        float x0, y0, x1, y1;
+        bool empty() const { return x1 <= x0 || y1 <= y0; }
+        Rect cut(const Rect& o) const { return {std::max(x0, o.x0), std::max(y0, o.y0), std::min(x1, o.x1), std::min(y1, o.y1)}; }
+    };
+    Rect screen_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const;
+    // The views through the doorways of `world`, seen from `eye` through the
+    // doorways `path` names - as deep as the world says (`views_deep`), and
+    // only those the view before leaves open (`seen`): planned, for
+    // draw_views to draw this frame's best of.
+    void view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen);
+    // Of every view planned this frame, the biggest on the screen - as many
+    // as the room in view says (`views_most`) - drawn before whatever shows it.
+    void draw_views(const Spatial3D& world, float aspect);
 
     void set_frame(const Pose& p);
 
@@ -712,6 +734,14 @@ private:
     static bool shades(const Caster& c, const Frustum& sees, const Light& light);
     // Which mesh a box is drawn with (its shape, rounding and taper).
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
+    // The last frame's picture of the room the eye is in, before its look:
+    // what a doorway past how deep the views go shows of a room glued to
+    // itself - the view through it, fitted to where it is - so every frame
+    // sees one level further in, for the cost of a copy.
+    gl::RenderTarget last_frame_;
+    Camera drawn_cam_;   // the eye of the view being drawn, and its aspect
+    float drawn_aspect_ = 1.0f;
+    const Spatial3D* root_world_ = nullptr;
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
@@ -762,6 +792,36 @@ private:
     Rgb rays_colour_{1, 1, 1};
     bool rays_on_ = false;
     std::unordered_map<Key, WorldPortal> worlds_;
+    // Views through doorways seen through doorways, by the way the eye came.
+    struct Nested {
+        gl::RenderTarget ms, target;
+        uint64_t frame = 0;
+    };
+    // A view lives only within its frame: the views drawn share a fixed set of
+    // pictures, handed out by rank, made with the screen's other targets -
+    // never in the middle of a frame (the stall of a first step through).
+    std::vector<Nested> pool_;
+    std::unordered_map<std::string, std::size_t> slot_;  // this frame's view, by the way the eye came
+    static constexpr std::size_t kViewPool = 12;
+    // And the pictures of the doorways of the room the eye is in: as many as
+    // can be seen at once, not one for every doorway the world has.
+    struct RootView {
+        gl::RenderTarget ms, target;
+    };
+    std::vector<RootView> root_pool_;
+    static constexpr std::size_t kRootViews = 8;
+    struct ViewJob {
+        std::string key;
+        const Spatial3D* host;
+        const Element* portal;
+        Element from, there;
+        const WorldPortal* wp;
+        int depth;
+        float area;
+    };
+    std::vector<ViewJob> jobs_;  // this frame's views through doorways seen through doorways
+    std::string path_;          // the way the eye came, while a view through doorways is drawn
+    uint64_t frame_count_ = 0;
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn
     // Drawing a world seen through a doorway (not the viewer's own), and how

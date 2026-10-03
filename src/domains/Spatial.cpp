@@ -1,6 +1,138 @@
 #include "sg/domains/Spatial.hpp"
 
+#include "sg/spatial/Math.hpp"
+
 namespace sg {
+
+namespace {
+using spatial::M3;
+spatial::V3 v3(const Vec3d& v) { return {v.x, v.y, v.z}; }
+Vec3d vd(const spatial::V3& v) { return {v.x, v.y, v.z}; }
+M3 rot(const Pose& p) { return spatial::from_euler(p.yaw, p.pitch, p.roll); }
+Pose pose_of(const Vec3d& at, const M3& r) {
+    Pose p{at};
+    spatial::to_euler(r, p.yaw, p.pitch, p.roll);
+    return p;
+}
+// Where a box turns about: its middle, above its base.
+double pivot(const Element& e) {
+    return e.kind == kinds::mesh || e.kind == kinds::wall ? e.params.num(keys::sy, 1.0) * 0.5 : 0.0;
+}
+M3 from_quaternion(double w, double x, double y, double z) {
+    const double n = std::sqrt(w * w + x * x + y * y + z * z);
+    if (n < 1e-12) return M3{};
+    w /= n, x /= n, y /= n, z /= n;
+    M3 m;
+    m.a = {1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y),
+           2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+           2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)};
+    return m;
+}
+void to_quaternion(const M3& m, double& w, double& x, double& y, double& z) {
+    const double t = m(0, 0) + m(1, 1) + m(2, 2);
+    if (t > 0) {
+        const double s = std::sqrt(t + 1.0) * 2;
+        w = 0.25 * s, x = (m(2, 1) - m(1, 2)) / s, y = (m(0, 2) - m(2, 0)) / s, z = (m(1, 0) - m(0, 1)) / s;
+    } else if (m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(0, 0) - m(1, 1) - m(2, 2)) * 2;
+        w = (m(2, 1) - m(1, 2)) / s, x = 0.25 * s, y = (m(0, 1) + m(1, 0)) / s, z = (m(0, 2) + m(2, 0)) / s;
+    } else if (m(1, 1) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(1, 1) - m(0, 0) - m(2, 2)) * 2;
+        w = (m(0, 2) - m(2, 0)) / s, x = (m(0, 1) + m(1, 0)) / s, y = 0.25 * s, z = (m(1, 2) + m(2, 1)) / s;
+    } else {
+        const double s = std::sqrt(1.0 + m(2, 2) - m(0, 0) - m(1, 1)) * 2;
+        w = (m(1, 0) - m(0, 1)) / s, x = (m(0, 2) + m(2, 0)) / s, y = (m(1, 2) + m(2, 1)) / s, z = 0.25 * s;
+    }
+}
+const Key kStandW{"stand_w"}, kStandX{"stand_x"}, kStandY{"stand_y"}, kStandZ{"stand_z"};
+}  // namespace
+
+Vec3d turn(const Pose& p, const Vec3d& v) {
+    if (upright(p)) return rotate_xz(v, p.yaw);
+    return vd(rot(p) * v3(v));
+}
+
+Vec3d unturn(const Pose& p, const Vec3d& v) {
+    if (upright(p)) return rotate_xz(v, -p.yaw);
+    return vd(spatial::transpose(rot(p)) * v3(v));
+}
+
+Vec3d place_in(const Pose& p, const Vec3d& local) {
+    const Vec3d t = turn(p, local);
+    return {p.position.x + t.x, p.position.y + t.y, p.position.z + t.z};
+}
+
+Vec3d local_of(const Pose& p, const Vec3d& at) {
+    return unturn(p, {at.x - p.position.x, at.y - p.position.y, at.z - p.position.z});
+}
+
+Pose inverse(const Pose& p) {
+    if (upright(p)) {
+        const Vec3d back = rotate_xz({-p.position.x, -p.position.y, -p.position.z}, -p.yaw);
+        return Pose{back, -p.yaw};
+    }
+    const M3 rt = spatial::transpose(rot(p));
+    return pose_of(vd(rt * v3({-p.position.x, -p.position.y, -p.position.z})), rt);
+}
+
+Pose pose_between(const Vec3d& from, const Vec3d& to) {
+    const spatial::V3 a = spatial::normalize(v3(from)), b = spatial::normalize(v3(to));
+    const double c = std::clamp(spatial::dot(a, b), -1.0, 1.0);
+    spatial::V3 axis = spatial::cross(a, b);
+    if (spatial::length(axis) < 1e-12) {
+        if (c > 0) return Pose{};
+        // Opposite: half a turn about anything square to them.
+        axis = spatial::cross(a, std::fabs(a.x) < 0.9 ? spatial::V3{1, 0, 0} : spatial::V3{0, 0, 1});
+    }
+    return pose_of({}, spatial::axis_angle(spatial::normalize(axis), std::acos(c)));
+}
+
+Vec3d period_of(const State& s) {
+    return {s.params().num(Key{"period_x"}, 0.0), s.params().num(Key{"period_y"}, 0.0), s.params().num(Key{"period_z"}, 0.0)};
+}
+
+std::vector<Vec3d> images(const State& s, const Vec3d& at, double reach) {
+    const Vec3d p = period_of(s);
+    std::vector<Vec3d> out{{0, 0, 0}};
+    const auto span = [&](double period, double c) {
+        if (period <= 0) return std::pair<int, int>{0, 0};
+        return std::pair<int, int>{static_cast<int>(std::floor((c - reach) / period + 0.5)), static_cast<int>(std::ceil((c + reach) / period - 0.5))};
+    };
+    const auto [x0, x1] = span(p.x, at.x);
+    const auto [y0, y1] = span(p.y, at.y);
+    const auto [z0, z1] = span(p.z, at.z);
+    for (int i = x0; i <= x1; ++i)
+        for (int j = y0; j <= y1; ++j)
+            for (int k = z0; k <= z1; ++k)
+                if (i || j || k) out.push_back({i * p.x, j * p.y, k * p.z});
+    return out;
+}
+
+Vec3d wrapped(const State& s, const Vec3d& at) {
+    const Vec3d p = period_of(s);
+    const auto in = [](double c, double period) { return period > 0 ? c - period * std::floor(c / period + 0.5) : c; };
+    return {in(at.x, p.x), in(at.y, p.y), in(at.z, p.z)};
+}
+
+Pose standing(const Element& camera) {
+    if (!camera.params.has(kStandW)) return Pose{};
+    return pose_of({}, from_quaternion(camera.params.num(kStandW, 1.0), camera.params.num(kStandX), camera.params.num(kStandY),
+                                       camera.params.num(kStandZ)));
+}
+
+void set_standing(Element& camera, const Pose& ground) {
+    double w, x, y, z;
+    to_quaternion(rot(ground), w, x, y, z);
+    camera.params.set(kStandW, w).set(kStandX, x).set(kStandY, y).set(kStandZ, z);
+}
+
+Pose eye_pose(const Element& camera) {
+    const Pose look{position_of(camera), camera.params.num(keys::yaw), camera.params.num(keys::pitch), camera.params.num(keys::roll)};
+    if (!camera.params.has(kStandW)) return look;
+    return pose_of(look.position, rot(standing(camera)) * rot(look));
+}
+
+Vec3d up_of(const Element& camera) { return up_of(eye_pose(camera)); }
 
 SpatialState::SpatialState(Key id, int dims) : State(id), dims_(dims < 3 ? 2 : 3) {
     step_event_ = dims_ == 3 ? Key{"space3.step"} : Key{"space2.step"};
@@ -115,6 +247,7 @@ auto Spatial3D::picture(Key name) const -> const Picture* {
 }
 
 Vec3d forward_of(const Element& camera) {
+    if (camera.params.has(kStandW)) return facing(eye_pose(camera));
     const double pitch = camera.params.num(keys::pitch);
     const Vec3d flat = heading(camera.params.num(keys::yaw));
     const double cp = std::cos(pitch);
@@ -127,14 +260,24 @@ double distance(const Vec3d& a, const Vec3d& b) {
 }
 
 Pose local_pose(const Element& e) {
-    return Pose{position_of(e), e.params.num(keys::yaw)};
+    Pose p{position_of(e), e.params.num(keys::yaw), e.params.num(keys::pitch), e.params.num(keys::roll)};
+    if (!upright(p)) {
+        // Turned about its middle: its frame is where its base goes.
+        const double h = pivot(e);
+        const Vec3d up = turn(p, {0.0, h, 0.0});
+        p.position = {p.position.x - up.x, p.position.y + h - up.y, p.position.z - up.z};
+    }
+    return p;
 }
 
 Pose compose_pose(const Pose& parent, const Pose& local) {
-    const Vec3d turned = rotate_xz(local.position, parent.yaw);
-    return Pose{{parent.position.x + turned.x, parent.position.y + turned.y,
-                 parent.position.z + turned.z},
-                parent.yaw + local.yaw};
+    if (upright(parent)) {
+        const Vec3d turned = rotate_xz(local.position, parent.yaw);
+        return Pose{{parent.position.x + turned.x, parent.position.y + turned.y,
+                     parent.position.z + turned.z},
+                    parent.yaw + local.yaw, local.pitch, local.roll};
+    }
+    return pose_of(place_in(parent, local.position), rot(parent) * rot(local));
 }
 
 Pose world_pose(const State& s, const Element& e) {
@@ -186,7 +329,7 @@ double HalfSpace::at(const Vec3d& p) const {
 
 HalfSpace room_side(const State& room, const Element& portal, const Pose& placed) {
     const Pose p = compose_pose(placed, world_pose(room, portal));
-    const Vec3d n = heading(p.yaw);
+    const Vec3d n = upright(p) ? heading(p.yaw) : facing(p);
     return HalfSpace{n, -(n.x * p.position.x + n.y * p.position.y + n.z * p.position.z)};
 }
 
@@ -227,71 +370,120 @@ double portal_delta(const Element& here, const Element& there) {
     return portal_delta(here.params.num(keys::yaw), there.params.num(keys::yaw));
 }
 
+Pose through_portal(const Pose& here, const Pose& there, const Pose& p) {
+    if (upright(here) && upright(there)) {
+        const double delta = portal_delta(here.yaw, there.yaw);
+        const Vec3d turned = rotate_xz({p.position.x - here.position.x, 0.0, p.position.z - here.position.z}, delta);
+        return Pose{{there.position.x + turned.x, p.position.y - here.position.y + there.position.y,
+                     there.position.z + turned.z},
+                    p.yaw + delta, p.pitch, p.roll};
+    }
+    // Into the doorway's frame, half round about its up, out of the other's.
+    return compose_pose(there, compose_pose(Pose{{}, 3.14159265358979}, compose_pose(inverse(here), p)));
+}
+
 Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, double yaw) {
-    const double delta = portal_delta(here.yaw, there.yaw);
-    const Vec3d turned =
-        rotate_xz({pos.x - here.position.x, 0.0, pos.z - here.position.z}, delta);
-    return Pose{{there.position.x + turned.x, pos.y - here.position.y + there.position.y,
-                 there.position.z + turned.z},
-                yaw + delta};
+    return through_portal(here, there, Pose{pos, yaw});
+}
+
+void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst) {
+    const Pose at = through_portal(here, there, Pose{position_of(src)});
+    set_position(dst, at.position);
+    if (!src.params.has(kStandW) && upright(at)) {
+        dst.params.set(keys::yaw, src.params.num(keys::yaw) + at.yaw);
+        dst.params.set(keys::pitch, src.params.num(keys::pitch));
+        if (src.params.has(keys::roll)) dst.params.set(keys::roll, src.params.num(keys::roll));
+    } else {
+        // The ground it stands on turned as the doorway turns it, the look
+        // within it as it was - unless that leaves the ground level again,
+        // which is a heading.
+        Pose ground = compose_pose(Pose{{}, at.yaw, at.pitch, at.roll}, standing(src));
+        double yaw = src.params.num(keys::yaw);
+        dst.params.set(keys::pitch, src.params.num(keys::pitch));
+        if (src.params.has(keys::roll)) dst.params.set(keys::roll, src.params.num(keys::roll));
+        if (std::fabs(ground.pitch) < 1e-9 && std::fabs(ground.roll) < 1e-9) {
+            // Level again: a heading, and no ground of its own.
+            dst.params.set(keys::yaw, yaw + ground.yaw);
+            for (Key k : {kStandW, kStandX, kStandY, kStandZ}) dst.params.erase(k);
+        } else {
+            dst.params.set(keys::yaw, yaw);
+            set_standing(dst, ground);
+        }
+    }
+    // What it was moving with goes with it, turned as it is turned.
+    if (src.params.has(keys::vx)) {
+        const Vec3d v = turn(Pose{{}, at.yaw, at.pitch, at.roll}, {src.params.num(keys::vx), src.params.num(keys::vy), src.params.num(keys::vz)});
+        dst.params.set(keys::vx, v.x).set(keys::vy, v.y).set(keys::vz, v.z);
+    }
+    dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
 }
 
 std::function<void(const Element&, Element&)> portal_carry(const Element& here, const Element& there) {
-    const Vec3d hp = position_of(here);
-    const Vec3d tp = position_of(there);
-    const double delta = portal_delta(here, there);
-    return [hp, tp, delta](const Element& src, Element& dst) {
-        const Vec3d p = position_of(src);
-        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
-        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
-        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
-        dst.params.set(keys::pitch, src.params.num(keys::pitch));
-        dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
-    };
+    const Pose h = local_pose(here), t = local_pose(there);
+    return [h, t](const Element& src, Element& dst) { carry_camera(h, t, src, dst); };
 }
 
+namespace {
+// A pose carried across a doorway, written to `dst`: its pitch and roll only
+// where it is not upright, or had them before.
+void write_pose(Element& dst, const Pose& p) {
+    set_position(dst, p.position);
+    // A turn is said only where there is one (or where it was said before).
+    const bool level = std::fabs(p.pitch) < 1e-9 && std::fabs(p.roll) < 1e-9;
+    if (level && !dst.params.has(keys::pitch) && !dst.params.has(keys::roll)) {
+        dst.params.set(keys::yaw, p.yaw);  // level: a heading
+        return;
+    }
+    dst.params.set(keys::yaw, p.yaw);
+    if (std::fabs(p.pitch) >= 1e-9 || dst.params.has(keys::pitch)) dst.params.set(keys::pitch, p.pitch);
+    if (std::fabs(p.roll) >= 1e-9 || dst.params.has(keys::roll)) dst.params.set(keys::roll, p.roll);
+}
+Pose pose_params(const Element& e) {
+    return Pose{position_of(e), e.params.num(keys::yaw), e.params.num(keys::pitch), e.params.num(keys::roll)};
+}
+}  // namespace
+
 std::function<void(const Element&, Element&)> seam_carry(const Element& here, const Element& there) {
-    const Vec3d hp = position_of(here), tp = position_of(there);
-    const double delta = portal_delta(here, there);
-    return [hp, tp, delta](const Element& src, Element& dst) {
-        const Vec3d p = position_of(src);
-        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
-        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
-        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta + 3.14159265358979);
+    const Pose h = local_pose(here), t = local_pose(there);
+    return [h, t](const Element& src, Element& dst) {
+        // The same doorway, facing back into its own room.
+        write_pose(dst, compose_pose(through_portal(h, t, pose_params(src)), Pose{{}, 3.14159265358979}));
         for (Key k : {keys::w, keys::h})
             if (src.params.has(k)) dst.params.set(k, src.params.num(k));
     };
 }
 
 std::function<void(const Element&, Element&)> pose_carry(const Element& here, const Element& there) {
-    const Vec3d hp = position_of(here), tp = position_of(there);
-    const double delta = portal_delta(here, there);
-    return [hp, tp, delta](const Element& src, Element& dst) {
-        const Vec3d p = position_of(src);
-        const Vec3d turned = rotate_xz({p.x - hp.x, 0.0, p.z - hp.z}, delta);
-        set_position(dst, {tp.x + turned.x, p.y - hp.y + tp.y, tp.z + turned.z});
-        dst.params.set(keys::yaw, src.params.num(keys::yaw) + delta);
-    };
+    const Pose h = local_pose(here), t = local_pose(there);
+    return [h, t](const Element& src, Element& dst) { write_pose(dst, through_portal(h, t, pose_params(src))); };
 }
 
 bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
-    const Vec3d p = position_of(portal);
-    const double yaw = portal.params.num(keys::yaw);
-    const Vec3d face = heading(yaw);  // the way it faces
-    const Vec3d side = across(yaw);   // along the opening
-    const double nx = face.x, nz = face.z, tx = side.x, tz = side.z;
-    const double d0 = (from.x - p.x) * nx + (from.z - p.z) * nz;
-    const double d1 = (to.x - p.x) * nx + (to.z - p.z) * nz;
+    if (portal.params.has(Key{"ball"})) {
+        const Vec3d c = position_of(portal);
+        const double r = portal.params.num("ball");
+        const double d0 = distance(from, c), d1 = distance(to, c);
+        return portal.params.num("ball_out", 0.0) > 0.5 ? (d0 < r && d1 >= r) : (d0 > r && d1 <= r);
+    }
+    const Pose at = local_pose(portal);
+    const bool level = upright(at);
+    const Vec3d p = at.position;
+    const Vec3d face = level ? heading(at.yaw) : facing(at);  // the way it faces
+    const Vec3d side = level ? across(at.yaw) : across_of(at);  // along the opening
+    const Vec3d up = level ? Vec3d{0.0, 1.0, 0.0} : up_of(at);
+    const auto dot3 = [](const Vec3d& a, const Vec3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+    const Vec3d f{from.x - p.x, level ? 0.0 : from.y - p.y, from.z - p.z}, g{to.x - p.x, level ? 0.0 : to.y - p.y, to.z - p.z};
+    const double d0 = dot3(f, face), d1 = dot3(g, face);
     if (!(d0 > 0.0 && d1 <= 0.0)) return false;  // only front to back
     const double span = d0 - d1;
     const double t = span > 1e-9 ? d0 / span : 0.0;
-    const double hx = from.x + (to.x - from.x) * t;
-    const double hz = from.z + (to.z - from.z) * t;
-    const double lateral = (hx - p.x) * tx + (hz - p.z) * tz;
+    const Vec3d hit{f.x + (g.x - f.x) * t, f.y + (g.y - f.y) * t, f.z + (g.z - f.z) * t};
     const double half_w = portal.params.num(keys::w, 2.0) * 0.5;
-    if (std::fabs(lateral) > half_w) return false;
+    if (std::fabs(dot3(hit, side)) > half_w) return false;
     const double half_h = portal.params.num(keys::h, 2.0) * 0.5;
-    return std::fabs(to.y - p.y) <= half_h + 0.9;
+    // Upright, a walker's eye is above the opening's middle: up to its head.
+    if (level) return std::fabs(to.y - p.y) <= half_h + 0.9;
+    return std::fabs(dot3(hit, up)) <= half_h;
 }
 
 }  // namespace sg

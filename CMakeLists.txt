@@ -235,6 +235,9 @@ if(SG_BUILD_TESTS)
   add_executable(sg_rooms tests/test_room.cpp)
   target_link_libraries(sg_rooms PRIVATE stategine_dev)
   add_test(NAME sg_rooms COMMAND sg_rooms)
+  add_executable(sg_walk tests/test_walk.cpp)
+  target_link_libraries(sg_walk PRIVATE stategine_dev)
+  add_test(NAME sg_walk COMMAND sg_walk)
   add_executable(sg_spatial tests/test_spatial.cpp)
   target_link_libraries(sg_spatial PRIVATE stategine_dev)
   add_test(NAME sg_spatial COMMAND sg_spatial)
@@ -292,7 +295,7 @@ if(SG_BUILD_TESTS)
   set_property(GLOBAL PROPERTY STATEGINE_MODULES
     "sg/core=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/core:"
     "sg/algebra=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/algebra:sg/core"
-    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains:sg/core"
+    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains:sg/core,sg/physics,sg/spatial"
     "sg/spatial=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/spatial:"
     "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/physics:sg/core,sg/spatial"
     "sg/net=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/net:sg/core"
@@ -305,7 +308,7 @@ if(SG_BUILD_TESTS)
   # neutral plan, while no world/numerical/notation module may depend on web.
   set_property(GLOBAL APPEND PROPERTY STATEGINE_MODULES
     "sg/core=${CMAKE_CURRENT_SOURCE_DIR}/src/core:"
-    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/src/domains:sg/core,sg/spatial"
+    "sg/domains=${CMAKE_CURRENT_SOURCE_DIR}/src/domains:sg/core,sg/spatial,sg/physics"
     "sg/spatial=${CMAKE_CURRENT_SOURCE_DIR}/src/spatial:sg/core"
     "sg/physics=${CMAKE_CURRENT_SOURCE_DIR}/src/physics:sg/core,sg/spatial"
     "sg/net=${CMAKE_CURRENT_SOURCE_DIR}/src/net:sg/core"
@@ -461,7 +464,7 @@ endif()
 
 # Native programs stay at the build root; archives and checks have their folders.
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
-  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_rooms sg_spatial sg_fields
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_rooms sg_walk sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl
       sg_instancing_gl sg_culling_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl

@@ -532,7 +532,8 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
             errors.push_back("seam " + sm.name.str() + ": unknown side " + (a ? sm.b : sm.a).str());
             continue;
         }
-        if (sm.a == sm.b) errors.push_back("seam " + sm.name.str() + ": a state cannot be glued to itself");
+        if (sm.a == sm.b && !sm.wraps)
+            errors.push_back("seam " + sm.name.str() + ": a state glued to itself is the shape of its space - say the seam wraps");
         for (Key x : sm.boundary_a)
             if (!a->find(x)) errors.push_back("seam " + sm.name.str() + ": " + sm.a.str() + " has no " + x.str());
         for (Key y : sm.boundary_b)

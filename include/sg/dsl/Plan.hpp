@@ -107,6 +107,7 @@ struct Embed {
 struct Glue {
     Key name, a, pa, b, pb;
     std::vector<std::pair<Key, Key>> also;
+    bool wraps = false;
 };
 // sg::drive
 struct Drive {

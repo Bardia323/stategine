@@ -4,13 +4,13 @@ bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera
     const Pose p = pose_of(world, e);
     const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
     const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
-    const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across(p.yaw));
+    const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across_of(p)), up = to_vec3(up_of(p));
     const float far = static_cast<float>(world.params().num(Key{"far"}, 120.0));
     const gl::Vec3 f = gl::normalize(cam.forward);
     bool ahead = false;
     for (float a : {-1.0f, 1.0f})
         for (float b : {-1.0f, 1.0f}) {
-            const gl::Vec3 corner = c + side * (a * w) + gl::Vec3{0, b * h, 0};
+            const gl::Vec3 corner = c + side * (a * w) + up * (b * h);
             const float along = gl::dot(corner - cam.eye, f);
             ahead = ahead || (along > 0.0f && along < far);
         }
@@ -18,7 +18,7 @@ bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera
     // And inside what the eye sees, not only in front of it: a screen well off
     // to one side is not looked at.
     if (aspect <= 0.0f) return true;
-    const Frustum sees = frustum_of(gl::Mat4::perspective(cam.fov, aspect, kNear, far) * gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up));
+    const Frustum sees = frustum_of(projection_of(cam, aspect, kNear, far) * gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up));
     return sees.intersects_sphere({c.x, c.y, c.z}, std::sqrt(w * w + h * h));
 }
 
@@ -37,7 +37,8 @@ void GLWorldView::set_frame(const Pose& p) {
     frame_matrix_ = gl::Mat4::translate({static_cast<float>(p.position.x),
                                          static_cast<float>(p.position.y),
                                          static_cast<float>(p.position.z)}) *
-                    gl::Mat4::rotate_y(static_cast<float>(p.yaw));
+                    gl::Mat4::rotate_y(static_cast<float>(p.yaw)) * gl::Mat4::rotate_z(static_cast<float>(p.pitch)) *
+                    gl::Mat4::rotate_x(static_cast<float>(p.roll));
 }
 
 const Element* GLWorldView::shown_in(const State& room, Key id) const {
@@ -49,7 +50,14 @@ const Element* GLWorldView::shown_in(const State& room, Key id) const {
 }
 
 auto GLWorldView::camera_of(const Element& cam) -> Camera {
-    const auto view=view_camera(cam);Camera c;c.eye=to_vec3(view.eye);c.forward=to_vec3(view.forward);c.up=to_vec3(view.up);c.fov=static_cast<float>(view.fov)*3.14159265f/180.0f;return c;
+    const auto view=view_camera(cam);Camera c;c.eye=to_vec3(view.eye);c.forward=to_vec3(view.forward);c.up=to_vec3(view.up);c.fov=static_cast<float>(view.fov)*3.14159265f/180.0f;
+    c.ortho=static_cast<float>(cam.params.num(Key{"ortho"},0.0));
+    return c;
+}
+
+gl::Mat4 GLWorldView::projection_of(const Camera& cam, float aspect, float znear, float zfar) {
+    if (cam.ortho > 0.0f) return gl::Mat4::ortho(-cam.ortho * aspect, cam.ortho * aspect, -cam.ortho, cam.ortho, znear, zfar);
+    return gl::Mat4::perspective(cam.fov, aspect, znear, zfar);
 }
 
 auto GLWorldView::frustum_of(const gl::Mat4& vp) -> Frustum {

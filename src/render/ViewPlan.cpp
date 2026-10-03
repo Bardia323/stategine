@@ -9,9 +9,18 @@ ViewCamera view_camera(const Element &c) {
     ViewCamera out;
     out.eye = position_of(c);
     out.forward = forward_of(c);
+    // Seen square on (`ortho`), the view stands back from the eye along the
+    // way it looks (`ortho_back`): what is beside the eye is seen, not cut.
+    if (c.params.num(Key{"ortho"}, 0.0) > 0.0) {
+        const double back = c.params.num(Key{"ortho_back"}, 40.0);
+        out.eye = {out.eye.x - out.forward.x * back, out.eye.y - out.forward.y * back, out.eye.z - out.forward.z * back};
+    }
     out.fov = c.params.num(keys::fov, 70);
     const float roll = static_cast<float>(c.params.num(keys::roll));
-    if (roll != 0) {
+    if (c.params.has(Key{"stand_w"})) {
+        // Standing on ground of its own (a wall, a planet's far side): its up is that ground's, turned by the look.
+        out.up = up_of(c);
+    } else if (roll != 0) {
         using namespace spatial::projection;
         const Vec3 f{static_cast<float>(out.forward.x), static_cast<float>(out.forward.y),
                      static_cast<float>(out.forward.z)};
@@ -23,6 +32,16 @@ ViewCamera view_camera(const Element &c) {
 }
 HalfSpace portal_clip(const State &host, const Element &portal, const Element &hc, const Element &gc) {
     const Pose p = world_pose(host, portal);
+    if (!upright(p) || hc.params.has(Key{"stand_w"}) || gc.params.has(Key{"stand_w"})) {
+        // The portal's plane, carried by the turn and shift that carried the
+        // eye: whatever took the host's eye to the guest's.
+        const Pose by = compose_pose(eye_pose(gc), inverse(eye_pose(hc)));
+        const Vec3d n = facing(p);
+        const double inset = portal.params.num("inset", .06);
+        const Vec3d q = place_in(by, {p.position.x + n.x * inset, p.position.y + n.y * inset, p.position.z + n.z * inset});
+        const Vec3d m = turn(by, n);
+        return {{-m.x, -m.y, -m.z}, m.x * q.x + m.y * q.y + m.z * q.z};
+    }
     const Vec3d n = heading(p.yaw);
     const double inset = portal.params.num("inset", .06);
     const Vec3d at{p.position.x + n.x * inset, p.position.y, p.position.z + n.z * inset};
@@ -52,14 +71,13 @@ spatial::projection::Mat4 box_transform(const State &st, const Element &e) {
     using namespace spatial::projection;
     const Vec3 s{static_cast<float>(e.params.num(keys::sx, 1)), static_cast<float>(e.params.num(keys::sy, 1)),
                  static_cast<float>(e.params.num(keys::sz, 1))};
+    // Its whole turn, its anchors' with it; turned about its middle.
     const Pose w = world_pose(st, e);
-    const Vec3 p{static_cast<float>(w.position.x), static_cast<float>(w.position.y) + s.y * 0.5f,
-                 static_cast<float>(w.position.z)};
-    const float pitch = static_cast<float>(e.params.num(keys::pitch)),
-                roll = static_cast<float>(e.params.num(keys::roll));
+    const Vec3d c = place_in(w, {0.0, s.y * 0.5, 0.0});
+    const Vec3 p{static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z)};
     auto turn = Mat4::rotate_y(static_cast<float>(w.yaw));
-    if (pitch != 0 || roll != 0)
-        turn = turn * Mat4::rotate_z(pitch) * Mat4::rotate_x(roll);
+    if (!upright(w))
+        turn = turn * Mat4::rotate_z(static_cast<float>(w.pitch)) * Mat4::rotate_x(static_cast<float>(w.roll));
     return Mat4::translate(p) * turn * Mat4::scale(s);
 }
 std::vector<DrawInstance> enclosure(const Spatial3D &world) {
@@ -74,6 +92,9 @@ std::vector<DrawInstance> enclosure(const Spatial3D &world) {
         d.surface = surface;
         out.push_back(d);
     };
+    // A space that is not a room - the void, a sky round planets - says so:
+    // nothing encloses it but what it holds.
+    if (world.params().num(Key{"enclosed"}, 1.0) < 0.5) return out;
     const float w = static_cast<float>(world.params().num(Key{"room_w"}, 14.0));
     const float d = static_cast<float>(world.params().num(Key{"room_d"}, 12.0));
     const float h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));
@@ -127,7 +148,7 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.color = {static_cast<float>(e.params.num("r", 1)), static_cast<float>(e.params.num("g", .93)),
                static_cast<float>(e.params.num("b", .82))};
     l.power = static_cast<float>(e.params.num(keys::intensity, 1)) * 26.0f;
-    l.dir = normalize(vec(rotate_xz({e.params.num("dx"), e.params.num("dy", -1), e.params.num("dz")}, pose.yaw)));
+    l.dir = normalize(vec(turn(pose, {e.params.num("dx"), e.params.num("dy", -1), e.params.num("dz")})));
     l.inner = static_cast<float>(e.params.num("inner", .55));
     l.outer = static_cast<float>(e.params.num("outer", 1.15));
     l.sun = e.params.num("sun") > .5;
@@ -149,8 +170,8 @@ std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool 
     const Vec3 at{static_cast<float>(p.position.x), static_cast<float>(p.position.y), static_cast<float>(p.position.z)};
     const float yaw = static_cast<float>(p.yaw), w = static_cast<float>(e.params.num(keys::w, 3)),
                 h = static_cast<float>(e.params.num(keys::h, 2));
-    const auto rotation = Mat4::rotate_y(yaw) * Mat4::rotate_z(static_cast<float>(e.params.num(keys::pitch))) *
-                          Mat4::rotate_x(static_cast<float>(e.params.num(keys::roll)));
+    const auto rotation = Mat4::rotate_y(yaw) * Mat4::rotate_z(static_cast<float>(p.pitch)) *
+                          Mat4::rotate_x(static_cast<float>(p.roll));
     std::vector<DrawInstance> out;
     const auto add = [&](const Vec3 &centre, const Mat4 &turn, const Vec3 &size, Rgb colour, double roughness) {
         DrawInstance d;
@@ -183,7 +204,7 @@ std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool 
 spatial::projection::Mat4 portal_face(const State &host, const Element &e, bool window) {
     using namespace spatial::projection;
     const auto p = world_pose(host, e);
-    const double pitch = window ? 0 : e.params.num(keys::pitch);
+    const double pitch = window ? 0 : p.pitch;
     const auto n = heading(p.yaw);
     const float lift = window                          ? static_cast<float>(e.params.num("inset", .06))
                        : e.params.num("frame", 1) > .5 ? .08f
@@ -201,7 +222,7 @@ spatial::projection::Mat4 portal_face(const State &host, const Element &e, bool 
     return Mat4::translate(at + normal * lift + tangent * (((a0 + a1) * .5f - .5f) * w) +
                            Vec3{0, ((b0 + b1) * .5f - .5f) * h, 0}) *
            Mat4::rotate_y(static_cast<float>(p.yaw)) * Mat4::rotate_z(static_cast<float>(pitch)) *
-           Mat4::rotate_x(window ? 0 : static_cast<float>(e.params.num(keys::roll))) *
+           Mat4::rotate_x(window ? 0 : static_cast<float>(p.roll)) *
            Mat4::scale({1, h * (b1 - b0), w * (a1 - a0)});
 }
 spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera &camera, int size, float &bias) {

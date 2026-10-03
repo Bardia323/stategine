@@ -249,6 +249,7 @@ private:
             for (std::size_t i = 0; i < g.also.size(); ++i) o << (i ? ", " : "") << "{" << lit(g.also[i].first) << ", " << lit(g.also[i].second) << "}";
             o << "}";
         }
+        if (g.wraps) o << (g.also.empty() ? ", {}" : "") << ", true";
         o << ");\n";
     }
     void step(std::ostream& o, const plan::Drive& d) {

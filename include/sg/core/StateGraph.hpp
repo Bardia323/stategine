@@ -68,6 +68,12 @@ struct Seam {
     Key a_to_b, b_to_a;
     Key glue_ab, glue_ba;
     std::vector<Key> boundary_a, boundary_b;
+    // The rings through it are the shape of the space, not a fault in it: a
+    // torus's sides, a portal pair in one room, a surface of higher genus. Go
+    // round one and you arrive turned or moved by the space itself. Only a
+    // seam that wraps may join a state to itself; every ring that does not
+    // pass through one must still close.
+    bool wraps = false;
 };
 
 // Whether a driven state's time goes on only while it is active - the room

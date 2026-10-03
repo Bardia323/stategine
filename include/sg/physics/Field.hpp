@@ -2,6 +2,7 @@
 // Sources -> value(position, supplied time) -> declared receiver response.
 #pragma once
 #include "sg/spatial/Index.hpp"
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -20,13 +21,22 @@ public:
     virtual Value sample(V3 position, double time) const = 0;
 };
 
+// Box: a box `half` each way, in its pose. Outside it, its value leaves each
+// face along that face's normal, and round its edges and corners points from
+// the nearest point of it - continuous all round, so whoever is pulled to it
+// walks over an edge onto the next face. Inside, it leaves by the nearest
+// face. A face may have a strength of its own (`faces`: +x -x +y -y +z -z),
+// blended round the edges. Negative strength pulls: onto a cube's outside;
+// positive pushes: onto a hollow room's walls from within.
 struct Source {
-    enum Shape { Directional, Radial, Plane, Specialized };
+    enum Shape { Directional, Radial, Plane, Specialized, Box };
     std::string channel;
     Shape shape=Directional;
     spatial::Transform pose;
     Value value;
     V3 normal{0,1,0};
+    V3 half{0.5,0.5,0.5};
+    std::optional<std::array<double,6>> faces;
     double strength=1, exponent=0, softening=0.01;
     // Local support. An empty optional means unbounded, never a global object.
     std::optional<spatial::Aabb> bounds;
@@ -37,6 +47,7 @@ struct Source {
     static Source directional(std::string channel, V3 vector);
     static Source radial(std::string channel, V3 centre, double strength, double exponent=0);
     static Source plane(std::string channel, V3 point, V3 normal, double strength);
+    static Source box(std::string channel, spatial::Transform pose, V3 half, double strength);
     Value sample(V3 position, double time) const;
 };
 

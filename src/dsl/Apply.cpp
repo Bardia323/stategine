@@ -184,7 +184,7 @@ public:
     void make(const plan::Lens& l) { g_.lens(l.get, l.put); }
     void make(const plan::Connect& c) { g_.connect(c.t); }
     void make(const plan::Embed& e) { g_.embed(e.e); }
-    void make(const plan::Glue& gl) { glue_doorway(g_, gl.name, gl.a, gl.pa, gl.b, gl.pb, gl.also); }
+    void make(const plan::Glue& gl) { glue_doorway(g_, gl.name, gl.a, gl.pa, gl.b, gl.pb, gl.also, gl.wraps); }
     void make(const plan::Drive& d) {
         sg::drive(g_, clock(g_, d.d.clock.str()), d.d.state, d.d.trigger, d.d.additive, d.d.keeps);
     }

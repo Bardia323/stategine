@@ -684,10 +684,71 @@ void test_seams() {
     room.element("leaf").params.set(sg::keys::yaw, -0.3);
     check(sg::laws::seams(g).empty(), "and swung back into agreement, it is sound again");
 
-    // One doorway moved without the other: the seam no longer closes.
+    // One doorway moved: its glue is made from where its two sides are when
+    // it is used, so the doorway is glued where it now is - nothing is left
+    // that could disagree with it.
     yard.element("gate").params.set(sg::keys::x, 41.0);
-    check(has_seam_violation(g, "yard.gate.x"), "a doorway moved on one side only is caught");
+    {
+        bool gate = false, leaf = false;
+        for (const auto& v : sg::laws::seams(g))
+            gate = gate || v.detail.find(".gate.") != std::string::npos, leaf = leaf || v.detail.find(".leaf.") != std::string::npos;
+        check(!gate, "a doorway moved is glued where it now is: its glue cannot drift from it");
+        check(leaf, "but a door left hanging where the doorway was is caught, on both sides");
+    }
     yard.element("gate").params.set(sg::keys::x, 40.0);
+    {
+        // What must agree is the whole: three rooms in a ring, each doorway
+        // back to back, close - go round and you are where you started. Move
+        // one doorway on one side and every doorway is still sound, but the
+        // ring no longer closes, and the cover says so.
+        sg::StateGraph r;
+        sg::Atlas atlas;
+        const char* names[3] = {"ring_a", "ring_b", "ring_c"};
+        for (const char* n : names) {
+            auto& s = r.add<sg::Spatial3D>(n);
+            s.portal("next", {0, 1, 0}, 1, 2, 0.0);
+            s.portal("prev", {0, 1, 0}, 1, 2, 3.14159265358979);
+        }
+        for (int i = 0; i < 3; ++i) atlas.glue(sg::Key{std::string("d") + std::to_string(i)}, names[i], "next", names[(i + 1) % 3], "prev");
+        check(sg::descent_defects(atlas, r).empty(), "a ring of rooms that closes is one space");
+        r.state("ring_b").element("next").params.set(sg::keys::x, 2.0);
+        bool cycle = false;
+        for (const auto& d : sg::descent_defects(atlas, r)) cycle = cycle || d.find("cycle") != std::string::npos;
+        check(cycle, "a doorway moved on one side only: the ring no longer closes, and the cover names it");
+    }
+    {
+        // A torus: one square room, its east wall glued to its west and its
+        // north to its south. Each seam joins the room to itself, and going
+        // round either way brings you back moved by the room's width - that is
+        // the space's shape, and the seams say so: they wrap.
+        sg::StateGraph r;
+        auto& room = r.add<sg::Spatial3D>("torus");
+        room.portal("east", {8, 1, 4}, 8, 2, 3.14159265358979);
+        room.portal("west", {0, 1, 4}, 8, 2, 0.0);
+        room.portal("south", {4, 1, 8}, 8, 2, -1.5707963267948966);
+        room.portal("north", {4, 1, 0}, 8, 2, 1.5707963267948966);
+        sg::Atlas atlas;
+        atlas.glue("ew", "torus", "east", "torus", "west").wraps = true;
+        atlas.glue("ns", "torus", "south", "torus", "north").wraps = true;
+        const auto defects = sg::descent_defects(atlas, r);
+        for (const auto& d : defects) std::printf("        %s\n", d.c_str());
+        check(defects.empty() && r.validate().empty(), "a torus: one room glued to itself both ways, its seams wrapping, is one space");
+        sg::Element cam = room.camera();
+        cam.params.set(sg::keys::x, 7.9).set(sg::keys::y, 1.6).set(sg::keys::z, 4.0).set(sg::keys::yaw, 0.0);
+        sg::Element out = cam;
+        sg::portal_carry(room.element("east"), room.element("west"))(cam, out);
+        check(std::fabs(out.params.num(sg::keys::x) - (-0.1)) < 1e-9 || std::fabs(out.params.num(sg::keys::x) - 0.1) < 1e-9,
+              "walk out of its east wall and you come in at its west");
+
+        sg::StateGraph bad;
+        auto& one = bad.add<sg::Spatial3D>("one");
+        one.portal("a", {8, 1, 4}, 8, 2, 3.14159265358979);
+        one.portal("b", {0, 1, 4}, 8, 2, 0.0);
+        sg::glue_doorway(bad, "self", "one", "a", "one", "b");
+        bool refused = false;
+        for (const auto& e : bad.validate()) refused = refused || e.find("wraps") != std::string::npos;
+        check(refused, "but a room glued to itself without saying so is refused, and told why");
+    }
 
     // A glue that reaches past the boundary, or leaves part of it unglued.
     {

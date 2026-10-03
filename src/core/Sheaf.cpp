@@ -196,6 +196,7 @@ auto Cover::grow(const StateGraph& g, Key root) const -> Tree {
         for (std::size_t oi : it->second) {
             if (seen[oi]) continue;
             const Overlap& o = overlaps_[oi];
+            if (o.wraps) continue;  // the space's own shape: no tree grows across it
             const Key there = other_side(o, here);
             const Functor* step = transition(g, o, here);
             const Functor* home = transition(g, o, there);

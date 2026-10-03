@@ -14,6 +14,9 @@ Source Source::plane(std::string channel,V3 point,V3 normal,double strength) {
     Source s; s.channel=std::move(channel); s.shape=Plane; s.pose.translation=point;
     s.normal=spatial::normalize(normal); s.strength=strength; return s;
 }
+Source Source::box(std::string channel,spatial::Transform pose,V3 half,double strength) {
+    Source s; s.channel=std::move(channel); s.shape=Box; s.pose=pose; s.half=half; s.strength=strength; return s;
+}
 Value Source::sample(V3 position,double time) const {
     if(!enabled) return {};
     if(shape==Directional && !bounds && volume.planes.empty()) {
@@ -30,6 +33,28 @@ Value Source::sample(V3 position,double time) const {
     } else if(shape==Radial) {
         distance=spatial::length(p);
         out.vector=distance>1e-12?p*(1/distance):V3{};
+    } else if(shape==Box) {
+        // The nearest point of the box, and the way out from it.
+        const V3 q{std::clamp(p.x,-half.x,half.x),std::clamp(p.y,-half.y,half.y),std::clamp(p.z,-half.z,half.z)};
+        V3 out_of=p-q;
+        distance=spatial::length(out_of);
+        if(distance>1e-12) out_of=out_of*(1/distance);
+        else {
+            // Inside: out by the nearest face.
+            const double gaps[3]={half.x-std::fabs(p.x),half.y-std::fabs(p.y),half.z-std::fabs(p.z)};
+            const int a=gaps[0]<=gaps[1]&&gaps[0]<=gaps[2]?0:gaps[1]<=gaps[2]?1:2;
+            const double c[3]={p.x,p.y,p.z};
+            out_of=V3{a==0?(c[0]<0?-1.0:1.0):0.0,a==1?(c[1]<0?-1.0:1.0):0.0,a==2?(c[2]<0?-1.0:1.0):0.0};
+            distance=gaps[a];
+        }
+        out.vector=out_of;
+        if(faces) {
+            // Each face's strength, as much as the way out is through it.
+            const auto& f=*faces;
+            const double k=out_of.x*out_of.x*(out_of.x>=0?f[0]:f[1])+out_of.y*out_of.y*(out_of.y>=0?f[2]:f[3])+
+                           out_of.z*out_of.z*(out_of.z>=0?f[4]:f[5]);
+            out.vector=out_of*k;
+        }
     } else if(shape==Plane) {
         const V3 n=spatial::normalize(normal);
         const double d=spatial::dot(p,n); distance=std::fabs(d);

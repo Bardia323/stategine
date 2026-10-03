@@ -170,6 +170,7 @@ struct SeamAst {
     std::string a, pa, b, pb;  // state, portal, state, portal (as written: split by the checker)
     std::vector<std::pair<std::string, std::string>> also;
     std::string name;
+    bool wraps = false;
 };
 
 struct EmbedAst {

@@ -787,6 +787,11 @@ private:
             g.b = Key{sb};
             g.pb = Key{pb};
             g.name = Key{s.name.empty() ? s.a + "<->" + s.b : s.name};
+            g.wraps = s.wraps;
+            if (sa == sb && !s.wraps) {
+                err(s.at, "a seam joining " + sa + " to itself is the shape of its space: say it `wraps`");
+                ok = false;
+            }
             for (const auto& also : s.also) {
                 std::string x, y;
                 const bool ax = split(also.first, x, y) && x == sa && !y.empty();
@@ -808,7 +813,7 @@ private:
             if (ok) {
                 // what a seam makes: its travel (a viewer carried across, both
                 // ways) and its glue - functors a transition may carry
-                const Seam made = doorway_seam(g.name, g.a, g.pa, g.b, g.pb, g.also);
+                const Seam made = doorway_seam(g.name, g.a, g.pa, g.b, g.pb, g.also, g.wraps);
                 functors_[made.a_to_b.str()] = FInfo{sa, sb, false};
                 functors_[made.b_to_a.str()] = FInfo{sb, sa, false};
                 functors_[made.glue_ab.str()] = FInfo{sa, sb, false};
