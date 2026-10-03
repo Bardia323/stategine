@@ -125,6 +125,21 @@ int main() {
         check(w.params.num(sg::keys::z) > 6.0 && lowest > 1.6, "through a doorway in a wall, with the floor under it all the way");
     }
     {
+        // A flight of stairs: each step under the height of a stride, climbed.
+        sg::Spatial3D s(Key{"flight"});
+        s.params().set("g", 9.81);
+        s.wall(Key{"floor"}, {0, -1, 0}, 40, 1, 40);
+        for (int i = 0; i < 10; ++i) s.wall(Key{"step" + std::to_string(i)}, {0, 0, 2.0 + 0.3 * i + 0.15}, 4, 0.18 * (i + 1), 0.3);
+        s.wall(Key{"landing"}, {0, 0, 5.0 + 2.0}, 4, 1.8, 4.0);
+        sg::Element& w = s.camera();
+        w.params.set(sg::keys::x, 0.0).set(sg::keys::y, 1.65).set(sg::keys::z, 0.5).set(sg::keys::yaw, kPi * 0.5);
+        const auto f = solved(s);
+        double t = 0;
+        steps(s, f, w, {1.0, 0, 0, 0, 2.4}, 3.0, t);
+        check(w.params.num(sg::keys::z) > 5.0 && std::fabs(w.params.num(sg::keys::y) - (1.8 + 1.65)) < 0.1,
+              "up a flight of stairs, step by step, to stand on the top");
+    }
+    {
         // The same step from the same walker gives the same walker.
         sg::Spatial3D s(Key{"same"});
         s.params().set("g", 9.81);

@@ -272,8 +272,24 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     const V3 travel = v * dt;
     const int steps = std::max(1, static_cast<int>(std::ceil(spatial::length(travel) / (r * 0.5))));
     bool landed = false;
+    // Whether the walker could stand with its eye at `e`: nothing solid in
+    // its feet, its middle or its head (but what a doorway opens).
+    const auto clear_at = [&](V3 e) {
+        for (const Solid& d : solids)
+            for (const double down : {height - r, (height - r) * 0.5, 0.0}) {
+                V3 n;
+                double depth;
+                const V3 at = e - up * down;
+                if (push_out(d, at, r, n, depth) && !opened(open, at - n * (r - depth))) return false;
+            }
+        return true;
+    };
+    // How high a step it takes in its stride: a stair, a kerb.
+    constexpr double kStep = 0.36;
     for (int i = 0; i < steps; ++i) {
-        eye = eye + travel * (1.0 / steps);
+        const V3 moved = eye + travel * (1.0 / steps);
+        eye = moved;
+        bool stopped_low = false;
         for (int pass = 0; pass < 2; ++pass)
             for (const Solid& d : solids)
                 for (const double down : {height - r, (height - r) * 0.5, 0.0}) {
@@ -283,11 +299,22 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
                     if (!push_out(d, at, r, n, depth)) continue;
                     // A doorway lets them through what it opens.
                     if (opened(open, at - n * (r - depth))) continue;
+                    const double rise = spatial::dot(n, up);
+                    if (down == height - r && rise < 0.6 && rise > -0.3) stopped_low = true;
                     eye = eye + n * depth;
                     const double into = spatial::dot(v, n);
                     if (into < 0) v = v - n * into;
-                    if (spatial::dot(n, up) > 0.6) landed = true;
+                    if (rise > 0.6) landed = true;
                 }
+        // Stopped at the feet by something low, on one's feet: step up onto
+        // it, if there is room, and down onto its top.
+        if (stopped_low && (grounded || landed) && clear_at(moved + up * kStep)) {
+            eye = moved + up * kStep;
+            for (double down = 0.0; down < kStep && clear_at(eye - up * 0.02); down += 0.02) eye = eye - up * 0.02;
+            landed = true;
+            const double along_up = spatial::dot(v, up);
+            if (along_up < 0) v = v - up * along_up;
+        }
     }
     grounded = landed;
 

@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A walker steps up what is under the height of a stride (a stair, a kerb) and down onto its top, never into anything (`sg_walk` climbs a flight).
 - Crossing a threshold costs no more than any frame: the pictures of doorways and of views through them come from pools made with the screen's targets (never one per doorway in the world, never made mid-frame); views of a world lit the same way share its shadow maps, kept by which lights cast them (a sun that follows the eye, by the view's path); how deep views go is the eye's world's to say, and deeper views go only into the eye's own world. A wrapping space is drawn whole in every view, copies out of sight skipped.
 - A doorway lets a walker through what it opens - the surface it is in, where the contact is in its opening - and nothing else: the floor under it holds. (`sg_walk` walks through one.)
 
