@@ -24,5 +24,6 @@
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Shapes.hpp"
+#include "sg/domains/Room.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
