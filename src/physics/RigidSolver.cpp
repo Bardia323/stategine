@@ -6,7 +6,7 @@ void World::prepare(double h) {
         Body& a = bodies[m->a];
         Body& b = bodies[m->b];
         const V3 ca = a.com(), cb = b.com();
-        const M3 ia = moves(a) ? a.inv_inertia() : zero3(), ib = moves(b) ? b.inv_inertia() : zero3();
+        const M3 ia = moves(a) ? inertia_[m->a] : zero3(), ib = moves(b) ? inertia_[m->b] : zero3();
         const double ma = moves(a) ? a.inv_mass : 0.0, mb = moves(b) ? b.inv_mass : 0.0;
         // Impulses found while one of them slept were found against a
         // thing that could not move - a wall, as far as the other knew:
@@ -78,14 +78,22 @@ void World::integrate_velocities(double h, double time) {
     }
 }
 
-void World::apply(Body& a, Body& b, V3 ra, V3 rb, V3 j) {
+void World::refresh_inertia() {
+    inertia_.resize(bodies.size());
+    for (std::size_t i = 0; i < bodies.size(); ++i)
+        if (moves(bodies[i])) inertia_[i] = bodies[i].inv_inertia();
+}
+
+void World::apply(std::size_t ia, std::size_t ib, V3 ra, V3 rb, V3 j) {
+    Body& a = bodies[ia];
+    Body& b = bodies[ib];
     if (moves(a)) {
         a.v -= j * a.inv_mass;
-        a.w -= a.inv_inertia() * cross(ra, j);
+        a.w -= inertia_[ia] * cross(ra, j);
     }
     if (moves(b)) {
         b.v += j * b.inv_mass;
-        b.w += b.inv_inertia() * cross(rb, j);
+        b.w += inertia_[ib] * cross(rb, j);
     }
 }
 
@@ -95,7 +103,7 @@ void World::warm_start() {
     for (Manifold* m : live_) {
         Body& a = bodies[m->a];
         Body& b = bodies[m->b];
-        for (Point& p : m->pts) apply(a, b, p.ra, p.rb, m->n * p.pn + m->t1 * p.pt1 + m->t2 * p.pt2);
+        for (Point& p : m->pts) apply(m->a, m->b, p.ra, p.rb, m->n * p.pn + m->t1 * p.pt1 + m->t2 * p.pt2);
     }
 }
 
@@ -120,7 +128,9 @@ void World::solve(double h, bool springs) {
             Body& b = bodies[m->b];
             double total = 0;
             for (Point& p : m->pts) {
-                const double s = separation(*m, p);
+                // (Nothing has moved since the first pass: the gap is the same.)
+                if (it == 0) p.gap = separation(*m, p);
+                const double s = p.gap;
                 double bias = 0, ms = 1, is = 0;
                 if (s > 0) {
                     bias = s / h;  // a gap: it may be closed, no faster
@@ -136,7 +146,7 @@ void World::solve(double h, bool springs) {
                 p.pn = pn;
                 p.most = std::max(p.most, pn);
                 total += pn;
-                apply(a, b, p.ra, p.rb, m->n * j);
+                apply(m->a, m->b, p.ra, p.rb, m->n * j);
             }
             for (Point& p : m->pts) {
                 const double limit = m->friction * p.pn;
@@ -148,7 +158,7 @@ void World::solve(double h, bool springs) {
                 if (l > limit && l > 0) n1 *= limit / l, n2 *= limit / l;
                 const double j1 = n1 - p.pt1, j2 = n2 - p.pt2;
                 p.pt1 = n1, p.pt2 = n2;
-                apply(a, b, p.ra, p.rb, m->t1 * j1 + m->t2 * j2);
+                apply(m->a, m->b, p.ra, p.rb, m->t1 * j1 + m->t2 * j2);
             }
             (void)total;
         }
@@ -222,7 +232,7 @@ void World::restitution() {
             const double pn = std::max(p.pn + j, 0.0);
             j = pn - p.pn;
             p.pn = pn;
-            apply(a, b, p.ra, p.rb, m->n * j);
+            apply(m->a, m->b, p.ra, p.rb, m->n * j);
         }
     }
 }
@@ -249,21 +259,23 @@ void World::sleep(double dt) {
         parent[root(m->a)] = root(m->b);
     }
     // Joined things are one island: a door and its frame, a chain.
-    for (const Joint& j : joints) {
-        Body* A = find(j.a);
-        Body* B = j.b.empty() ? nullptr : find(j.b);
-        if (!A) continue;
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        const Joint& j = joints[k];
+        const int ia = joint_at_[k][0], ib = joint_at_[k][1];
+        if (ia < 0) continue;
+        Body* A = &bodies[static_cast<std::size_t>(ia)];
+        Body* B = ib < 0 ? nullptr : &bodies[static_cast<std::size_t>(ib)];
         // A motor driving it, or a spring not yet where it draws it: it
         // is still on its way, however slowly (a door closing the last
         // degree), and does not sleep.
         if (j.kind == Joint::Hinge && ((j.motor && j.speed != 0.0) ||
-                                       (j.spring && std::fabs(std::remainder(angle(j) - j.target, 2 * 3.14159265358979)) > 0.002))) {
+                                       (j.spring && std::fabs(std::remainder(angle_between(j, A, B) - j.target, 2 * 3.14159265358979)) > 0.002))) {
             if (A->dynamic()) wake(*A);
             if (B && B->dynamic()) wake(*B);
         }
         if (!B || !A->dynamic() || !B->dynamic()) continue;
         if (A->awake != B->awake) wake(A->awake ? *B : *A);
-        parent[root(index_[A->id])] = root(index_[B->id]);
+        parent[root(static_cast<std::size_t>(ia))] = root(static_cast<std::size_t>(ib));
     }
     std::unordered_map<std::size_t, double> least;
     for (std::size_t i = 0; i < bodies.size(); ++i) {

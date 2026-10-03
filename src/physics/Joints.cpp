@@ -18,14 +18,27 @@ Joint& World::join(Joint::Kind kind, const std::string& a, const std::string& b,
     return joints.back();
 }
 
-bool World::held(Joint& j, Held& h) {
-    h.A = find(j.a);
-    h.B = j.b.empty() ? nullptr : find(j.b);
+void World::locate_joints() {
+    joint_at_.resize(joints.size());
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        const auto find_at = [&](const std::string& id) {
+            const auto it = id.empty() ? index_.end() : index_.find(id);
+            return it == index_.end() ? -1 : static_cast<int>(it->second);
+        };
+        joint_at_[k] = {find_at(joints[k].a), find_at(joints[k].b)};
+    }
+}
+
+bool World::held(std::size_t k, Held& h) {
+    Joint& j = joints[k];
+    h.A = joint_at_[k][0] < 0 ? nullptr : &bodies[static_cast<std::size_t>(joint_at_[k][0])];
+    h.B = joint_at_[k][1] < 0 ? nullptr : &bodies[static_cast<std::size_t>(joint_at_[k][1])];
     if (!h.A) return false;
     const bool ma = moves(*h.A), mb = h.B && moves(*h.B);
     if (!ma && !mb) return false;
     h.ma = ma ? h.A->inv_mass : 0.0, h.mb = mb ? h.B->inv_mass : 0.0;
-    h.ia = ma ? h.A->inv_inertia() : zero3(), h.ib = mb ? h.B->inv_inertia() : zero3();
+    h.ia = ma ? inertia_[static_cast<std::size_t>(joint_at_[k][0])] : zero3();
+    h.ib = mb ? inertia_[static_cast<std::size_t>(joint_at_[k][1])] : zero3();
     h.pa = h.A->x + h.A->r * j.la;
     h.pb = h.B ? h.B->x + h.B->r * j.lb : j.lb;
     h.ra = h.pa - h.A->com();
@@ -62,9 +75,10 @@ double World::soft(double hz, double zeta, double h, double& ms, double& is) {
 }
 
 void World::warm_joints() {
-    for (Joint& j : joints) {
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        Joint& j = joints[k];
         Held h;
-        if (!held(j, h)) continue;
+        if (!held(k, h)) continue;
         push(h, j.point);
         if (j.kind == Joint::Hinge) {
             const V3 axis = h.A->r * j.axis_a;
@@ -83,9 +97,10 @@ void World::solve_joints(double hstep, bool springs) {
     double ms = 1, is = 0;
     const double bias_rate = springs ? soft(joint_hertz, 5.0, hstep, ms, is) : 0.0;
     if (!springs) ms = 1, is = 0;
-    for (Joint& j : joints) {
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        Joint& j = joints[k];
         Held h;
-        if (!held(j, h)) continue;
+        if (!held(k, h)) continue;
         const auto effective = [&](V3 d) {  // along d, at the points
             const V3 xa = cross(h.ra, d), xb = cross(h.rb, d);
             const double k = h.ma + h.mb + dot(xa, h.ia * xa) + dot(xb, h.ib * xb);
@@ -123,7 +138,7 @@ void World::solve_joints(double hstep, bool springs) {
                 twist(h, d * lambda);
             }
             const double m_axis = turning(axis);
-            const double theta = angle(j);
+            const double theta = angle_between(j, h.A, h.B);
             // Along the axis, what turns is `a` against `b`: a twist of
             // `ax` turns `a` forward.
             const V3 ax = axis * -1.0;

@@ -414,6 +414,7 @@ private:
         double pn = 0, pt1 = 0, pt2 = 0;
         double mn = 0, mt1 = 0, mt2 = 0;
         double vn0 = 0, most = 0;
+        double gap = 0;      // how far apart now: the bodies stand still while the solver works
         uint32_t id = 0;
     };
     struct Manifold {
@@ -461,12 +462,18 @@ private:
         double ma, mb;
         M3 ia, ib;
     };
-    bool held(Joint& j, Held& h);
+    bool held(std::size_t k, Held& h);
     void push(Held& h, V3 j);
     void twist(Held& h, V3 t);
     V3 spin_between(const Held& h) const { return (h.mb > 0 ? h.B->w : V3{}) - (h.ma > 0 ? h.A->w : V3{}); }
     V3 speed_between(const Held& h) const;
     static double soft(double hz, double zeta, double h, double& ms, double& is);
+
+    // Which bodies each joint holds, by number (-1: the room), found once at the
+    // start of a step instead of by name at every impulse.
+    std::vector<std::array<int, 2>> joint_at_;
+    void locate_joints();
+    double angle_between(const Joint& j, const Body* A, const Body* B) const;
 
     void warm_joints();
 
@@ -529,7 +536,12 @@ private:
     field::Solver field_solver_;
     std::vector<field::Result> responses_;
 
-    void apply(Body& a, Body& b, V3 ra, V3 rb, V3 j);
+    // How each moving body resists turning, in the room: worked out when it has
+    // turned (before the substeps, after each one), not at every impulse.
+    std::vector<M3> inertia_;
+    void refresh_inertia();
+
+    void apply(std::size_t ia, std::size_t ib, V3 ra, V3 rb, V3 j);
 
     void warm_start();
 

@@ -230,9 +230,9 @@ Joint& World::spring(const std::string& a, const std::string& b, V3 pa, V3 pb, d
     return j;
 }
 
-double World::angle(const Joint& j) const {
-    const Body* A = find(j.a);
-    const Body* B = j.b.empty() ? nullptr : find(j.b);
+double World::angle(const Joint& j) const { return angle_between(j, find(j.a), j.b.empty() ? nullptr : find(j.b)); }
+
+double World::angle_between(const Joint& j, const Body* A, const Body* B) const {
     if (!A) return 0;
     const V3 axis = A->r * j.axis_a, ra = A->r * j.ref_a, rb = B ? B->r * j.ref_b : j.ref_b;
     return std::atan2(dot(cross(rb, ra), axis), dot(ra, rb));
@@ -293,12 +293,15 @@ void World::step(double dt, double time) {
     for (std::size_t i = 0; i < bodies.size(); ++i) from_x_[i] = bodies[i].x, from_r_[i] = bodies[i].r;
     collide();
     const double h = dt / substeps;
+    locate_joints();
+    refresh_inertia();
     prepare(h);
     for (int s = 0; s < substeps; ++s) {
         integrate_velocities(h, time + s * h);
         warm_start();
         solve(h, true);
         integrate_positions(h);
+        refresh_inertia();
         relax(h);
     }
     restitution();
@@ -456,8 +459,12 @@ void World::pair(std::size_t ia, std::size_t ib, double reach) {
             const uint64_t key = pair_key(ia, ib, static_cast<int>(ha), static_cast<int>(hb));
             Manifold& m = manifolds_[key];
             const bool fresh = m.pts.empty() && !m.live;
-            std::vector<Point> old;
+            // (The last step's points go to a buffer kept between calls, and
+            // the buffer's room to the manifold: nothing is made afresh.)
+            thread_local std::vector<Point> old;
+            old.clear();
             old.swap(m.pts);
+            m.pts.clear();
             m.a = ia, m.b = ib, m.ha = static_cast<int>(ha), m.hb = static_cast<int>(hb);
             m.n = n;
             const double fa = a.hulls[ha].friction >= 0 ? a.hulls[ha].friction : a.friction;

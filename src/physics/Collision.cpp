@@ -4,9 +4,13 @@ namespace detail {
 
 bool minkowski_face(V3 a, V3 b, V3 c, V3 d) {
     // Do the arcs a-b and c-d cross on the sphere of directions?
-    const V3 bxa = cross(b, a), dxc = cross(d, c);
-    const double cba = dot(c, bxa), dba = dot(d, bxa), adc = dot(a, dxc), bdc = dot(b, dxc);
-    return cba * dba < 0 && adc * bdc < 0 && cba * bdc > 0;
+    // (The first test parts most pairs: the rest is worked out only if it holds.)
+    const V3 bxa = cross(b, a);
+    const double cba = dot(c, bxa), dba = dot(d, bxa);
+    if (!(cba * dba < 0)) return false;
+    const V3 dxc = cross(d, c);
+    const double adc = dot(a, dxc), bdc = dot(b, dxc);
+    return adc * bdc < 0 && cba * bdc > 0;
 }
 
 void closest(V3 p1, V3 q1, V3 p2, V3 q2, V3& c1, V3& c2) {
@@ -57,15 +61,31 @@ int touch(const Hull& ha, const Body::Placed& pa, const Hull& hb, const Body::Pl
     // Edge against edge, where they could make a face of the difference.
     double e_sep = -1e18;
     V3 e_n, e_pa, e_qa, e_pb, e_qb;
+    // What each edge of b brings to every test against it, once: the two
+    // faces' normals turned about, and the arc between them.
+    struct ArcB {
+        V3 c, d, dxc;
+        const Hull::Edge* e;
+    };
+    thread_local std::vector<ArcB> arcs;
+    arcs.clear();
+    for (const Hull::Edge& eb : hb.e) {
+        if (eb.fb < 0) continue;
+        const V3 c = -pb.n[static_cast<std::size_t>(eb.fa)], d = -pb.n[static_cast<std::size_t>(eb.fb)];
+        arcs.push_back(ArcB{c, d, cross(d, c), &eb});
+    }
     for (const Hull::Edge& ea : ha.e) {
         if (ea.fb < 0) continue;
         const V3 u1 = pa.n[static_cast<std::size_t>(ea.fa)], u2 = pa.n[static_cast<std::size_t>(ea.fb)];
         const V3 a0 = pa.v[static_cast<std::size_t>(ea.a)], a1 = pa.v[static_cast<std::size_t>(ea.b)];
         const V3 da = a1 - a0;
-        for (const Hull::Edge& eb : hb.e) {
-            if (eb.fb < 0) continue;
-            const V3 v1 = pb.n[static_cast<std::size_t>(eb.fa)], v2 = pb.n[static_cast<std::size_t>(eb.fb)];
-            if (!detail::minkowski_face(u1, u2, -v1, -v2)) continue;
+        const V3 bxa = cross(u2, u1);
+        for (const ArcB& arc : arcs) {
+            const double cba = dot(arc.c, bxa), dba = dot(arc.d, bxa);
+            if (!(cba * dba < 0)) continue;
+            const double adc = dot(u1, arc.dxc), bdc = dot(u2, arc.dxc);
+            if (!(adc * bdc < 0 && cba * bdc > 0)) continue;
+            const Hull::Edge& eb = *arc.e;
             const V3 b0 = pb.v[static_cast<std::size_t>(eb.a)], b1 = pb.v[static_cast<std::size_t>(eb.b)];
             V3 n = cross(da, b1 - b0);
             const double l = length(n);
@@ -108,8 +128,8 @@ int touch(const Hull& ha, const Body::Placed& pa, const Hull& hb, const Body::Pl
         V3 p;
         uint32_t id;
     };
-    std::vector<C> poly, next;
-    poly.reserve(16), next.reserve(16);
+    thread_local std::vector<C> poly, next;
+    poly.clear(), next.clear();
     for (int i : ih.f[static_cast<std::size_t>(inc)].vi) poly.push_back(C{ip.v[static_cast<std::size_t>(i)], static_cast<uint32_t>(i) & 0xFFu});
     // Clipped by the sides of the reference face.
     const auto& rv = rh.f[static_cast<std::size_t>(rf)].vi;
@@ -128,7 +148,8 @@ int touch(const Hull& ha, const Body::Placed& pa, const Hull& hb, const Body::Pl
         }
         poly.swap(next);
     }
-    std::vector<Touch> pts;
+    thread_local std::vector<Touch> pts;
+    pts.clear();
     const uint32_t faces = (on_a ? 0x80000000u : 0u) | ((static_cast<uint32_t>(rf) & 0x3Fu) << 25);
     for (const C& q : poly) {
         const double s = dot(rn, q.p) - rd;

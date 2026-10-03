@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- Rigid physics is faster with the same results, bit for bit (a pile of boxes, a pile of cylinders, towers and joint chains all end in exactly the same state): each moving body's inertia in the room is worked out when it has turned rather than at every impulse, a contact's gap once per solve, a joint's bodies once per step rather than by name at every impulse, and the edge-against-edge test of the separating axis search tests each edge's arc once. Scratch buffers for contact points are kept between calls. Active scenes take about 1.5x to 2x less time a step.
+
 - The same core, domains, physics, DSL and signed networking build through Emscripten, retaining C++ exceptions and canonical double-precision CPU verification. A native host `sgc` compiles the same notation for both targets. Browser DOM input, WebRTC sessions and WebGPU resources are external, discardable executors; callbacks have no world capability.
 - **Breaking:** native GL drawing is now `stategine::gl`, with `sg/gl/World.hpp`. `stategine::render` contains backend-neutral derived view/geometry machinery and ASCII. Emscripten's `stategine::web` consumes that machinery. Renderer shader time now comes only from declared `own_time` or a Temporal drive; applications supply transient frame intervals for fades rather than using a renderer wall clock.
 
