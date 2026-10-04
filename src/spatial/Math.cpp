@@ -97,7 +97,7 @@ M3 from_euler(double yaw, double pitch, double roll) {
 
 void to_euler(const M3& m, double& yaw, double& pitch, double& roll) {
     pitch = std::asin(std::clamp(m(1, 0), -1.0, 1.0));
-    if (std::fabs(std::cos(pitch)) > 1e-6) {
+    if (std::fabs(std::cos(pitch)) > 1e-5) {  // (nearer upright than that, how a turn splits between yaw and roll is only noise)
         roll = std::atan2(-m(1, 2), m(1, 1));
         yaw = std::atan2(m(2, 0), m(0, 0));
     } else {

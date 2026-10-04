@@ -45,6 +45,15 @@ int main() {
         ok = ok && c;
     };
     check(frame().shadow_maps == 0, "nothing moving: no shadow map is drawn again");
+    {
+        const auto still = frame();
+        std::printf("still frame: lights %d, casters %d, indices %d, uniforms %d, graph %d\n", still.lights_read, still.casters_listed,
+                    still.indices_built, still.uniforms_resolved, still.graph_queries);
+        check(still.lights_read == 0 && still.casters_listed == 0 && still.indices_built == 0 && still.uniforms_resolved == 0 &&
+                  still.graph_queries == 0,
+              "a still world costs a frame nothing but drawing it: no light read, no caster listed, no index built, no look's "
+              "uniform found by name, no question put to the graph");
+    }
     behind.params.set(sg::keys::x, 3.4);
     const auto behind_moved = frame();
     check(behind_moved.shadow_maps == 0, "a thing moved behind the lamp, where it sees nothing: its map stands");

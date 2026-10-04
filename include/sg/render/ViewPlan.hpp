@@ -56,6 +56,7 @@ struct DrawLight {
         bool gated = false;
         spatial::projection::Vec3 gate_at{0, 0, 0}, gate_across{1, 0, 0}, gate_in{0, 0, 1};
         float gate_w = 0.0f, gate_h = 0.0f;
+        uint64_t gate = 0;  // which doorway it comes in by (its name), wherever that doorway is now
         float open = 1.0f;  // how much of the opening is clear, for a gated light with no shadow map
         // Let through only onto what hangs in the doorway (a door's leaf): a
         // bounce of the far room's, or any of its light while the door is shut.

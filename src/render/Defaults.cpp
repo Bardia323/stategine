@@ -3,6 +3,7 @@ namespace sg::render {
 void standard_look(LookState &l, const Quality &q) {
     l.uniform(passes::scene, "uFogColor", 0.05, 0.06, 0.09)
         .uniform(passes::scene, "uFogDensity", 0.018)
+        .uniform(passes::scene, "uFogFull", 0.0)
         .uniform(passes::scene, "uSky", 0.10, 0.13, 0.20)
         .uniform(passes::scene, "uGround", 0.14, 0.10, 0.07)
         .uniform(passes::scene, "uAmbient", 0.55)

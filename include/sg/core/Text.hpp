@@ -25,6 +25,7 @@
 #include <functional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <variant>
 
 #include "sg/core/State.hpp"
@@ -38,6 +39,12 @@ std::string escape(const std::string& s);
 std::string unescape(const std::string& s);
 
 std::string value(const Value& v);
+
+// The same, written on the end of `out`: no text made on the way.
+void append_escaped(std::string& out, const std::string& s);
+void append_value(std::string& out, const Value& v);
+// One element's lines.
+void append_element(std::string& out, const Element& e);
 
 bool parse(const std::string& t, Value& out);
 
@@ -55,5 +62,23 @@ std::string to_text(const State& s, const std::function<bool(const Element&)>& k
 // `s` holds exactly what the text says. False, with `why`, on a line it
 // cannot read - and nothing is changed.
 bool from_text(State& s, const std::string& text, std::string* why = nullptr, bool exact = false);
+
+// The text of a state written again and again (a room kept in its file): each
+// element's lines are kept with the stamp of its params, and made again only
+// for an element whose params have changed since. The same text as to_text,
+// for the cost of the elements that moved.
+class StateText {
+public:
+    std::string operator()(const State& s, const std::function<bool(const Element&)>& keep_element = {},
+                           const std::function<bool(Key)>& keep_param = {});
+
+private:
+    struct Piece {
+        uint64_t stamp = 0;
+        bool alive = true;
+        std::string text;
+    };
+    std::unordered_map<std::string, Piece> pieces_;  // by element id
+};
 
 }  // namespace sg

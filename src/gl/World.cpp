@@ -1,5 +1,7 @@
 #include "sg/gl/World.hpp"
 
+#include "sg/domains/Texture.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -185,6 +187,10 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
                     for (gl::RenderTarget& o : f.out) o.create(f.rw, f.rh, gl::GL_SRGB8_ALPHA8, 0, false);
                 }
             }
+            // Nothing it is made from has changed: the picture it has is the one.
+            const uint64_t key = feed_key(f);
+            if (f.drawn_of == key && f.drawn_of != 0) continue;
+            f.drawn_of = key;
             f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
             f.view->root_ = this;
             f.view->output_ = &f.out[1 - f.front];
@@ -237,6 +243,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // screen's targets: none is made in the middle of a frame.)
     std::size_t root_views = 0;
     ++frame_count_;
+    shadow_budget_ = kNestedShadowMaps;
     times_ = FrameTimes{};
     times_.feeds = feeds_ms;
     times_.feed_views = feed_views;
@@ -248,6 +255,11 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
     };
     auto t0 = mark();
+    // A feed whose scene is as it was: developed again, not drawn again.
+    const uint64_t scene_now = root_ && output_ ? scene_key(rooms, fb_w, fb_h) : 0;
+    const bool still = scene_now != 0 && scene_now == scene_drawn_ && resolve_.valid();
+    scene_drawn_ = scene_now;
+    if (!still) {
     // Screens already drawn this frame: the same world from the same eye
     // is one view, whichever screen shows it.
     std::vector<std::pair<WorldPortal*, Element>> screens;
@@ -261,10 +273,10 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         if (!in_view(world, e, eye_cam)) continue;
-        if (it->second.world != &world) continue;  // (deeper only into the eye's own world)
         Element eye = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye_of(world), eye);
-        view_through(*it->second.world, eye, aspect, 1, "/" + e.id.str(), screen_rect(world, e, eye_cam, aspect));
+        const Element* back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
+        view_through(*it->second.world, eye, aspect, 1, "/" + e.id.str(), screen_rect(world, e, eye_cam, aspect), 0, back ? back->id.key() : Key{});
     }
     bool views_drawn = false;
     for (const auto& e : world.elements()) {
@@ -349,6 +361,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     if (!last_frame_.valid() || last_frame_.width() != resolve_.width() || last_frame_.height() != resolve_.height())
         last_frame_.create(resolve_.width(), resolve_.height(), gl::GL_RGBA16F, 0, false);
     resolve_.blit_to(last_frame_);
+    }
     scene_src_ = &resolve_;
     const double ao = setting(post_, passes::composite, "ao", 0.0);
     if (ao > 0.0) {
@@ -374,7 +387,11 @@ bool GLWorldView::has_surface(const Element& e) const {
 }
 
 Key GLWorldView::signal_of(const Element& e) const {
-    return graph_ ? render::signal_of(*graph_,e) : Key{e.id.str()};
+    if (!graph_) return e.id;
+    auto& memo = signal_memo_[&e];
+    if (memo.graph != graph_ || memo.revision != graph_->revision() || memo.stamp != e.params.stamp())
+        memo = {graph_, graph_->revision(), e.params.stamp(), render::signal_of(*graph_, e)}, ++times_.graph_queries;
+    return memo.signal;
 }
 
 gl::Vec3 GLWorldView::to_vec3(const Vec3d& v) {
@@ -438,6 +455,10 @@ void GLWorldView::ensure_targets(int w, int h) {
         n.target.bind();
         gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
         n.frame = 0;
+        if (!n.shadows) n.shadows = std::make_unique<ShadowSet>();
+        n.shadows->array.ensure(std::min(q_.shadow_size, kNestedShadowSize), static_cast<int>(kShadowMaps));
+        for (uint64_t& s : n.shadows->sig) s = 0;
+        n.owner.clear();
     }
     last_frame_.create(w, h, gl::GL_RGBA16F, 0, false);
     // Full resolution: at half, the occlusion's edges stair-step over the
@@ -542,6 +563,7 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
         const float open = 1.0f - covered(room, e, door, half_w, half_h, shut);
         const auto gate = [&](Light& l) {
             l.gated = true;
+            l.gate = std::hash<Key>{}(e.id);
             l.gate_at = at, l.gate_across = across_door, l.gate_in = into, l.gate_w = half_w, l.gate_h = half_h;
             // In the shadow of what stands in the way, none of it gets through.
             l.open = open, l.floor = 0.0f;
@@ -716,6 +738,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // A space that wraps is seen in every copy of it the eye can reach -
     // from inside it or through any doorway onto it: every view is drawn
     // here, so every view sees the same space.
+    const auto part_from = std::chrono::steady_clock::now();
+    const auto lap = [&](int k, std::chrono::steady_clock::time_point& at) {
+        const auto now = std::chrono::steady_clock::now();
+        times_.part[k] += std::chrono::duration<double, std::milli>(now - at).count();
+        at = now;
+    };
+    auto part_at = part_from;
     std::vector<PlacedRoom> rooms = given;
     for (std::size_t r = 0, own = given.size(); r < own; ++r) {
         if (!given[r].room) continue;
@@ -732,7 +761,20 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
     }
     std::size_t shadowed = 0;
-    const std::vector<Light> lights = read_lights(rooms, shadowed);
+    const auto lights_from = std::chrono::steady_clock::now();
+    const uint64_t rooms_at_now = rooms_key(rooms);
+    const uint64_t lit_key = (rooms_at_now ^ worlds_stamp()) * 1099511628211ULL;
+    if (lights_memo_.size() > 64) lights_memo_.clear();
+    auto lit_memo = lights_memo_.find(lit_key);
+    if (lit_memo == lights_memo_.end()) {
+        LightsMemo m;
+        m.lights = read_lights(rooms, m.shadowed);
+        ++times_.lights_read;
+        lit_memo = lights_memo_.emplace(lit_key, std::move(m)).first;
+    }
+    const std::vector<Light>& lights = lit_memo->second.lights;
+    shadowed = lit_memo->second.shadowed;
+    times_.lights_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lights_from).count();
     cam_eye_ = cam.eye, cam_forward_ = cam.forward, cam_up_ = cam.up;
     drawn_cam_ = cam, drawn_aspect_ = aspect;
     guest_pass_ = depth > 0;
@@ -747,8 +789,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // of each map is how wide a texel of it is in the world, at a unit's
     // distance from a lamp (or anywhere, for a sun's box): it keeps its
     // lookups that far off the surface (shadow_factor).
+    // (A view with maps of its own - seen through another - has them at
+    // the pool's size.)
+    const int shadow_px = slot_shadows_ ? std::min(q_.shadow_size, kNestedShadowSize) : q_.shadow_size;
     const auto texel_of = [&](const Light& l) {
-        const float size = static_cast<float>(std::max(q_.shadow_size, 1));
+        const float size = static_cast<float>(std::max(shadow_px, 1));
         if (l.sun) return 2.0f * l.extent / size;
         return 2.0f * std::tan(std::min(l.outer * 2.05f, 2.7f) * 0.5f) / size;
     };
@@ -757,7 +802,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     for (std::size_t i = 0; i < kShadowMaps; ++i) {
         const Light& l = lights[std::min(i, lights.size() - 1)];
         const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
-        light_vp[i]=shadow_projection(l,eye,q_.shadow_size,bias[i]);
+        light_vp[i]=shadow_projection(l,eye,shadow_px,bias[i]);
         bias[i] = texel_of(l);
     }
     // A sun whose map reaches far gets a second, small one round the viewer
@@ -776,14 +821,22 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         close.extent = kNearReach;
         close.pinned = false;
         const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
-        light_vp[layers] = shadow_projection(close, eye, q_.shadow_size, bias[layers]);
+        light_vp[layers] = shadow_projection(close, eye, shadow_px, bias[layers]);
         bias[layers] = texel_of(close);
         near_of[i] = static_cast<float>(layers);
         layer_light[layers] = i;
         ++layers;
     }
+    // Narrowed to the part of the screen drawn (sub_): that part fills the
+    // viewport, at the same pixels it has on the screen.
+    const bool part = sub_.x0 > -1 || sub_.y0 > -1 || sub_.x1 < 1 || sub_.y1 < 1;
+    const float hx = (sub_.x1 - sub_.x0) * 0.5f, hy = (sub_.y1 - sub_.y0) * 0.5f;
+    const gl::Mat4 narrow = part ? gl::Mat4::scale({1.0f / hx, 1.0f / hy, 1.0f}) * gl::Mat4::translate({-(sub_.x0 + sub_.x1) * 0.5f, -(sub_.y0 + sub_.y1) * 0.5f, 0.0f})
+                                 : gl::Mat4::identity();
+    vp_w_ = part ? std::round(static_cast<float>(target.width()) * hx) : static_cast<float>(target.width());
+    vp_h_ = part ? std::round(static_cast<float>(target.height()) * hy) : static_cast<float>(target.height());
     const gl::Mat4 view_proj =
-        projection_of(cam, aspect, znear, zfar) *
+        narrow * projection_of(cam, aspect, znear, zfar) *
         gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
 
     if (timing_) gl::glFinish();
@@ -807,7 +860,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     for (std::size_t i = 0; i < layers; ++i) {
         const Light& l = lights[layer_light[i]];
         lit = mix_bits(lit, l.sun ? 1.0f : l.gated ? 2.0f : 3.0f);
-        if (l.gated) for (float f : {l.gate_at.x, l.gate_at.y, l.gate_at.z}) lit = mix_bits(lit, std::round(f * 100.0f));
+        // (By the doorway it comes in by, not where that is: a doorway that
+        // moves - on a planet in its orbit - keeps its maps.)
+        if (l.gated) lit = (lit ^ l.gate) * 1099511628211ULL;
         follows_eye = follows_eye || (l.sun && !l.pinned) || near_of[layer_light[i]] >= 0.0f;
     }
     // (A view is the way the eye came to it - its path, the same from frame
@@ -816,11 +871,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lit = (lit ^ std::hash<std::string>{}(path_)) * 1099511628211ULL;
         lit = (lit ^ reinterpret_cast<std::uintptr_t>(root_)) * 1099511628211ULL;
     }
-    ShadowSet& maps = shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
-    if (maps.array.ensure(q_.shadow_size, static_cast<int>(std::max<std::size_t>(layers, 1))))
+    ShadowSet& maps = slot_shadows_ ? *slot_shadows_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
+    if (maps.array.ensure(shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1))))
         for (uint64_t& s : maps.sig) s = 0;
     const auto sig_from = std::chrono::steady_clock::now();
-    const std::vector<Caster> casters = casters_of(rooms);
+    if (casters_memo_.size() > 64) casters_memo_.clear();
+    auto cast_memo = casters_memo_.find(rooms_at_now);
+    if (cast_memo == casters_memo_.end()) cast_memo = casters_memo_.emplace(rooms_at_now, casters_of(rooms)).first, ++times_.casters_listed;
+    const std::vector<Caster>& casters = cast_memo->second;
     times_.signature += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sig_from).count();
     // Where each room stands is part of where its things are.
     uint64_t rooms_at = 1469598103934665603ULL;
@@ -867,8 +925,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (room_now < rooms.size()) flush_batches(caster, false);
     };
+    const auto layers_from = std::chrono::steady_clock::now();
     std::vector<const Caster*> sees;
-    for (std::size_t i = 0; i < layers; ++i) {
+    bool unshadowed = false;
+    // The eye's own views draw a few maps a frame, taking turns from frame
+    // to frame; past that a map stands as last drawn, with its own box - a
+    // shadow that moves follows a frame or two later, and the frame does not
+    // wait on every lamp at once. (One never drawn is drawn now.)
+    int own_budget = kOwnShadowMaps;
+    for (std::size_t n = 0; n < layers; ++n) {
+        const std::size_t i = (n + frame_count_) % layers;
         // What this lamp's map holds: the casters in the volume it sees. A
         // map stands while those stand - a mug moved in another corner of the
         // house is nothing to it - and it is drawn with those alone.
@@ -884,7 +950,22 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             sees.push_back(&c);
         }
         if (maps.sig[i] == sig) continue;
+        // A view seen through another view draws within the frame's budget.
+        if (depth > 1 && shadow_budget_ <= 0) {
+            if (maps.sig[i] == 0) unshadowed = true;  // never drawn: nothing to cast with yet
+            else light_vp[i] = maps.vp[i];            // as last drawn, with its own box
+            continue;
+        }
+        if (depth <= 1 && maps.sig[i] != 0) {
+            if (own_budget <= 0) {
+                light_vp[i] = maps.vp[i];
+                continue;
+            }
+            --own_budget;
+        }
+        if (depth > 1) --shadow_budget_;
         maps.sig[i] = sig;
+        maps.vp[i] = light_vp[i];
         ++times_.shadow_maps;
         times_.shadow_casters += static_cast<int>(sees.size());
         if (!caster_ready) {
@@ -909,6 +990,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         draw_casters(sees);
     }
+    times_.layers_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - layers_from).count();
     gl::glDisable(gl::GL_CLIP_DISTANCE0);
     gl::glCullFace(gl::GL_BACK);
     if (timing_) {
@@ -916,10 +998,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         times_.shadows += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - shadow_start).count();
     }
 
+    lap(0, part_at);
     // --- the scene -------------------------------------------------------
     // The first room is the one this view is taken from; its look clears.
     const Mix first = mix(rooms.front().room->id(), look_of(*rooms.front().room));
     target.bind();
+    if (part) {
+        gl::glViewport(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
+        gl::glScissor(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
+        gl::glEnable(gl::GL_SCISSOR_TEST);
+    }
     gl::glClearColor(static_cast<float>(setting(first, passes::scene, "clear.x", 0.012)),
                      static_cast<float>(setting(first, passes::scene, "clear.y", 0.014)),
                      static_cast<float>(setting(first, passes::scene, "clear.z", 0.022)),
@@ -944,7 +1032,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(shadow_uniform(i, 1), bias[i]);
         }
         p.set("uLightCount", static_cast<int>(lights.size()));
-        p.set("uShadowCount", static_cast<int>(shadowed));
+        p.set("uShadowCount", unshadowed ? 0 : static_cast<int>(shadowed));
         gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
         for (std::size_t i = 0; i < lights.size(); ++i) {
             p.set(light_uniform(i, 0), lights[i].pos);
@@ -958,7 +1046,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 8), lights[i].indirect ? 1.0f : 0.0f);
             p.set(light_uniform(i, 9), lights[i].falloff);
             const Light& l = lights[i];
-            p.set(light_uniform(i, 12), near_of[i]);
+            p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
             p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
             // The sky's sun is this room's own, not one seen through a door.
@@ -981,12 +1069,45 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uTex", 0);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
-        p.set("uViewport", static_cast<float>(target.width()),
-              static_cast<float>(target.height()));
+        p.set("uViewport", vp_w_, vp_h_);
+        p.set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
     };
 
+    // A room's own settings on the program drawing it (in use as scene_):
+    // its look, time, where its copy is lit, its sides of its doorways.
+    const auto prepare = [&](const Mix& look, const gl::Vec3& shift, const PlacedRoom& placed, const Spatial3D& room) {
+        apply_uniforms(*scene_, look, passes::scene);
+        apply_attended(*scene_, passes::scene);
+        scene_->set("uLatticeShift", shift);
+        scene_->set("uTime",static_cast<float>(semantic_time(graph_?graph_:(root_?root_->graph_:nullptr),room)));
+        // This room's side of each doorway, from the portals as they are now,
+        // and whatever the caller cuts away besides.
+        int n = 0;
+        for (const HalfSpace& h : clips) {
+            if (n >= kMaxBounds) break;
+            scene_->set(clip_uniform(n++), static_cast<float>(h.normal.x),
+                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
+                        static_cast<float>(h.offset));
+        }
+        for (Key d : placed.doorways) {
+            const Element* portal = room.find(d);
+            if (!portal || n >= kMaxBounds) continue;
+            const HalfSpace h = room_side(room, *portal, placed.pose);
+            scene_->set(clip_uniform(n++), static_cast<float>(h.normal.x),
+                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
+                        static_cast<float>(h.offset));
+        }
+        scene_->set("uClipCount", n);
+        clip_count_ = n;
+        doors_to_program(placed);
+        return n;
+    };
+    std::vector<const Element*> sprites;
+
+    lap(1, part_at);
     scene_ = nullptr;
     const Frustum view = frustum_of(view_proj);
+    const PlacedRoom* last = nullptr;
     for (const PlacedRoom& placed : rooms) {
         if (!placed.room) continue;
         // A copy of a space that wraps, out of sight: its cell, not in view.
@@ -1003,7 +1124,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (placed.image)
             for (const PlacedRoom& own : rooms)
                 if (own.room == placed.room && !own.image) shift = to_vec3(own.pose.position) - to_vec3(placed.pose.position);
-
+        // A copy straight after its own room is that room again: the same
+        // look, the same program and everything set on it, only moved.
+        const bool again = placed.image && last && last->room == placed.room && placed.doorways.empty();
+        last = &placed;
+        int bounds = clip_count_;
+        if (again) {
+            scene_->set("uLatticeShift", shift);
+        } else {
         // Each room in its own look: the annex seen through the doorway
         // keeps its own fog, whichever side you stand on.
         const Mix look = mix(room.id(), look_of(room));
@@ -1013,32 +1141,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             scene_->use();
             frame_uniforms(*scene_);
         }
-        apply_uniforms(*scene_, look, passes::scene);
-        apply_attended(*scene_, passes::scene);
-        scene_->set("uLatticeShift", shift);
-        scene_->set("uTime",static_cast<float>(semantic_time(graph_?graph_:(root_?root_->graph_:nullptr),room)));
-
-        // This room's side of each doorway, from the portals as they are now,
-        // and whatever the caller cuts away besides.
-        int bounds = 0;
-        for (const HalfSpace& h : clips) {
-            if (bounds >= kMaxBounds) break;
-            scene_->set(clip_uniform(bounds++), static_cast<float>(h.normal.x),
-                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
-                        static_cast<float>(h.offset));
+        bounds = prepare(look, shift, placed, room);
         }
-        for (Key d : placed.doorways) {
-            const Element* portal = room.find(d);
-            if (!portal || bounds >= kMaxBounds) continue;
-            const HalfSpace h = room_side(room, *portal, placed.pose);
-            scene_->set(clip_uniform(bounds++), static_cast<float>(h.normal.x),
-                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
-                        static_cast<float>(h.offset));
-        }
-        scene_->set("uClipCount", bounds);
-        clip_count_ = bounds;
-        doors_to_program(placed);
 
+        lap(2, part_at);
         if (room.params().num(Key{"sky"}, 0.0) > 0.5) {
             // The sky is at no distance a plane can cut: it is the room's
             // ceiling, whatever bounds its ground.
@@ -1048,14 +1154,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         } else {
             draw_room(room);
         }
-        for (const auto i : plan_draws(room, view)) {
+        const gl::Vec3 moved = shift * -1.0f;
+        for (const auto i : plan_draws(room, view, placed.image ? &moved : nullptr)) {
             const auto& e=room.elements()[i];
             if (e.kind == terrain_kind()) {
                 draw_terrain(e);
             } else if (e.kind == kinds::mesh) {
-                if (is_sprite(e)) draw_sprite(room, e);
+                if (is_sprite(e)) sprites.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
-                else draw_crate(room, e);
+                else if (!batch_skinned(room, e)) draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
                 if (q_.instancing && e.id != highlight_)
                     batch(cube_, box_matrix(room, e).m, color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f,
@@ -1066,7 +1173,29 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 draw_lamp(room, e);
             }
         }
+        lap(3, part_at);
         flush_batches(*scene_, true);
+        // Pictures cut out of their cards, together, with the program that
+        // may cut (cutout_of), set up for this room as the other is.
+        if (!sprites.empty()) {
+            const gl::Program* solid = scene_;
+            const gl::Program* cut = cutout_of(*solid);
+            if (cut) {
+                scene_ = cut;
+                cut->use();
+                frame_uniforms(*cut);
+                prepare(mix(room.id(), look_of(room)), shift, placed, room);
+            }
+            for (const Element* e : sprites) draw_sprite(room, *e);
+            sprites.clear();
+            if (cut) {
+                scene_ = solid;
+                solid->use();
+            }
+        }
+        lap(4, part_at);
+        // Doorways' frames drawn together (what each shows, one by one).
+        batch_frames_ = q_.instancing;
         for (const auto i : draw_plans_.at(&room).portals) {
             const auto& e=room.elements()[i];
             // The doorway being looked through keeps its frame; only its
@@ -1074,10 +1203,22 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             // the whole picture.
             draw_portal(room, e, depth, target, placed.image || (!skip_portal.empty() && e.id == skip_portal));
         }
+        if (batch_frames_) flush_batches(*scene_, true);
+        batch_frames_ = false;
+        lap(5, part_at);
     }
     for (int i = 0; i < kMaxBounds; ++i)
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
+    if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
     set_frame(Pose{});
+}
+
+void GLWorldView::sample_screen(const Rect& r, float fx, float fy) const {
+    // Where `r` is in the part of the screen being drawn, 0..1 across it.
+    const float w = sub_.x1 - sub_.x0, h = sub_.y1 - sub_.y0;
+    scene_->set("uScreenRect", (r.x0 - sub_.x0) / w, (r.y0 - sub_.y0) / h, (r.x1 - sub_.x0) / w, (r.y1 - sub_.y0) / h);
+    scene_->set("uViewport", vp_w_, vp_h_);
+    if (fx < 1.0f || fy < 1.0f) scene_->set("uUVRect", 0.0f, 0.0f, fx, fy);
 }
 
 uint64_t GLWorldView::chain_stamp(const State& st, const Element& e) {
@@ -1350,10 +1491,107 @@ bool GLWorldView::instanceable(const Element& e) const {
     static const Key worn{"skin"}, hung{"straddle"};
     if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5) return false;
     const auto skin = surfaces_.find(e.id);
-    return skin == surfaces_.end() || !skin->second.surface;
+    if (skin != surfaces_.end() && skin->second.surface) return false;
+    // Hung from a thing that wears a texture, it wears it too: drawn on its
+    // own (skin_holder says in whose frame).
+    const std::string parent = e.params.get_or<std::string>(keys::parent, "");
+    const auto worn_by = parent.empty() ? surfaces_.end() : surfaces_.find(Key{parent});
+    return worn_by == surfaces_.end() || !worn_by->second.surface;
 }
 
-void GLWorldView::batch_crate(const State& st, const Element& e) {
+const Element* GLWorldView::skin_holder(const State& st, const Element& e) const {
+    const Element* at = &e;
+    for (int i = 0; i < 8 && at; ++i) {
+        const auto s = surfaces_.find(at->id);
+        // A thing's parts wear only a texture, never a sheet bound to it.
+        if (s != surfaces_.end() && s->second.surface && (at == &e || dynamic_cast<const Texture*>(s->second.surface)) &&
+            declared_surface(*at, *s->second.surface))
+            return at;
+        const std::string parent = at->params.get_or<std::string>(keys::parent, "");
+        at = parent.empty() ? nullptr : st.find(Key{parent});
+    }
+    return nullptr;
+}
+
+namespace {
+// The inverse of a matrix that moves, turns and scales (no projection).
+gl::Mat4 affine_inverse(const gl::Mat4& a) {
+    const float* m = a.m;
+    const float c00 = m[5] * m[10] - m[9] * m[6], c01 = m[9] * m[2] - m[1] * m[10], c02 = m[1] * m[6] - m[5] * m[2];
+    const float det = m[0] * c00 + m[4] * c01 + m[8] * c02;
+    const float k = std::fabs(det) > 1e-20f ? 1.0f / det : 0.0f;
+    gl::Mat4 r;
+    r.m[0] = c00 * k, r.m[1] = c01 * k, r.m[2] = c02 * k;
+    r.m[4] = (m[8] * m[6] - m[4] * m[10]) * k, r.m[5] = (m[0] * m[10] - m[8] * m[2]) * k, r.m[6] = (m[4] * m[2] - m[0] * m[6]) * k;
+    r.m[8] = (m[4] * m[9] - m[8] * m[5]) * k, r.m[9] = (m[8] * m[1] - m[0] * m[9]) * k, r.m[10] = (m[0] * m[5] - m[4] * m[1]) * k;
+    r.m[3] = r.m[7] = r.m[11] = 0.0f, r.m[15] = 1.0f;
+    for (int i = 0; i < 3; ++i) r.m[12 + i] = -(r.m[i] * m[12] + r.m[4 + i] * m[13] + r.m[8 + i] * m[14]);
+    return r;
+}
+}  // namespace
+
+auto GLWorldView::skin_frame(const State& st, const Element& holder) const -> const SkinFrame& {
+    SkinFrame& f = skin_frames_[&holder];
+    if (f.frame == frame_count_) return f;
+    f.frame = frame_count_;
+    const bool mesh = holder.kind == kinds::mesh || holder.kind == kinds::wall;
+    if (mesh) {
+        f.to_unit = affine_inverse(box_matrix(st, holder).m);
+        f.size = {static_cast<float>(holder.params.num(keys::sx, 1.0)), static_cast<float>(holder.params.num(keys::sy, 1.0)),
+                  static_cast<float>(holder.params.num(keys::sz, 1.0))};
+        return f;
+    }
+    // A thing of parts: the box round all of them, in its own turn.
+    const Pose at = pose_of(st, holder);
+    Vec3d lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
+    for (const Element& d : st.elements()) {
+        if (!d.alive || (d.kind != kinds::mesh && d.kind != kinds::wall) || skin_holder(st, d) != &holder) continue;
+        const gl::Mat4& m = box_matrix(st, d).m;
+        for (float x : {-0.5f, 0.5f})
+            for (float y : {-0.5f, 0.5f})
+                for (float z : {-0.5f, 0.5f}) {
+                    const gl::Vec3 c = m.transform_point({x, y, z});
+                    const Vec3d l = local_of(at, {c.x, c.y, c.z});
+                    lo = {std::min(lo.x, l.x), std::min(lo.y, l.y), std::min(lo.z, l.z)};
+                    hi = {std::max(hi.x, l.x), std::max(hi.y, l.y), std::max(hi.z, l.z)};
+                }
+    }
+    if (lo.x > hi.x) lo = hi = Vec3d{};
+    const gl::Vec3 size{static_cast<float>(std::max(hi.x - lo.x, 1e-3)), static_cast<float>(std::max(hi.y - lo.y, 1e-3)),
+                        static_cast<float>(std::max(hi.z - lo.z, 1e-3))};
+    const gl::Vec3 mid{static_cast<float>((lo.x + hi.x) * 0.5), static_cast<float>((lo.y + hi.y) * 0.5), static_cast<float>((lo.z + hi.z) * 0.5)};
+    const gl::Mat4 frame = gl::Mat4::translate(to_vec3(at.position)) * panel_turn(at, holder) * gl::Mat4::translate(mid) * gl::Mat4::scale(size);
+    f.to_unit = affine_inverse(frame);
+    f.size = size;
+    return f;
+}
+
+void GLWorldView::upload_skin(BoundSurface& bound) {
+    Surface2D& surf = *bound.surface;
+    const auto& pixels = surf.raster();
+    if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
+        bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
+        bound.revision = ~uint64_t{0};
+    }
+    if (bound.revision != surf.revision()) {
+        bound.texture.upload(pixels);
+        bound.revision = surf.revision();
+    }
+}
+
+bool GLWorldView::batch_skinned(const State& st, const Element& e) {
+    if (!q_.instancing || e.id == highlight_ || e.params.num(Key{"straddle"}, 0.0) > 0.5 || e.params.has(Key{"skin"})) return false;
+    if (skin_holder(st, e) != &e) return false;
+    const auto it = surfaces_.find(e.id);
+    if (it == surfaces_.end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;
+    upload_skin(it->second);
+    append_record(st, e, batch_for(shape_of(st, e), &it->second));
+    return true;
+}
+
+void GLWorldView::batch_crate(const State& st, const Element& e) { append_record(st, e, batch_for(shape_of(st, e))); }
+
+void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
     Placed& p = placed_of(st, e);
     if (!p.recorded) {
         const gl::Mat4& m = box_matrix(st, e).m;
@@ -1366,14 +1604,13 @@ void GLWorldView::batch_crate(const State& st, const Element& e) {
         std::copy(mat, mat + 8, p.record.begin() + 16);
         p.recorded = true;
     }
-    Batch& b = batch_for(shape_of(st, e));
     b.data.insert(b.data.end(), p.record.begin(), p.record.end());
 }
 
-auto GLWorldView::batch_for(const gl::Mesh& mesh) -> Batch& {
+auto GLWorldView::batch_for(const gl::Mesh& mesh, BoundSurface* skin) -> Batch& {
     for (Batch& x : batches_)
-        if (x.mesh == &mesh) return x;
-    return batches_.emplace_back(Batch{&mesh, {}});
+        if (x.mesh == &mesh && x.skin == skin) return x;
+    return batches_.emplace_back(Batch{&mesh, {}, skin});
 }
 
 void GLWorldView::batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::Vec3& albedo, float roughness, float surface, float emissive, float highlight, float mirror) {
@@ -1399,7 +1636,17 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             any = true;
         }
         const auto n = static_cast<gl::GLsizei>(b.data.size() / gl::Mesh::kInstanceFloats);
+        const auto* tex = scene && b.skin ? dynamic_cast<const Texture*>(b.skin->surface) : nullptr;
+        if (tex) {
+            const Element& m = tex->map();
+            b.skin->texture.bind(0);
+            p.set("uTexMix", 1.0f), p.set("uSkin", 1.0f), p.set("uSkinFramed", 1.0f), p.set("uSkinOwn", 1.0f);
+            p.set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
+            p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
+            p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
+        }
         b.mesh->draw_instanced(instances_.upload(b.data), n);
+        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
     }
@@ -1548,9 +1795,11 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
         return;
     }
-    // A surface bound to a mesh is its skin: an atlas, a cell a face.
-    auto skin = surfaces_.find(e.id);
-    if (skin != surfaces_.end() && skin->second.surface && declared_surface(e,*skin->second.surface)) {
+    // A surface bound to a mesh is its skin: an atlas, a cell a face - or a
+    // texture worn by a thing it is part of.
+    const Element* holder = skin_holder(st, e);
+    auto skin = holder ? surfaces_.find(holder->id) : surfaces_.end();
+    if (skin != surfaces_.end()) {
         BoundSurface& bound = skin->second;
         Surface2D& surf = *bound.surface;
         const auto& pixels = surf.raster();
@@ -1567,7 +1816,21 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         scene_->set("uSkin", 1.0f);
         scene_->set("uScreenUV", 0.0f);
         scene_->set("uCRT", 0.0f);
+        // A texture says how it is worn: tiled round the thing by the metre,
+        // and how softly a curve goes from one way's cell to the next.
+        const auto* tex = dynamic_cast<const Texture*>(&surf);
+        if (tex) {
+            const Element& m = tex->map();
+            const SkinFrame& f = skin_frame(st, *holder);
+            scene_->set("uSkinFramed", 1.0f);
+            scene_->set("uSkinFrame", f.to_unit);
+            scene_->set("uSkinSize", f.size);
+            scene_->set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
+            scene_->set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
+            scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
+        }
         shape_of(st, e).draw();
+        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
@@ -1618,33 +1881,38 @@ GLWorldView::Rect GLWorldView::screen_rect(const Spatial3D& world, const Element
     return Rect{std::max(r.x0, -1.0f), std::max(r.y0, -1.0f), std::min(r.x1, 1.0f), std::min(r.y1, 1.0f)};
 }
 
-void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen) {
-    // How deep the views through doorways go is the eye's world's to say: one
-    // (the doorway shows the room beyond, and its doorways are glass) unless
-    // it says more - two portals facing, a room glued to itself.
-    // (The world the eye is in says it, not the one looked into: a view's
-    // cost is the viewer's.)
-    const Spatial3D& says = root_world_ ? *root_world_ : world;
-    const int deep = static_cast<int>(says.params().num(Key{"views_deep"}, 1.0));
-    if (depth >= deep || jobs_.size() >= 512) return;
+void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back) {
+    // How deep the views through a world's doorways go is that world's to
+    // say, from wherever it is seen: one (a doorway shows the room beyond,
+    // and that room's doorways show theirs) unless it says more - two
+    // portals facing, a room glued to itself - whether the eye is in it or
+    // looks into it through a doorway. What it costs is bounded all the same:
+    // the frame draws only its biggest views (views_most), each only where
+    // it is on the screen.
+    const int deep = static_cast<int>(world.params().num(Key{"views_deep"}, 1.0));
+    if (depth - from > deep || depth > 16 || jobs_.size() >= 512) return;
     const Camera cam = camera_of(eye);
     for (const auto& e : world.elements()) {
-        if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"})) continue;
+        if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"}) || e.id == back) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         if (!in_view(world, e, cam, aspect)) continue;
         const Rect r = screen_rect(world, e, cam, aspect).cut(seen);
         const float area = (r.x1 - r.x0) * (r.y1 - r.y0);
-        if (r.empty() || area < 2e-4f) continue;
+        // A view onto the eye's own world only a few dozen pixels across is
+        // not drawn: last frame's picture of that world, fitted to it, is
+        // what it would show to within those pixels (draw_portal).
+        const float least = it->second.world == root_world_ ? kLeastOwnView : 2e-4f;
+        if (r.empty() || area < least) continue;
         if (local_of(pose_of(world, e), position_of(eye)).x <= 0.0 && e.params.num(Key{"oneway"}, 0.0) > 0.5) continue;
         Element there = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye, there);
         const std::string key = path + "/" + e.id.str();
-        jobs_.push_back(ViewJob{key, &world, &e, eye, there, &it->second, depth, area});
-        // Deeper only into the eye's own world - what a room glued to itself
-        // needs to go on; a doorway onto another shows it once, and past
-        // that what stands for it.
-        if (it->second.world == root_world_) view_through(*it->second.world, there, aspect, depth + 1, key, r);
+        jobs_.push_back(ViewJob{key, &world, &e, eye, there, &it->second, depth, area, r});
+        // On through its doorways: on in the same world as deep as it says,
+        // and into another, counted from there.
+        const Element* next_back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
+        view_through(*it->second.world, there, aspect, depth + 1, key, r, it->second.world == &world ? from : depth, next_back ? next_back->id.key() : Key{});
     }
 }
 
@@ -1676,8 +1944,24 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
         slot_[j.key] = k;
         const Element* back = !j.wp->back.empty() ? j.wp->world->find(j.wp->back) : back_portal(*j.wp->world, *j.host);
         path_ = j.key;
+        // Drawn only where its doorway is on the screen, at the screen's own
+        // pixels: a view costs what of the screen it covers. (Its rect to
+        // the pixel, a pixel over, so that it is sampled one to one.)
+        const float W = static_cast<float>(n.target.width()), H = static_cast<float>(n.target.height());
+        const float px0 = std::max(0.0f, std::floor((j.seen.x0 + 1) * 0.5f * W) - 1), px1 = std::min(W, std::ceil((j.seen.x1 + 1) * 0.5f * W) + 1);
+        const float py0 = std::max(0.0f, std::floor((j.seen.y0 + 1) * 0.5f * H) - 1), py1 = std::min(H, std::ceil((j.seen.y1 + 1) * 0.5f * H) + 1);
+        n.rect = Rect{px0 / W * 2 - 1, py0 / H * 2 - 1, px1 / W * 2 - 1, py1 / H * 2 - 1};
+        n.fx = (px1 - px0) / W, n.fy = (py1 - py0) / H;
+        sub_ = n.rect;
+        if (n.owner != j.key) {
+            for (uint64_t& s : n.shadows->sig) s = 0;
+            n.owner = j.key;
+        }
+        slot_shadows_ = n.shadows.get();
         draw_world(std::vector<PlacedRoom>{PlacedRoom{j.wp->world, Pose{}, {}}}, camera_of(j.there), aspect, n.target, j.depth + 1, kNear,
                    back ? back->id.key() : Key{}, {portal_clip(*j.host, *j.portal, j.from, j.there)});
+        sub_ = Rect{-1, -1, 1, 1};
+        slot_shadows_ = nullptr;
         n.frame = frame_count_;
         ++times_.portal_views;
     }
@@ -1711,8 +1995,14 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // glow, as a blackboard does: then only when pointed at.
     const bool says_glow = e.params.has(Key{"glow"});
     const float hi = ((open && !says_glow) || e.id == highlight_) ? 1.0f : 0.0f;
-    for(const auto& draw:portal_body(st,e,is_window))
-        draw_solid(room_local(draw.model),{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)},static_cast<float>(draw.roughness),0,0,hi);
+    Body& body = bodies_[&e];
+    if (const uint64_t stamp = placed_of(st, e).stamp; body.stamp != stamp || body.window != is_window)
+        body = Body{stamp, is_window, portal_body(st, e, is_window)};
+    for(const auto& draw:body.parts) {
+        const gl::Vec3 c{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)};
+        if (batch_frames_) batch(cube_, draw.model, c, static_cast<float>(draw.roughness), 0, 0, hi, 0);
+        else draw_solid(room_local(draw.model),c,static_cast<float>(draw.roughness),0,0,hi);
+    }
 
     if (is_window) {
         if (frame_only) return;
@@ -1775,8 +2065,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
                 scene_->set("uTexMix", 1.0f);
                 scene_->set("uGlow", 0.0f);
                 scene_->set("uScreenUV", 1.0f);
-                scene_->set("uScreenRect", (r.x0 + 1) * 0.5f, (r.y0 + 1) * 0.5f, (r.x1 + 1) * 0.5f, (r.y1 + 1) * 0.5f);
-                scene_->set("uViewport", static_cast<float>(target.width()), static_cast<float>(target.height()));
+                sample_screen(r, 1.0f, 1.0f);
                 quad_.draw();
                 scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
                 scene_->set("uScreenUV", 0.0f);
@@ -1826,8 +2115,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         scene_->set("uTexMix", 1.0f);
         scene_->set("uGlow", 0.0f);
         scene_->set("uScreenUV", 1.0f);
-        scene_->set("uViewport", static_cast<float>(target.width()),
-                   static_cast<float>(target.height()));
+        if (deeper) sample_screen(deeper->rect, deeper->fx, deeper->fy);
+        else sample_screen(Rect{-1, -1, 1, 1}, 1.0f, 1.0f);
         // `undim`: a doorway that is part of a screen the room dims round
         // (leaned in to it) is not dimmed with the room.
         const bool undim = e.params.num(Key{"undim"}, 0.0) > 0.5;
@@ -1851,6 +2140,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
             quad_.draw();
         }
         scene_->set("uScreenUV", 0.0f);
+        scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
+        scene_->set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
         scene_->set("uTexMix", 0.0f);
         scene_->set("uEmissive", 0.0f);
         return;
@@ -2127,6 +2418,27 @@ void GLWorldView::apply_attended(const gl::Program& p, Key pass) {
 }
 
 void GLWorldView::apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
+    uint64_t key = (1469598103934665603ULL ^ reinterpret_cast<std::uintptr_t>(&p)) * 1099511628211ULL;
+    key = (key ^ std::hash<Key>{}(pass)) * 1099511628211ULL;
+    key = (key ^ stamp_of(standard_)) * 1099511628211ULL;
+    for (const Mix::Part& part : m.parts) {
+        uint32_t w = 0;
+        std::memcpy(&w, &part.weight, sizeof w);
+        key = (key ^ reinterpret_cast<std::uintptr_t>(part.look)) * 1099511628211ULL;
+        key = (key ^ w) * 1099511628211ULL;
+        key = (key ^ stamp_of(*part.look)) * 1099511628211ULL;
+    }
+    if (auto hit = uniform_memo_.find(key); hit != uniform_memo_.end()) {
+        for (const UniformSet& u : hit->second) {
+            if (u.n == 3) gl::glUniform3f(u.at, u.v[0], u.v[1], u.v[2]);
+            else if (u.n == 2) gl::glUniform2f(u.at, u.v[0], u.v[1]);
+            else gl::glUniform1f(u.at, u.v[0]);
+        }
+        return;
+    }
+    if (uniform_memo_.size() > 256) uniform_memo_.clear();
+    ++times_.uniforms_resolved;
+    std::vector<UniformSet>& record = uniform_memo_[key];
     uniform_keys_.clear();
     const auto collect = [&](const LookState& l) {
         const Element* e = l.find(pass);
@@ -2146,6 +2458,7 @@ void GLWorldView::apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
         const std::size_t dot = name.find('.');
         if (dot == std::string::npos) {
             p.set(name.c_str(), v);
+            record.push_back(UniformSet{p.uniform(name.c_str()), 1, {v, 0, 0}});
             continue;
         }
         const std::string base = name.substr(0, dot);
@@ -2168,6 +2481,7 @@ void GLWorldView::apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
         } else {
             p.set(u.name.c_str(), u.v[0]);
         }
+        record.push_back(UniformSet{p.uniform(u.name.c_str()), u.n, {u.v[0], u.v[1], u.v[2]}});
     }
 }
 
@@ -2216,7 +2530,23 @@ const gl::Program* GLWorldView::shared_program(const std::string& vs, const std:
     if (!p) return nullptr;
     ++stats_.programs;
     if (!preparing_) ++stats_.late;
-    return programs_.emplace(std::move(key), std::move(p)).first->second.get();
+    const gl::Program* made = programs_.emplace(std::move(key), std::move(p)).first->second.get();
+    sources_of_[made] = {vs, fs};
+    return made;
+}
+
+const gl::Program* GLWorldView::cutout_of(const gl::Program& p) {
+    if (auto it = cutout_.find(&p); it != cutout_.end()) return it->second;
+    const auto src = sources_of_.find(&p);
+    const gl::Program* twin = nullptr;
+    if (src != sources_of_.end()) {
+        std::string fs = src->second.second;
+        const std::size_t line = fs.find('\n');
+        fs.insert(line == std::string::npos ? 0 : line + 1, "#define SG_CUTOUT\n");
+        std::string error;
+        twin = shared_program(src->second.first, fs, "cutout", error);
+    }
+    return cutout_[&p] = twin;
 }
 
 void GLWorldView::check_look(const LookState& look, std::vector<std::string>& out) {
@@ -2300,11 +2630,18 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
 }
 
 auto GLWorldView::shadows_for(const void* world, const void* view) -> ShadowSet& {
-    // Never more than the views there can be: a set no view has asked for
-    // goes when the sets would grow past that.
-    if (shadow_sets_.size() > 64 && !shadow_sets_.count({world, view})) shadow_sets_.clear();
+    // Never more than the views there can be: past that, the set asked for
+    // longest ago goes - one, never all of them at once (every view would
+    // draw its maps again in the same frame).
+    if (shadow_sets_.size() >= 64 && !shadow_sets_.count({world, view})) {
+        auto oldest = shadow_sets_.begin();
+        for (auto it = shadow_sets_.begin(); it != shadow_sets_.end(); ++it)
+            if (it->second->used < oldest->second->used) oldest = it;
+        shadow_sets_.erase(oldest);
+    }
     auto& set = shadow_sets_[{world, view}];
     if (!set) set = std::make_unique<ShadowSet>();
+    set->used = frame_count_;
     return *set;
 }
 
@@ -2312,6 +2649,97 @@ uint64_t GLWorldView::mix_bits(uint64_t h, float f) {
     uint32_t b = 0;
     std::memcpy(&b, &f, sizeof b);
     return (h ^ b) * 1099511628211ULL;
+}
+
+uint64_t GLWorldView::scene_key(const std::vector<PlacedRoom>& rooms, int w, int h) const {
+    uint64_t k = 1469598103934665603ULL;
+    const auto mix = [&k](uint64_t v) { k = (k ^ v) * 1099511628211ULL; };
+    const auto bits = [](double d) {
+        uint64_t b = 0;
+        std::memcpy(&b, &d, sizeof b);
+        return b;
+    };
+    mix(static_cast<uint64_t>(w) << 32 | static_cast<uint64_t>(h));
+    mix(bits(world_time_));
+    mix(reinterpret_cast<std::uintptr_t>(attend_));
+    if (eye_override_) mix(eye_override_->params.stamp());
+    const auto& feeds = shared_feeds();
+    for (const PlacedRoom& p : rooms) {
+        if (!p.room) continue;
+        const Spatial3D& room = *p.room;
+        mix(reinterpret_cast<std::uintptr_t>(&room));
+        for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) mix(bits(v));
+        mix(room.params().stamp());
+        const LookState& look = look_of(room);
+        for (Key pass : {passes::scene, passes::shadow})
+            if (const Element* e = look.find(pass)) mix(e->params.stamp());
+        for (const Element& e : room.elements()) {
+            const bool drawn = e.kind == kinds::mesh || e.kind == kinds::wall || e.kind == kinds::light || e.kind == kinds::portal ||
+                               e.kind == kinds::anchor || e.kind == kinds::camera || e.kind == terrain_kind();
+            if (!drawn) continue;
+            mix(e.params.stamp() << 1 | (e.alive ? 1u : 0u));
+            if (const auto s = surfaces_.find(e.id); s != surfaces_.end() && s->second.surface) mix(s->second.surface->revision());
+            if (e.kind != kinds::portal) continue;
+            if (const auto f = feeds.find(signal_of(e)); f != feeds.end()) mix(f->second.drawn_of), mix(static_cast<uint64_t>(f->second.front));
+            if (const auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world && it->second.world != &room)
+                mix(stamp_of(*it->second.world));
+        }
+    }
+    return k | 1;
+}
+
+uint64_t GLWorldView::feed_key(const Feed& f) const {
+    uint64_t h = 1469598103934665603ULL;
+    const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
+    mix(stamp_of(*f.world));
+    mix(stamp_of(look_of(*f.world)));
+    const double t = semantic_time(graph_, *f.world);
+    uint64_t b = 0;
+    std::memcpy(&b, &t, sizeof b);
+    mix(b);
+    if (f.eye) mix(f.eye->params.stamp());
+    mix(static_cast<uint64_t>(f.rw) << 32 | static_cast<uint64_t>(f.rh));
+    for (const Element& e : f.world->elements())
+        if (e.kind == kinds::portal && e.alive)
+            if (auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world && it->second.world != f.world)
+                mix(stamp_of(*it->second.world));
+    return h | 1;  // (never 0: 0 is "never drawn")
+}
+
+uint64_t GLWorldView::stamp_of(const State& s) const {
+    auto& at = stamps_[&s];
+    if (at.first != frame_count_ + 1) at = {frame_count_ + 1, s.data_version()};
+    return at.second;
+}
+
+uint64_t GLWorldView::rooms_key(const std::vector<PlacedRoom>& rooms) const {
+    uint64_t h = 1469598103934665603ULL;
+    const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
+    for (const PlacedRoom& p : rooms) {
+        if (!p.room || p.image) continue;
+        mix(reinterpret_cast<std::uintptr_t>(p.room));
+        mix(stamp_of(*p.room));
+        for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) {
+            uint64_t b = 0;
+            std::memcpy(&b, &v, sizeof b);
+            mix(b);
+        }
+        for (Key d : p.doorways) mix(std::hash<Key>{}(d));
+    }
+    return h;
+}
+
+uint64_t GLWorldView::worlds_stamp() const {
+    // Every world a doorway opens onto, and how it is seen: what comes in
+    // through a doorway is theirs.
+    uint64_t h = 1469598103934665603ULL;
+    for (const auto& [id, wp] : worlds_) {
+        if (!wp.world) continue;
+        h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
+        h = (h ^ stamp_of(*wp.world)) * 1099511628211ULL;
+        h = (h ^ stamp_of(look_of(*wp.world))) * 1099511628211ULL;
+    }
+    return h;
 }
 
 std::vector<GLWorldView::Caster> GLWorldView::casters_of(const std::vector<PlacedRoom>& rooms) {

@@ -5,6 +5,11 @@ namespace sg::text_detail {
 std::string escape(const std::string& s) {
     std::string out;
     out.reserve(s.size());
+    append_escaped(out, s);
+    return out;
+}
+
+void append_escaped(std::string& out, const std::string& s) {
     for (char c : s) {
         switch (c) {
             case '\\': out += "\\\\"; break;
@@ -15,7 +20,6 @@ std::string escape(const std::string& s) {
             default: out += c;
         }
     }
-    return out;
 }
 
 std::string unescape(const std::string& s) {
@@ -38,16 +42,45 @@ std::string unescape(const std::string& s) {
 }
 
 std::string value(const Value& v) {
-    if (const bool* b = std::get_if<bool>(&v)) return *b ? "b:true" : "b:false";
-    if (const int64_t* i = std::get_if<int64_t>(&v)) return "i:" + std::to_string(*i);
-    if (const double* d = std::get_if<double>(&v)) {
+    std::string out;
+    append_value(out, v);
+    return out;
+}
+
+void append_value(std::string& out, const Value& v) {
+    if (const bool* b = std::get_if<bool>(&v)) {
+        out += *b ? "b:true" : "b:false";
+    } else if (const int64_t* i = std::get_if<int64_t>(&v)) {
+        char buf[24] = {'i', ':'};
+        const auto r = std::to_chars(buf + 2, buf + sizeof buf, *i);
+        out.append(buf, r.ptr);
+    } else if (const double* d = std::get_if<double>(&v)) {
         // The shortest text that reads back to the very same number.
         char buf[40] = {'d', ':'};
         const auto r = std::to_chars(buf + 2, buf + sizeof buf, *d);
-        return std::string(buf, r.ptr);
+        out.append(buf, r.ptr);
+    } else if (const std::string* s = std::get_if<std::string>(&v)) {
+        out += "s:";
+        append_escaped(out, *s);
+    } else {
+        out += '-';
     }
-    if (const std::string* s = std::get_if<std::string>(&v)) return "s:" + escape(*s);
-    return "-";
+}
+
+void append_element(std::string& out, const Element& e) {
+    out += "element ";
+    append_escaped(out, e.id.str());
+    out += ' ';
+    append_escaped(out, e.kind.str());
+    if (!e.alive) out += " dead";
+    out += '\n';
+    for (const auto& [k, v] : e.params) {
+        out += "  ";
+        append_escaped(out, k.str());
+        out += ' ';
+        append_value(out, v);
+        out += '\n';
+    }
 }
 
 bool parse(const std::string& t, Value& out) {
@@ -80,11 +113,40 @@ std::string to_text(const State& s, const std::function<bool(const Element&)>& k
     using namespace text_detail;
     std::string out = "state " + escape(s.id().str()) + " " + escape(s.kind().str()) + "\n";
     for (const auto& [k, v] : s.params())
-        if (!keep_param || keep_param(k)) out += "param " + escape(k.str()) + " " + value(v) + "\n";
+        if (!keep_param || keep_param(k)) {
+            out += "param ";
+            append_escaped(out, k.str());
+            out += ' ';
+            append_value(out, v);
+            out += '\n';
+        }
+    for (const Element& e : s.elements())
+        if (!keep_element || keep_element(e)) append_element(out, e);
+    return out;
+}
+
+std::string StateText::operator()(const State& s, const std::function<bool(const Element&)>& keep_element, const std::function<bool(Key)>& keep_param) {
+    using namespace text_detail;
+    // The state's own params are few: written each time.
+    std::string out = to_text(s, [](const Element&) { return false; }, keep_param);
+    std::size_t kept = 0;
     for (const Element& e : s.elements()) {
         if (keep_element && !keep_element(e)) continue;
-        out += "element " + escape(e.id.str()) + " " + escape(e.kind.str()) + (e.alive ? "" : " dead") + "\n";
-        for (const auto& [k, v] : e.params) out += "  " + escape(k.str()) + " " + value(v) + "\n";
+        Piece& p = pieces_[e.id.str()];
+        if (p.text.empty() || p.stamp != e.params.stamp() || p.alive != e.alive) {
+            p.text.clear();
+            append_element(p.text, e);
+            p.stamp = e.params.stamp(), p.alive = e.alive;
+        }
+        out += p.text;
+        ++kept;
+    }
+    // (Pieces of elements gone are let go, now and then.)
+    if (pieces_.size() > 2 * kept + 64) {
+        std::unordered_map<std::string, Piece> live;
+        for (const Element& e : s.elements())
+            if (auto it = pieces_.find(e.id.str()); it != pieces_.end()) live.emplace(it->first, std::move(it->second));
+        pieces_ = std::move(live);
     }
     return out;
 }

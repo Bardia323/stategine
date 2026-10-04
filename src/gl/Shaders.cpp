@@ -30,6 +30,7 @@ std::string crt_glsl_constants() {
 
 const char* scene_fs() {
     static const std::string source = std::string(R"(#version 330 core
+#extension GL_ARB_shader_image_load_store : enable
 in vec3 vWorld;
 // Where a fragment is lit as being: where it is - or, for a copy of a space
 // that wraps, where its original is (uLatticeShift), lit and shadowed as that is.
@@ -41,7 +42,16 @@ in vec2 vUV;
 in vec3 vLocal;
 in vec3 vObject;
 in vec3 vObjNormal;
+in vec3 vRoomNormal;
+in vec3 vTexScale;
 
+// Whether this point is seen is known before it is shaded: what stands in
+// front is never lit for nothing. (Not where a picture is cut out of its
+// card - SG_CUTOUT, the program those are drawn with - since what is cut away
+// must not hide what is behind it.)
+#if !defined(SG_CUTOUT) && defined(GL_ARB_shader_image_load_store)
+layout(early_fragment_tests) in;
+#endif
 out vec4 FragColor;
 
 uniform vec3  uAlbedo;
@@ -56,6 +66,13 @@ uniform float uSurface;       // 0 plain, 1 floor tiles, 2 wall plaster, 3 crate
 uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv); 2: a picture tiled over the world (world_uv)
 uniform float uTile;          // with uSkin 2: the metres of the world one picture covers
+uniform float uSkinTile;      // with uSkin 1: metres of the thing a cell covers, its pattern going on round it; 0: a face the whole cell
+uniform vec3  uSkinSize;      // with uSkinTile: the thing's size
+uniform float uSkinBlend;     // with uSkin 1: 0 a face its own cell; 1 a curve soft between the cells of the ways it faces
+uniform float uSkinFramed;    // 1: projected in the frame of what wears it (uSkinFrame) - the thing, all its parts as one
+uniform mat4  uSkinFrame;     // the room's frame to that thing's unit box
+uniform float uSkinOwn;       // 1: the frame is the mesh's own (drawn with others of its shape, each its own size)
+uniform float uSkinRelief;    // > 0: the skin's alpha is how high its paint stands, this many metres at 1 - the surface bent by it
 uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
 uniform float uCutout;        // 1: clear pixels are not drawn (a sprite)
 uniform float uGlow;          // extra emission for an active interface
@@ -92,6 +109,7 @@ uniform int   uShadowCount;           // how many lights, from the first, have a
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+uniform float uFogFull;       // 1: the air takes all at last (a space with no end); else at most 0.85 of it
 uniform vec3  uSky;           // ambient from above
 uniform vec3  uGround;        // ambient bounced from the floor
 // The doorways of the room being drawn, and the light from all round on
@@ -255,6 +273,60 @@ vec2 skin_uv() {
     return vec2((col + u) / 3.0, (row + 1.0 - v) / 2.0);
 }
 
+// Where on a skin's cell (0..5) a point of the thing is, seen from that cell's
+// way: the whole face 0..1 (as skin_uv), or - tiling - metres over
+// uSkinTile, the four sides one band round the thing (+z, +x, -z, -x) so
+// what runs round it runs on from face to face.
+vec2 skin_at(float cell, vec3 p, vec3 size) {
+    if (uSkinTile <= 0.0) {
+        if (cell < 0.5) return vec2(0.5 - p.z, p.y + 0.5);
+        if (cell < 1.5) return vec2(p.z + 0.5, p.y + 0.5);
+        if (cell < 2.5) return vec2(p.x + 0.5, p.y + 0.5);
+        if (cell < 3.5) return vec2(0.5 - p.x, p.y + 0.5);
+        if (cell < 4.5) return vec2(p.x + 0.5, 0.5 - p.z);
+        return vec2(p.x + 0.5, p.z + 0.5);
+    }
+    vec3 h = size * 0.5, m = p * size;
+    float u;
+    if (cell < 0.5) u = 2.0 * h.x + (h.z - m.z);
+    else if (cell < 1.5) u = 4.0 * h.x + 2.0 * h.z + (m.z + h.z);
+    else if (cell < 2.5) u = m.x + h.x;
+    else if (cell < 3.5) u = 2.0 * h.x + 2.0 * h.z + (h.x - m.x);
+    else u = m.x;
+    float v = cell < 3.5 ? m.y : (cell < 4.5 ? -m.z : m.z);
+    return vec2(u, v) / uSkinTile;
+}
+
+// That point of that cell of the atlas, filtered as the unwrapped place
+// changes across the screen (no seam where a tiling wraps).
+vec4 skin_sample(float cell, vec2 uv, vec2 dx, vec2 dy) {
+    vec2 f = clamp(uSkinTile > 0.0 ? fract(uv) : uv, 0.002, 0.998);
+    float col = mod(cell, 3.0), row = floor(cell / 3.0);
+    vec2 k = vec2(1.0 / 3.0, -0.5);
+    return textureGrad(uTex, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);
+}
+
+// A skin worn by any shape: each point from the cell of the way it most
+// faces, or (uSkinBlend) from those of the ways it half faces, weighted.
+vec4 skin_texel() {
+    // In the unit box of the thing that wears it, facing as it truly faces
+    // there (its normal scaled back out of the box).
+    vec3 size = uSkinOwn > 0.5 ? vTexScale : uSkinSize;
+    vec3 p = uSkinOwn > 0.5 ? vLocal : (uSkinFrame * vec4(vRoom, 1.0)).xyz;
+    vec3 n = normalize(uSkinOwn > 0.5 ? vObjNormal / max(size, vec3(1e-4)) : uSkinSize * (mat3(uSkinFrame) * vRoomNormal)), a = abs(n);
+    float cx = n.x > 0.0 ? 0.0 : 1.0, cy = n.y > 0.0 ? 4.0 : 5.0, cz = n.z > 0.0 ? 2.0 : 3.0;
+    vec2 ux = skin_at(cx, p, size), uy = skin_at(cy, p, size), uz = skin_at(cz, p, size);
+    vec2 dxx = dFdx(ux), dyx = dFdy(ux), dxy = dFdx(uy), dyy = dFdy(uy), dxz = dFdx(uz), dyz = dFdy(uz);
+    vec3 w = pow(a, vec3(mix(24.0, 2.0, clamp(uSkinBlend, 0.0, 1.0))));
+    if (uSkinBlend <= 0.0) w = a.x >= a.y && a.x >= a.z ? vec3(1, 0, 0) : (a.z >= a.y ? vec3(0, 0, 1) : vec3(0, 1, 0));
+    w /= max(w.x + w.y + w.z, 1e-5);
+    vec4 c = vec4(0.0);
+    if (w.x > 0.001) c += w.x * skin_sample(cx, ux, dxx, dyx);
+    if (w.y > 0.001) c += w.y * skin_sample(cy, uy, dxy, dyy);
+    if (w.z > 0.001) c += w.z * skin_sample(cz, uz, dxz, dyz);
+    return c;
+}
+
 // A picture tiled over the world, as a wall or a floor wears it: laid on
 // the plane the surface most faces, upright on walls.
 vec2 world_uv() {
@@ -363,6 +435,13 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
 // smooth gradient dithered finely, not the steps of a fixed grid. The disc
 // reaches `uShadowSoft` times two texels, with a slope-scaled bias. What is
 // left in the darkest shadow is `uShadowFloor`.
+// Sixteen points of a spiral (the golden angle round, the square root out),
+// turned for each pixel by one angle: soft, and no seam of a pattern.
+const vec2 kSpiral[16] = vec2[16](vec2(0.176777, 0.000000), vec2(-0.225772, 0.206826), vec2(0.034558, -0.393771), vec2(0.284571, 0.371173),
+    vec2(-0.522223, -0.092374), vec2(0.494695, -0.314685), vec2(-0.165466, 0.615525), vec2(-0.315562, -0.607594),
+    vec2(0.684642, 0.250030), vec2(-0.712256, 0.294009), vec2(0.343354, -0.733729), vec2(0.253731, 0.808932),
+    vec2(-0.764746, -0.443186), vec2(0.897134, -0.197233), vec2(-0.547507, 0.778772), vec2(-0.126487, -0.976090));
+
 float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     float spread = max(uShadowSoft, 0.5);
     // Looked up a little off the surface, along its normal, by about as many
@@ -379,20 +458,30 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
-    float bias = 0.00006;
-    float turn = ign(gl_FragCoord.xy) * 6.2831853;
-    vec2 reach = 2.4 * spread * uShadowTexel;
-    float sum = 0.0;
-    for (int i = 0; i < 16; ++i) {
-        float a = float(i) * 2.3999632 + turn;
-        vec2 off = vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / 16.0) * reach;
-        sum += texture(uShadowMaps, vec4(proj.xy + off, float(layer), proj.z - bias));
-    }
     // Towards the edge of the map, the shadow fades out rather than stopping
     // on a line: a sun's box round the viewer has an edge a lamp's cone does
     // not, and far off is where it would show.
     float edge = smoothstep(0.82, 0.98, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
-    return mix(mix(floor_, 1.0, sum / 16.0), 1.0, edge);
+    if (edge >= 1.0) return 1.0;
+    float bias = 0.00006;
+    float turn = ign(gl_FragCoord.xy) * 6.2831853;
+    float c = cos(turn), s = sin(turn);
+    mat2 spin = mat2(c, s, -s, c) * 2.4 * spread;
+    vec2 texel2 = uShadowTexel;
+    // Four, across the spiral, first: wholly lit or wholly in shadow there,
+    // it is so all through - only an edge between (a penumbra) takes all
+    // sixteen.
+    float sum = 0.0;
+    for (int i = 3; i < 16; i += 4) sum += texture(uShadowMaps, vec4(proj.xy + spin * kSpiral[i] * texel2, float(layer), proj.z - bias));
+    float k;
+    if (sum < 0.001 || sum > 3.999) {
+        k = sum * 0.25;
+    } else {
+        for (int i = 0; i < 16; ++i)
+            if ((i & 3) != 3) sum += texture(uShadowMaps, vec4(proj.xy + spin * kSpiral[i] * texel2, float(layer), proj.z - bias));
+        k = sum / 16.0;
+    }
+    return mix(mix(floor_, 1.0, k), 1.0, edge);
 }
 
 // A sun's shadow, close up and far: its wide map reaches over the whole of
@@ -601,14 +690,18 @@ void main() {
     }
     float rough_mod;
     vec3 albedo = surface_albedo(rough_mod);
+    float relief_h = -1.0;  // how high a skin's paint stands here, if it says
     if (uTexMix > 0.0) {
         vec2 uv = uScreenUV > 0.5 ? (gl_FragCoord.xy / uViewport - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4))
                 : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
-        vec4 texel = texture(uTex, uv);
+        vec4 texel = uSkin > 0.5 && uSkin < 1.5 && uSkinFramed > 0.5 ? skin_texel() : texture(uTex, uv);
+#ifdef SG_CUTOUT
         if (uCutout > 0.5 && texel.a < 0.5) discard;
+#endif
         vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texel.rgb;
+        if (uSkinRelief > 0.0) relief_h = texel.a * uSkinRelief;
         if (uUntone > 0.5) {
             // A picture already developed - a world drawn in its own look -
             // is taken back through the tone curve (ACES, solved for its
@@ -638,6 +731,15 @@ void main() {
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
+    if (relief_h >= 0.0) {
+        // Bent by the paint's relief, from how its height changes across the
+        // screen (Mikkelsen's surface gradient): no tangents, any projection.
+        vec3 dpx = dFdx(vWorld), dpy = dFdy(vWorld);
+        vec3 r1 = cross(dpy, n), r2 = cross(n, dpx);
+        float det = dot(dpx, r1);
+        vec3 grad = sign(det) * (dFdx(relief_h) * r1 + dFdy(relief_h) * r2);
+        n = normalize(abs(det) * n - grad);
+    }
     if (mSurface > 17.5 && mSurface < 18.5 && n.y > 0.5) {
         // Waves: the slope of a few long swells and shorter chop, each a
         // travelling sine, crossing; the short ones fade with distance
@@ -693,12 +795,16 @@ void main() {
             float square = 1.0 / (1.0 + 2.0 * dist * dist);
             atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, vLit, toLight, false);
         }
-        if (atten <= 0.0) continue;
+        // A lamp that gives this point nothing - behind it, outside its cone,
+        // too far - costs it nothing either.
+        if (atten * cone <= 1e-5 || dot(n, l) <= 0.0) continue;
         vec3 h = normalize(l + v);
 
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
-        if (ndl > 0.0 && i < uShadowCount) {
+        // (Only where the lamp reaches: outside its cone it adds nothing,
+        // and its shadow there is nothing.)
+        if (ndl > 0.0 && cone > 0.0 && i < uShadowCount) {
             float fl = uLightFloor[i] < 0.0 || uStraddle > 0.5 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }
@@ -776,8 +882,11 @@ void main() {
     vec3 to_frag = vWorld - uViewPos;
     float fog = 1.0 - exp(-uFogDensity * length(to_frag));
     float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
-    vec3 haze = uFogColor + uSunColor * toward * 0.25;
-    color = mix(color, haze, clamp(fog, 0.0, 0.85));
+    // Air that takes all at last is the background too: as far as it goes,
+    // what is seen is what is beyond the last thing drawn.
+    vec3 haze = uFogColor + uSunColor * toward * 0.25 * (1.0 - uFogFull);
+    fog = clamp(fog, 0.0, mix(0.85, 1.0, uFogFull));
+    color = mix(color, haze, fog);
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
@@ -789,7 +898,7 @@ void main() {
         vec3 there = texture(uSeamTex, gl_FragCoord.xy / uViewport).rgb;
         color = mix(there, color, smoothstep(0.0, uSeamAt.w, into));
     }
-    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - clamp(fog, 0.0, 0.85)));
+    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - fog));
 })";
     return source.c_str();
 }

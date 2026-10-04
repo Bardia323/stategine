@@ -87,8 +87,31 @@ auto GLWorldView::query_bounds(const RoomMatrix& local) const -> DrawBound {
     return bound;
 }
 
-std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Frustum& view) {
-    auto& plan=draw_plans_[&room]; plan.unbounded.clear(); plan.portals.clear();
+std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Frustum& view,const gl::Vec3* shift) {
+    auto& plan=draw_plans_[&room];
+    if(shift && plan.framed) {
+        const gl::Vec3 o=*shift;
+        Frustum back=view;
+        for(auto& p:back.planes) p.offset+=p.normal.x*o.x+p.normal.y*o.y+p.normal.z*o.z;
+        auto visible=plan.visibility.visible(back);
+        const auto& elements=room.elements();
+        visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) {
+            const auto& b=plan.bounds[i];
+            const gl::Vec3 c=b.centre+o;
+            if(lod_least_>0.0f && elements[i].id!=highlight_) {
+                const gl::Vec3 away=c-cam_eye_;
+                const float d2=gl::dot(away,away),r=(b.radius-0.05f)/1.5f;
+                if(r*lod_px_*r*lod_px_<lod_least_*lod_least_*d2) return true;
+            }
+            for(const auto& p:view.planes)
+                if(static_cast<float>(p.normal.x)*c.x+static_cast<float>(p.normal.y)*c.y+static_cast<float>(p.normal.z)*c.z+static_cast<float>(p.offset)<-b.radius) return true;
+            return false;
+        }),visible.end());
+        visible.insert(visible.end(),plan.unbounded.begin(),plan.unbounded.end());
+        std::sort(visible.begin(),visible.end());
+        return visible;
+    }
+    plan.unbounded.clear(); plan.portals.clear();
     std::vector<spatial::Index::Entry> bounds;
     const auto& elements=room.elements();
     bool same_frame=plan.framed;
@@ -96,6 +119,7 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
     plan.bounds.resize(elements.size());
     const auto lists=draw_lists(room);
     plan.unbounded=lists.unbounded;plan.portals=lists.portals;
+    bool moved=!same_frame || plan.indexed!=lists.solids.size();
     for(const auto i:lists.solids) {
         const auto& e=elements[i];
         auto& placement=placed_of(room,e);
@@ -103,10 +127,12 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
         auto& bound=plan.bounds[i];
         if(!same_frame || bound.element!=&e || bound.stamp!=placement.stamp) {
             bound=query_bounds(placement.box);bound.element=&e;bound.stamp=placement.stamp;
+            moved=true;
         }
         bounds.push_back({i,bound.bounds});
     }
-    plan.visibility.update(std::move(bounds));
+    // (The index is the things' bounds: while none moved, it stands.)
+    if(moved) plan.visibility.update(std::move(bounds)), plan.indexed=lists.solids.size(), ++times_.indices_built;
     auto visible=plan.visibility.visible(view);
     // Preserve the original float sphere test after conservative BVH pruning.
     visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) {
@@ -130,7 +156,11 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
 
 bool GLWorldView::declared_world(const State& host,const Element& portal,const Spatial3D& guest) const {
     const StateGraph* g=graph_?graph_:(root_?root_->graph_:nullptr);
-    return g && render::declared_world(*g,host,portal,guest);
+    if(!g) return false;
+    auto& memo=world_access_[&portal];
+    if(memo.graph==g && memo.host==&host && memo.guest==&guest && memo.revision==g->revision() && memo.stamp==portal.params.stamp()) return memo.allowed;
+    memo={g,&host,&guest,g->revision(),portal.params.stamp(),render::declared_world(*g,host,portal,guest)}; ++times_.graph_queries;
+    return memo.allowed;
 }
 bool GLWorldView::declared_feed(Key portal,const Spatial3D& guest) const {
     const StateGraph* g=graph_?graph_:(root_?root_->graph_:nullptr);

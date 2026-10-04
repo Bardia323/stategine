@@ -50,6 +50,13 @@ struct Stride {
 bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist = nullptr,
          Key* what = nullptr);
 
+// What stops whoever stands at `walker`'s eye in `space`: they are put
+// clear of every solid - their feet, their middle and their head each a ball
+// `radius` round - and let through what a doorway opens. The one answer to
+// "what stops a walker", for every place: the walk below takes it, and so
+// does any place that moves its walker its own way.
+void stand_clear(const State& space, Element& walker, double radius = 0.3);
+
 // One step of `walker` through `space`, pulled by `pull` (fields_of(space),
 // solved), `dt` long, ending at `time`. It reads and writes the walker's
 // params only: x y z (its eye), vx vy vz, its ground (stand_*), yaw and pitch

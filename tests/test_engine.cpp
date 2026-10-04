@@ -1208,6 +1208,23 @@ void test_text_and_store() {
     check(sg::to_text(b).substr(sg::to_text(b).find('\n')) == src.substr(src.find('\n')),
           "and written out again, it is the same text");
     check(!sg::from_text(b, "element x mesh\n  k q:1\n", &why) && !why.empty(), "a line it cannot read is refused");
+    {
+        // Written again and again, element by element as they change: the
+        // very text to_text writes, whatever changed in between.
+        sg::StateText text;
+        bool same = text(a) == sg::to_text(a);
+        m.params.set(sg::keys::x, 2.5);
+        same = same && text(a) == sg::to_text(a);
+        a.element(a.camera_id()).alive = true;
+        a.mesh("lamp", 0, 0, 0);
+        same = same && text(a) == sg::to_text(a);
+        a.remove_element(sg::Key{"lamp"});
+        a.params().set("far", 12.0);
+        same = same && text(a) == sg::to_text(a);
+        const auto skip = [](const sg::Element& e) { return e.id != sg::Key{"desk top"}; };
+        same = same && text(a, skip) == sg::to_text(a, skip);
+        check(same, "a state's text kept element by element is the text written whole");
+    }
 
     // Texts in files: read once, written only when changed, re-read when
     // changed from outside.

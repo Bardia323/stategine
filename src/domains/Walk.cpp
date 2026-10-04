@@ -140,6 +140,30 @@ bool ray_solid(const Solid& d, V3 o, V3 dir, double& t, V3& n) {
     return true;
 }
 
+// One pass of standing clear: each ball of the walker out of each solid it is
+// in, but where a doorway opens what it touches. What it stopped against, if
+// asked: its velocity loses what ran into them, `landed` says one was under
+// its feet, `stopped_low` that one stopped its feet from the side.
+void clear_pass(const std::vector<Solid>& solids, const std::vector<Opening>& open, V3& eye, const V3& up, double height, double r,
+                V3* v = nullptr, bool* landed = nullptr, bool* stopped_low = nullptr) {
+    for (const Solid& d : solids)
+        for (const double down : {height - r, (height - r) * 0.5, 0.0}) {
+            V3 n;
+            double depth;
+            const V3 at = eye - up * down;
+            if (!push_out(d, at, r, n, depth)) continue;
+            if (opened(open, at - n * (r - depth))) continue;  // a doorway lets them through what it opens
+            const double rise = spatial::dot(n, up);
+            if (stopped_low && down == height - r && rise < 0.6 && rise > -0.3) *stopped_low = true;
+            eye = eye + n * depth;
+            if (v) {
+                const double into = spatial::dot(*v, n);
+                if (into < 0) *v = *v - n * into;
+            }
+            if (landed && rise > 0.6) *landed = true;
+        }
+}
+
 // The turn of `m` taken `angle` further about `axis`.
 M3 turned(const M3& m, V3 axis, double angle) { return spatial::axis_angle(spatial::normalize(axis), angle) * m; }
 }  // namespace
@@ -159,6 +183,17 @@ bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, V
     if (dist) *dist = best;
     if (what) *what = id;
     return true;
+}
+
+void stand_clear(const State& space, Element& walker, double radius) {
+    const double height = walker.params.num("height", 1.65);
+    const Pose ground = standing(walker);
+    const V3 up = v3(up_of(ground));
+    V3 eye = v3(position_of(walker));
+    const std::vector<Solid> solids = solids_of(space, vd(eye), height + 1.0);
+    const std::vector<Opening> open = openings_of(space);
+    for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, height, radius);
+    set_position(walker, vd(eye));
 }
 
 std::vector<field::Source> fields_of(const State& s) {
@@ -290,22 +325,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
         const V3 moved = eye + travel * (1.0 / steps);
         eye = moved;
         bool stopped_low = false;
-        for (int pass = 0; pass < 2; ++pass)
-            for (const Solid& d : solids)
-                for (const double down : {height - r, (height - r) * 0.5, 0.0}) {
-                    V3 n;
-                    double depth;
-                    const V3 at = eye - up * down;
-                    if (!push_out(d, at, r, n, depth)) continue;
-                    // A doorway lets them through what it opens.
-                    if (opened(open, at - n * (r - depth))) continue;
-                    const double rise = spatial::dot(n, up);
-                    if (down == height - r && rise < 0.6 && rise > -0.3) stopped_low = true;
-                    eye = eye + n * depth;
-                    const double into = spatial::dot(v, n);
-                    if (into < 0) v = v - n * into;
-                    if (rise > 0.6) landed = true;
-                }
+        for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, height, r, &v, &landed, &stopped_low);
         // Stopped at the feet by something low, on one's feet: step up onto
         // it, if there is room, and down onto its top.
         if (stopped_low && (grounded || landed) && clear_at(moved + up * kStep)) {

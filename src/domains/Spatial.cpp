@@ -415,6 +415,9 @@ void carry_camera(const Pose& here, const Pose& there, const Element& src, Eleme
         const Vec3d v = turn(Pose{{}, at.yaw, at.pitch, at.roll}, {src.params.num(keys::vx), src.params.num(keys::vy), src.params.num(keys::vz)});
         dst.params.set(keys::vx, v.x).set(keys::vy, v.y).set(keys::vz, v.z);
     }
+    // And whether it is on its feet: a walker that was striding is striding
+    // still, not falling, the step after it is through.
+    if (src.params.has(Key{"grounded"})) dst.params.set(Key{"grounded"}, src.params.num(Key{"grounded"}));
     dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
 }
 

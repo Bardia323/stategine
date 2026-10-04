@@ -52,6 +52,8 @@ out vec2 vUV;
 out vec3 vLocal;
 out vec3 vObject;
 out vec3 vObjNormal;
+out vec3 vRoomNormal;
+out vec3 vTexScale;
 
 void main() {
     mat4 model = uInstanced == 1 ? uFrame * iLocal : uModel;
@@ -68,6 +70,10 @@ void main() {
     vec3 scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
     vObject = aPos * scale;
     vObjNormal = aNormal;
+    // In the room's frame, as a surface's normal goes when it is scaled.
+    vec3 texScale = vec3(length(texModel[0].xyz), length(texModel[1].xyz), length(texModel[2].xyz));
+    vTexScale = texScale;
+    vRoomNormal = mat3(texModel) * (aNormal / max(texScale * texScale, vec3(1e-8)));
     vNormal = normalize(mat3(model) * aNormal);
     vUV = aUV;
     for (int i = 0; i < MAX_BOUNDS; ++i)

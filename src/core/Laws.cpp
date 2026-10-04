@@ -1,5 +1,8 @@
 #include "sg/core/Laws.hpp"
 
+#include <array>
+#include <cmath>
+
 namespace sg {
 
 std::string Violation::str() const {
@@ -979,12 +982,41 @@ void report(std::vector<Violation>& out, const std::string& where, const std::st
     out.push_back(std::move(v));
 }
 
+namespace {
+// A turn, yaw, pitch and roll (R = Ry Rz Rx), as the rotation it is: the
+// same turn has more than one name (upside down is pitch half round, or yaw
+// and roll half round), and a seam carries the turn, not the name.
+std::array<double, 9> turn_of(const Element& e) {
+    const double y = e.params.num(keys::yaw), p = e.params.num(keys::pitch), r = e.params.num(keys::roll);
+    const double cy = std::cos(y), sy = std::sin(y), cp = std::cos(p), sp = std::sin(p), cr = std::cos(r), sr = std::sin(r);
+    // Ry * Rz * Rx, row by row.
+    return {cy * cp, -cy * sp * cr + sy * sr, cy * sp * sr + sy * cr,
+            sp,      cp * cr,                 -cp * sr,
+            -sy * cp, sy * sp * cr + cy * sr, -sy * sp * sr + cy * cr};
+}
+bool turned(const Element& e) { return e.params.has(keys::yaw) || e.params.has(keys::pitch) || e.params.has(keys::roll); }
+}  // namespace
+
 void agree(std::vector<Violation>& out, const std::string& where, const std::string& lhs, const std::string& rhs, const Element& image, const Element* have, const std::string& what) {
     if (!have) {
         report(out, where, lhs, rhs, what + " is missing on the far side");
         return;
     }
     for (const auto& kv : image.params) {
+    // Its turn, as a rotation.
+    const bool turn = turned(image);
+    if (turn) {
+        const auto a = turn_of(image), b = turn_of(*have);
+        double worst = 0;
+        for (int i = 0; i < 9; ++i) worst = std::max(worst, std::fabs(a[i] - b[i]));
+        if (worst > 1e-6)
+            report(out, where, lhs, rhs,
+                   what + ".yaw " + std::to_string(image.params.num(keys::yaw)) + " pitch " + std::to_string(image.params.num(keys::pitch)) + " roll " +
+                       std::to_string(image.params.num(keys::roll)) + " is carried across, but another turn is there: yaw " +
+                       std::to_string(have->params.num(keys::yaw)) + " pitch " + std::to_string(have->params.num(keys::pitch)) + " roll " +
+                       std::to_string(have->params.num(keys::roll)));
+    }
+        if (turn && (kv.first == keys::yaw || kv.first == keys::pitch || kv.first == keys::roll)) continue;
         if (!have->params.has(kv.first)) {
             report(out, where, lhs, rhs, what + "." + kv.first.str() + " is " + to_string(kv.second) +
                                              " carried across, and not there at all");

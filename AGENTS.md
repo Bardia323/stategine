@@ -128,6 +128,13 @@ transport reads more than its two elements is declared
 only what changed. Static geometry is `Spatial3D::fixture` (no arrow, so it
 costs the laws and the frame nothing) - `mesh` is for things that move. Check
 large states' arrows count: laws cost arrows x elements.
+The renderer keeps the same rule for every room, so a new one is cheap without
+tuning: what a frame needs from a world (lights, casters, its visibility index,
+a look's uniforms, a portal's declaration, a feed's picture) is kept by what it
+is made from - data versions, the graph's revision, poses - and made again only
+when that moves. A still world's frame does none of it (`FrameTimes` counts,
+`sg_culling_gl` holds it); never key a cache on where something is when it can
+be keyed on what it is (a moving doorway once made new shadow maps every frame).
 
 The engine keeps to one rule for this: **strictness in the model, checking in
 the tools, dispatch compiled.** What is true of the model is refused when it is
@@ -163,6 +170,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `Seam::wraps`, `nests`, `period_x/y/z` | a space glued to itself (torus, portal pair, genus two); worlds inside worlds by a ball; a space that wraps in an axis | rings excused by hand; planets in one coordinate frame; tiled copies placed by hand |
 | `Room` (`domains/Room.hpp`) | a room: a floor plan of any shape (`sg::plan`), openings as data on its walls, walls laid round them by one rule (shell, face, skirting, filler), and what hangs on an opening going with it | walls, openings or floor plans of your own; cutting walls round doors by hand |
 | `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
+| `Texture` (`domains/Texture.hpp`) | a picture things wear, a state of its own: six cells, the thing seen from each way of each axis (no unwrap); generated (`define`), photographed or painted over (`layer`, followed); worn by being embedded in a mesh or a thing of parts; `projection_guide` is the map to paint over | UVs, a texture path or colour in a mesh's params, a picture per part, an unwrap |
 | `LookState` (`domains/Look.hpp`) | how a state is shown: passes and uniforms, worn by `sg::wear`, faded by `fade` | shader params, tint, fog, grade kept in a state's own params |
 | `Camera` (`domains/Camera.hpp`) | a lens that sees a world by filming it (`sg::film`), its feed shown by a screen | a hand-made eye, a second view matrix, a render-to-texture written by hand |
 | `ConsoleState` (`domains/Console.hpp`) | scrollback, an input line, `submit` and `clear` | your own log buffer or command line |

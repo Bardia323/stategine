@@ -39,8 +39,10 @@ int main() {
     const auto realm=sg::to_text(graph.state("realm"));
     const auto inside=sg::to_text(graph.state("inside"));
     const auto facts=sg::dsl::facts(graph);
-    for(int i=0;i<3;++i) view.render(dynamic_cast<const sg::Spatial3D&>(host),320,180);
+    view.render(dynamic_cast<const sg::Spatial3D&>(host),320,180);
     check(view.times().feed_views==2,"projected portal and its nested 3D feed both render");
+    for(int i=0;i<2;++i) view.render(dynamic_cast<const sg::Spatial3D&>(host),320,180);
+    check(view.times().feed_views==0,"and while nothing they show changes, neither is drawn again");
     check(snapshot==sg::to_text(host) && realm==sg::to_text(graph.state("realm")) && inside==sg::to_text(graph.state("inside")) && facts==sg::dsl::facts(graph),"rendering changes no state or declared graph structure");
     engine.fire({"host.aim",sg::Params{}.set("target_x",100.0)}); engine.fire(sg::Key{"host.project"}); engine.tick(1.0/60);
     view.bind_feed("projection",dynamic_cast<const sg::Spatial3D*>(graph.find("realm")),320,180);

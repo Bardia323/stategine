@@ -148,6 +148,13 @@ public:
         int shadow_maps = 0;           // shadow layers drawn again (most frames, none)
         int shadow_casters = 0;        // and the casters they were drawn with, summed
         double signature = 0;          // ms spent seeing whether anything that casts has moved
+        double lights_ms = 0, layers_ms = 0;
+        double part[6] = {};
+        // Work a frame did that a still world needs only once: lights read,
+        // casters listed, visibility indices built, a look's uniforms found by
+        // name, questions put to the graph. Each is kept until what it was
+        // made from changes - cheap by construction, for any room.
+        int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
     };
     void set_timing(bool on) { timing_ = on; }
     // The state the viewer is attending to - an interface they sit at, say.
@@ -313,10 +320,12 @@ private:
     };
     Rect screen_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const;
     // The views through the doorways of `world`, seen from `eye` through the
-    // doorways `path` names - as deep as the world says (`views_deep`), and
-    // only those the view before leaves open (`seen`): planned, for
-    // draw_views to draw this frame's best of.
-    void view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen);
+    // doorways `path` names - as deep into it as the world says
+    // (`views_deep`), counted from where it was come into (`from`), and only
+    // those the view before leaves open (`seen`) - never back through the
+    // doorway it was come in by (`back`): planned, for draw_views to draw
+    // this frame's best of.
+    void view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back);
     // Of every view planned this frame, the biggest on the screen - as many
     // as the room in view says (`views_most`) - drawn before whatever shows it.
     void draw_views(const Spatial3D& world, float aspect);
@@ -520,9 +529,13 @@ private:
         std::vector<DrawBound> bounds;
         gl::Mat4 frame;
         bool framed=false;
+        std::size_t indexed=0;  // how many things its index holds: made again only when one moved, came or went
     };
     std::unordered_map<const Spatial3D*, DrawPlan> draw_plans_;
-    std::vector<std::size_t> plan_draws(const Spatial3D& room, const Frustum& view);
+    // What of a room the view sees. A copy of a space that wraps (`shift`,
+    // how far it is from the room as just planned) is that room moved: its
+    // things are those, seen by the view moved back - nothing planned again.
+    std::vector<std::size_t> plan_draws(const Spatial3D& room, const Frustum& view, const gl::Vec3* shift = nullptr);
     DrawBound query_bounds(const RoomMatrix& local) const;
     bool declared_world(const State& host, const Element& portal, const Spatial3D& guest) const;
     bool declared_feed(Key portal, const Spatial3D& guest) const;
@@ -534,6 +547,22 @@ private:
         bool allowed=false;
     };
     mutable std::unordered_map<const Element*, SurfaceAccess> surface_access_;
+    // The same for a world shown in a portal, and a portal's signal: asked
+    // many times a frame, answered once while the graph and the portal stand.
+    struct WorldAccess {
+        const StateGraph* graph = nullptr;
+        const State* host = nullptr;
+        const Spatial3D* guest = nullptr;
+        uint64_t revision = 0, stamp = 0;
+        bool allowed = false;
+    };
+    mutable std::unordered_map<const Element*, WorldAccess> world_access_;
+    struct SignalOf {
+        const StateGraph* graph = nullptr;
+        uint64_t revision = 0, stamp = 0;
+        Key signal;
+    };
+    mutable std::unordered_map<const Element*, SignalOf> signal_memo_;
 
     // The one place a room's placement is applied.
     void set_model(const RoomMatrix& local);
@@ -554,12 +583,31 @@ private:
     struct Batch {
         const gl::Mesh* mesh;
         std::vector<float> data;  // gl::Mesh::kInstanceFloats a thing
+        BoundSurface* skin = nullptr;  // a texture all of them wear, each in its own frame
     };
+    // A mesh wearing a texture in its own frame goes with the others of its
+    // shape wearing the same one: its frame is its own matrix.
+    bool batch_skinned(const State& st, const Element& e);
+    // Its matrix and material, as an instance of its batch (kept until it moves).
+    void append_record(const State& st, const Element& e, Batch& b);
+    void upload_skin(BoundSurface& bound);
     // A thing is drawn with the others of its shape unless it wears a skin (a
     // surface bound to it) or is being pointed at.
     bool instanceable(const Element& e) const;
+    // What a mesh wears and in whose frame: itself, or a thing it hangs from
+    // (its `parent`s) that a texture is embedded in - all its parts as one.
+    const Element* skin_holder(const State& st, const Element& e) const;
+    struct SkinFrame {
+        uint64_t frame = ~uint64_t{0};
+        gl::Mat4 to_unit;
+        gl::Vec3 size{1, 1, 1};
+    };
+    mutable std::unordered_map<const Element*, SkinFrame> skin_frames_;
+    // The room's frame to the unit box of the thing that wears a texture: a
+    // mesh's own box, or the box round all of a thing's parts, in its turn.
+    const SkinFrame& skin_frame(const State& st, const Element& holder) const;
     void batch_crate(const State& st, const Element& e);
-    Batch& batch_for(const gl::Mesh& mesh);
+    Batch& batch_for(const gl::Mesh& mesh, BoundSurface* skin = nullptr);
     // One more of `mesh` to draw, at `local` in the room being drawn.
     void batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::Vec3& albedo, float roughness, float surface,
                float emissive, float highlight, float mirror);
@@ -677,6 +725,11 @@ private:
     LookState standard_;
     std::unordered_map<Key, std::pair<std::string, std::string>> builtin_;
     std::unordered_map<std::string, std::unique_ptr<gl::Program>> programs_;
+    // Each program's sources, and its twin for pictures cut out of their
+    // cards (SG_CUTOUT): the same program, shading after the depth test.
+    std::unordered_map<const gl::Program*, std::pair<std::string, std::string>> sources_of_;
+    std::unordered_map<const gl::Program*, const gl::Program*> cutout_;
+    const gl::Program* cutout_of(const gl::Program& p);
     std::unordered_map<Key, std::unordered_map<Key, PassProgram>> resolved_;
     LookFader fader_{standard_};
     Mix post_{{{&standard_, 1.0f}}};
@@ -707,12 +760,22 @@ private:
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.
     std::vector<Batch> batches_;  // kept from frame to frame, emptied as drawn
+    bool batch_frames_ = false;   // a doorway's frame goes with the others of its shape (a copy of a space that wraps)
     gl::InstanceBuffer instances_;
 
     struct ShadowSet {
         gl::ShadowArray array;  // a layer for each light that casts, made as wanted
         uint64_t sig[kShadowMaps] = {};
+        gl::Mat4 vp[kShadowMaps];  // the box each map was drawn for
+        uint64_t used = 0;  // the frame a view last asked for it
     };
+    // How many maps the views seen through other views may still draw this
+    // frame: past it, a map stays as it was last drawn (with the box it was
+    // drawn for), and a view whose maps were never drawn is lit without
+    // them until they are - a frame or two, never a stall.
+    static constexpr int kNestedShadowMaps = 8;
+    static constexpr int kOwnShadowMaps = 3;  // drawn again a frame, at most, in a view of the eye's own (stale ones wait their turn)
+    int shadow_budget_ = kNestedShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
     static uint64_t mix_bits(uint64_t h, float f);
@@ -728,6 +791,36 @@ private:
         uint64_t where = 0;
     };
     std::vector<Caster> casters_of(const std::vector<PlacedRoom>& rooms);
+    // The lights and the casters of rooms are functions of their data (and
+    // of the worlds their doorways open onto): kept by it, so the views of
+    // one world in a frame - and every frame nothing changed in - read them
+    // once.
+    struct LightsMemo {
+        std::vector<Light> lights;
+        std::size_t shadowed = 0;
+    };
+    std::unordered_map<uint64_t, LightsMemo> lights_memo_;
+    std::unordered_map<uint64_t, std::vector<Caster>> casters_memo_;
+    mutable std::unordered_map<const State*, std::pair<uint64_t, uint64_t>> stamps_;  // a state's data version, this frame
+    uint64_t stamp_of(const State& s) const;
+    uint64_t rooms_key(const std::vector<PlacedRoom>& rooms) const;
+    uint64_t worlds_stamp() const;
+    // A look's uniforms as a program last took them - where each is, what it
+    // was set to - kept by the look's data and its mix: set again straight
+    // from this, no name looked up, while neither changes.
+    struct UniformSet {
+        gl::GLint at;
+        int n;
+        float v[3];
+    };
+    std::unordered_map<uint64_t, std::vector<UniformSet>> uniform_memo_;
+    // A doorway's frame and casing, as drawn: kept while it stands where it did.
+    struct Body {
+        uint64_t stamp = ~uint64_t{0};
+        bool window = false;
+        std::vector<DrawInstance> parts;
+    };
+    std::unordered_map<const Element*, Body> bodies_;
     // Whether a caster can lie across the rays of a map: inside the volume the
     // light sees (a thing outside it shades nothing in it), and, for light let
     // in through a doorway, on this side of the opening.
@@ -756,6 +849,7 @@ private:
         bool from_graph = false, seen = false;
         gl::RenderTarget out[2];
         int front = 0;  // the one shown; the other is drawn into
+        uint64_t drawn_of = 0;  // what its picture was drawn from (feed_key): drawn again only when that moves
         const gl::RenderTarget& shown() const { return out[front]; }
         std::unique_ptr<GLWorldView> view;
     };
@@ -765,6 +859,18 @@ private:
     // picture to each of the screen's, so it is never seen coarser than it is
     // made, and never smaller than a few dozen.
     static int feed_detail(float shown, int declared);
+    // Everything a feed's picture is made from: its world's data and look,
+    // its time there, the eye it is seen from, its size, and the worlds its
+    // own doorways open onto. A still world on a wall is drawn once.
+    uint64_t feed_key(const Feed& f) const;
+    // Everything the scene pass of a picture is drawn from: what it draws
+    // (things, walls, lamps, doorways, their anchors, the ground, the eye),
+    // its world's params, the look's scene and shadow passes, its time, its
+    // size, the pictures shown in it, and the worlds its doorways open onto.
+    // A feed whose scene is as it was is only developed again (post): light
+    // falling on a painting changes how it is seen, not what it shows.
+    uint64_t scene_key(const std::vector<PlacedRoom>& rooms, int w, int h) const;
+    uint64_t scene_drawn_ = 0;
     // The view on the screen, for a view it draws a feed or a far room with:
     // the feeds are that one's, and every view shows the same pictures.
     GLWorldView* root_ = nullptr;
@@ -796,7 +902,30 @@ private:
     struct Nested {
         gl::RenderTarget ms, target;
         uint64_t frame = 0;
+        // Where on the screen the view was drawn (its doorway's rect, in the
+        // eye's frame, to the pixel), in the corner of `target` it filled.
+        Rect rect{-1, -1, 1, 1};
+        float fx = 1, fy = 1;
+        // Its shadow maps, made with it: kept while the same view keeps
+        // this picture (`owner`, the way the eye came to it), drawn again
+        // when another view is given it.
+        std::unique_ptr<ShadowSet> shadows;
+        std::string owner;
     };
+    // A view seen through another is lit by maps of this size, made with the
+    // pool: it is never more of the screen than the doorway it is seen in.
+    static constexpr int kNestedShadowSize = 1024;
+    // The least of the screen (of 4, the whole) a view onto the eye's own world is drawn for.
+    static constexpr float kLeastOwnView = 0.012f;
+    ShadowSet* slot_shadows_ = nullptr;  // the maps of the view being drawn, if it has its own
+    // The part of the screen the drawing now going on is (the eye's own frame,
+    // -1..1; all of it but for a view drawn where its doorway is), and its
+    // viewport in pixels.
+    Rect sub_{-1, -1, 1, 1};
+    float vp_w_ = 1, vp_h_ = 1;
+    // A picture of the screen's part `r`, drawn into the corner (fx, fy) of
+    // its target, sampled where it is seen from the drawing now going on.
+    void sample_screen(const Rect& r, float fx, float fy) const;
     // A view lives only within its frame: the views drawn share a fixed set of
     // pictures, handed out by rank, made with the screen's other targets -
     // never in the middle of a frame (the stall of a first step through).
@@ -818,6 +947,7 @@ private:
         const WorldPortal* wp;
         int depth;
         float area;
+        Rect seen;  // its doorway's rect on the screen, cut by the views it is seen through
     };
     std::vector<ViewJob> jobs_;  // this frame's views through doorways seen through doorways
     std::string path_;          // the way the eye came, while a view through doorways is drawn
@@ -837,7 +967,7 @@ private:
     Key highlight_;
     bool timing_ = false;
     const State* attend_ = nullptr;
-    FrameTimes times_;
+    mutable FrameTimes times_;  // (counted from const questions too)
 };
 
 }  // namespace sg::render
