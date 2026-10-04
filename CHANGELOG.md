@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A modeller (`sg::Modeler`, `sg/domains/Modeler.hpp`): a shape made from a recipe kept as text, one operation a line - boxes, cylinders, cones, spheres, tori, capsules, lathes, extrusions, prisms, lofts, tubes, sweeps and imported `.obj` files, placed, turned, scaled, arrayed, mirrored, cut from one another (`sub`, `and`, blended by a radius) and named as macros with parameters; a library of the macros a castle is made of (tower, wall, battlement, arch, gatehouse, stairs, roof, column, pine, rock). Its mesh is a function of the recipe alone, memoised on it; a pure union stays the exact faces it was made of, and only what a cut touches is meshed from a signed field by dual contouring, so corners stay sharp and the result is closed. Lines go in at its ports (`model.op`, `.set`, `.undo`, `.clear`), as a Paint takes strokes; parts are apart by material (`mat=`), for a texture each. The language is in `docs/modeler.md`.
 - A ball window is glass: it reflects what is round it (`reflect`, 1 unless it says), by Fresnel - faint face on, all but whole at its rim - over the world it shows. Its reflection is a probe (`gl::CubeMap`): what is round it seen every way from its surface out, a face drawn again a frame while it moves, every eighth while it stands.
 - What moves is culled on its own, out of a room's visibility index: snow falling, a thing carried, no longer makes the index of everything that stands again.
 
