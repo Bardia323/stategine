@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A ring that does not close is a shape, not a fault: `Cover::monodromy(g)` gives, for every generating ring (each overlap that closes a loop, and each that wraps), what going once round it does - its composite functor, read by the laws already here: what it moves (`identity_defects`), whether objects come back as others (`permutes`: the space itself goes round), and how many times round until it is the identity (`order`; 0, not within 24). Any domain, any parameter. **Breaking**: `cocycle_defects` (and so `descent_defects`) names only a ring that is no automorphism - round one way and back the other not where you were; a ring that moves, turns or swaps is in `monodromy`. `sections` still glues only a cover whose rings close, or wrap.
 - A ball window is glass: it reflects what is round it (`reflect`, 1 unless it says), by Fresnel - faint face on, all but whole at its rim - over the world it shows. Its reflection is a probe (`gl::CubeMap`): what is round it seen every way from its surface out, a face drawn again a frame while it moves, every eighth while it stands.
 - What moves is culled on its own, out of a room's visibility index: snow falling, a thing carried, no longer makes the index of everything that stands again.
 

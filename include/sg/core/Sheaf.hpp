@@ -9,10 +9,12 @@
 //   separatedness   on each overlap, going across and back is the identity.
 //                   A doorway seen from either side is the same doorway.
 //
-//   cocycle         around any loop of overlaps, the composite is the
-//                   identity. Otherwise the loop has holonomy: walk the ring
-//                   of rooms and you come back somewhere else, and there is no
-//                   global object to glue to, only a seam.
+//   cocycle         around any loop of overlaps, the composite is an
+//                   automorphism: round and back is where you were. The
+//                   identity, and the pieces glue into one chart; otherwise
+//                   the loop has monodromy - walk the ring of rooms and you
+//                   come back moved, turned, swapped - and that is the
+//                   space's shape, named (`Monodromy`), not a fault.
 //
 // Both conditions are statements that some composite *is the identity*, and
 // measuring the gap between a composite and the identity is exactly what
@@ -22,8 +24,9 @@
 // arrows of a cover.
 //
 // What it buys, concretely: you cannot quietly build a space that does not
-// close up. `descent_defects` names the seam before anything is drawn, and
-// `Cover::sections` will not glue a cover that has one.
+// agree with itself, nor one stranger than you meant. `descent_defects` names
+// the seam before anything is drawn, `monodromy` says what shape the rest
+// is, and `Cover::sections` glues only a space that closes.
 #pragma once
 
 #include <cmath>
@@ -89,6 +92,33 @@ inline bool is_lossless(const StateGraph& g, const Functor& round) {
 // happens to be about.
 std::vector<std::string> interface_defects(const StateGraph& g);
 
+// A ring's monodromy: what going once round it does. Going round is a
+// composite of the cover's own transitions, so it is a functor from the
+// ring's state to itself - nothing new, and held to the laws already here:
+// whether it is the identity (`identity_defects`), and how many times round
+// it takes until it is. A ring that is not the identity is not a mistake -
+// it is the shape of the space: a corridor that comes back on itself further
+// on, a room you go round four times before you are where you began, a hall
+// of mirrors, a world inside itself. What it moves says which: an object
+// that comes back as another is the space itself going round; a parameter
+// that comes back changed is what lives in it, twisted. Any domain, any
+// parameter: the functor says, the cover only reads it.
+//
+// What is said of one ring is said of two: their commutator - round one,
+// round the other, back round the first, back round the second - is a
+// composite like any other, and the identity when they commute.
+struct Monodromy {
+    static constexpr int kMostOrder = 24;
+    std::string ring;  // the states round it, in order
+    bool wraps = false;  // a ring the cover says is its shape (Overlap::wraps)
+    // Times round until it is the identity: 1, it closes; 0, not within kMostOrder.
+    int order = 1;
+    bool permutes = false;            // objects come back as others
+    std::vector<std::string> moves;   // what comes back changed, once round
+    bool trivial() const { return order == 1; }
+    std::string str() const;
+};
+
 class Cover {
 public:
     Overlap& add(Key name, Key u, Key v, Key u_to_v, Key v_to_u);
@@ -105,28 +135,36 @@ public:
     // overlap and every loop of the cover, however long, is held to it.
     std::vector<std::string> descent_defects(const StateGraph& g) const;
 
-    // Loops that do not close: walk the ring and you arrive somewhere else.
+    // Loops that are not automorphisms: round one way and back the other is
+    // not where you were. A ring that is an automorphism but not the identity
+    // is the space's shape, not a defect - `monodromy` names it.
     //
     // Every loop, not those up to some length. Grow a tree over each connected
     // piece of the cover from a root; each overlap the tree does not use closes
     // exactly one loop - out along the tree, across it, back along the tree -
     // and every loop of the cover is made of these. So when each of them is
-    // the identity (and separatedness makes going there and back cancel),
-    // every loop is: one check per overlap, not one per path.
+    // an automorphism, every loop is: one check per overlap, not one per path.
     //
-    // The trees grow only along overlaps that do not wrap, so every loop made
-    // of those alone is held to closing; an overlap that wraps is the space's
-    // own shape - a generator of its loops - and is held only to going across
-    // and back being the identity.
+    // The trees grow only along overlaps that do not wrap; an overlap that
+    // wraps is the space's own shape - a generator of its loops - and is a
+    // ring of its own.
     std::vector<std::string> cocycle_defects(const StateGraph& g) const;
+
+    // --- the shape of the space -----------------------------------------------
+    // What each generating ring does: one per overlap that closes a loop, and
+    // one per overlap that wraps. All trivial, the cover is ordinary space
+    // cut into pieces; otherwise this says which rings are not, and how.
+    std::vector<Monodromy> monodromy(const StateGraph& g) const;
 
     // --- gluing -------------------------------------------------------------------
     // The composite transition from `root` to every state it can reach: the
     // change of coordinates that expresses that state's local data in the
     // root's terms. This is the glued section - and it is only well defined
-    // because descent holds, so descent is asked first: a cover that fails it
-    // glues to nothing, and its defects are put in `seams` if asked for. The
-    // section covers every piece joined to the root, however far.
+    // because descent holds and every ring that does not wrap is trivial (one
+    // chart of a space whose rings move what goes round them would have to be
+    // in two places at once), so both are asked first: a cover that fails glues to
+    // nothing, and why is put in `seams` if asked for. The section covers
+    // every piece joined to the root, however far.
     std::vector<std::pair<Key, Functor>> sections(const StateGraph& g, Key root,
                                                   std::vector<std::string>* seams = nullptr) const;
 
@@ -141,6 +179,11 @@ private:
     };
 
     Tree grow(const StateGraph& g, Key root) const;
+
+    // Every generating ring of the cover: its overlap, its name, and its loop
+    // functor round each way.
+    template <typename Fn>
+    void each_ring(const StateGraph& g, Fn&& fn) const;
 
     // The states of the cover, in the order they were first named - so the
     // same cover is always walked, and reported, the same way.

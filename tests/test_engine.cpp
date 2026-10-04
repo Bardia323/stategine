@@ -701,7 +701,8 @@ void test_seams() {
         // What must agree is the whole: three rooms in a ring, each doorway
         // back to back, close - go round and you are where you started. Move
         // one doorway on one side and every doorway is still sound, but the
-        // ring no longer closes, and the cover says so.
+        // ring no longer closes: round it you are moved on. That is a space
+        // of its own (it winds), and the cover says which.
         sg::StateGraph r;
         sg::Atlas atlas;
         const char* names[3] = {"ring_a", "ring_b", "ring_c"};
@@ -712,10 +713,22 @@ void test_seams() {
         }
         for (int i = 0; i < 3; ++i) atlas.glue(sg::Key{std::string("d") + std::to_string(i)}, names[i], "next", names[(i + 1) % 3], "prev");
         check(sg::descent_defects(atlas, r).empty(), "a ring of rooms that closes is one space");
+        auto ring = sg::as_cover(atlas, r).monodromy(r);
+        check(ring.size() == 1 && ring[0].trivial(), "and its one ring is trivial");
         r.state("ring_b").element("next").params.set(sg::keys::x, 2.0);
-        bool cycle = false;
-        for (const auto& d : sg::descent_defects(atlas, r)) cycle = cycle || d.find("cycle") != std::string::npos;
-        check(cycle, "a doorway moved on one side only: the ring no longer closes, and the cover names it");
+        check(sg::descent_defects(atlas, r).empty(), "a doorway moved on one side only is no defect: the ring is still an automorphism");
+        ring = sg::as_cover(atlas, r).monodromy(r);
+        for (const auto& m : ring) std::printf("        %s\n", m.str().c_str());
+        check(ring.size() == 1 && ring[0].order == 0 && !ring[0].permutes && !ring[0].moves.empty(),
+              "but round it you are moved on, and never come home: the cover names it");
+        std::vector<std::string> why;
+        check(sg::as_cover(atlas, r).sections(r, "ring_a", &why).empty() && !why.empty(), "and one chart cannot hold it");
+        // Turned a quarter instead: four times round, home.
+        r.state("ring_b").element("next").params.set(sg::keys::x, 0.0).set(sg::keys::yaw, 1.5707963267948966);
+        ring = sg::as_cover(atlas, r).monodromy(r);
+        for (const auto& m : ring) std::printf("        %s\n", m.str().c_str());
+        check(ring.size() == 1 && ring[0].order == 4 && sg::descent_defects(atlas, r).empty(),
+              "a doorway turned a quarter: round the ring four times, and you are home");
     }
     {
         // A torus: one square room, its east wall glued to its west and its
@@ -734,6 +747,12 @@ void test_seams() {
         const auto defects = sg::descent_defects(atlas, r);
         for (const auto& d : defects) std::printf("        %s\n", d.c_str());
         check(defects.empty() && r.validate().empty(), "a torus: one room glued to itself both ways, its seams wrapping, is one space");
+        {
+            const auto ms = sg::as_cover(atlas, r).monodromy(r);
+            bool shape = ms.size() == 2;
+            for (const auto& m : ms) shape = shape && m.wraps && m.order == 0 && !m.permutes;
+            check(shape, "and its two rings are its shape: each moves you on, for ever");
+        }
         sg::Element cam = room.camera();
         cam.params.set(sg::keys::x, 7.9).set(sg::keys::y, 1.6).set(sg::keys::z, 4.0).set(sg::keys::yaw, 0.0);
         sg::Element out = cam;
@@ -874,21 +893,21 @@ void test_descent() {
     check(to_w && near(probe.element("x").params.num("v"), 8.0),
           "and the glued section is the composite of the steps");
 
-    // Close the ring the wrong way: u -> v -> w -> u must be the identity, and
-    // 3 + 5 - 7 is not zero. That is holonomy, and there is nothing to glue.
+    // Close the ring another way: u -> v -> w -> u, and 3 + 5 - 7 is not
+    // zero. Round it, v is one more: that is monodromy - a space that winds,
+    // not a fault - and the cover names it.
     sg::Cover bad_ring;
     link_shift(g, bad_ring, "u", "v", 3.0);
     link_shift(g, bad_ring, "v", "w", 5.0);
     link_shift(g, bad_ring, "w", "u", 7.0);
-    const auto seams = bad_ring.descent_defects(g);
-    bool named_cycle = false;
-    for (const auto& d : seams)
-        if (d.find("cycle") != std::string::npos) named_cycle = true;
-    check(!seams.empty() && named_cycle, "a ring that does not close is reported as a seam");
-    // And a ring with a seam has no glued section: gluing asks descent first.
+    check(bad_ring.descent_defects(g).empty(), "a ring that does not close is still a cover: each overlap agrees");
+    const auto winds = bad_ring.monodromy(g);
+    check(winds.size() == 1 && winds[0].order == 0 && !winds[0].moves.empty() && winds[0].moves[0].find("x.v") != std::string::npos,
+          "and its ring is named, with what it moves");
+    // But one chart cannot hold it: gluing asks that every ring close.
     std::vector<std::string> why;
     check(bad_ring.sections(g, "u", &why).empty() && !why.empty(),
-          "a cover that fails descent glues to nothing, and says why");
+          "a cover whose ring does not close glues to nothing, and says why");
 
     // Close it correctly and the seam goes away.
     sg::Cover good_ring;
@@ -909,9 +928,9 @@ void test_descent() {
     sg::Cover long_ring, long_chain;
     for (int i = 0; i < 6; ++i) link_shift(h, long_ring, six[i], six[(i + 1) % 6], 1.0);
     for (int i = 0; i < 5; ++i) link_shift(h, long_chain, six[i], six[i + 1], 1.0);
-    bool named = false;
-    for (const auto& d : long_ring.descent_defects(h)) named = named || d.find("cycle") != std::string::npos;
-    check(named, "a ring of six that does not close is a seam");
+    const auto six_round = long_ring.monodromy(h);
+    check(six_round.size() == 1 && !six_round[0].trivial() && long_ring.descent_defects(h).empty(),
+          "a ring of six that does not close is named, however long");
     const auto far = long_chain.sections(h, "p0");
     const sg::Functor* to_p5 = nullptr;
     for (const auto& sec : far)
@@ -920,6 +939,61 @@ void test_descent() {
     if (to_p5) to_p5->apply(h.state("p0"), probe5);
     check(far.size() == 6 && to_p5 && near(probe5.element("x").params.num("v"), 5.0),
           "and a section reaches every piece, however far from the root");
+}
+
+// A ring that is not the identity is a space of its own shape, and the cover
+// names it: two pieces joined twice, the second join carrying things by some
+// map and back by its inverse, so each overlap agrees and only the ring
+// does not close.
+using Carry = std::function<void(const sg::Element&, sg::Element&)>;
+std::vector<sg::Monodromy> twice_joined(std::vector<std::pair<sg::Key, sg::Key>> objects, Carry there, Carry back) {
+    sg::StateGraph g;
+    for (const char* id : {"ha", "hb"}) {
+        auto& s = g.add<sg::State>(sg::Key{id});
+        s.add_element("p", "thing").params.set("v", 1.0).set("w", 0.0);
+        s.add_element("q", "thing").params.set("v", 2.0).set("w", 0.0);
+    }
+    auto& same = g.set_functor(sg::Functor{"ha->hb", "ha", "hb"});
+    auto& home = g.set_functor(sg::Functor{"hb->ha", "hb", "ha"});
+    auto& out = g.set_functor(sg::Functor{"ha=>hb", "ha", "hb"});
+    auto& in = g.set_functor(sg::Functor{"hb=>ha", "hb", "ha"});
+    for (sg::Key k : {sg::Key{"p"}, sg::Key{"q"}}) same.on_object(k, k), home.on_object(k, k);
+    for (const auto& [a, b] : objects) out.on_object(a, b, there), in.on_object(b, a, back);
+    sg::Cover cover;
+    cover.add("first", "ha", "hb", "ha->hb", "hb->ha");
+    cover.add("second", "ha", "hb", "ha=>hb", "hb=>ha");
+    for (const auto& d : cover.descent_defects(g)) std::printf("        %s\n", d.c_str());
+    check(cover.descent_defects(g).empty(), "each overlap agrees, so the ring is an automorphism");
+    const auto m = cover.monodromy(g);
+    for (const auto& r : m) std::printf("        %s\n", r.str().c_str());
+    return m;
+}
+
+void test_monodromy() {
+    const std::vector<std::pair<sg::Key, sg::Key>> each{{"p", "p"}, {"q", "q"}}, swapped{{"p", "q"}, {"q", "p"}};
+    const Carry as_is = [](const sg::Element& s, sg::Element& d) { d.params = s.params; };
+    const auto turned = [](double by) {
+        return Carry([by](const sg::Element& s, sg::Element& d) {
+            d.params = s.params;
+            d.params.set("w", std::remainder(s.params.num("w") + by, 6.283185307179586));
+        });
+    };
+    auto m = twice_joined(each, as_is, as_is);
+    check(m.size() == 1 && m[0].trivial(), "joined twice the same way: the ring closes");
+
+    m = twice_joined(each, turned(1.5707963267948966), turned(-1.5707963267948966));
+    check(m[0].order == 4 && !m[0].permutes, "a heading turned a quarter round it: four times round, home");
+
+    m = twice_joined(each, [](const sg::Element& s, sg::Element& d) { d.params = s.params; d.params.set("v", -s.params.num("v")); },
+                     [](const sg::Element& s, sg::Element& d) { d.params = s.params; d.params.set("v", -s.params.num("v")); });
+    check(m[0].order == 2, "reflected round it: twice round, home");
+
+    m = twice_joined(each, [](const sg::Element& s, sg::Element& d) { d.params = s.params; d.params.set("v", s.params.num("v") + 0.25); },
+                     [](const sg::Element& s, sg::Element& d) { d.params = s.params; d.params.set("v", s.params.num("v") - 0.25); });
+    check(m[0].order == 0 && !m[0].moves.empty(), "moved on round it: never home, and what moves is named");
+
+    m = twice_joined(swapped, as_is, as_is);
+    check(m[0].permutes && m[0].order == 2, "p and q change places round it: the space itself goes round, and twice is home");
 }
 
 // A round trip that drops a parameter outright has lost it, as surely as one
@@ -2061,6 +2135,7 @@ int main() {
     test_seams();
     test_view_portal_validation();
     test_descent();
+    test_monodromy();
     test_lossless_counts_what_is_dropped();
     test_atlas_is_a_cover();
     test_any_domain();

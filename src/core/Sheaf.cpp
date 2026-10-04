@@ -100,6 +100,17 @@ std::vector<std::string> interface_defects(const StateGraph& g) {
     return out;
 }
 
+std::string Monodromy::str() const {
+    std::string s = ring + ": ";
+    if (trivial()) return s + "closes";
+    s += order ? "comes home after " + std::to_string(order) + " times round"
+               : "does not come home within " + std::to_string(kMostOrder) + " times round";
+    if (permutes) s += "; the space itself goes round (objects come back as others)";
+    if (!moves.empty()) s += "; once round, " + moves.front().substr(moves.front().find(": ") + 2);
+    if (moves.size() > 1) s += " (and " + std::to_string(moves.size() - 1) + " more)";
+    return s;
+}
+
 Overlap& Cover::add(Key name, Key u, Key v, Key u_to_v, Key v_to_u) {
     if (name.empty()) name = Key{u.str() + "^" + v.str()};
     overlaps_.push_back(Overlap{name, u, v, u_to_v, v_to_u});
@@ -143,28 +154,73 @@ std::vector<std::string> Cover::descent_defects(const StateGraph& g) const {
     return out;
 }
 
-std::vector<std::string> Cover::cocycle_defects(const StateGraph& g) const {
-    std::vector<std::string> out;
+template <typename Fn>
+void Cover::each_ring(const StateGraph& g, Fn&& fn) const {
     std::unordered_map<Key, bool> reached;
     for (Key root : states_in_order()) {
         if (reached[root] || !g.find(root)) continue;
         const Tree t = grow(g, root);
         for (const auto& kv : t.to) reached[kv.first] = true;
-        for (std::size_t oi : t.closing) {
+        // The overlaps that close a loop, and those the cover says wrap: each
+        // is one generator of the piece's loops.
+        std::vector<std::size_t> rings = t.closing;
+        for (std::size_t oi = 0; oi < overlaps_.size(); ++oi)
+            if (overlaps_[oi].wraps && t.to.count(overlaps_[oi].u) && t.to.count(overlaps_[oi].v)) rings.push_back(oi);
+        for (std::size_t oi : rings) {
             const Overlap& o = overlaps_[oi];
-            const Functor* across = transition(g, o, o.u);
-            if (!across) continue;
-            Functor loop = Functor::compose(Functor::compose(t.to.at(o.u), *across),
-                                            t.back.at(o.v));
+            // (By name: a piece glued to itself has u and v the same.)
+            const Functor* across = g.functor(o.u_to_v);
+            const Functor* over = g.functor(o.v_to_u);
+            if (!across || !over) continue;
             std::string ring;
             for (const Key& p : t.path.at(o.u)) ring += p.str() + " -> ";
             const auto& home = t.path.at(o.v);
             for (auto it = home.rbegin(); it != home.rend(); ++it)
                 ring += it->str() + (std::next(it) == home.rend() ? "" : " -> ");
-            loop.rename(Key{"loop." + ring});
-            for (const auto& d : identity_defects(g, loop, "cycle " + ring)) out.push_back(d);
+            if (o.wraps) ring += " (by " + o.name.str() + ")";
+            // Round it, and round it the other way.
+            Functor loop = Functor::compose(Functor::compose(t.to.at(o.u), *across), t.back.at(o.v), Key{"loop." + ring});
+            Functor back = Functor::compose(Functor::compose(t.to.at(o.v), *over), t.back.at(o.u), Key{"loop.back." + ring});
+            fn(o, ring, loop, back);
         }
     }
+}
+
+std::vector<Monodromy> Cover::monodromy(const StateGraph& g) const {
+    std::vector<Monodromy> out;
+    each_ring(g, [&](const Overlap& o, const std::string& ring, const Functor& loop, const Functor&) {
+        Monodromy m;
+        m.ring = ring;
+        m.wraps = o.wraps;
+        m.moves = identity_defects(g, loop, "cycle " + ring);
+        loop.for_each_object([&](Key src, Key image) { m.permutes = m.permutes || (!image.empty() && image != src); });
+        // Its order: how many times round until every composite is the identity.
+        m.order = 0;
+        if (m.moves.empty()) {
+            m.order = 1;
+        } else {
+            Functor power = loop;
+            for (int n = 2; n <= Monodromy::kMostOrder; ++n) {
+                power = Functor::compose(power, loop, Key{"loop." + ring + "^" + std::to_string(n)});
+                if (identity_defects(g, power, "power").empty()) {
+                    m.order = n;
+                    break;
+                }
+            }
+        }
+        out.push_back(std::move(m));
+    });
+    return out;
+}
+
+std::vector<std::string> Cover::cocycle_defects(const StateGraph& g) const {
+    // A ring is an automorphism when going round it one way and back the other
+    // is where you were: then it is the space's shape, however strange. One
+    // that is not loses or confuses what goes round it, and glues to nothing.
+    std::vector<std::string> out;
+    each_ring(g, [&](const Overlap&, const std::string& ring, const Functor& loop, const Functor& back) {
+        for (auto& d : identity_defects(g, Functor::compose(loop, back), "cycle " + ring + " and back")) out.push_back(std::move(d));
+    });
     return out;
 }
 
@@ -172,6 +228,10 @@ std::vector<std::pair<Key, Functor>> Cover::sections(const StateGraph& g, Key ro
     std::vector<std::pair<Key, Functor>> out;
     if (!g.find(root)) return out;
     std::vector<std::string> defects = descent_defects(g);
+    // One chart of a space whose rings move what goes round them would have to
+    // be in two places at once; a ring the cover says wraps is its shape.
+    for (const Monodromy& m : monodromy(g))
+        if (!m.wraps && !m.trivial()) defects.push_back("cycle " + m.str());
     if (!defects.empty()) {
         if (seams) *seams = std::move(defects);
         return out;
@@ -202,7 +262,7 @@ auto Cover::grow(const StateGraph& g, Key root) const -> Tree {
             const Functor* home = transition(g, o, there);
             if (!step || !home) continue;  // descent names a missing transition
             seen[oi] = true;
-            if (t.to.count(there)) continue;  // closes a loop: checked by cocycle
+            if (t.to.count(there)) continue;  // closes a loop: its monodromy
             in_tree[oi] = true;
             t.to.emplace(there, Functor::compose(t.to.at(here), *step,
                                                  Key{root.str() + "->" + there.str()}));
