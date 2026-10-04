@@ -351,8 +351,10 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             make_root_view(root_pool_.emplace_back(), target_w_, target_h_);
         }
         RootView& view = root_pool_[root_views++];
+        host_air_ = air_of(world);
         draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
                    /*depth=*/1, kNear, back ? back->id.key() : Key{}, clips);
+        host_air_.on = false;
         wp.drawn = frame_count_;
         path_.clear();
         view.ms.blit_to(view.target);
@@ -938,6 +940,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // house is nothing to it - and it is drawn with those alone.
         const Light& li = lights[layer_light[i]];
         const bool with_eye = li.sun && !li.pinned;
+        // Which light this layer holds now: a map is that light's, and one
+        // that was another's (the lights came in another order) is drawn now,
+        // never left standing as some other lamp's shadow.
+        uint64_t of = (mix_bits(1469598103934665603ULL, li.sun ? 1.0f : 0.0f) ^ li.gate) * 1099511628211ULL;
+        for (float f : {li.color.x, li.color.y, li.color.z, li.power, li.extent, near_of[layer_light[i]] == static_cast<float>(i) ? 1.0f : 0.0f})
+            of = mix_bits(of, f);
+        if (!li.sun) of = mix_bits(mix_bits(mix_bits(of, li.pos.x), li.pos.y), li.pos.z);
+        const bool same = maps.of[i] == of;
         const Frustum volume = frustum_of(light_vp[i]);
         uint64_t sig = rooms_at ^ (0x9E3779B97F4A7C15ULL * (i + 1));
         for (float f : light_vp[i].m) sig = mix_bits(sig, f);
@@ -950,12 +960,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (maps.sig[i] == sig) continue;
         // A view seen through another view draws within the frame's budget.
-        if (depth > 1 && shadow_budget_ <= 0 && !with_eye) {
+        const bool may_wait = same && !with_eye;
+        if (depth > 1 && shadow_budget_ <= 0 && may_wait) {
             if (maps.sig[i] == 0) unshadowed = true;  // never drawn: nothing to cast with yet
             else light_vp[i] = maps.vp[i];            // as last drawn, with its own box
             continue;
         }
-        if (depth <= 1 && maps.sig[i] != 0 && !with_eye) {
+        if (depth <= 1 && maps.sig[i] != 0 && may_wait) {
             if (own_budget <= 0) {
                 light_vp[i] = maps.vp[i];
                 continue;
@@ -965,6 +976,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (depth > 1) --shadow_budget_;
         maps.sig[i] = sig;
         maps.vp[i] = light_vp[i];
+        maps.of[i] = of;
         ++times_.shadow_maps;
         times_.shadow_casters += static_cast<int>(sees.size());
         if (!caster_ready) {
@@ -1069,6 +1081,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uScreenUV", 0.0f);
         p.set("uViewport", vp_w_, vp_h_);
         p.set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
+        if (host_air_.on && !clips.empty()) {
+            const HalfSpace& door = clips.front();
+            p.set("uHostFog", host_air_.density, host_air_.start, host_air_.full, 1.0f);
+            p.set("uHostFogColor", host_air_.color);
+            p.set("uDoorPlane", static_cast<float>(door.normal.x), static_cast<float>(door.normal.y), static_cast<float>(door.normal.z),
+                  static_cast<float>(door.offset));
+        } else {
+            p.set("uHostFog", 0.0f, 0.0f, 0.0f, 0.0f);
+        }
     };
 
     // A room's own settings on the program drawing it (in use as scene_):
@@ -1209,6 +1230,18 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
     if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
     set_frame(Pose{});
+}
+
+GLWorldView::HostAir GLWorldView::air_of(const Spatial3D& world) const {
+    const LookState& look = look_of(world);
+    HostAir a;
+    a.on = true;
+    a.density = static_cast<float>(value(look, passes::scene, Key{"uFogDensity"}, 0.0));
+    a.start = static_cast<float>(value(look, passes::scene, Key{"uFogStart"}, 0.0));
+    a.full = static_cast<float>(value(look, passes::scene, Key{"uFogFull"}, 0.0));
+    a.color = {static_cast<float>(value(look, passes::scene, Key{"uFogColor.x"}, 0.0)), static_cast<float>(value(look, passes::scene, Key{"uFogColor.y"}, 0.0)),
+               static_cast<float>(value(look, passes::scene, Key{"uFogColor.z"}, 0.0))};
+    return a;
 }
 
 void GLWorldView::fit(Nested& n, int w, int h, bool anew) {
@@ -1639,8 +1672,17 @@ void GLWorldView::batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::V
 
 void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
     bool any = false;
+    // A box's far side is never seen from outside it: in the scene it is not
+    // drawn, or far off - where depth is coarser than a wall is thick - the
+    // two sides fight for every pixel. (Only the box: its faces are wound
+    // outward; other shapes are drawn whole. The shadow pass culls as it
+    // likes: its own, set before it.)
     for (Batch& b : batches_) {
         if (b.data.empty()) continue;
+        if (scene) {
+            if (b.mesh == &cube_) gl::glEnable(gl::GL_CULL_FACE), gl::glCullFace(gl::GL_BACK);
+            else gl::glDisable(gl::GL_CULL_FACE);
+        }
         if (!any) {
             p.set("uInstanced", 1);
             p.set("uFrame", frame_matrix_);
@@ -1669,6 +1711,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
         b.data.clear();
     }
     if (any) p.set("uInstanced", 0);
+    if (scene) gl::glDisable(gl::GL_CULL_FACE);
 }
 
 bool GLWorldView::is_sprite(const Element& e) {
@@ -1947,8 +1990,10 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
         n.rect = Rect{px0 / W * 2 - 1, py0 / H * 2 - 1, px1 / W * 2 - 1, py1 / H * 2 - 1};
         n.fx = (px1 - px0) / static_cast<float>(n.target.width()), n.fy = (py1 - py0) / static_cast<float>(n.target.height());
         sub_ = n.rect;
+        host_air_ = air_of(*j.host);
         draw_world(seen(*j.wp->world), camera_of(j.there), aspect, n.target, j.depth + 1, kNear,
                    back ? back->id.key() : Key{}, {portal_clip(*j.host, *j.portal, j.from, j.there)});
+        host_air_.on = false;
         sub_ = Rect{-1, -1, 1, 1};
         n.frame = frame_count_;
         ++times_.portal_views;

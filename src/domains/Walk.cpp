@@ -262,12 +262,23 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     V3 eye = v3(position_of(walker));
     V3 v{walker.params.num(keys::vx), walker.params.num(keys::vy), walker.params.num(keys::vz)};
     bool grounded = walker.params.num("grounded", 0.0) > 0.5;
+    // Stepped up onto a stair, it stands that much lower (`stoop`), its feet
+    // already on the step, and straightens on the clock: its eye rises with
+    // it, never the whole step in a frame.
+    double stoop = walker.params.num("stoop", 0.0);
+    {
+        const double was = stoop;
+        stoop *= std::exp(-10.0 * dt);
+        if (stoop < 1e-4) stoop = 0.0;
+        eye = eye + (ground * V3{0, 1, 0}) * (was - stoop);
+    }
+    double body = height - stoop;
 
     // The pull where its middle is, and the ground turned to stand against
     // it - about its feet, easing (a share of the way each second, on its
     // feet more than in the air: never a step it would be seen to take).
-    const V3 feet = eye - up * (height - r);
-    const V3 g = pull.evaluate(eye - up * (height * 0.5), time - dt, {{"gravity", field::Response::Acceleration, 1.0}}).acceleration;
+    const V3 feet = eye - up * (body - r);
+    const V3 g = pull.evaluate(eye - up * (body * 0.5), time - dt, {{"gravity", field::Response::Acceleration, 1.0}}).acceleration;
     if (spatial::length(g) > 1e-6) {
         const V3 want = spatial::normalize(-g);
         const double c = std::clamp(spatial::dot(up, want), -1.0, 1.0), angle = std::acos(c);
@@ -277,7 +288,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
             const double share = 1.0 - std::exp(-(grounded ? 8.0 : 3.0) * dt);
             ground = spatial::orthonormal(turned(ground, axis, angle * share));
             up = ground * V3{0, 1, 0};
-            eye = feet + up * (height - r);
+            eye = feet + up * (body - r);
         }
     }
 
@@ -303,7 +314,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
 
     // Moved, in steps no longer than half its radius, and stopped by what is
     // solid: its feet, its middle and its head each a ball.
-    const std::vector<Solid> solids = solids_of(space, vd(eye), spatial::length(v * dt) + height + 2.0);
+    const std::vector<Solid> solids = solids_of(space, vd(eye), spatial::length(v * dt) + body + 2.0);
     const std::vector<Opening> open = openings_of(space);
     const V3 travel = v * dt;
     const int steps = std::max(1, static_cast<int>(std::ceil(spatial::length(travel) / (r * 0.5))));
@@ -312,7 +323,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     // its feet, its middle or its head (but what a doorway opens).
     const auto clear_at = [&](V3 e) {
         for (const Solid& d : solids)
-            for (const double down : {height - r, (height - r) * 0.5, 0.0}) {
+            for (const double down : {body - r, (body - r) * 0.5, 0.0}) {
                 V3 n;
                 double depth;
                 const V3 at = e - up * down;
@@ -326,12 +337,16 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
         const V3 moved = eye + travel * (1.0 / steps);
         eye = moved;
         bool stopped_low = false;
-        for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, height, r, &v, &landed, &stopped_low);
+        for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, body, r, &v, &landed, &stopped_low);
         // Stopped at the feet by something low, on one's feet: step up onto
-        // it, if there is room, and down onto its top.
+        // it, if there is room, and down onto its top - the feet, at once;
+        // the eye stays where it was, the walker that much lower (stoop).
         if (stopped_low && (grounded || landed) && clear_at(moved + up * kStep)) {
-            eye = moved + up * kStep;
-            for (double down = 0.0; down < kStep && clear_at(eye - up * 0.02); down += 0.02) eye = eye - up * 0.02;
+            V3 top = moved + up * kStep;
+            for (double down = 0.0; down < kStep && clear_at(top - up * 0.02); down += 0.02) top = top - up * 0.02;
+            const double rise = spatial::dot(top - moved, up), taken = std::min(rise, std::max(0.0, 0.6 * height - stoop));
+            stoop += taken, body = height - stoop;
+            eye = moved + up * (rise - taken);
             landed = true;
             const double along_up = spatial::dot(v, up);
             if (along_up < 0) v = v - up * along_up;
@@ -342,7 +357,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     // In a space that wraps, back in the cell round the origin.
     set_position(walker, wrapped(space, vd(eye)));
     walker.params.set(keys::vx, v.x).set(keys::vy, v.y).set(keys::vz, v.z);
-    walker.params.set(keys::yaw, yaw).set(keys::pitch, pitch).set("grounded", grounded ? 1.0 : 0.0);
+    walker.params.set(keys::yaw, yaw).set(keys::pitch, pitch).set("grounded", grounded ? 1.0 : 0.0).set("stoop", stoop);
     // (Level ground is written as a heading: set_standing.)
     double gy, gp, gr;
     spatial::to_euler(ground, gy, gp, gr);

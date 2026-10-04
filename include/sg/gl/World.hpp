@@ -771,6 +771,7 @@ private:
         gl::ShadowArray array;  // a layer for each light that casts, made as wanted
         uint64_t sig[kShadowMaps] = {};
         gl::Mat4 vp[kShadowMaps];  // the box each map was drawn for
+        uint64_t of[kShadowMaps] = {};  // and the light it is of (a map is a light's, not a layer's)
         uint64_t used = 0;  // the frame a view last asked for it
     };
     // How many maps the views seen through other views may still draw this
@@ -910,6 +911,15 @@ private:
     // viewport in pixels.
     Rect sub_{-1, -1, 1, 1};
     float vp_w_ = 1, vp_h_ = 1;
+    // The air of the world a view is seen from, while it is drawn: the way
+    // to what it shows goes through that air up to the doorway (uHostFog).
+    struct HostAir {
+        bool on = false;
+        float density = 0, start = 0, full = 0;
+        gl::Vec3 color{0, 0, 0};
+    };
+    HostAir host_air_;
+    HostAir air_of(const Spatial3D& world) const;
     // A picture of the screen's part `r`, drawn into the corner (fx, fy) of
     // its target, sampled where it is seen from the drawing now going on.
     void sample_screen(const Rect& r, float fx, float fy) const;

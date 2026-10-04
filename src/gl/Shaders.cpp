@@ -108,6 +108,9 @@ uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform float uFogStart;      // how far from the eye the air begins
+uniform vec4  uHostFog;       // seen through a doorway from another world: its air (density, start, full, and 1)
+uniform vec3  uHostFogColor;
+uniform vec4  uDoorPlane;     // and the doorway's plane, here: normal and offset
 uniform float uFogFull;       // 1: the air takes all at last (a space with no end); else at most 0.85 of it
 uniform vec3  uSky;           // ambient from above
 uniform vec3  uGround;        // ambient bounced from the floor
@@ -874,14 +877,24 @@ void main() {
     // on its way through the air.
     // (From `uFogStart` on: the air near the eye clear. Seen through a
     // doorway the eye is carried, so the distance is the whole way there.)
+    // Seen through a doorway from another world, the way here is that
+    // world's air up to the doorway (`uDoorPlane`) and this one's beyond:
+    // the far stretch fogged by this air, then the near one by the host's.
+    // (Through a doorway onto its own world the two are one air: the same.)
     vec3 to_frag = vWorld - uViewPos;
-    float fog = 1.0 - exp(-uFogDensity * max(length(to_frag) - uFogStart, 0.0));
+    float len = length(to_frag), t = 0.0;
+    if (uHostFog.w > 0.5) {
+        float dn = dot(uDoorPlane.xyz, to_frag / max(len, 1e-5));
+        if (abs(dn) > 1e-5) t = clamp(-(dot(uDoorPlane.xyz, uViewPos) + uDoorPlane.w) / dn, 0.0, len);
+    }
+    float fog = 1.0 - exp(-uFogDensity * max(len - max(t, uFogStart), 0.0));
     float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
     // Air that takes all at last is the background too: as far as it goes,
     // what is seen is what is beyond the last thing drawn.
     vec3 haze = uFogColor + uSunColor * toward * 0.25 * (1.0 - uFogFull);
     fog = clamp(fog, 0.0, mix(0.85, 1.0, uFogFull));
     color = mix(color, haze, fog);
+    if (uHostFog.w > 0.5) color = mix(color, uHostFogColor, clamp(1.0 - exp(-uHostFog.x * max(t - uHostFog.y, 0.0)), 0.0, mix(0.85, 1.0, uHostFog.z)));
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
