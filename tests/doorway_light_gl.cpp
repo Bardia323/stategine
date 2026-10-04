@@ -135,6 +135,20 @@ int main() {
     }
     const int edge = x90 - x10;
 
+    // At the threshold: the eye a hair before the doorway's plane, looking
+    // through it, sees the room beyond - as it does from a step back - in
+    // whatever frame it lands there.
+    near.element("pa").params.set("tunnel", 0.5).set("inset", 0.0);
+    // (A wall behind it, as a portal on a wall has: what shows if the view
+    // through the doorway is not drawn.)
+    near.fixture("behind", 7.0, -1.0, 0.0).params.set(sg::keys::sx, 6.0).set(sg::keys::sy, 6.0).set(sg::keys::sz, 0.2);
+    const auto through_at = [&](double gap) {
+        eye.params.set(sg::keys::x, 7.0).set(sg::keys::y, 1.2).set(sg::keys::z, 0.3 + gap).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, 0.0);
+        for (int i = 0; i < 3; ++i) view.render(near, W, H);
+        return floor_brightness(W, H, 0.4, 0.6);
+    };
+    const double step_back = through_at(0.03), hair = through_at(0.0005);
+    std::printf("through the doorway, 3 cm before it %.1f, half a millimetre %.1f\n", step_back, hair);
     std::printf("floor by the doorway: open %.1f, light = 0 %.1f, shut %.1f; half shut: left %.1f right %.1f\n", through,
                 none, shut, left, right);
     bool ok = true;
@@ -154,5 +168,6 @@ int main() {
     bool grows = swing.front() < none + 2.0 && swing[2] > none + 15.0;
     for (std::size_t i = 1; i < swing.size(); ++i) grows = grows && swing[i] >= swing[i - 1] - 3.0;
     check(grows, "a door opening lets the light in as it opens, more the wider it is");
+    check(std::abs(hair - step_back) < 6.0, "right at the threshold the doorway shows what lies beyond, as a step back");
     return ok ? 0 : 1;
 }

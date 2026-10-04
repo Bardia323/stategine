@@ -76,6 +76,11 @@ struct Seam {
     bool wraps = false;
 };
 
+// In how many dimensions a state is walked: its `walk_dims` if it says (a
+// world of three held to a plane says 2), else 3 for a space3d, 2 for a
+// space2d, 0 for what is not walked. A seam joins like to like (validate).
+int walked_dims(const State& s);
+
 // Whether a driven state's time goes on only while it is active - the room
 // you are in, and what is open in it - or always: what goes on in a room you
 // stepped out of (a door still swinging, a record still turning).

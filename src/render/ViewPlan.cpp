@@ -9,12 +9,11 @@ ViewCamera view_camera(const Element &c) {
     ViewCamera out;
     out.eye = position_of(c);
     out.forward = forward_of(c);
-    // Seen square on (`ortho`), the view stands back from the eye along the
-    // way it looks (`ortho_back`): what is beside the eye is seen, not cut.
-    if (c.params.num(Key{"ortho"}, 0.0) > 0.0) {
-        const double back = c.params.num(Key{"ortho_back"}, 40.0);
-        out.eye = {out.eye.x - out.forward.x * back, out.eye.y - out.forward.y * back, out.eye.z - out.forward.z * back};
-    }
+    // The view may stand back from the eye along the way it looks (`back`):
+    // seen square on (`ortho`), so what is beside the eye is seen, not cut;
+    // in depth, so a lens narrowing towards square on keeps what it frames.
+    const double back = c.params.num(Key{"back"}, c.params.num(Key{"ortho"}, 0.0) > 0.0 ? 40.0 : 0.0);
+    if (back != 0.0) out.eye = {out.eye.x - out.forward.x * back, out.eye.y - out.forward.y * back, out.eye.z - out.forward.z * back};
     out.fov = c.params.num(keys::fov, 70);
     const float roll = static_cast<float>(c.params.num(keys::roll));
     if (c.params.has(Key{"stand_w"})) {

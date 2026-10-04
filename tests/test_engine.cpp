@@ -1629,6 +1629,30 @@ void test_a_step_crosses_in_its_frame() {
           "carried there by the seam's own travel, where the step took it");
 }
 
+// A seam glues like to like: no doorway between a space walked in three
+// dimensions and one walked in two (that one is a surface, gone into as a
+// screen is). And what a doorway carries of an eye is the whole of it - the
+// lens too: an eye from a room of perspective is not a far camera's ortho.
+void test_seams_glue_like_to_like() {
+    sg::StateGraph bad;
+    bad.add<sg::Spatial3D>("hall").portal("frame", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265358979);
+    auto& flat = bad.add<sg::Spatial3D>("flat");
+    flat.params().set("walk_dims", 2.0);
+    flat.portal("door", {0.0, 1.5, 0.0}, 1.0, 2.0, 0.0);
+    bad.set_initial("hall");
+    sg::glue_doorway(bad, "doorway", "hall", "frame", "flat", "door");
+    bool refused = false;
+    for (const auto& e : bad.validate()) refused = refused || e.find("like to like") != std::string::npos;
+    check(refused, "a doorway between a space of three and one of two is refused, and told why");
+
+    sg::Element from = bad.state("hall").find("frame") ? static_cast<sg::Spatial3D&>(bad.state("hall")).camera() : sg::Element{};
+    from.params.set(sg::keys::x, 13.0).set(sg::keys::y, 1.6).set(sg::keys::z, 7.0).set(sg::keys::fov, 70.0);
+    sg::Element to = flat.camera();
+    to.params.set("ortho", 5.0);
+    sg::portal_carry(static_cast<sg::Spatial3D&>(bad.state("hall")).element("frame"), flat.element("door"))(from, to);
+    check(!to.params.has("ortho") && near(to.params.num(sg::keys::fov), 70.0), "a doorway carries the eye's lens with it, not the far camera's");
+}
+
 }  // namespace
 
 void test_adjunction_is_not_an_isomorphism() {
@@ -2015,6 +2039,7 @@ int main() {
     test_a_camera_is_a_state();
     test_the_view_crosses_seams();
     test_a_step_crosses_in_its_frame();
+    test_seams_glue_like_to_like();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }

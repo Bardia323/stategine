@@ -457,6 +457,12 @@ bool StateGraph::restore_default(Key id, bool guests, std::set<Key>& done) {
     return true;
 }
 
+int walked_dims(const State& s) {
+    if (s.params().has(Key{"walk_dims"})) return static_cast<int>(s.params().num(Key{"walk_dims"}));
+    const Key k = s.kind();
+    return k == Key{"space3d"} ? 3 : k == Key{"space2d"} ? 2 : 0;
+}
+
 std::vector<std::string> StateGraph::validate(bool reuse) const {
     std::vector<std::string> errors;
     for (const auto& t : transitions_) {
@@ -534,6 +540,13 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
         }
         if (sm.a == sm.b && !sm.wraps)
             errors.push_back("seam " + sm.name.str() + ": a state glued to itself is the shape of its space - say the seam wraps");
+        // A seam identifies like with like: two spaces walked in as many
+        // dimensions. A world of fewer is not glued to one of more - it is
+        // seen in it as a picture (an embedding) and gone into by a
+        // transition; one of more is come out into by a transition only.
+        if (const int da = walked_dims(*a), db = walked_dims(*b); da && db && da != db)
+            errors.push_back("seam " + sm.name.str() + ": " + sm.a.str() + " is walked in " + std::to_string(da) + " dimensions and " + sm.b.str() + " in " +
+                             std::to_string(db) + " - a seam glues like to like; see the fewer as a picture (an embedding) and go in by a transition");
         for (Key x : sm.boundary_a)
             if (!a->find(x)) errors.push_back("seam " + sm.name.str() + ": " + sm.a.str() + " has no " + x.str());
         for (Key y : sm.boundary_b)

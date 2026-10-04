@@ -275,6 +275,9 @@ private:
         Surface2D* surface = nullptr;
         gl::Texture texture;
         uint64_t revision = 0;
+        // The frame it was last asked whether it changed: once a frame, however
+        // many things wear it, in however many copies of a room.
+        uint64_t asked = 0;
     };
 
     // Where a doorway is on the view, in -1..1 each way, and what of it a

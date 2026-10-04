@@ -410,7 +410,14 @@ void carry_camera(const Pose& here, const Pose& there, const Element& src, Eleme
     // And whether it is on its feet: a walker that was striding is striding
     // still, not falling, the step after it is through.
     if (src.params.has(Key{"grounded"})) dst.params.set(Key{"grounded"}, src.params.num(Key{"grounded"}));
+    // Its lens, whole: what the eye sees with is the eye's, not the far
+    // camera's - a far side seen square on (`ortho`) is seen through the
+    // doorway as the eye sees, in depth.
     dst.params.set(keys::fov, src.params.num(keys::fov, 70.0));
+    for (const Key k : {Key{"ortho"}, Key{"back"}}) {
+        if (src.params.has(k)) dst.params.set(k, src.params.num(k));
+        else dst.params.erase(k);
+    }
 }
 
 std::function<void(const Element&, Element&)> portal_carry(const Element& here, const Element& there) {

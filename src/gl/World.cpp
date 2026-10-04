@@ -1618,6 +1618,9 @@ auto GLWorldView::skin_frame(const State& st, const Element& holder) const -> co
 }
 
 void GLWorldView::upload_skin(BoundSurface& bound) {
+    const uint64_t frame = (root_ ? root_->frame_count_ : frame_count_) + 1;
+    if (bound.asked == frame && bound.texture.valid()) return;
+    bound.asked = frame;
     Surface2D& surf = *bound.surface;
     const auto& pixels = surf.raster();
     if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
@@ -2125,9 +2128,12 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // It is drawn in front of everything (depth 0): behind the doorway
         // may be solid wall - a portal on a wall - and nothing stands
         // between the eye and a doorway it is centimetres from.
+        // (Scaled from the eye so its plane lies twice the near plane off,
+        // however close the eye is: right at the threshold too - a floor on
+        // `side` once left it inside the near plane, and the opening empty
+        // for a frame.)
         if (e.params.num(Key{"tunnel"}, 0.0) > 0.0 && side >= 0.0f && side < kNear * 2.0f) {
-            const float back = kNear * 2.0f - side;
-            const float k = (std::max(side, 0.002f) + back) / std::max(side, 0.002f);
+            const float k = kNear * 2.0f / std::max(side, 1e-6f);
             const gl::Vec3 plane = pos + n * inset, eye = to_vec3(eye_here);
             const gl::Vec3 centre = eye + (plane - eye) * k;
             set_model(room_local(gl::Mat4::translate(centre) * turned *

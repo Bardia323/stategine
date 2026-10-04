@@ -95,12 +95,15 @@ std::vector<Opening> openings_of(const State& s) {
 }
 // Whether the surface a ball touches at `touch` is opened there by a doorway:
 // the point is in a doorway's opening, on its plane or just behind it - the
-// wall it is cut in, the wall or floor it hangs on. What is beside it or under
-// it still stands.
-bool opened(const std::vector<Opening>& open, const V3& touch) {
+// wall it is cut in, the wall or floor it hangs on - and the ball itself (its
+// centre, `at`) is within the opening's width: it passes where its eye would
+// cross the doorway (crossed_portal), and nowhere else - never slipping past
+// a jamb into the plane, where it would stand past the doorway without
+// having gone through. What is beside it or under it still stands.
+bool opened(const std::vector<Opening>& open, const V3& touch, const V3& at) {
     for (const Opening& o : open) {
-        const Vec3d l = local_of(o.at, vd(touch));
-        if (l.x < 0.05 && l.x > -0.6 && std::fabs(l.z) < o.hw && std::fabs(l.y) < o.hh) return true;
+        const Vec3d l = local_of(o.at, vd(touch)), c = local_of(o.at, vd(at));
+        if (l.x < 0.05 && l.x > -0.6 && std::fabs(l.z) < o.hw && std::fabs(l.y) < o.hh && std::fabs(c.z) < o.hw) return true;
     }
     return false;
 }
@@ -152,7 +155,7 @@ void clear_pass(const std::vector<Solid>& solids, const std::vector<Opening>& op
             double depth;
             const V3 at = eye - up * down;
             if (!push_out(d, at, r, n, depth)) continue;
-            if (opened(open, at - n * (r - depth))) continue;  // a doorway lets them through what it opens
+            if (opened(open, at - n * (r - depth), at)) continue;  // a doorway lets them through what it opens
             const double rise = spatial::dot(n, up);
             if (stopped_low && down == height - r && rise < 0.6 && rise > -0.3) *stopped_low = true;
             eye = eye + n * depth;
@@ -327,7 +330,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
                 V3 n;
                 double depth;
                 const V3 at = e - up * down;
-                if (push_out(d, at, r, n, depth) && !opened(open, at - n * (r - depth))) return false;
+                if (push_out(d, at, r, n, depth) && !opened(open, at - n * (r - depth), at)) return false;
             }
         return true;
     };
