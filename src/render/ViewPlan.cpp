@@ -36,13 +36,13 @@ HalfSpace portal_clip(const State &host, const Element &portal, const Element &h
         // eye: whatever took the host's eye to the guest's.
         const Pose by = compose_pose(eye_pose(gc), inverse(eye_pose(hc)));
         const Vec3d n = facing(p);
-        const double inset = portal.params.num("inset", .06);
+        const double inset = portal_inset(portal);
         const Vec3d q = place_in(by, {p.position.x + n.x * inset, p.position.y + n.y * inset, p.position.z + n.z * inset});
         const Vec3d m = turn(by, n);
         return {{-m.x, -m.y, -m.z}, m.x * q.x + m.y * q.y + m.z * q.z};
     }
     const Vec3d n = heading(p.yaw);
-    const double inset = portal.params.num("inset", .06);
+    const double inset = portal_inset(portal);
     const Vec3d at{p.position.x + n.x * inset, p.position.y, p.position.z + n.z * inset};
     const double turn = gc.params.num(keys::yaw) - hc.params.num(keys::yaw);
     const auto he = position_of(hc), ge = position_of(gc);

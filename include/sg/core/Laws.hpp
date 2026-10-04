@@ -541,7 +541,7 @@ std::vector<Violation> seams(const StateGraph& g);
 // ground at the same height, the eye carried as high - and a side walked through has a way across (a
 // transition carrying the seam's travel). What a seam lets differ it says on
 // either boundary: `differs` = the names, space separated (walk, down,
-// floor, eye, crossing). A cut, a dissolve or any other way that is not seamless
+// floor, eye, crossing, look). A cut, a dissolve or any other way that is not seamless
 // is not a seam: it is a transition, and owes this nothing.
 std::vector<Violation> overlaps(const StateGraph& g);
 

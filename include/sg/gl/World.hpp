@@ -216,6 +216,12 @@ public:
     // The portal shows nothing any more: it is a plain opening again.
     void unbind_world(Key portal_element) { worlds_.erase(portal_element); }
 
+    // Every seam of the prepared graph is bound so, both ways, by itself: its
+    // doorways show the worlds they are glued to, from the eye carried by the
+    // seam's own travel - made again whenever the graph changes. A seam needs
+    // no binding by hand; bind_world is for what is not a seam (a projection).
+    void bind_seams();
+
     // Show another 3D state on a panel as a picture (see the top of this
     // file): drawn from its own camera, in its own look, `w` x `h` pixels.
     // Only drawn while the panel is in the room being drawn and in view.
@@ -729,6 +735,13 @@ private:
 
     // Looks, and the programs they compile to.
     const StateGraph* graph_ = nullptr;
+    // Drawn as the far side of an own-look doorway: what is cut away (the
+    // near side of that doorway's plane), and the doorway left out.
+    std::vector<HalfSpace> own_clips_;
+    Key own_skip_;
+    // What bind_seams bound, and at which revision of the graph.
+    std::vector<Key> seam_bound_;
+    uint64_t seams_at_ = ~uint64_t{0};
     LookState standard_;
     std::unordered_map<Key, std::pair<std::string, std::string>> builtin_;
     std::unordered_map<std::string, std::unique_ptr<gl::Program>> programs_;

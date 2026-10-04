@@ -527,6 +527,10 @@ Params SpatialState::overlap(Key boundary) const {
     return out;
 }
 
+double portal_inset(const Element& portal) {
+    return portal.params.num(Key{"inset"}, portal.params.num(Key{"walk"}, 0.0) > 0.5 ? 0.0 : 0.06);
+}
+
 bool opens_from(const Element& portal, const Vec3d& at) {
     if (portal.params.has(Key{"ball"})) return true;
     if (portal.params.num(Key{"walk"}, 0.0) < 0.5 && portal.params.num(Key{"oneway"}, 0.0) < 0.5) return true;

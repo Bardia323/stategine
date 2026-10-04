@@ -29,6 +29,7 @@ constexpr GLenum GL_COLOR_BUFFER_BIT = 0x00004000;
 constexpr GLenum GL_TRIANGLES = 0x0004;
 constexpr GLenum GL_LEQUAL = 0x0203;
 constexpr GLenum GL_LESS = 0x0201;
+constexpr GLenum GL_ALWAYS = 0x0207;
 constexpr GLenum GL_FRONT = 0x0404;
 constexpr GLenum GL_BACK = 0x0405;
 constexpr GLenum GL_CCW = 0x0901;

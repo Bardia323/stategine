@@ -31,6 +31,32 @@ void GLWorldView::spill(Key light, const Surface2D* from, double most, bool on) 
     sp.on = on;
 }
 
+void GLWorldView::bind_seams() {
+    if (!graph_ || graph_->revision() == seams_at_) return;
+    const StateGraph* g = graph_;
+    seams_at_ = g->revision();
+    for (Key k : seam_bound_) worlds_.erase(k);
+    seam_bound_.clear();
+    for (const Seam& s : g->seams())
+        for (std::size_t i = 0; i < s.boundary_a.size() && i < s.boundary_b.size(); ++i)
+            for (const bool ab : {true, false}) {
+                const Key from = ab ? s.a : s.b, to = ab ? s.b : s.a;
+                const Key here = ab ? s.boundary_a[i] : s.boundary_b[i], there = ab ? s.boundary_b[i] : s.boundary_a[i];
+                const auto* world = dynamic_cast<const Spatial3D*>(g->find(to));
+                if (!world || !dynamic_cast<const Spatial3D*>(g->find(from))) continue;
+                // The seam's travel: carried by its two doorways where they
+                // are when it is used, never where they were.
+                bind_world(here, world, [g, from, here, to, there](const Element& src, Element& dst) {
+                    const State* A = g->find(from);
+                    const State* B = g->find(to);
+                    const Element* h = A ? A->find(here) : nullptr;
+                    const Element* t = B ? B->find(there) : nullptr;
+                    if (h && t) portal_carry(*h, *t)(src, dst);
+                }, there);
+                seam_bound_.push_back(here);
+            }
+}
+
 void GLWorldView::bind_world(Key portal_element, const Spatial3D* world, Carry carry, Key back) {
     WorldPortal& wp = worlds_[portal_element];
     wp.world = world;
@@ -241,6 +267,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // A view drawing a feed or a far room sees through the same doorways
     // as the view on the screen: its worlds are that one's, each seen
     // from this view's own eye (its targets its own).
+    if (!root_) bind_seams();
     if (root_) {
         for (auto it = worlds_.begin(); it != worlds_.end();)
             it = root_->worlds_.count(it->first) ? std::next(it) : worlds_.erase(it);
@@ -331,7 +358,15 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             wp.own->root_ = root_ ? root_ : this;
             wp.own->output_ = &wp.own_out;
             wp.own->eye_override_ = &eye;
+            // Cut as any view through a doorway is: nothing between the
+            // carried eye and the far doorway, and that doorway's own view
+            // left out - right at the threshold the eye stands in its frame.
+            const Element* own_back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
+            wp.own->own_clips_ = {far_side(world, e, eye)};
+            wp.own->own_skip_ = own_back ? own_back->id.key() : Key{};
             wp.own->render(*wp.world, fb_w, fb_h);
+            wp.own->own_clips_.clear();
+            wp.own->own_skip_ = Key{};
             wp.own->output_ = nullptr;
             wp.own->eye_override_ = nullptr;
             wp.own_drawn = true;
@@ -366,7 +401,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
 
     // --- the room the viewer is actually standing in ------------------------
     path_.clear();
-    draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, kNear);
+    draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, kNear, own_skip_, own_clips_);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();
     times_.scene = since(t0);
@@ -2047,8 +2082,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         if (depth > 0 && is_screen(e)) return;
         WorldPortal& wp = world_it->second.shared ? *world_it->second.shared : world_it->second;
         // `inset` is how far in front of the portal's plane the view is
-        // drawn; a doorway walked through wants it on the plane (0).
-        const float inset = static_cast<float>(e.params.num(Key{"inset"}, 0.06));
+        // drawn; a doorway walked through has it on the plane (portal_inset).
+        const float inset = static_cast<float>(portal_inset(e));
         // Where the viewer is, in front of the doorway (> 0) or behind it.
         const Vec3d eye_here = local_of(frame_, {cam_eye_.x, cam_eye_.y, cam_eye_.z});
         const float side = gl::dot(to_vec3(eye_here) - (pos + n * inset), n);
@@ -2132,14 +2167,20 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // however close the eye is: right at the threshold too - a floor on
         // `side` once left it inside the near plane, and the opening empty
         // for a frame.)
-        if (e.params.num(Key{"tunnel"}, 0.0) > 0.0 && side >= 0.0f && side < kNear * 2.0f) {
+        // (Every doorway walked through has it, unless it says `tunnel` 0.)
+        const double tunnel = e.params.num(Key{"tunnel"}, e.params.num(Key{"walk"}, 0.0) > 0.5 ? 1.0 : 0.0);
+        if (tunnel > 0.0 && side >= 0.0f && side < kNear * 2.0f) {
             const float k = kNear * 2.0f / std::max(side, 1e-6f);
             const gl::Vec3 plane = pos + n * inset, eye = to_vec3(eye_here);
             const gl::Vec3 centre = eye + (plane - eye) * k;
             set_model(room_local(gl::Mat4::translate(centre) * turned *
                       gl::Mat4::scale({1.0f, h * k, w * k})));
+            // (Not tested against what is there: a wall right behind the
+            // doorway may stand on the near plane, at the same depth.)
             gl::glDepthRange(0.0, 0.0);
+            gl::glDepthFunc(gl::GL_ALWAYS);
             quad_.draw();
+            gl::glDepthFunc(gl::GL_LESS);
             gl::glDepthRange(0.0, 1.0);
         }
         scene_->set("uScreenUV", 0.0f);

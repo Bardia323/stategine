@@ -1,4 +1,5 @@
 #include "sg/domains/Atlas.hpp"
+#include "sg/domains/Room.hpp"
 
 #include <algorithm>
 
@@ -109,6 +110,10 @@ const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, 
     Functor glue_b(gab, a, b), glue_a(gba, b, a);
     glue_b.on_object(pa, pb, between(g, a, pa, b, pb, seam_carry));
     glue_a.on_object(pb, pa, between(g, b, pb, a, pa, seam_carry));
+    // A room's opening glued to something leads somewhere: it is open, not
+    // filled in (Room::opens).
+    for (const auto& [s, p] : {std::pair{a, pa}, std::pair{b, pb}})
+        if (auto* room = dynamic_cast<Room*>(&g.state(s))) room->opens(p, true);
     // The boundary on each side: the doorway, and whatever hangs in it.
     Seam seam = doorway_seam(name, a, pa, b, pb, also, wraps);
     for (const auto& [x, y] : also) {

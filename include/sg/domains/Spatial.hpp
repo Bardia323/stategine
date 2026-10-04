@@ -345,6 +345,11 @@ bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to);
 // walks into. Any other portal, and a ball, from anywhere.
 bool opens_from(const Element& portal, const Vec3d& at);
 
+// How far before its own plane a portal's picture is drawn (`inset`): a
+// doorway walked through is drawn where it is crossed (0), so nothing lies
+// between the picture and the crossing; a window, a little proud (0.06).
+double portal_inset(const Element& portal);
+
 // A doorway made `w` wide and `h` high, its foot where it stood: a door
 // stands on its ground whatever its size, so two sides glued (which must be
 // one size) still stand on theirs.
