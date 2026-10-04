@@ -74,6 +74,16 @@ public:
     // Return true to consume the event before any morphism sees it.
     virtual bool on_event(const Event&) { return false; }
 
+    // Going through a seam is the domain's to say, the taking of it the
+    // engine's. `passage` is where whoever crosses this state's boundaries
+    // is now (a room's: its eye); `passed` whether, from `before`, they have
+    // gone through `boundary` since. The engine asks after every frame's
+    // step, and takes the seam's own transition in that frame: no frame is
+    // ever seen from past a doorway in the room it leads out of. A state
+    // with no boundaries to cross says nothing.
+    virtual Params passage() const { return {}; }
+    virtual bool passed(const Params& /*before*/, Key /*boundary*/) const { return false; }
+
     // The frame order is part of the contract, hence non-virtual. With
     // `watch`, an on_update that changes the state's data - rather than
     // emitting an event for an arrow to act on - is noted (wrote_in_update):

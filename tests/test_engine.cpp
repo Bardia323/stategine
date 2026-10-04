@@ -1592,6 +1592,43 @@ void test_the_view_crosses_seams() {
     check(near(hall.camera().params.num(sg::keys::x), was), "and only from the room the engine is in: the far room's eye moves no one");
 }
 
+// A step through a doorway is a step into the room beyond, in the frame it is
+// taken: the engine takes the seam's own transition after the step, so no
+// frame is seen from past the doorway in the room it leads out of.
+void test_a_step_crosses_in_its_frame() {
+    sg::StateGraph g;
+    auto& hall = g.add<sg::Spatial3D>("hall");
+    auto& annex = g.add<sg::Spatial3D>("annex");
+    hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265358979).params.set("walk", 1.0);
+    annex.portal("door", {4.5, 1.5, 0.0}, 2.8, 3.0, 1.5707963267949).params.set("walk", 1.0);
+    hall.arrow("stride", sg::SpatialState::camera_id(), sg::SpatialState::camera_id(), "step",
+               [](sg::State&, sg::Element& eye, sg::Element*, const sg::Event& ev) {
+                   eye.params.set(sg::keys::x, eye.params.num(sg::keys::x) + ev.args.num("dx"));
+               });
+    g.set_initial("hall");
+    sg::glue_doorway(g, "doorway", "hall", "door", "annex", "door");
+    g.connect("hall", "walk.out", "annex", "doorway.ab");
+    sg::Engine e(g);
+    e.set_strict(true);
+    e.start();
+    hall.camera().params.set(sg::keys::x, 13.95).set(sg::keys::y, 1.6).set(sg::keys::z, 7.0);
+    e.tick(1.0 / 60.0);
+    hall.camera().params.set(sg::keys::x, 14.2);  // put past it, not walked
+    e.tick(1.0 / 60.0);
+    check(e.current() == &hall, "a walker put past a doorway is not walked through it");
+    hall.camera().params.set(sg::keys::x, 13.95);
+    sg::Element want = annex.camera();
+    sg::Element after = hall.camera();
+    after.params.set(sg::keys::x, 14.05);
+    sg::portal_carry(hall.element("door"), annex.element("door"))(after, want);
+    e.fire(sg::Event{"step", sg::Params{}.set("dx", 0.1)});
+    e.tick(1.0 / 60.0);
+    check(e.current() == &annex, "a step through the doorway lands in the room beyond, in the frame it is taken");
+    check(roughly(annex.camera().params.num(sg::keys::x), want.params.num(sg::keys::x)) &&
+              roughly(annex.camera().params.num(sg::keys::z), want.params.num(sg::keys::z)),
+          "carried there by the seam's own travel, where the step took it");
+}
+
 }  // namespace
 
 void test_adjunction_is_not_an_isomorphism() {
@@ -1977,6 +2014,7 @@ int main() {
     test_rooms_are_adjacent();
     test_a_camera_is_a_state();
     test_the_view_crosses_seams();
+    test_a_step_crosses_in_its_frame();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }

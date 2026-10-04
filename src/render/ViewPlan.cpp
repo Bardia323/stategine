@@ -173,9 +173,11 @@ std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool 
     const auto rotation = Mat4::rotate_y(yaw) * Mat4::rotate_z(static_cast<float>(p.pitch)) *
                           Mat4::rotate_x(static_cast<float>(p.roll));
     std::vector<DrawInstance> out;
-    const auto add = [&](const Vec3 &centre, const Mat4 &turn, const Vec3 &size, Rgb colour, double roughness) {
+    // Every piece in the portal's own frame, turned as it is turned (x out of
+    // its face, y up it, z across it): a frame stands as its doorway does.
+    const auto add = [&](const Vec3 &offset, const Vec3 &size, Rgb colour, double roughness) {
         DrawInstance d;
-        d.model = Mat4::translate(centre) * turn * Mat4::scale(size);
+        d.model = Mat4::translate(at) * rotation * Mat4::translate(offset) * Mat4::scale(size);
         d.colour = colour;
         d.roughness = roughness;
         out.push_back(d);
@@ -183,47 +185,41 @@ std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool 
     if (window) {
         const float t = static_cast<float>(e.params.num("casing", .22)),
                     depth = static_cast<float>(e.params.num("depth", .34));
-        const auto tangent = across(yaw);
-        const Vec3 a{static_cast<float>(tangent.x), 0, static_cast<float>(tangent.z)};
-        const auto turn = Mat4::rotate_y(yaw);
         const Rgb c{e.params.num("r", .24), e.params.num("g", .22), e.params.num("b", .20)};
         if (t > 0) {
-            add(at + a * (w * .5f + t * .5f), turn, {depth, h + 2 * t, t}, c, .6);
-            add(at - a * (w * .5f + t * .5f), turn, {depth, h + 2 * t, t}, c, .6);
-            add(at + Vec3{0, h * .5f + t * .5f, 0}, turn, {depth, t, w + 2 * t}, c, .6);
-            add(at - Vec3{0, h * .5f + t * .5f, 0}, turn, {depth, t, w + 2 * t}, c, .6);
+            add({0, 0, w * .5f + t * .5f}, {depth, h + 2 * t, t}, c, .6);
+            add({0, 0, -(w * .5f + t * .5f)}, {depth, h + 2 * t, t}, c, .6);
+            add({0, h * .5f + t * .5f, 0}, {depth, t, w + 2 * t}, c, .6);
+            // Under the opening a sill - but not under a doorway one walks
+            // through: its floor is the room's (a piece there lies in the floor).
+            if (e.params.num("walk", 0) < .5) add({0, -(h * .5f + t * .5f), 0}, {depth, t, w + 2 * t}, c, .6);
         }
     } else if (e.params.num("frame", 1) > .5) {
         const float border = static_cast<float>(e.params.num("border", .15));
-        add(at, rotation, {.12f, h + 2 * border, w + 2 * border}, {.14f, .11f, .08f}, .6);
+        add({}, {.12f, h + 2 * border, w + 2 * border}, {.14f, .11f, .08f}, .6);
     } else
-        add(at, rotation, {static_cast<float>(e.params.num("thick", .004)), h, w},
+        add({}, {static_cast<float>(e.params.num("thick", .004)), h, w},
             {e.params.num("r", .92), e.params.num("g", .90), e.params.num("b", .86)}, .85);
     return out;
 }
 spatial::projection::Mat4 portal_face(const State &host, const Element &e, bool window) {
     using namespace spatial::projection;
+    // In the portal's own frame, turned as it is turned (as its body is).
     const auto p = world_pose(host, e);
-    const double pitch = window ? 0 : p.pitch;
-    const auto n = heading(p.yaw);
     const float lift = window                          ? static_cast<float>(e.params.num("inset", .06))
                        : e.params.num("frame", 1) > .5 ? .08f
                                                        : static_cast<float>(e.params.num("thick", .004)) * .5f + .0015f;
-    const Vec3 at{static_cast<float>(p.position.x), static_cast<float>(p.position.y), static_cast<float>(p.position.z)},
-        normal{static_cast<float>(n.x * std::cos(pitch)), static_cast<float>(std::sin(pitch)),
-               static_cast<float>(n.z * std::cos(pitch))};
+    const Vec3 at{static_cast<float>(p.position.x), static_cast<float>(p.position.y), static_cast<float>(p.position.z)};
     const float w = static_cast<float>(e.params.num(keys::w, 3)), h = static_cast<float>(e.params.num(keys::h, 2));
     const float a0 = window ? static_cast<float>(e.params.num("crop_a0")) : 0,
                 a1 = window ? static_cast<float>(e.params.num("crop_a1", 1)) : 1,
                 b0 = window ? static_cast<float>(e.params.num("crop_b0")) : 0,
                 b1 = window ? static_cast<float>(e.params.num("crop_b1", 1)) : 1;
-    const auto axis = across(p.yaw);
-    const Vec3 tangent{static_cast<float>(axis.x), 0, static_cast<float>(axis.z)};
-    return Mat4::translate(at + normal * lift + tangent * (((a0 + a1) * .5f - .5f) * w) +
-                           Vec3{0, ((b0 + b1) * .5f - .5f) * h, 0}) *
-           Mat4::rotate_y(static_cast<float>(p.yaw)) * Mat4::rotate_z(static_cast<float>(pitch)) *
-           Mat4::rotate_x(window ? 0 : static_cast<float>(p.roll)) *
-           Mat4::scale({1, h * (b1 - b0), w * (a1 - a0)});
+    const auto v = [](const Vec3d &d) { return Vec3{static_cast<float>(d.x), static_cast<float>(d.y), static_cast<float>(d.z)}; };
+    return Mat4::translate(at + v(facing(p)) * lift + v(across_of(p)) * (((a0 + a1) * .5f - .5f) * w) +
+                           v(up_of(p)) * (((b0 + b1) * .5f - .5f) * h)) *
+           Mat4::rotate_y(static_cast<float>(p.yaw)) * Mat4::rotate_z(static_cast<float>(p.pitch)) *
+           Mat4::rotate_x(static_cast<float>(p.roll)) * Mat4::scale({1, h * (b1 - b0), w * (a1 - a0)});
 }
 spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera &camera, int size, float &bias) {
     if (size <= 0)

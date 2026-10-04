@@ -99,6 +99,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, ClearColor, (GLfloat, GLfloat, GLfloat, GLfloat))                                 \
     X(void, Viewport, (GLint, GLint, GLsizei, GLsizei))                                       \
     X(void, DepthFunc, (GLenum))                                                              \
+    X(void, DepthRange, (double, double))                                                     \
     X(void, BlendFunc, (GLenum, GLenum))                                                      \
     X(void, BlendColor, (GLfloat, GLfloat, GLfloat, GLfloat))                                 \
     X(void, CullFace, (GLenum))                                                               \

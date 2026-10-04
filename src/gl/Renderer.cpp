@@ -49,6 +49,34 @@ GLint Program::uniform(const char* name) const {
     return loc;
 }
 
+void Program::put(GLint at, int n, const float* v) const {
+    if (at < 0) return;
+    const auto i = static_cast<std::size_t>(at);
+    if (i >= held_.size()) held_.resize(i + 1), held_n_.resize(i + 1, 0);
+    if (held_n_[i] == n && std::memcmp(held_[i].data(), v, sizeof(float) * static_cast<std::size_t>(n)) == 0) return;
+    std::memcpy(held_[i].data(), v, sizeof(float) * static_cast<std::size_t>(n));
+    held_n_[i] = static_cast<signed char>(n);
+    switch (n) {
+        case 1: glUniform1f(at, v[0]); break;
+        case 2: glUniform2f(at, v[0], v[1]); break;
+        case 3: glUniform3f(at, v[0], v[1], v[2]); break;
+        case 4: glUniform4f(at, v[0], v[1], v[2], v[3]); break;
+        default: glUniformMatrix4fv(at, 1, 0, v);
+    }
+}
+
+void Program::set(const char* n, int i) const {
+    const GLint at = uniform(n);
+    if (at < 0) return;
+    const auto k = static_cast<std::size_t>(at);
+    if (k >= held_.size()) held_.resize(k + 1), held_n_.resize(k + 1, 0);
+    float bits;
+    std::memcpy(&bits, &i, sizeof bits);
+    if (held_n_[k] == -1 && std::memcmp(&held_[k][0], &bits, sizeof bits) == 0) return;
+    held_[k][0] = bits, held_n_[k] = -1;
+    glUniform1i(at, i);
+}
+
 void Texture::create(int w, int h, bool mipmaps, bool srgb, bool pixel) {
     if (id_) glDeleteTextures(1, &id_);  // made again, at a new size
     w_ = w;

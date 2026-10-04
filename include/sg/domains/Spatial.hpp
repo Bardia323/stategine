@@ -49,6 +49,11 @@ public:
     Element& camera() { return element(camera_id()); }
     const Element& camera() const { return element(camera_id()); }
 
+    // Who crosses a space's doorways is its eye: through one that is walked
+    // (`walk`, and not only a way in - `leave` 0), front to back.
+    Params passage() const override;
+    bool passed(const Params& before, Key boundary) const override;
+
 protected:
     virtual Key default_kind() const { return dims_ == 3 ? kinds::mesh : kinds::sprite; }
 
@@ -330,5 +335,11 @@ std::function<void(const Element&, Element&)> pose_carry(const Element& here, co
 // says `ball_out`, going out of it: the boundary of a world inside another
 // (a planet in its system), seen from outside and from within.
 bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to);
+
+// Is the doorway a way through from `at`? A doorway that is walked (`walk`)
+// is crossed only front to back, and a `oneway` one is only that way: from
+// behind, either is only its frame - what is seen through it is what one
+// walks into. Any other portal, and a ball, from anywhere.
+bool opens_from(const Element& portal, const Vec3d& at);
 
 }  // namespace sg

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -34,14 +35,16 @@ public:
     // unused has been optimised away, and does not count.
     bool has(const char* name) const { return uniform(name) >= 0; }
 
-    void set(const char* n, const Mat4& m) const { glUniformMatrix4fv(uniform(n), 1, 0, m.m); }
-    void set(const char* n, const Vec3& v) const { glUniform3f(uniform(n), v.x, v.y, v.z); }
-    void set(const char* n, float f) const { glUniform1f(uniform(n), f); }
-    void set(const char* n, float a, float b) const { glUniform2f(uniform(n), a, b); }
-    void set(const char* n, float a, float b, float c, float d) const {
-        glUniform4f(uniform(n), a, b, c, d);
-    }
-    void set(const char* n, int i) const { glUniform1i(uniform(n), i); }
+    void set(const char* n, const Mat4& m) const { put(uniform(n), 16, m.m); }
+    void set(const char* n, const Vec3& v) const { const float f[3]{v.x, v.y, v.z}; put(uniform(n), 3, f); }
+    void set(const char* n, float f) const { put(uniform(n), 1, &f); }
+    void set(const char* n, float a, float b) const { const float f[2]{a, b}; put(uniform(n), 2, f); }
+    void set(const char* n, float a, float b, float c, float d) const { const float f[4]{a, b, c, d}; put(uniform(n), 4, f); }
+    void set(const char* n, int i) const;
+    // A value at a location (1, 2, 3, 4 floats, or a 4x4 matrix): sent to
+    // the driver only if the program does not hold it already - the many
+    // views of one world set the same lights and look again and again.
+    void put(GLint at, int n, const float* v) const;
 
     GLuint id() const { return id_; }
 
@@ -49,6 +52,9 @@ private:
     GLuint id_ = 0;
     mutable std::unordered_map<std::string, GLint> locations_;
     mutable std::unordered_map<const char*, std::pair<const char*, GLint>> by_address_;
+    // What each location holds (as floats; an int as its bits), by location.
+    mutable std::vector<std::array<float, 16>> held_;
+    mutable std::vector<signed char> held_n_;
 };
 
 // An RGBA texture the CPU refills - how a 2D state's raster becomes a surface

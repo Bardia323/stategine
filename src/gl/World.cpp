@@ -1,5 +1,6 @@
 #include "sg/gl/World.hpp"
 
+#include "sg/domains/Atlas.hpp"
 #include "sg/domains/Texture.hpp"
 
 #include <cstdio>
@@ -75,8 +76,20 @@ void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
     render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
 }
 
+std::vector<PlacedRoom> GLWorldView::seen(const Spatial3D& world) const {
+    std::vector<PlacedRoom> out{PlacedRoom{&world, Pose{}, {}}};
+    if (const StateGraph* g = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr))
+        for (const PlacedRoom& p : nests(*g, world.id())) out.push_back(p);
+    return out;
+}
+
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
-    auto rooms=requested;
+    // What is seen of the world the eye is in: it, and the worlds round it
+    // or in it (sg::nests) - as through any doorway onto it.
+    auto rooms = requested;
+    if (!rooms.empty() && rooms.front().room)
+        for (const PlacedRoom& p : seen(*rooms.front().room))
+            if (std::none_of(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == p.room; })) rooms.push_back(p);
     const StateGraph* declared=graph_?graph_:(root_?root_->graph_:nullptr);
     if(rooms.size()>1){
         if(!declared)rooms.resize(1);
@@ -210,7 +223,6 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     advance_fades();
 
     const Spatial3D& world = *rooms.front().room;
-    root_world_ = &world;
     // The post passes belong to the viewer, so they wear the look of the
     // room the viewer is in, and fade when that room changes.
     if (&world != last_world_ && std::find(own_shown_.begin(), own_shown_.end(), &world) != own_shown_.end())
@@ -272,7 +284,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         if (e.params.num(Key{"own_look"}, 0.0) > 0.5) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
-        if (!in_view(world, e, eye_cam)) continue;
+        if (!in_view(world, e, eye_cam) || !opens_from(e, position_of(eye_of(world)))) continue;
         Element eye = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye_of(world), eye);
         const Element* back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
@@ -285,7 +297,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         WorldPortal& wp = it->second;
         wp.shared = nullptr;
-        if (!in_view(world, e, eye_cam)) continue;
+        if (!in_view(world, e, eye_cam) || !opens_from(e, position_of(eye_of(world)))) continue;
         // The virtual camera stands behind the far side's doorway - that is
         // what a portal is. What lies between it and the doorway is cut
         // away by a plane: this portal's own plane, carried to the far
@@ -329,15 +341,17 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         }
         const Camera guest_cam = camera_of(eye);
         const Element* back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
-        const PlacedRoom guest{wp.world, Pose{}, {}};
         std::vector<HalfSpace> clips;
         if (!screen) clips.push_back(far_side(world, e, eye));
         const std::string path = "/" + e.id.str();
         if (!views_drawn) draw_views(world, aspect), views_drawn = true;
         path_ = path;
-        if (root_views >= root_pool_.size()) continue;  // as many as can be seen at once
+        if (root_views >= root_pool_.size()) {
+            if (root_pool_.size() >= kRootViewsMost) continue;
+            make_root_view(root_pool_.emplace_back(), target_w_, target_h_);
+        }
         RootView& view = root_pool_[root_views++];
-        draw_world(std::vector<PlacedRoom>{guest}, guest_cam, aspect, view.ms,
+        draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
                    /*depth=*/1, kNear, back ? back->id.key() : Key{}, clips);
         wp.drawn = frame_count_;
         path_.clear();
@@ -357,10 +371,6 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     t0 = mark();
 
     scene_target_.blit_to(resolve_);
-    // Kept for the next frame's doorways past how deep the views go.
-    if (!last_frame_.valid() || last_frame_.width() != resolve_.width() || last_frame_.height() != resolve_.height())
-        last_frame_.create(resolve_.width(), resolve_.height(), gl::GL_RGBA16F, 0, false);
-    resolve_.blit_to(last_frame_);
     }
     scene_src_ = &resolve_;
     const double ao = setting(post_, passes::composite, "ao", 0.0);
@@ -440,27 +450,14 @@ void GLWorldView::ensure_targets(int w, int h) {
     // The views through doorways seen through doorways, and the last frame's
     // picture: made now, with the rest, so that no step through a doorway
     // waits on one being made.
-    root_pool_.resize(kRootViews);
-    for (RootView& v : root_pool_) {
-        v.ms.create(w, h, gl::GL_RGBA16F, msaa_, true);
-        v.target.create(w, h, gl::GL_RGBA16F, 0, false);
-        for (gl::RenderTarget* t : {&v.ms, &v.target}) {
-            t->bind();
-            gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-        }
-    }
-    pool_.resize(kViewPool);
+    root_pool_.reserve(kRootViewsMost);  // (never moved: doorways hold their pictures)
+    root_pool_.resize(std::max(root_pool_.size(), kRootViews));
+    for (RootView& v : root_pool_) make_root_view(v, w, h);
+    pool_.resize(std::max(pool_.size(), kViewPool));
     for (Nested& n : pool_) {
-        n.target.create(w, h, gl::GL_RGBA16F, 0, true);
-        n.target.bind();
-        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+        fit(n, w / 4, h / 4, true);
         n.frame = 0;
-        if (!n.shadows) n.shadows = std::make_unique<ShadowSet>();
-        n.shadows->array.ensure(std::min(q_.shadow_size, kNestedShadowSize), static_cast<int>(kShadowMaps));
-        for (uint64_t& s : n.shadows->sig) s = 0;
-        n.owner.clear();
     }
-    last_frame_.create(w, h, gl::GL_RGBA16F, 0, false);
     // Full resolution: at half, the occlusion's edges stair-step over the
     // antialiased picture.
     ao_a_.create(w, h, gl::GL_RGBA16F, 0, false);
@@ -697,18 +694,18 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
         return a.pos.y < b.pos.y;
     });
     const std::size_t own = std::min(out.size(), kOwnShadows);
-    std::vector<Light> in, hung;
+    // What comes through a doorway, shut or not - the same lights in the
+    // same places, only what they reach told by the door (hung_only) - gets
+    // a shadow map of its own while there are maps: then what stands in the
+    // opening - a door ajar, the frame - throws its own shadow. Past that,
+    // it is let in by how much of the opening is clear.
+    std::vector<Light> in;
     for (const PlacedRoom& placed : rooms)
         if (!placed.image)
-            for (const Light& l : through_doorways(placed)) (l.hung_only ? hung : in).push_back(l);
-    // What comes through a doorway gets a shadow map of its own, while
-    // there are maps: then what stands in the opening - a door ajar, the
-    // frame - throws its own shadow. Past that, it is let in by how much
-    // of the opening is clear.
+            for (const Light& l : through_doorways(placed)) in.push_back(l);
     shadowed = std::min(own + in.size(), kShadowMaps);
-    for (std::size_t k = shadowed - own; k < in.size(); ++k) in[k].power *= in[k].open;
+    for (std::size_t k = 0; k < shadowed - own && k < in.size(); ++k) in[k].open = 1.0f;
     out.insert(out.begin() + static_cast<std::ptrdiff_t>(own), in.begin(), in.end());
-    out.insert(out.end(), hung.begin(), hung.end());  // (no maps of their own)
     shadowed = std::min(shadowed, out.size());
     if (out.size() > kMaxLights) out.resize(kMaxLights);
     if (out.empty()) {
@@ -776,7 +773,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     shadowed = lit_memo->second.shadowed;
     times_.lights_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lights_from).count();
     cam_eye_ = cam.eye, cam_forward_ = cam.forward, cam_up_ = cam.up;
-    drawn_cam_ = cam, drawn_aspect_ = aspect;
     guest_pass_ = depth > 0;
     lod_px_ = 0.5f * static_cast<float>(target.height()) / std::tan(cam.fov * 0.5f);
     lod_least_ = static_cast<float>(rooms.front().room->params().num(Key{"lod_px"}, 0.75));
@@ -789,9 +785,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // of each map is how wide a texel of it is in the world, at a unit's
     // distance from a lamp (or anywhere, for a sun's box): it keeps its
     // lookups that far off the surface (shadow_factor).
-    // (A view with maps of its own - seen through another - has them at
-    // the pool's size.)
-    const int shadow_px = slot_shadows_ ? std::min(q_.shadow_size, kNestedShadowSize) : q_.shadow_size;
+    const int shadow_px = q_.shadow_size;
     const auto texel_of = [&](const Light& l) {
         const float size = static_cast<float>(std::max(shadow_px, 1));
         if (l.sun) return 2.0f * l.extent / size;
@@ -833,8 +827,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const float hx = (sub_.x1 - sub_.x0) * 0.5f, hy = (sub_.y1 - sub_.y0) * 0.5f;
     const gl::Mat4 narrow = part ? gl::Mat4::scale({1.0f / hx, 1.0f / hy, 1.0f}) * gl::Mat4::translate({-(sub_.x0 + sub_.x1) * 0.5f, -(sub_.y0 + sub_.y1) * 0.5f, 0.0f})
                                  : gl::Mat4::identity();
-    vp_w_ = part ? std::round(static_cast<float>(target.width()) * hx) : static_cast<float>(target.width());
-    vp_h_ = part ? std::round(static_cast<float>(target.height()) * hy) : static_cast<float>(target.height());
+    // (The screen's pixels: a part's picture need only be as big as the part.)
+    vp_w_ = part ? std::round(static_cast<float>(target_w_) * hx) : static_cast<float>(target.width());
+    vp_h_ = part ? std::round(static_cast<float>(target_h_) * hy) : static_cast<float>(target.height());
     const gl::Mat4 view_proj =
         narrow * projection_of(cam, aspect, znear, zfar) *
         gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
@@ -871,7 +866,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lit = (lit ^ std::hash<std::string>{}(path_)) * 1099511628211ULL;
         lit = (lit ^ reinterpret_cast<std::uintptr_t>(root_)) * 1099511628211ULL;
     }
-    ShadowSet& maps = slot_shadows_ ? *slot_shadows_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
+    ShadowSet& maps = shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
     if (maps.array.ensure(shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1))))
         for (uint64_t& s : maps.sig) s = 0;
     const auto sig_from = std::chrono::steady_clock::now();
@@ -931,7 +926,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // The eye's own views draw a few maps a frame, taking turns from frame
     // to frame; past that a map stands as last drawn, with its own box - a
     // shadow that moves follows a frame or two later, and the frame does not
-    // wait on every lamp at once. (One never drawn is drawn now.)
+    // wait on every lamp at once. (One never drawn is drawn now.) Only a map
+    // whose box is fixed where it is may wait: one whose box goes with the
+    // eye (a sun's) stood as it was covers where the eye was, not where it
+    // is, and is drawn every frame it changes.
     int own_budget = kOwnShadowMaps;
     for (std::size_t n = 0; n < layers; ++n) {
         const std::size_t i = (n + frame_count_) % layers;
@@ -939,6 +937,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // map stands while those stand - a mug moved in another corner of the
         // house is nothing to it - and it is drawn with those alone.
         const Light& li = lights[layer_light[i]];
+        const bool with_eye = li.sun && !li.pinned;
         const Frustum volume = frustum_of(light_vp[i]);
         uint64_t sig = rooms_at ^ (0x9E3779B97F4A7C15ULL * (i + 1));
         for (float f : light_vp[i].m) sig = mix_bits(sig, f);
@@ -951,12 +950,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (maps.sig[i] == sig) continue;
         // A view seen through another view draws within the frame's budget.
-        if (depth > 1 && shadow_budget_ <= 0) {
+        if (depth > 1 && shadow_budget_ <= 0 && !with_eye) {
             if (maps.sig[i] == 0) unshadowed = true;  // never drawn: nothing to cast with yet
             else light_vp[i] = maps.vp[i];            // as last drawn, with its own box
             continue;
         }
-        if (depth <= 1 && maps.sig[i] != 0) {
+        if (depth <= 1 && maps.sig[i] != 0 && !with_eye) {
             if (own_budget <= 0) {
                 light_vp[i] = maps.vp[i];
                 continue;
@@ -1049,6 +1048,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
             p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
+            p.set(light_uniform(i, 13), l.open);
             // The sky's sun is this room's own, not one seen through a door.
             if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
                 sun_dir = gl::normalize(lights[i].dir) * -1.0f;
@@ -1064,8 +1064,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uShadowMaps", 1);
         p.set("uStraddle", 0.0f);
         p.set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
-        p.set("uSeamTex", 3);
-        p.set("uSeamMix", 0.0f);
         p.set("uTex", 0);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
@@ -1211,6 +1209,26 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
     if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
     set_frame(Pose{});
+}
+
+void GLWorldView::fit(Nested& n, int w, int h, bool anew) {
+    // As big as the part of the screen it is given - grown in steps of 128
+    // pixels, never past the screen: a few sizes, each made once.
+    const auto step = [](int v, int most) { return std::min(most, (std::max(v, 1) + 127) / 128 * 128); };
+    if (!anew && n.target.valid() && n.target.width() >= w && n.target.height() >= h) return;
+    const int was_w = anew || !n.target.valid() ? 0 : n.target.width(), was_h = anew || !n.target.valid() ? 0 : n.target.height();
+    n.target.create(step(std::max(w, was_w), target_w_), step(std::max(h, was_h), target_h_), gl::GL_RGBA16F, 0, true);
+    n.target.bind();
+    gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+}
+
+void GLWorldView::make_root_view(RootView& v, int w, int h) {
+    v.ms.create(w, h, gl::GL_RGBA16F, msaa_, true);
+    v.target.create(w, h, gl::GL_RGBA16F, 0, false);
+    for (gl::RenderTarget* t : {&v.ms, &v.target}) {
+        t->bind();
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    }
 }
 
 void GLWorldView::sample_screen(const Rect& r, float fx, float fy) const {
@@ -1724,52 +1742,25 @@ void GLWorldView::draw_sprite(const State& st, const Element& e) {
 
 void GLWorldView::draw_crate(const State& st, const Element& e) {
     ++times_.draws;
-    // `straddle`: it hangs in a doorway, half in each room. Seen through the
-    // doorway it is drawn whole (no plane cuts it) and, near the plane, lit by
-    // the room it is seen from (uStraddle); on the viewer's side, near the
-    // plane, it blends into that picture of itself (uSeamMix). No line between
-    // its halves, and shut it is lit by the room the viewer is in.
+    // `straddle`: it hangs in a doorway, half in each room, and is lit as
+    // that by one rule wherever it is drawn - in the room the eye is in, or
+    // seen through the doorway - each point by the rooms it is in, as far as
+    // it is in them (uStraddle): the two pictures of it are one, and shut or
+    // ajar it is lit the same. Seen through the doorway it is drawn whole: no
+    // plane cuts it.
     struct Hung {
         const gl::Program* p;
         float on;
-        bool unclipped = false, blended = false;
-        int clips = 0;
+        int clips = -1;
         ~Hung() {
             if (on < 0.5f) return;
-            if (unclipped) p->set("uClipCount", clips), p->set("uStraddle", 0.0f);
-            if (blended) p->set("uSeamMix", 0.0f);
+            p->set("uStraddle", 0.0f);
+            if (clips >= 0) p->set("uClipCount", clips);
         }
     } hung{scene_, static_cast<float>(e.params.num(Key{"straddle"}, 0.0))};
     if (hung.on > 0.5f) {
-        if (guest_pass_) {
-            hung.unclipped = true, hung.clips = clip_count_;
-            scene_->set("uClipCount", 0);
-            scene_->set("uStraddle", 1.0f);
-        } else {
-            // The doorway nearest it whose far side has been drawn this frame.
-            const Vec3d at = pose_of(st, e).position;
-            const Element* best = nullptr;
-            const WorldPortal* seen = nullptr;
-            double nearest = 1e18;
-            for (const Element& d : st.elements()) {
-                if (d.kind != kinds::portal || !d.alive || is_screen(d)) continue;
-                const auto it = worlds_.find(d.id);
-                if (it == worlds_.end() || !it->second.world || !it->second.shown || it->second.drawn != frame_count_ || it->second.own_drawn) continue;
-                const Vec3d p = pose_of(st, d).position;
-                const double k = (p.x - at.x) * (p.x - at.x) + (p.z - at.z) * (p.z - at.z);
-                if (k < nearest) nearest = k, best = &d, seen = &it->second;
-            }
-            if (best && nearest < 9.0) {
-                const Pose door = compose_pose(frame_, pose_of(st, *best));
-                const Vec3d in = heading(door.yaw);
-                seen->shown->bind_color(3);
-                scene_->set("uSeamAt", static_cast<float>(door.position.x), static_cast<float>(door.position.y),
-                            static_cast<float>(door.position.z), 0.6f);
-                scene_->set("uSeamIn", gl::Vec3{static_cast<float>(in.x), 0.0f, static_cast<float>(in.z)});
-                scene_->set("uSeamMix", 1.0f);
-                hung.blended = true;
-            }
-        }
+        scene_->set("uStraddle", 1.0f);
+        if (guest_pass_) hung.clips = clip_count_, scene_->set("uClipCount", 0);
     }
     set_model(box_matrix(st, e));
     scene_->set("uAlbedo", color_of(e, {0.8f, 0.5f, 0.25f}));
@@ -1882,29 +1873,30 @@ GLWorldView::Rect GLWorldView::screen_rect(const Spatial3D& world, const Element
 }
 
 void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back) {
-    // How deep the views through a world's doorways go is that world's to
-    // say, from wherever it is seen: one (a doorway shows the room beyond,
-    // and that room's doorways show theirs) unless it says more - two
-    // portals facing, a room glued to itself - whether the eye is in it or
-    // looks into it through a doorway. What it costs is bounded all the same:
-    // the frame draws only its biggest views (views_most), each only where
-    // it is on the screen.
+    // A doorway not drawn shows its world's air, so whether one is drawn must
+    // change nothing on the screen: in air that takes all at last
+    // (`uFogFull`) a view is left out only where the air has already taken
+    // it - past `reach` from the eye, the whole way through the doorways come
+    // by - however deep that is. Where the air never takes all, how deep the
+    // views go is the world's to say (`views_deep`, counted from where it was
+    // come into): two portals facing, a room glued to itself.
+    const LookState& look = look_of(world);
+    const double density = value(look, passes::scene, Key{"uFogDensity"}, 0.0);
+    const double reach = value(look, passes::scene, Key{"uFogFull"}, 0.0) > 0.5 && density > 0.0
+                             ? value(look, passes::scene, Key{"uFogStart"}, 0.0) + 4.6 / density
+                             : 1e30;
     const int deep = static_cast<int>(world.params().num(Key{"views_deep"}, 1.0));
-    if (depth - from > deep || depth > 16 || jobs_.size() >= 512) return;
+    if ((reach >= 1e30 && depth - from > deep) || depth > 16 || jobs_.size() >= 512) return;
     const Camera cam = camera_of(eye);
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"}) || e.id == back) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
-        if (!in_view(world, e, cam, aspect)) continue;
+        if (!in_view(world, e, cam, aspect) || !opens_from(e, position_of(eye))) continue;
+        if (distance(position_of(eye), pose_of(world, e).position) - 0.5 * std::hypot(e.params.num(keys::w, 3.0), e.params.num(keys::h, 2.0)) > reach) continue;
         const Rect r = screen_rect(world, e, cam, aspect).cut(seen);
         const float area = (r.x1 - r.x0) * (r.y1 - r.y0);
-        // A view onto the eye's own world only a few dozen pixels across is
-        // not drawn: last frame's picture of that world, fitted to it, is
-        // what it would show to within those pixels (draw_portal).
-        const float least = it->second.world == root_world_ ? kLeastOwnView : 2e-4f;
-        if (r.empty() || area < least) continue;
-        if (local_of(pose_of(world, e), position_of(eye)).x <= 0.0 && e.params.num(Key{"oneway"}, 0.0) > 0.5) continue;
+        if (r.empty() || area < kLeastView) continue;
         Element there = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye, there);
         const std::string key = path + "/" + e.id.str();
@@ -1922,7 +1914,7 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
     std::vector<std::size_t> order(jobs_.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return jobs_[x].area > jobs_[y].area; });
-    const std::size_t most = std::min(kViewPool, static_cast<std::size_t>(world.params().num(Key{"views_most"}, static_cast<double>(kViewPool))));
+    const std::size_t most = std::min(kViewPoolMost, static_cast<std::size_t>(world.params().num(Key{"views_most"}, static_cast<double>(kViewPoolMost))));
     std::unordered_map<std::string, bool> kept;
     std::vector<std::size_t> draw;
     for (std::size_t i : order) {
@@ -1939,29 +1931,25 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
     for (std::size_t k = 0; k < draw.size(); ++k) {
         const std::size_t i = draw[k];
         const ViewJob& j = jobs_[i];
-        if (k >= pool_.size()) break;  // (made with the screen's targets)
+        if (k >= pool_.size()) pool_.emplace_back();
         Nested& n = pool_[k];
         slot_[j.key] = k;
         const Element* back = !j.wp->back.empty() ? j.wp->world->find(j.wp->back) : back_portal(*j.wp->world, *j.host);
         path_ = j.key;
         // Drawn only where its doorway is on the screen, at the screen's own
-        // pixels: a view costs what of the screen it covers. (Its rect to
-        // the pixel, a pixel over, so that it is sampled one to one.)
-        const float W = static_cast<float>(n.target.width()), H = static_cast<float>(n.target.height());
+        // pixels, into a picture as big as that: a view costs what of the
+        // screen it covers. (Its rect to the pixel, a pixel over, so that it
+        // is sampled one to one.)
+        const float W = static_cast<float>(target_w_), H = static_cast<float>(target_h_);
         const float px0 = std::max(0.0f, std::floor((j.seen.x0 + 1) * 0.5f * W) - 1), px1 = std::min(W, std::ceil((j.seen.x1 + 1) * 0.5f * W) + 1);
         const float py0 = std::max(0.0f, std::floor((j.seen.y0 + 1) * 0.5f * H) - 1), py1 = std::min(H, std::ceil((j.seen.y1 + 1) * 0.5f * H) + 1);
+        fit(n, static_cast<int>(px1 - px0), static_cast<int>(py1 - py0));
         n.rect = Rect{px0 / W * 2 - 1, py0 / H * 2 - 1, px1 / W * 2 - 1, py1 / H * 2 - 1};
-        n.fx = (px1 - px0) / W, n.fy = (py1 - py0) / H;
+        n.fx = (px1 - px0) / static_cast<float>(n.target.width()), n.fy = (py1 - py0) / static_cast<float>(n.target.height());
         sub_ = n.rect;
-        if (n.owner != j.key) {
-            for (uint64_t& s : n.shadows->sig) s = 0;
-            n.owner = j.key;
-        }
-        slot_shadows_ = n.shadows.get();
-        draw_world(std::vector<PlacedRoom>{PlacedRoom{j.wp->world, Pose{}, {}}}, camera_of(j.there), aspect, n.target, j.depth + 1, kNear,
+        draw_world(seen(*j.wp->world), camera_of(j.there), aspect, n.target, j.depth + 1, kNear,
                    back ? back->id.key() : Key{}, {portal_clip(*j.host, *j.portal, j.from, j.there)});
         sub_ = Rect{-1, -1, 1, 1};
-        slot_shadows_ = nullptr;
         n.frame = frame_count_;
         ++times_.portal_views;
     }
@@ -2016,9 +2004,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // Where the viewer is, in front of the doorway (> 0) or behind it.
         const Vec3d eye_here = local_of(frame_, {cam_eye_.x, cam_eye_.y, cam_eye_.z});
         const float side = gl::dot(to_vec3(eye_here) - (pos + n * inset), n);
-        // A `oneway` doorway, seen from behind, is only its frame: what is
-        // behind it is what you see through it.
-        if (side < 0.0f && e.params.num(Key{"oneway"}, 0.0) > 0.5) return;
+        // Seen from a side it is not crossed from, a doorway is only its
+        // frame: what is behind it is what one walks into (opens_from).
+        if (!opens_from(e, eye_here)) return;
         // Seen through another doorway, its own view is the one drawn for
         // the way the eye came (view_through) - or, past how deep views go,
         // glass.
@@ -2027,60 +2015,18 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
             auto nt = slot_.find(path_ + "/" + e.id.str());
             if (nt != slot_.end() && pool_[nt->second].frame == frame_count_) deeper = &pool_[nt->second];
         }
-        // Past how deep the views go, a doorway is never a hole into nothing.
-        // Onto the room the eye is in, it shows last frame's picture of it,
-        // fitted to where the doorway is: that picture holds every level
-        // drawn so far, so the next frame sees one level further in - for
-        // ever, for the cost of a copy. Onto another world, the view of it
-        // through another doorway in sight, fitted the same way; failing
-        // that, the world's own air, as anything that far off is.
-        if (depth > 0 && !deeper && !is_screen(e)) {
-            const gl::RenderTarget* picture = nullptr;
-            if (wp.world == root_world_ && last_frame_.valid()) picture = &last_frame_;
-            const Rect r = screen_rect(static_cast<const Spatial3D&>(st), e, drawn_cam_, drawn_aspect_);
-            if (!picture && !r.empty()) {
-                const Mix far = mix(wp.world->id(), look_of(*wp.world));
-                set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
-                scene_->set("uAlbedo", gl::Vec3{static_cast<float>(setting(far, passes::scene, "clear.x", 0.012)),
-                                                static_cast<float>(setting(far, passes::scene, "clear.y", 0.014)),
-                                                static_cast<float>(setting(far, passes::scene, "clear.z", 0.022))});
-                scene_->set("uRoughness", 1.0f);
-                scene_->set("uSurface", 0.0f);
-                scene_->set("uEmissive", 1.0f);
-                scene_->set("uHighlight", 0.0f);
-                scene_->set("uTexMix", 0.0f);
-                scene_->set("uGlow", 0.0f);
-                quad_.draw();
-                scene_->set("uEmissive", 0.0f);
-                return;
-            }
-            if (!r.empty()) {
-                picture->bind_color(0);
-                set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
-                scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
-                scene_->set("uRoughness", 1.0f);
-                scene_->set("uSurface", 0.0f);
-                scene_->set("uEmissive", 1.0f);
-                scene_->set("uHighlight", 0.0f);
-                scene_->set("uTexMix", 1.0f);
-                scene_->set("uGlow", 0.0f);
-                scene_->set("uScreenUV", 1.0f);
-                sample_screen(r, 1.0f, 1.0f);
-                quad_.draw();
-                scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
-                scene_->set("uScreenUV", 0.0f);
-                scene_->set("uTexMix", 0.0f);
-                scene_->set("uEmissive", 0.0f);
-                return;
-            }
-        }
+        // Past how deep the views go, or past what a frame draws, a doorway
+        // shows the air of the world beyond - as anything that far off is. A
+        // world that should look endless says its air takes all by then
+        // (`uFogFull`, from `uFogStart`), and its views that far off are not
+        // drawn at all (view_through).
         const bool fresh = wp.shown && wp.drawn == frame_count_;
         if ((depth > 0 && !deeper) || (depth == 0 && !fresh && !(wp.own_drawn && wp.own_out.valid()))) {
-            // Past how deep the views go, what is beyond is as far off as
-            // anything: black, as empty space is.
-            set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned *
-                      gl::Mat4::scale({1.0f, h, w})));
-            scene_->set("uAlbedo", gl::Vec3{0.0f, 0.0f, 0.0f});
+            const Mix far = mix(wp.world->id(), look_of(*wp.world));
+            set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
+            scene_->set("uAlbedo", gl::Vec3{static_cast<float>(setting(far, passes::scene, "clear.x", 0.012)),
+                                            static_cast<float>(setting(far, passes::scene, "clear.y", 0.014)),
+                                            static_cast<float>(setting(far, passes::scene, "clear.z", 0.022))});
             scene_->set("uRoughness", 1.0f);
             scene_->set("uSurface", 0.0f);
             scene_->set("uEmissive", 1.0f);
@@ -2088,6 +2034,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
             scene_->set("uTexMix", 0.0f);
             scene_->set("uGlow", 0.0f);
             quad_.draw();
+            scene_->set("uEmissive", 0.0f);
             return;
         }
         // The far room, sampled in screen space: a hole in the wall - all
@@ -2130,6 +2077,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // plane, behind the doorway, on the opening's own outline as seen
         // from the eye - so it covers exactly what the opening covers, no
         // more, and nothing about the doorway changes size as you close in.
+        // It is drawn in front of everything (depth 0): behind the doorway
+        // may be solid wall - a portal on a wall - and nothing stands
+        // between the eye and a doorway it is centimetres from.
         if (e.params.num(Key{"tunnel"}, 0.0) > 0.0 && side >= 0.0f && side < kNear * 2.0f) {
             const float back = kNear * 2.0f - side;
             const float k = (std::max(side, 0.002f) + back) / std::max(side, 0.002f);
@@ -2137,7 +2087,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
             const gl::Vec3 centre = eye + (plane - eye) * k;
             set_model(room_local(gl::Mat4::translate(centre) * turned *
                       gl::Mat4::scale({1.0f, h * k, w * k})));
+            gl::glDepthRange(0.0, 0.0);
             quad_.draw();
+            gl::glDepthRange(0.0, 1.0);
         }
         scene_->set("uScreenUV", 0.0f);
         scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
@@ -2429,11 +2381,7 @@ void GLWorldView::apply_uniforms(const gl::Program& p, const Mix& m, Key pass) {
         key = (key ^ stamp_of(*part.look)) * 1099511628211ULL;
     }
     if (auto hit = uniform_memo_.find(key); hit != uniform_memo_.end()) {
-        for (const UniformSet& u : hit->second) {
-            if (u.n == 3) gl::glUniform3f(u.at, u.v[0], u.v[1], u.v[2]);
-            else if (u.n == 2) gl::glUniform2f(u.at, u.v[0], u.v[1]);
-            else gl::glUniform1f(u.at, u.v[0]);
-        }
+        for (const UniformSet& u : hit->second) p.put(u.at, u.n, u.v);
         return;
     }
     if (uniform_memo_.size() > 256) uniform_memo_.clear();
@@ -2618,10 +2566,10 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
         static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear"};
-        std::array<std::array<std::string, 13>, kMaxLights> n;
+                                       "uLightNear", "uLightOpen"};
+        std::array<std::array<std::string, 14>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 13; ++f)
+            for (int f = 0; f < 14; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;

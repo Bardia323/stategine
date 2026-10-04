@@ -94,21 +94,20 @@ uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
 uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
 uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
-uniform float uStraddle;                  // 1: a door's leaf, drawn by the room beyond the doorway it hangs in
-uniform float uSeamMix;                   // 1: a door's leaf on the viewer's side: blend into the far picture near the plane
-uniform vec4  uSeamAt;                    // a point of that plane, and how far into this room the blend reaches
-uniform vec3  uSeamIn;                    // the way into this room
-uniform sampler2D uSeamTex;               // the far side's picture, as the doorway shows it
+uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
 uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
 // Light from beyond a doorway, let in only through its opening: its middle
 // and half its width, then which way across it is (x, z), half its height,
 // and whether the light is gated at all.
 uniform vec4  uLightGate[MAX_LIGHTS];
 uniform vec4  uLightGateAxis[MAX_LIGHTS];
+uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
+
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+uniform float uFogStart;      // how far from the eye the air begins
 uniform float uFogFull;       // 1: the air takes all at last (a space with no end); else at most 0.85 of it
 uniform vec3  uSky;           // ambient from above
 uniform vec3  uGround;        // ambient bounced from the floor
@@ -425,7 +424,7 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
     vec3 q = lamp_side ? p : p + way * t;
     float soft = 0.06 + 0.12 * max(t * length(way), 0.0);
     float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
-    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v));
+    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v)) * uLightOpen[i];
     if (!lamp_side) return opening;
     return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
 }
@@ -769,12 +768,15 @@ void main() {
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
 
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
-    // A door's leaf, drawn here for a viewer in the room beyond its doorway:
-    // that room's light (far_*: let in through the doorway, shut or not) where
-    // it is at the plane - all of it, shut - and this room's own further out.
-    vec3 far_direct = vec3(0.0), far_bounced = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
+        // Light let in through a doorway reaches a door's leaf, half in the
+        // room beyond, as that room's own does: nothing this side's shadow
+        // maps hold stands between them. And a bounce let in stands for that
+        // room's light from all round, which the leaf has itself (below):
+        // it is not lit by it twice.
+        bool let_in = uStraddle > 0.5 && uLightGateAxis[i].w > 0.5;
+        if (let_in && uLightIndirect[i] > 0.5) continue;
         vec3 l;
         float atten, cone;
         if (uLightSun[i] > 0.5) {
@@ -804,8 +806,8 @@ void main() {
         float shadow = 1.0;
         // (Only where the lamp reaches: outside its cone it adds nothing,
         // and its shadow there is nothing.)
-        if (ndl > 0.0 && cone > 0.0 && i < uShadowCount) {
-            float fl = uLightFloor[i] < 0.0 || uStraddle > 0.5 ? uShadowFloor : uLightFloor[i];
+        if (ndl > 0.0 && cone > 0.0 && i < uShadowCount && !let_in) {
+            float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }
 
@@ -822,14 +824,8 @@ void main() {
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
 
-        bool far_side = uStraddle > 0.5 && uLightGateAxis[i].w > 0.5;
-        if (uLightIndirect[i] > 0.5) {
-            vec3 b = diffuse * ndl * uLightColor[i] * atten * cone * shadow;
-            if (far_side) far_bounced += b; else bounced += b;
-        } else {
-            vec3 d = lobe * ndl * uLightColor[i] * atten * cone * shadow;
-            if (far_side) far_direct += d; else direct += d;
-        }
+        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * atten * cone * shadow;
+        else direct += lobe * ndl * uLightColor[i] * atten * cone * shadow;
     }
 
     // Light from all round: the sky's colour from above, the floor's bounce
@@ -843,24 +839,21 @@ void main() {
     vec3 sky_here, ground_here;
     around_at(vLit, sky_here, ground_here);
     if (uStraddle > 0.5) {
-        // Which doorway it hangs in, and how far into this room each point is.
+        // A door's leaf is lit by the lamps of both rooms, each face by those
+        // before it (n.l says which); the light from all round is that of the
+        // room the face looks into. The doorway it hangs in: the nearest.
         int k = -1;
-        float s_in = 0.0, best = 1e9;
+        float best = 1e9;
         for (int i = 0; i < MAX_DOORS; ++i) {
             if (i >= uDoorCount) break;
             vec3 d = vLit - uDoorAt[i].xyz;
-            float s = dot(d.xz, uDoorIn[i].xy), off = abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w;
-            float score = abs(s) + max(off, 0.0) * 4.0;
-            if (score < best) best = score, k = i, s_in = s;
+            float score = abs(dot(d.xz, uDoorIn[i].xy)) + max(abs(dot(d.xz, uDoorAxis[i].xy)) - uDoorAt[i].w, 0.0) * 4.0;
+            if (score < best) best = score, k = i;
         }
         if (k >= 0) {
-            float here = smoothstep(0.0, 0.6, s_in);
-            direct = mix(far_direct, direct, here);
-            bounced = mix(far_bounced, bounced, here);
-            sky_here = mix(uDoorSky[k], uSky * uAmbient, here);
-            ground_here = mix(uDoorGround[k], uGround * uAmbient, here);
-        } else {
-            direct += far_direct, bounced += far_bounced;
+            float here = smoothstep(-0.3, 0.3, dot(n.xz, uDoorIn[k].xy));
+            sky_here = mix(uDoorSky[k], sky_here, here);
+            ground_here = mix(uDoorGround[k], ground_here, here);
         }
     }
     vec3 around = mix(ground_here, sky_here, n.y * 0.5 + 0.5);
@@ -879,8 +872,10 @@ void main() {
 
     // Fog, brighter where it is looked at towards the sun: light scattered
     // on its way through the air.
+    // (From `uFogStart` on: the air near the eye clear. Seen through a
+    // doorway the eye is carried, so the distance is the whole way there.)
     vec3 to_frag = vWorld - uViewPos;
-    float fog = 1.0 - exp(-uFogDensity * length(to_frag));
+    float fog = 1.0 - exp(-uFogDensity * max(length(to_frag) - uFogStart, 0.0));
     float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
     // Air that takes all at last is the background too: as far as it goes,
     // what is seen is what is beyond the last thing drawn.
@@ -890,14 +885,6 @@ void main() {
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
-    // A door's leaf is drawn by both sides, each its own half. Near the plane
-    // between them this side's colour gives way to the other side's picture of
-    // the same point, so the two halves of it are one.
-    if (uSeamMix > 0.5) {
-        float into = dot(vWorld - uSeamAt.xyz, uSeamIn);
-        vec3 there = texture(uSeamTex, gl_FragCoord.xy / uViewport).rgb;
-        color = mix(there, color, smoothstep(0.0, uSeamAt.w, into));
-    }
     FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - fog));
 })";
     return source.c_str();

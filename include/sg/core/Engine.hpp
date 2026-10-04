@@ -189,6 +189,11 @@ private:
     // walk through - its sky, its ground, whatever it shows, aimed from
     // there. The first seam onto a room is the one it is seen through.
     void look_across(const State& here);
+    // Whoever this frame's step took through one of `here`'s seams
+    // (State::passed, from `before` the step) is taken through it now, by
+    // the transition that carries the seam's own travel. The state they are
+    // in after. (Only a step: a walker put somewhere is not walked there.)
+    State* cross(State& here, const Params& before);
 
     // A state stepped on its own - the active one, or one that keeps time
     // always - is carried, Live, into whatever it is open in: a room into

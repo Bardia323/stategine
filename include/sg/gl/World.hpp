@@ -277,6 +277,14 @@ private:
         uint64_t revision = 0;
     };
 
+    // Where a doorway is on the view, in -1..1 each way, and what of it a
+    // view through another leaves open.
+    struct Rect {
+        float x0, y0, x1, y1;
+        bool empty() const { return x1 <= x0 || y1 <= y0; }
+        Rect cut(const Rect& o) const { return {std::max(x0, o.x0), std::max(y0, o.y0), std::min(x1, o.x1), std::min(y1, o.y1)}; }
+    };
+
     struct WorldPortal {
         const Spatial3D* world = nullptr;
         Carry carry;
@@ -311,13 +319,9 @@ private:
     // read off the two cameras - the guest's was carried from the host's by
     // the portal's own functor, so the pair of them is that functor.
     HalfSpace far_side(const Spatial3D& host, const Element& portal, const Element& gc) const;
-    // Where a doorway is on the view, in -1..1 each way, and what of it a
-    // view through another leaves open.
-    struct Rect {
-        float x0, y0, x1, y1;
-        bool empty() const { return x1 <= x0 || y1 <= y0; }
-        Rect cut(const Rect& o) const { return {std::max(x0, o.x0), std::max(y0, o.y0), std::min(x1, o.x1), std::min(y1, o.y1)}; }
-    };
+    // What is seen of a world, wherever it is seen from: it, and the worlds
+    // round it or in it (sg::nests), where they are.
+    std::vector<PlacedRoom> seen(const Spatial3D& world) const;
     Rect screen_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const;
     // The views through the doorways of `world`, seen from `eye` through the
     // doorways `path` names - as deep into it as the world says
@@ -827,14 +831,6 @@ private:
     static bool shades(const Caster& c, const Frustum& sees, const Light& light);
     // Which mesh a box is drawn with (its shape, rounding and taper).
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
-    // The last frame's picture of the room the eye is in, before its look:
-    // what a doorway past how deep the views go shows of a room glued to
-    // itself - the view through it, fitted to where it is - so every frame
-    // sees one level further in, for the cost of a copy.
-    gl::RenderTarget last_frame_;
-    Camera drawn_cam_;   // the eye of the view being drawn, and its aspect
-    float drawn_aspect_ = 1.0f;
-    const Spatial3D* root_world_ = nullptr;
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
@@ -900,24 +896,15 @@ private:
     std::unordered_map<Key, WorldPortal> worlds_;
     // Views through doorways seen through doorways, by the way the eye came.
     struct Nested {
-        gl::RenderTarget ms, target;
+        gl::RenderTarget target;
         uint64_t frame = 0;
         // Where on the screen the view was drawn (its doorway's rect, in the
         // eye's frame, to the pixel), in the corner of `target` it filled.
         Rect rect{-1, -1, 1, 1};
         float fx = 1, fy = 1;
-        // Its shadow maps, made with it: kept while the same view keeps
-        // this picture (`owner`, the way the eye came to it), drawn again
-        // when another view is given it.
-        std::unique_ptr<ShadowSet> shadows;
-        std::string owner;
     };
-    // A view seen through another is lit by maps of this size, made with the
-    // pool: it is never more of the screen than the doorway it is seen in.
-    static constexpr int kNestedShadowSize = 1024;
-    // The least of the screen (of 4, the whole) a view onto the eye's own world is drawn for.
-    static constexpr float kLeastOwnView = 0.012f;
-    ShadowSet* slot_shadows_ = nullptr;  // the maps of the view being drawn, if it has its own
+    // The least of the screen (of 4, the whole) a view through a doorway is drawn for.
+    static constexpr float kLeastView = 1e-5f;
     // The part of the screen the drawing now going on is (the eye's own frame,
     // -1..1; all of it but for a view drawn where its doorway is), and its
     // viewport in pixels.
@@ -926,19 +913,24 @@ private:
     // A picture of the screen's part `r`, drawn into the corner (fx, fy) of
     // its target, sampled where it is seen from the drawing now going on.
     void sample_screen(const Rect& r, float fx, float fy) const;
-    // A view lives only within its frame: the views drawn share a fixed set of
-    // pictures, handed out by rank, made with the screen's other targets -
-    // never in the middle of a frame (the stall of a first step through).
+    // A view lives only within its frame: the views drawn share a set of
+    // pictures, handed out by rank, each as big as the part of the screen it
+    // was given - as many as the views the frame has (to kViewPoolMost), so
+    // which are drawn is the views' own rule (how deep, how far the air
+    // lets one see, how small), never which won a place this frame.
     std::vector<Nested> pool_;
     std::unordered_map<std::string, std::size_t> slot_;  // this frame's view, by the way the eye came
-    static constexpr std::size_t kViewPool = 12;
+    static constexpr std::size_t kViewPool = 12, kViewPoolMost = 128;
+    void fit(Nested& n, int w, int h, bool anew = false);
     // And the pictures of the doorways of the room the eye is in: as many as
-    // can be seen at once, not one for every doorway the world has.
+    // are seen at once (made with the screen's targets, and more the first
+    // frame more are in sight), not one for every doorway the world has.
     struct RootView {
         gl::RenderTarget ms, target;
     };
     std::vector<RootView> root_pool_;
-    static constexpr std::size_t kRootViews = 8;
+    static constexpr std::size_t kRootViews = 8, kRootViewsMost = 32;
+    void make_root_view(RootView& v, int w, int h);
     struct ViewJob {
         std::string key;
         const Spatial3D* host;

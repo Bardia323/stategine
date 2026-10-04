@@ -121,6 +121,13 @@ Pose standing(const Element& camera) {
 }
 
 void set_standing(Element& camera, const Pose& ground) {
+    // Level ground is no ground of its own: its turn is a heading. One pose,
+    // written one way - so whatever reads only the heading reads it right.
+    if (std::fabs(ground.pitch) < 1e-6 && std::fabs(ground.roll) < 1e-6) {
+        camera.params.set(keys::yaw, camera.params.num(keys::yaw) + ground.yaw);
+        for (Key k : {kStandW, kStandX, kStandY, kStandZ}) camera.params.erase(k);
+        return;
+    }
     double w, x, y, z;
     to_quaternion(rot(ground), w, x, y, z);
     camera.params.set(kStandW, w).set(kStandX, x).set(kStandY, y).set(kStandZ, z);
@@ -389,27 +396,12 @@ Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, doubl
 void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst) {
     const Pose at = through_portal(here, there, Pose{position_of(src)});
     set_position(dst, at.position);
-    if (!src.params.has(kStandW) && upright(at)) {
-        dst.params.set(keys::yaw, src.params.num(keys::yaw) + at.yaw);
-        dst.params.set(keys::pitch, src.params.num(keys::pitch));
-        if (src.params.has(keys::roll)) dst.params.set(keys::roll, src.params.num(keys::roll));
-    } else {
-        // The ground it stands on turned as the doorway turns it, the look
-        // within it as it was - unless that leaves the ground level again,
-        // which is a heading.
-        Pose ground = compose_pose(Pose{{}, at.yaw, at.pitch, at.roll}, standing(src));
-        double yaw = src.params.num(keys::yaw);
-        dst.params.set(keys::pitch, src.params.num(keys::pitch));
-        if (src.params.has(keys::roll)) dst.params.set(keys::roll, src.params.num(keys::roll));
-        if (std::fabs(ground.pitch) < 1e-9 && std::fabs(ground.roll) < 1e-9) {
-            // Level again: a heading, and no ground of its own.
-            dst.params.set(keys::yaw, yaw + ground.yaw);
-            for (Key k : {kStandW, kStandX, kStandY, kStandZ}) dst.params.erase(k);
-        } else {
-            dst.params.set(keys::yaw, yaw);
-            set_standing(dst, ground);
-        }
-    }
+    // The whole of the eye's turn, whatever `dst` held before: the ground it
+    // stands on turned as the doorway turns it, the look within it as it was
+    // (level ground, a heading: set_standing).
+    dst.params.set(keys::yaw, src.params.num(keys::yaw)).set(keys::pitch, src.params.num(keys::pitch));
+    dst.params.set(keys::roll, src.params.num(keys::roll));
+    set_standing(dst, compose_pose(Pose{{}, at.yaw, at.pitch, at.roll}, standing(src)));
     // What it was moving with goes with it, turned as it is turned.
     if (src.params.has(keys::vx)) {
         const Vec3d v = turn(Pose{{}, at.yaw, at.pitch, at.roll}, {src.params.num(keys::vx), src.params.num(keys::vy), src.params.num(keys::vz)});
@@ -459,6 +451,28 @@ std::function<void(const Element&, Element&)> seam_carry(const Element& here, co
 std::function<void(const Element&, Element&)> pose_carry(const Element& here, const Element& there) {
     const Pose h = local_pose(here), t = local_pose(there);
     return [h, t](const Element& src, Element& dst) { write_pose(dst, through_portal(h, t, pose_params(src))); };
+}
+
+Params SpatialState::passage() const {
+    const Element* eye = find(camera_id());
+    return eye ? Params{}.set(keys::x, eye->params.num(keys::x)).set(keys::y, eye->params.num(keys::y)).set(keys::z, eye->params.num(keys::z))
+               : Params{};
+}
+
+bool SpatialState::passed(const Params& before, Key boundary) const {
+    const Element* door = find(boundary);
+    const Element* eye = find(camera_id());
+    if (!door || !eye || door->kind != kinds::portal || !before.has(keys::x)) return false;
+    if (door->params.num(Key{"walk"}, 0.0) < 0.5 || door->params.num(Key{"leave"}, 1.0) < 0.5) return false;
+    return crossed_portal(*door, {before.num(keys::x), before.num(keys::y), before.num(keys::z)}, position_of(*eye));
+}
+
+bool opens_from(const Element& portal, const Vec3d& at) {
+    if (portal.params.has(Key{"ball"})) return true;
+    if (portal.params.num(Key{"walk"}, 0.0) < 0.5 && portal.params.num(Key{"oneway"}, 0.0) < 0.5) return true;
+    const Pose p = local_pose(portal);
+    const Vec3d face = upright(p) ? heading(p.yaw) : facing(p);
+    return (at.x - p.position.x) * face.x + (at.y - p.position.y) * face.y + (at.z - p.position.z) * face.z > 0.0;
 }
 
 bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {

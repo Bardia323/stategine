@@ -195,11 +195,14 @@ void Engine::tick(double dt) {
         // Edits made in an open Live guest since the last frame land in the
         // host before it updates, so the two never disagree within a frame.
         sync_live_out(*c);
+        const Params before = c->passage();
         drive(*c, dt);
         step(*c, t);
         step_embeddings(*c, t);
         carry_to_hosts(*c);
-        look_across(*c);
+        c = cross(*c, before);
+        if (!running_) return;
+        if (c) look_across(*c);
     }
     keep_time(t);
     stepped_.clear();
@@ -337,6 +340,24 @@ void Engine::look_across(const State& here) {
         const Functor* f = graph_.functor(from_a ? sm.a_to_b : sm.b_to_a);
         if (State* o = graph_.find(other); f && o) f->apply(here, *o);
     }
+}
+
+State* Engine::cross(State& here, const Params& before) {
+    if (before.empty()) return &here;
+    for (const Seam& sm : graph_.seams())
+        for (const bool from_a : {true, false}) {
+            if ((from_a ? sm.a : sm.b) != here.id()) continue;
+            const Key travel = from_a ? sm.a_to_b : sm.b_to_a;
+            for (const Key& boundary : from_a ? sm.boundary_a : sm.boundary_b) {
+                if (!here.passed(before, boundary)) continue;
+                for (const Transition& t : graph_.transitions())
+                    if (t.functor == travel && (t.from == here.id() || t.from == Key{"*"}) && (!t.guard || t.guard(here, Event{t.trigger}))) {
+                        take(t, here, Event{t.trigger});
+                        return top();
+                    }
+            }
+        }
+    return &here;
 }
 
 void Engine::carry_to_hosts(State& s) {

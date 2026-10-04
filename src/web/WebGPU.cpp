@@ -508,9 +508,7 @@ struct WebGPUView::Impl {
                         }
                     }
                 }
-                if (e.params.num("oneway") > .5 &&
-                    spatial::projection::dot(vec(camera.eye) - vec(pose.position), vec(heading(pose.yaw))) < 0)
-                    continue;
+                if (!opens_from(e, camera.eye)) continue;
                 if (!image.isNull() || !feed.empty())
                     append(render::quad_vertices(), panel, {1, 1, 1}, e.params.num("roughness", .6), 0,
                            e.params.num("glow", 0), image, feed, feedback,

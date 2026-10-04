@@ -264,7 +264,8 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     bool grounded = walker.params.num("grounded", 0.0) > 0.5;
 
     // The pull where its middle is, and the ground turned to stand against
-    // it - about its feet, quickly when on its feet, slowly in the air.
+    // it - about its feet, easing (a share of the way each second, on its
+    // feet more than in the air: never a step it would be seen to take).
     const V3 feet = eye - up * (height - r);
     const V3 g = pull.evaluate(eye - up * (height * 0.5), time - dt, {{"gravity", field::Response::Acceleration, 1.0}}).acceleration;
     if (spatial::length(g) > 1e-6) {
@@ -273,8 +274,8 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
         if (angle > 1e-9) {
             V3 axis = spatial::cross(up, want);
             if (spatial::length(axis) < 1e-9) axis = ground * V3{1, 0, 0};
-            const double most = (grounded ? 8.0 : 3.0) * dt;
-            ground = spatial::orthonormal(turned(ground, axis, std::min(angle, most)));
+            const double share = 1.0 - std::exp(-(grounded ? 8.0 : 3.0) * dt);
+            ground = spatial::orthonormal(turned(ground, axis, angle * share));
             up = ground * V3{0, 1, 0};
             eye = feet + up * (height - r);
         }
@@ -342,15 +343,10 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     set_position(walker, wrapped(space, vd(eye)));
     walker.params.set(keys::vx, v.x).set(keys::vy, v.y).set(keys::vz, v.z);
     walker.params.set(keys::yaw, yaw).set(keys::pitch, pitch).set("grounded", grounded ? 1.0 : 0.0);
-    // Level ground is a heading, kept as one: only a ground that has turned
-    // is written as the walker's own.
+    // (Level ground is written as a heading: set_standing.)
     double gy, gp, gr;
     spatial::to_euler(ground, gy, gp, gr);
-    if (std::fabs(gp) < 1e-12 && std::fabs(gr) < 1e-12 && !walker.params.has(Key{"stand_w"})) {
-        walker.params.set(keys::yaw, yaw + gy);
-    } else {
-        set_standing(walker, Pose{{}, gy, gp, gr});
-    }
+    set_standing(walker, Pose{{}, gy, gp, gr});
 }
 
 }  // namespace sg
