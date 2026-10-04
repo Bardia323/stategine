@@ -311,6 +311,12 @@ private:
         // target it fills (a ball onto a world is drawn only where it is).
         Rect seen{-1, -1, 1, 1};
         float fx = 1.0f, fy = 1.0f;
+        // A glass's reflection: the room seen every way from its middle,
+        // a face of it drawn again each frame in turn (capture_glass).
+        gl::CubeMap env;
+        gl::RenderTarget env_face;
+        int env_next = 0, env_wait = 0;
+        Vec3d env_at;  // where the glass was when last drawn
         // `own_look`: the far side drawn whole, in its own look, from the
         // carried eye - as it will be seen once through (its picture, and
         // the view that draws it).
@@ -318,6 +324,8 @@ private:
         gl::RenderTarget own_out;
         bool own_drawn = false;
     };
+    // A ball window's reflection of `world` round it, kept up to date.
+    void capture_glass(const Spatial3D& world, const Element& e, WorldPortal& wp);
 
     struct TerrainMesh {
         std::function<double(double, double)> height;
@@ -551,7 +559,11 @@ private:
         std::vector<DrawBound> bounds;
         gl::Mat4 frame;
         bool framed=false;
-        std::size_t indexed=0;  // how many things its index holds: made again only when one moved, came or went
+        std::size_t indexed=0;  // how many things its index holds: made again only when one came, went, or first moved
+        // What has moved: culled each on its own, out of the index - so
+        // snow falling, a thing carried, does not make the index again.
+        std::vector<char> mover;
+        std::vector<std::size_t> movers;
     };
     std::unordered_map<const Spatial3D*, DrawPlan> draw_plans_;
     // What of a room the view sees. A copy of a space that wraps (`shift`,

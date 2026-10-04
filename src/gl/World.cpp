@@ -44,6 +44,42 @@ GLWorldView::Rect GLWorldView::ball_rect(const Spatial3D& world, const Element& 
     return Rect{std::max(x - hx, -1.0f), std::max(y - hy, -1.0f), std::min(x + hx, 1.0f), std::min(y + hy, 1.0f)};
 }
 
+void GLWorldView::capture_glass(const Spatial3D& world, const Element& e, WorldPortal& wp) {
+    constexpr int kSize = 128;
+    const bool fresh = !wp.env.valid();
+    // A face a frame while the glass moves (carried, shaken); standing, a
+    // face every eighth frame - what is round it keeps up, slowly.
+    const Vec3d at = pose_of(world, e).position;
+    const bool moved = at.x != wp.env_at.x || at.y != wp.env_at.y || at.z != wp.env_at.z;
+    wp.env_at = at;
+    if (!fresh && !moved && ++wp.env_wait < 8) return;
+    wp.env_wait = 0;
+    wp.env.create(kSize);
+    if (fresh) wp.env_face.create(kSize, kSize, gl::GL_RGBA16F, 0, true);
+    const gl::Vec3 c = to_vec3(pose_of(world, e).position);
+    // Each way a cube's faces look, and which way is up in each (as a cube
+    // map is read).
+    static const gl::Vec3 ways[6][2] = {{{1, 0, 0}, {0, -1, 0}}, {{-1, 0, 0}, {0, -1, 0}}, {{0, 1, 0}, {0, 0, 1}},
+                                        {{0, -1, 0}, {0, 0, -1}}, {{0, 0, 1}, {0, -1, 0}}, {{0, 0, -1}, {0, -1, 0}}};
+    const Rect was = sub_;
+    const std::string path = path_;
+    sub_ = Rect{-1, -1, 1, 1};
+    path_ = "/glass/" + e.id.str();
+    for (int n = 0; n < (fresh ? 6 : 1); ++n) {
+        const int i = fresh ? n : wp.env_next;
+        Camera cam;
+        cam.eye = c, cam.forward = ways[i][0], cam.up = ways[i][1], cam.fov = 3.14159265f * 0.5f, cam.ortho = 0.0f;
+        // (Seen from its surface out: nothing in the ball - the glass, what
+        // stands in it - is what it reflects.)
+        const float r = static_cast<float>(e.params.num(Key{"ball"}, 0.0));
+        draw_world(seen(world), cam, 1.0f, wp.env_face, /*depth=*/1, std::max(kNear, r * 1.02f), e.id.key(), {});
+        wp.env.take(i, wp.env_face.framebuffer(), kSize, kSize);
+    }
+    wp.env_next = (wp.env_next + 1) % 6;
+    sub_ = was;
+    path_ = path;
+}
+
 bool GLWorldView::ball_window(const Element& e) const {
     if (!e.params.has(Key{"ball"}) || e.params.num(Key{"window"}, 1.0) < 0.5) return false;
     const auto it = worlds_.find(e.id);
@@ -412,6 +448,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         // A ball onto a world is drawn only where the ball is on the
         // screen, at the screen's own pixels: a glass on a table costs what
         // of the screen it covers.
+        if (e.params.has(Key{"ball"})) capture_glass(world, e, wp);
         wp.seen = e.params.has(Key{"ball"}) ? ball_rect(world, e, eye_cam, aspect) : Rect{-1, -1, 1, 1};
         sub_ = wp.seen;
         draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
@@ -1141,6 +1178,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uStraddle", 0.0f);
         p.set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
         p.set("uTex", 0);
+        p.set("uEnv", 7);
+        p.set("uEnvMix", 0.0f);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
         p.set("uViewport", vp_w_, vp_h_);
@@ -2099,11 +2138,18 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
             scene_->set("uTexMix", 1.0f);
             scene_->set("uScreenUV", 1.0f);
             sample_screen(wp.seen, wp.fx, wp.fy);
+            // Glass: the room round it reflected in it (`reflect`, 1 unless it says).
+            const float reflect = static_cast<float>(e.params.num(Key{"reflect"}, 1.0));
+            if (reflect > 0.0f && wp.env.valid()) {
+                wp.env.bind(7);
+                scene_->set("uEnvMix", reflect);
+            }
             // Never cut by the near plane, however close the eye comes: the
             // glass covers what it covers, and nothing behind shows through.
             gl::glEnable(gl::GL_DEPTH_CLAMP);
             sphere_.draw();
             gl::glDisable(gl::GL_DEPTH_CLAMP);
+            scene_->set("uEnvMix", 0.0f);
             scene_->set("uScreenUV", 0.0f);
             scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
             scene_->set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);

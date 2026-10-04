@@ -141,6 +141,8 @@ uniform sampler2DArrayShadow uShadowMaps;
 uniform mat4 uShadowVP[MAX_SHADOWS];
 uniform float uShadowBias[MAX_SHADOWS];
 uniform sampler2D uTex;
+uniform samplerCube uEnv;     // what is seen every way from a polished thing (a glass's reflection)
+uniform float uEnvMix;        // > 0: it reflects uEnv, by Fresnel - faint face on, strong at its edges
 uniform vec2 uShadowTexel;
 uniform float uShadowSoft;    // how wide the filter is, in texels (1: tight)
 uniform float uShadowFloor;   // how much light is left in a full shadow - bounce, faked
@@ -719,7 +721,15 @@ void main() {
     // by that room's own light and air: it is shown as it is, not lit or
     // fogged a second time by the room it is seen from.
     if (uScreenUV > 0.5 && uTexMix > 0.99) {
-        FragColor = vec4(albedo * (1.0 - uDim * (1.0 - uUndim)), 0.0);
+        vec3 seen = albedo;
+        // Glass: what is round it, mirrored in it - little where it faces
+        // the eye, all but everything at its rim - over what is seen through.
+        if (uEnvMix > 0.0) {
+            vec3 gn = normalize(vNormal), gv = normalize(uViewPos - vWorld);
+            float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(gn, gv), 0.0, 1.0), 5.0);
+            seen = mix(seen, texture(uEnv, reflect(-gv, gn)).rgb, clamp(fres * uEnvMix, 0.0, 1.0));
+        }
+        FragColor = vec4(seen * (1.0 - uDim * (1.0 - uUndim)), 0.0);
         return;
     }
     float roughness = clamp(mRoughness + rough_mod, 0.05, 1.0);

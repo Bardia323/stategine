@@ -96,71 +96,68 @@ auto GLWorldView::query_bounds(const RoomMatrix& local) const -> DrawBound {
 
 std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Frustum& view,const gl::Vec3* shift) {
     auto& plan=draw_plans_[&room];
+    const auto& elements=room.elements();
+    // Whether a thing, its bounds moved by `o`, is to be drawn: in what is
+    // seen, and not a speck - less than a pixel or so across at this
+    // distance on this picture (what is highlighted is never one).
+    const auto shown=[&](std::size_t i,const gl::Vec3& o) {
+        const auto& b=plan.bounds[i];
+        const gl::Vec3 c=b.centre+o;
+        if(lod_least_>0.0f && elements[i].id!=highlight_) {
+            const gl::Vec3 away=c-cam_eye_;
+            const float d2=gl::dot(away,away),r=(b.radius-0.05f)/1.5f;
+            if(r*lod_px_*r*lod_px_<lod_least_*lod_least_*d2) return false;
+        }
+        for(const auto& p:view.planes)
+            if(static_cast<float>(p.normal.x)*c.x+static_cast<float>(p.normal.y)*c.y+static_cast<float>(p.normal.z)*c.z+static_cast<float>(p.offset)<-b.radius) return false;
+        return true;
+    };
     if(shift && plan.framed) {
         const gl::Vec3 o=*shift;
         Frustum back=view;
         for(auto& p:back.planes) p.offset+=p.normal.x*o.x+p.normal.y*o.y+p.normal.z*o.z;
         auto visible=plan.visibility.visible(back);
-        const auto& elements=room.elements();
-        visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) {
-            const auto& b=plan.bounds[i];
-            const gl::Vec3 c=b.centre+o;
-            if(lod_least_>0.0f && elements[i].id!=highlight_) {
-                const gl::Vec3 away=c-cam_eye_;
-                const float d2=gl::dot(away,away),r=(b.radius-0.05f)/1.5f;
-                if(r*lod_px_*r*lod_px_<lod_least_*lod_least_*d2) return true;
-            }
-            for(const auto& p:view.planes)
-                if(static_cast<float>(p.normal.x)*c.x+static_cast<float>(p.normal.y)*c.y+static_cast<float>(p.normal.z)*c.z+static_cast<float>(p.offset)<-b.radius) return true;
-            return false;
-        }),visible.end());
+        visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return !shown(i,o); }),visible.end());
+        for(const auto i:plan.movers) if(shown(i,o)) visible.push_back(i);
         visible.insert(visible.end(),plan.unbounded.begin(),plan.unbounded.end());
         std::sort(visible.begin(),visible.end());
         return visible;
     }
     plan.unbounded.clear(); plan.portals.clear();
-    std::vector<spatial::Index::Entry> bounds;
-    const auto& elements=room.elements();
     bool same_frame=plan.framed;
     for(int i=0;i<16 && same_frame;++i) same_frame=plan.frame.m[i]==frame_matrix_.m[i];
     plan.bounds.resize(elements.size());
+    plan.mover.resize(elements.size(),0);
     const auto lists=draw_lists(room);
     plan.unbounded=lists.unbounded;plan.portals=lists.portals;
-    bool moved=!same_frame || plan.indexed!=lists.solids.size();
+    bool remake=!same_frame;
+    plan.movers.clear();
+    std::vector<spatial::Index::Entry> bounds;
     for(const auto i:lists.solids) {
         const auto& e=elements[i];
         auto& placement=placed_of(room,e);
         if(!placement.boxed) placement.box=box_model(room,e),placement.boxed=true;
         auto& bound=plan.bounds[i];
         if(!same_frame || bound.element!=&e || bound.stamp!=placement.stamp) {
+            // Moved (not made, nor seen from a moved frame): out of the index.
+            if(same_frame && bound.element==&e && !plan.mover[i]) plan.mover[i]=1, remake=true;
+            if(bound.element!=&e) plan.mover[i]=0, remake=true;
             bound=query_bounds(placement.box);bound.element=&e;bound.stamp=placement.stamp;
-            moved=true;
         }
-        bounds.push_back({i,bound.bounds});
+        if(plan.mover[i]) plan.movers.push_back(i);
+        else bounds.push_back({i,bound.bounds});
     }
-    // (The index is the things' bounds: while none moved, it stands.)
-    if(moved) plan.visibility.update(std::move(bounds)), plan.indexed=lists.solids.size(), ++times_.indices_built;
+    // (The index is the bounds of what stands: while nothing came, went or
+    // first moved, it stands.)
+    if(const std::size_t n=bounds.size(); remake || plan.indexed!=n) plan.visibility.update(std::move(bounds)), plan.indexed=n, ++times_.indices_built;
     auto visible=plan.visibility.visible(view);
-    // Preserve the original float sphere test after conservative BVH pruning.
-    visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) {
-        const auto& b=plan.bounds[i];
-        // A speck: less than a pixel or so across at this distance on this
-        // picture. (What is highlighted is never one.)
-        if(lod_least_>0.0f && elements[i].id!=highlight_) {
-            const gl::Vec3 away=b.centre-cam_eye_;
-            const float d2=gl::dot(away,away),r=(b.radius-0.05f)/1.5f;
-            if(r*lod_px_*r*lod_px_<lod_least_*lod_least_*d2) return true;
-        }
-        for(const auto& p:view.planes)
-            if(static_cast<float>(p.normal.x)*b.centre.x+static_cast<float>(p.normal.y)*b.centre.y+static_cast<float>(p.normal.z)*b.centre.z+static_cast<float>(p.offset)<-b.radius) return true;
-        return false;
-    }),visible.end());
+    visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return !shown(i,{0,0,0}); }),visible.end());
+    for(const auto i:plan.movers) if(shown(i,{0,0,0})) visible.push_back(i);
     visible.insert(visible.end(),plan.unbounded.begin(),plan.unbounded.end());
     std::sort(visible.begin(),visible.end());
     plan.frame=frame_matrix_; plan.framed=true;
     return visible;
 }
-
 bool GLWorldView::declared_world(const State& host,const Element& portal,const Spatial3D& guest) const {
     const StateGraph* g=graph_?graph_:(root_?root_->graph_:nullptr);
     if(!g) return false;

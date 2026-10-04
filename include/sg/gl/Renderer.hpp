@@ -133,6 +133,22 @@ private:
 // --- render targets -----------------------------------------------------------
 // HDR colour with an optional multisampled twin, so the scene can be drawn with
 // MSAA and then resolved into a texture the post chain can sample.
+// A cube of six square pictures - what is seen every way from one point -
+// sampled by a direction: what a polished thing there reflects.
+class CubeMap {
+public:
+    void create(int size);
+    bool valid() const { return tex_ != 0; }
+    int size() const { return size_; }
+    // Face `face` (+x, -x, +y, -y, +z, -z) from what `from` drew.
+    void take(int face, GLuint from, int w, int h);
+    void bind(int unit) const;
+
+private:
+    GLuint tex_ = 0, fbo_ = 0;
+    int size_ = 0;
+};
+
 class RenderTarget {
 public:
     // `depth_texture`: a single-sampled target keeps its depth as a texture a
@@ -147,6 +163,8 @@ public:
 
     // Resolve a multisampled target into a plain one.
     void blit_to(const RenderTarget& dst) const;
+    // Its framebuffer, for what copies out of it (CubeMap::take).
+    GLuint framebuffer() const { return fbo_; }
 
     // Resolve depth too: a multisampled target's depth into a plain one's.
     void blit_depth_to(const RenderTarget& dst) const;

@@ -8,6 +8,9 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A ball window is glass: it reflects what is round it (`reflect`, 1 unless it says), by Fresnel - faint face on, all but whole at its rim - over the world it shows. Its reflection is a probe (`gl::CubeMap`): what is round it seen every way from its surface out, a face drawn again a frame while it moves, every eighth while it stands.
+- What moves is culled on its own, out of a room's visibility index: snow falling, a thing carried, no longer makes the index of everything that stands again.
+
 - A world inside a thing at another scale: a seam of two balls of different radii (a snow globe's glass onto a world of 26 m) carries by similarity - `through_ball`, its scale `seam_scale` the ratio of the radii - and its ball is a window onto that world (`ball_window`): drawn as the world's own view from the eye carried in, only where the ball is on the screen (`ball_rect`), never cut by the near plane however close the eye comes. A ball that says `window` 0 is not one (the world's own sky, from inside). Balls of one size still nest (`nests`).
 - Carries read where both doorways are in their states (`portal_carry(a, here, b, there)`): a doorway may hang from an anchor or move with a thing.
 - `check_crossings` flies into every ball window as it walks through every doorway, and names a jump or a flicker; `sg_crossings_gl` shows it can fail (a glass shown at the wrong scale).

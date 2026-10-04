@@ -221,6 +221,33 @@ void RenderTarget::create(int w, int h, GLenum internal_format, int samples, boo
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void CubeMap::create(int size) {
+    if (tex_ && size == size_) return;
+    if (!tex_) glGenTextures(1, &tex_), glGenFramebuffers(1, &fbo_);
+    size_ = size;
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+    for (int i = 0; i < 6; ++i)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(i), 0, static_cast<GLint>(GL_RGBA16F), size, size, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    for (GLenum w : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R}) glTexParameteri(GL_TEXTURE_CUBE_MAP, w, GL_CLAMP_TO_EDGE);
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+}
+
+void CubeMap::take(int face, GLuint from, int w, int h) {
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + static_cast<GLenum>(face), tex_, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, from);
+    glBlitFramebuffer(0, 0, w, h, 0, 0, size_, size_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void CubeMap::bind(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
+    glActiveTexture(GL_TEXTURE0);
+}
+
 void RenderTarget::blit_to(const RenderTarget& dst) const {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
