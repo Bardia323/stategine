@@ -8,6 +8,11 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A world inside a thing at another scale: a seam of two balls of different radii (a snow globe's glass onto a world of 26 m) carries by similarity - `through_ball`, its scale `seam_scale` the ratio of the radii - and its ball is a window onto that world (`ball_window`): drawn as the world's own view from the eye carried in, only where the ball is on the screen (`ball_rect`), never cut by the near plane however close the eye comes. A ball that says `window` 0 is not one (the world's own sky, from inside). Balls of one size still nest (`nests`).
+- Carries read where both doorways are in their states (`portal_carry(a, here, b, there)`): a doorway may hang from an anchor or move with a thing.
+- `check_crossings` flies into every ball window as it walks through every doorway, and names a jump or a flicker; `sg_crossings_gl` shows it can fail (a glass shown at the wrong scale).
+- A doorway's light memo is keyed on its far world's lights and look, not on everything in it.
+
 - `shapes::lathe_smooth(profile, sides, crease)`: a profile turned and polished - its normals run on round the axis and along the profile, but where it turns sharper than `crease` it keeps an edge (a rim, a step). For turned things that should not look cut (a chess piece, a vase).
 
 - Seams need no binding by hand: `GLWorldView` binds every seam of the prepared graph itself (`bind_seams`, made again whenever the graph changes), both ways, from the eye the seam's own travel carries. `bind_world` is for what is not a seam (a projection).

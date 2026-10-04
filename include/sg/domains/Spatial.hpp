@@ -312,7 +312,7 @@ inline Pose through_portal(const Element& here, const Element& there, const Vec3
 
 // Carry a camera across: its ground turned with it - unless the turn is about
 // the up of level ground, which is a heading and nothing more.
-void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst);
+void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst, double scale = 1.0);
 
 // The same transform as a transport, ready to hang on a functor: it carries a
 // camera (or anything with a pose) from one room's frame into the other's.
@@ -327,6 +327,19 @@ std::function<void(const Element&, Element&)> portal_carry(const Element& here,
 // with it. This is the glue of a seam, not travel: carrying the near doorway
 // lands exactly on the far one, and the seam law checks that it does.
 std::function<void(const Element&, Element&)> seam_carry(const Element& here, const Element& there);
+
+// Through a seam of two balls (`ball`, each its radius), a world goes inside
+// another at the scale of the one ball to the other: a snow globe's world in
+// its glass, a planet in its system. `p` carried from `here` to `there`, its
+// distance from the middle scaled by `k` (there's radius over here's).
+Pose through_ball(const Pose& here, const Pose& there, double k, const Pose& p);
+// What a seam's two doorways scale by, here to there: the ratio of their
+// balls' radii, or 1 for any other doorway.
+double seam_scale(const Element& here, const Element& there);
+// The viewer carried from `here` (of state `a`) out of `there` (of `b`), each
+// where it is in its own state - hung from an anchor, moved with a thing -
+// and, through two balls, at their scale.
+std::function<void(const Element&, Element&)> portal_carry(const State& a, const Element& here, const State& b, const Element& there);
 
 // Anything else that hangs in a seam - a door on its hinge - carried across
 // as it is: its place and its heading, in the other side's frame.

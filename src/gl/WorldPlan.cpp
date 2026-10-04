@@ -2,6 +2,13 @@
 namespace sg::render {
 bool GLWorldView::in_view(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
     const Pose p = pose_of(world, e);
+    // A ball: whether any of it is before the eye and in what it sees.
+    if (const double r = e.params.num(Key{"ball"}, 0.0); r > 0.0) {
+        const gl::Vec3 c = to_vec3(p.position);
+        const float far = static_cast<float>(world.params().num(Key{"far"}, 120.0));
+        const Frustum sees = frustum_of(projection_of(cam, aspect > 0.0f ? aspect : 1.0f, kNear, far) * gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up));
+        return sees.intersects_sphere({c.x, c.y, c.z}, static_cast<float>(r));
+    }
     const float w = static_cast<float>(e.params.num(keys::w, 3.0)) * 0.5f + 0.3f;
     const float h = static_cast<float>(e.params.num(keys::h, 2.0)) * 0.5f + 0.3f;
     const gl::Vec3 c = to_vec3(p.position), side = to_vec3(across_of(p)), up = to_vec3(up_of(p));

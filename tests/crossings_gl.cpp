@@ -100,5 +100,46 @@ int main() {
         for (const auto& s : out) jumped = jumped || s.find("hall -> annex") != std::string::npos && s.find("jumps") != std::string::npos;
         check(jumped, "a doorway shown from the wrong eye is a jump, and named");
     }
+    {
+        // A world in a glass: a ball of 0.3 m in the hall onto one of 10 m -
+        // flown into, one picture; shown through a carry that forgets the
+        // scale, not one, and named.
+        const auto build = [](sg::StateGraph& g) {
+            auto& hall = room(g, "hall", 8, 6, 2, 4.0, 0.8);
+            auto& inner = g.add<sg::Spatial3D>("inner");
+            inner.params().set("far", 400.0);
+            for (int i = 0; i < 6; ++i) {
+                sg::Element& b = inner.fixture("inner.block" + std::to_string(i), -4.0 + 1.6 * i, -2.0, (i % 2) * 2.0 - 1.0);
+                b.params.set(sg::keys::sx, 1.0).set(sg::keys::sy, 1.5 + i).set(sg::keys::sz, 1.0);
+                b.params.set(sg::keys::r, 0.2 + 0.12 * i).set(sg::keys::g, 0.5).set(sg::keys::b, 0.9 - 0.12 * i);
+            }
+            inner.fixture("inner.ground", 0.0, -2.5, 0.0).params.set(sg::keys::sx, 14.0).set(sg::keys::sy, 0.5).set(sg::keys::sz, 14.0);
+            inner.light("inner.lamp", {0.0, 6.0, 0.0});
+            inner.portal("inner.sky", {0.0, 0.0, 0.0}, 0.0, 0.0).params.set("ball", 10.0).set("ball_out", 1.0).set("window", 0.0);
+            hall.portal("glass", {4.0, 1.4, 3.0}, 0.0, 0.0).params.set("ball", 0.3);
+            g.set_initial("hall");
+            sg::glue_doorway(g, "globe", "hall", "glass", "inner", "inner.sky");
+        };
+        {
+            sg::StateGraph g;
+            build(g);
+            sg::render::GLWorldView view;
+            check(walk(view, g).empty(), "into a world in a glass, at its scale: one picture");
+        }
+        {
+            sg::StateGraph g;
+            build(g);
+            auto& hall = static_cast<sg::Spatial3D&>(g.state("hall"));
+            auto& inner = static_cast<sg::Spatial3D&>(g.state("inner"));
+            sg::render::GLWorldView view;
+            view.prepare(g);
+            view.render(hall, 160, 90);
+            view.bind_world(sg::Key{"glass"}, &inner, sg::portal_carry(hall.element("glass"), inner.element("inner.sky")), sg::Key{"inner.sky"});
+            const auto out = sg::render::check_crossings(view, g);
+            bool named = false;
+            for (const auto& s : out) named = named || s.find("hall -> inner") != std::string::npos;
+            check(named, "a world in a glass shown at the wrong scale is named");
+        }
+    }
     return failures ? 1 : 0;
 }

@@ -221,6 +221,9 @@ public:
     // seam's own travel - made again whenever the graph changes. A seam needs
     // no binding by hand; bind_world is for what is not a seam (a projection).
     void bind_seams();
+    // A ball onto a world of another scale (seam_scale), and not saying
+    // `window` 0: drawn as a window onto that world, its view on the ball.
+    bool ball_window(const Element& e) const;
 
     // Show another 3D state on a panel as a picture (see the top of this
     // file): drawn from its own camera, in its own look, `w` x `h` pixels.
@@ -293,6 +296,8 @@ private:
         bool empty() const { return x1 <= x0 || y1 <= y0; }
         Rect cut(const Rect& o) const { return {std::max(x0, o.x0), std::max(y0, o.y0), std::min(x1, o.x1), std::min(y1, o.y1)}; }
     };
+    // Where a ball onto a world (ball_window) is on the screen, seen by `cam`.
+    Rect ball_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const;
 
     struct WorldPortal {
         const Spatial3D* world = nullptr;
@@ -302,6 +307,10 @@ private:
         uint64_t drawn = 0;       // the frame its view was last drawn
         const gl::RenderTarget* shown = nullptr;  // that frame's picture of it (a view of the frame's own)
         int width = 0, height = 0;
+        // Where on the screen that picture was drawn, and how much of its
+        // target it fills (a ball onto a world is drawn only where it is).
+        Rect seen{-1, -1, 1, 1};
+        float fx = 1.0f, fy = 1.0f;
         // `own_look`: the far side drawn whole, in its own look, from the
         // carried eye - as it will be seen once through (its picture, and
         // the view that draws it).

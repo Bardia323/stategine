@@ -105,8 +105,20 @@ const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, 
     const Key ab{name.str() + ".ab"}, ba{name.str() + ".ba"};
     const Key gab{name.str() + ".glue.ab"}, gba{name.str() + ".glue.ba"};
     Functor to_b(ab, a, b), to_a(ba, b, a);
-    to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(), between(g, a, pa, b, pb, portal_carry));
-    to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(), between(g, b, pb, a, pa, portal_carry));
+    // The viewer: carried by where the two doorways are in their states (a
+    // doorway may hang from an anchor, move with a thing), at their scale.
+    const StateGraph* graph = &g;
+    const auto travel = [graph](Key x, Key px, Key y, Key py) {
+        return [graph, x, px, y, py](const Element& src, Element& dst) {
+            const State* X = graph->find(x);
+            const State* Y = graph->find(y);
+            const Element* here = X ? X->find(px) : nullptr;
+            const Element* there = Y ? Y->find(py) : nullptr;
+            if (here && there) portal_carry(*X, *here, *Y, *there)(src, dst);
+        };
+    };
+    to_b.on_object(SpatialState::camera_id(), SpatialState::camera_id(), travel(a, pa, b, pb));
+    to_a.on_object(SpatialState::camera_id(), SpatialState::camera_id(), travel(b, pb, a, pa));
     Functor glue_b(gab, a, b), glue_a(gba, b, a);
     glue_b.on_object(pa, pb, between(g, a, pa, b, pb, seam_carry));
     glue_a.on_object(pb, pa, between(g, b, pb, a, pa, seam_carry));
@@ -298,6 +310,9 @@ std::vector<PlacedRoom> nests(const StateGraph& g, Key root, int max_depth) {
                 const Element* hp = hs ? hs->find(forward ? s.boundary_a[0] : s.boundary_b[0]) : nullptr;
                 const Element* tp = ts ? ts->find(forward ? s.boundary_b[0] : s.boundary_a[0]) : nullptr;
                 if (!ts || !hp || !tp || !hp->params.has(Key{"ball"})) continue;
+                // A ball onto a world of another scale (a snow globe's) is a
+                // window onto it, drawn as its own view, not a world in this one.
+                if (std::fabs(seam_scale(*hp, *tp) - 1.0) > 1e-9) continue;
                 // Where the far world's origin is, carried back across the
                 // boundary into this one's frame - as Atlas::step places a room.
                 const Pose placed = compose_pose(at, through_portal(world_pose(*ts, *tp), world_pose(*hs, *hp), Pose{}));

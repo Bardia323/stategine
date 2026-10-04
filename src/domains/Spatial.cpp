@@ -394,8 +394,20 @@ Pose through_portal(const Pose& here, const Pose& there, const Vec3d& pos, doubl
     return through_portal(here, there, Pose{pos, yaw});
 }
 
-void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst) {
-    const Pose at = through_portal(here, there, Pose{position_of(src)});
+Pose through_ball(const Pose& here, const Pose& there, double k, const Pose& p) {
+    Pose q = compose_pose(inverse(here), p);
+    q.position = q.position * k;
+    return compose_pose(there, compose_pose(Pose{{}, 3.14159265358979}, q));
+}
+
+double seam_scale(const Element& here, const Element& there) {
+    const double a = here.params.num(Key{"ball"}, 0.0), b = there.params.num(Key{"ball"}, 0.0);
+    return a > 0.0 && b > 0.0 ? b / a : 1.0;
+}
+
+void carry_camera(const Pose& here, const Pose& there, const Element& src, Element& dst, double scale) {
+    // (Through two balls of one size, or any doorway, as it always was.)
+    const Pose at = scale == 1.0 ? through_portal(here, there, Pose{position_of(src)}) : through_ball(here, there, scale, Pose{position_of(src)});
     set_position(dst, at.position);
     // The whole of the eye's turn, whatever `dst` held before: the ground it
     // stands on turned as the doorway turns it, the look within it as it was
@@ -405,7 +417,7 @@ void carry_camera(const Pose& here, const Pose& there, const Element& src, Eleme
     set_standing(dst, compose_pose(Pose{{}, at.yaw, at.pitch, at.roll}, standing(src)));
     // What it was moving with goes with it, turned as it is turned.
     if (src.params.has(keys::vx)) {
-        const Vec3d v = turn(Pose{{}, at.yaw, at.pitch, at.roll}, {src.params.num(keys::vx), src.params.num(keys::vy), src.params.num(keys::vz)});
+        const Vec3d v = turn(Pose{{}, at.yaw, at.pitch, at.roll}, {src.params.num(keys::vx), src.params.num(keys::vy), src.params.num(keys::vz)}) * scale;
         dst.params.set(keys::vx, v.x).set(keys::vy, v.y).set(keys::vz, v.z);
     }
     // And whether it is on its feet: a walker that was striding is striding
@@ -424,6 +436,12 @@ void carry_camera(const Pose& here, const Pose& there, const Element& src, Eleme
 std::function<void(const Element&, Element&)> portal_carry(const Element& here, const Element& there) {
     const Pose h = local_pose(here), t = local_pose(there);
     return [h, t](const Element& src, Element& dst) { carry_camera(h, t, src, dst); };
+}
+
+std::function<void(const Element&, Element&)> portal_carry(const State& a, const Element& here, const State& b, const Element& there) {
+    const Pose h = world_pose(a, here), t = world_pose(b, there);
+    const double k = seam_scale(here, there);
+    return [h, t, k](const Element& src, Element& dst) { carry_camera(h, t, src, dst, k); };
 }
 
 namespace {

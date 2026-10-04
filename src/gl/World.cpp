@@ -31,6 +31,27 @@ void GLWorldView::spill(Key light, const Surface2D* from, double most, bool on) 
     sp.on = on;
 }
 
+GLWorldView::Rect GLWorldView::ball_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
+    // Where a ball is on the screen: round its middle, as wide as it looks
+    // from the eye (a little more, for the stretch off the middle of the view).
+    const gl::Vec3 c = to_vec3(pose_of(world, e).position), to = c - cam.eye;
+    const float r = static_cast<float>(e.params.num(Key{"ball"}, 0.0)), dist = std::sqrt(gl::dot(to, to));
+    const gl::Vec3 f = gl::normalize(cam.forward), right = gl::normalize(gl::cross(f, cam.up)), top = gl::cross(right, f);
+    const float z = gl::dot(to, f);
+    if (dist < r * 1.5f || z < r * 1.5f || cam.ortho > 0.0f) return Rect{-1, -1, 1, 1};
+    const float ty = std::tan(cam.fov * 0.5f), tx = ty * aspect, spread = std::tan(std::asin(std::min(r / dist, 0.999f))) * 1.3f;
+    const float x = gl::dot(to, right) / (z * tx), y = gl::dot(to, top) / (z * ty), hx = spread / tx * (dist / z), hy = spread / ty * (dist / z);
+    return Rect{std::max(x - hx, -1.0f), std::max(y - hy, -1.0f), std::min(x + hx, 1.0f), std::min(y + hy, 1.0f)};
+}
+
+bool GLWorldView::ball_window(const Element& e) const {
+    if (!e.params.has(Key{"ball"}) || e.params.num(Key{"window"}, 1.0) < 0.5) return false;
+    const auto it = worlds_.find(e.id);
+    if (it == worlds_.end() || !it->second.world || it->second.back.empty()) return false;
+    const Element* far = it->second.world->find(it->second.back);
+    return far && std::fabs(seam_scale(e, *far) - 1.0) > 1e-9;
+}
+
 void GLWorldView::bind_seams() {
     if (!graph_ || graph_->revision() == seams_at_) return;
     const StateGraph* g = graph_;
@@ -51,7 +72,7 @@ void GLWorldView::bind_seams() {
                     const State* B = g->find(to);
                     const Element* h = A ? A->find(here) : nullptr;
                     const Element* t = B ? B->find(there) : nullptr;
-                    if (h && t) portal_carry(*h, *t)(src, dst);
+                    if (h && t) portal_carry(*A, *h, *B, *t)(src, dst);
                 }, there);
                 seam_bound_.push_back(here);
             }
@@ -319,7 +340,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     }
     bool views_drawn = false;
     for (const auto& e : world.elements()) {
-        if (e.kind != kinds::portal || !e.alive || e.params.has(Key{"ball"})) continue;
+        if (e.kind != kinds::portal || !e.alive || (e.params.has(Key{"ball"}) && !ball_window(e))) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         WorldPortal& wp = it->second;
@@ -377,7 +398,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         const Camera guest_cam = camera_of(eye);
         const Element* back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
         std::vector<HalfSpace> clips;
-        if (!screen) clips.push_back(far_side(world, e, eye));
+        // (A ball's world keeps within it: nothing stands between.)
+        if (!screen && !e.params.has(Key{"ball"})) clips.push_back(far_side(world, e, eye));
         const std::string path = "/" + e.id.str();
         if (!views_drawn) draw_views(world, aspect), views_drawn = true;
         path_ = path;
@@ -387,8 +409,15 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         }
         RootView& view = root_pool_[root_views++];
         host_air_ = air_of(world);
+        // A ball onto a world is drawn only where the ball is on the
+        // screen, at the screen's own pixels: a glass on a table costs what
+        // of the screen it covers.
+        wp.seen = e.params.has(Key{"ball"}) ? ball_rect(world, e, eye_cam, aspect) : Rect{-1, -1, 1, 1};
+        sub_ = wp.seen;
         draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
                    /*depth=*/1, kNear, back ? back->id.key() : Key{}, clips);
+        wp.fx = vp_w_ / static_cast<float>(view.ms.width()), wp.fy = vp_h_ / static_cast<float>(view.ms.height());
+        sub_ = Rect{-1, -1, 1, 1};
         host_air_.on = false;
         wp.drawn = frame_count_;
         path_.clear();
@@ -2042,8 +2071,47 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
 
 void GLWorldView::draw_portal(const State& st, const Element& e, int depth, const gl::RenderTarget& target, bool frame_only) {
     // A ball is the boundary of a world drawn where it is (sg::nests): there
-    // is no picture of it to draw.
-    if (e.params.has(Key{"ball"})) return;
+    // is no picture of it to draw - unless the world is of another scale (a
+    // snow globe's): then the ball is a window onto it, its view on the ball.
+    if (e.params.has(Key{"ball"})) {
+        if (!ball_window(e) || frame_only) return;
+        WorldPortal& wp = worlds_.find(e.id)->second.shared ? *worlds_.find(e.id)->second.shared : worlds_.find(e.id)->second;
+        const float r = static_cast<float>(e.params.num(Key{"ball"}));
+        set_model(room_local(gl::Mat4::translate(to_vec3(pose_of(st, e).position)) * gl::Mat4::scale({2.0f * r, 2.0f * r, 2.0f * r})));
+        // Glass: polished (`roughness`, 0.04 unless it says), so the room's
+        // lamps glint on it and it shines at its edges, over what is in it.
+        scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.04)));
+        scene_->set("uSurface", 0.0f);
+        scene_->set("uEmissive", 1.0f);  // what is seen in it arrives already lit
+        scene_->set("uHighlight", 0.0f);
+        scene_->set("uGlow", 0.0f);
+        if (depth > 0 || !(wp.shown && wp.drawn == frame_count_)) {
+            // Past how deep the views go: its world's air.
+            const Mix far = mix(wp.world->id(), look_of(*wp.world));
+            scene_->set("uAlbedo", gl::Vec3{static_cast<float>(setting(far, passes::scene, "clear.x", 0.012)),
+                                            static_cast<float>(setting(far, passes::scene, "clear.y", 0.014)),
+                                            static_cast<float>(setting(far, passes::scene, "clear.z", 0.022))});
+            scene_->set("uTexMix", 0.0f);
+            sphere_.draw();
+        } else {
+            wp.shown->bind_color(0);
+            scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
+            scene_->set("uTexMix", 1.0f);
+            scene_->set("uScreenUV", 1.0f);
+            sample_screen(wp.seen, wp.fx, wp.fy);
+            // Never cut by the near plane, however close the eye comes: the
+            // glass covers what it covers, and nothing behind shows through.
+            gl::glEnable(gl::GL_DEPTH_CLAMP);
+            sphere_.draw();
+            gl::glDisable(gl::GL_DEPTH_CLAMP);
+            scene_->set("uScreenUV", 0.0f);
+            scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);
+            scene_->set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
+            scene_->set("uTexMix", 0.0f);
+        }
+        scene_->set("uEmissive", 0.0f);
+        return;
+    }
     // A portal with nothing bound to it is a marker for a plain opening -
     // the gap between wall segments is the doorway, and it needs no
     // geometry of its own.
@@ -2770,13 +2838,16 @@ uint64_t GLWorldView::rooms_key(const std::vector<PlacedRoom>& rooms) const {
 }
 
 uint64_t GLWorldView::worlds_stamp() const {
-    // Every world a doorway opens onto, and how it is seen: what comes in
-    // through a doorway is theirs.
+    // Every world a doorway opens onto - its lights - and how it is seen:
+    // what comes in through a doorway is theirs.
     uint64_t h = 1469598103934665603ULL;
     for (const auto& [id, wp] : worlds_) {
         if (!wp.world) continue;
         h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
-        h = (h ^ stamp_of(*wp.world)) * 1099511628211ULL;
+        // Its lights, not all it holds: snow falling in it lets in no more
+        // light than it did.
+        for (const auto& e : wp.world->elements())
+            if (e.kind == kinds::light) h = (h ^ e.params.stamp() ^ (e.alive ? 1u : 0u)) * 1099511628211ULL;
         h = (h ^ stamp_of(look_of(*wp.world))) * 1099511628211ULL;
     }
     return h;

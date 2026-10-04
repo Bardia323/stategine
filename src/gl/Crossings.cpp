@@ -48,9 +48,14 @@ std::vector<std::string> check_crossings(GLWorldView& view, StateGraph& g, const
                 const Element* door = A ? A->find(pa) : nullptr;
                 const Element* far = B ? B->find(pb) : nullptr;
                 if (!door || !far || door->kind != kinds::portal) continue;
-                // Only a doorway walked out through, and one with a face to
-                // walk through (a ball is flown into, not walked).
-                if (door->params.num(Key{"walk"}, 0.0) < 0.5 || door->params.num(Key{"leave"}, 1.0) < 0.5 || door->params.has(Key{"ball"})) continue;
+                // A doorway walked out through; or a ball onto a world of another
+                // scale (a snow globe's glass), flown into from outside.
+                const bool ball = door->params.has(Key{"ball"});
+                if (ball) {
+                    if (door->params.num(Key{"window"}, 1.0) < 0.5 || std::fabs(seam_scale(*door, *far) - 1.0) < 1e-9) continue;
+                } else if (door->params.num(Key{"walk"}, 0.0) < 0.5 || door->params.num(Key{"leave"}, 1.0) < 0.5) {
+                    continue;
+                }
                 const std::string way = s.name.str() + " (" + A->id().str() + " -> " + B->id().str() + ")";
                 const Params keep_a = A->camera().params, keep_b = B->camera().params;
                 const Pose at = world_pose(*A, *door);
@@ -60,23 +65,38 @@ std::vector<std::string> check_crossings(GLWorldView& view, StateGraph& g, const
                 const Pose ground = compose_pose(Pose{{}, at.yaw, at.pitch, at.roll}, Pose{{}, 3.14159265358979, 0.0, 0.0});
                 std::vector<std::vector<unsigned char>> frames;
                 std::vector<bool> beyond;
-                const int n = static_cast<int>(std::ceil((o.before + o.after) / o.step));
+                // Into a ball: from three times its radius out to half in,
+                // down at it a little from one side, looking at its middle.
+                const double r = door->params.num(Key{"ball"}, 0.0);
+                const Vec3d way_in = [] {
+                    const Vec3d w{0.35, 0.45, 0.82};
+                    const double l = std::sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+                    return w * (1.0 / l);
+                }();
+                const int n = ball ? 40 : static_cast<int>(std::ceil((o.before + o.after) / o.step));
                 for (int k = 0; k <= n; ++k) {
-                    // (Half a step off, so no frame is drawn from the doorway's plane itself.)
-                    const double d = o.before - (k + 0.5) * o.step;
+                    // How far before the crossing (> 0) or past it. (Half a step
+                    // off, so no frame is drawn from the boundary itself.)
+                    const double out_by = ball ? 3.0 * r - (k + 0.5) * (2.5 * r / n) : 0.0;
+                    const double d = ball ? out_by - r : o.before - (k + 0.5) * o.step;
                     Element eye = A->camera();
                     eye.params = keep_a;
                     for (const char* lens : {"ortho", "back", "stand_w", "stand_x", "stand_y", "stand_z"}) eye.params.erase(Key{lens});
                     eye.params.set(keys::yaw, 0.0).set(keys::pitch, 0.0).set(keys::roll, 0.0).set(keys::fov, 70.0);
-                    set_position(eye, at.position + up * (o.eye - hh) + in * d);
-                    set_standing(eye, ground);
+                    if (ball) {
+                        set_position(eye, at.position + way_in * out_by);
+                        eye.params.set(keys::yaw, std::atan2(-way_in.z, -way_in.x)).set(keys::pitch, std::asin(-way_in.y));
+                    } else {
+                        set_position(eye, at.position + up * (o.eye - hh) + in * d);
+                        set_standing(eye, ground);
+                    }
                     Spatial3D* world = A;
                     if (d > 0.0) {
                         A->camera().params = eye.params;
                     } else {
                         Element there = B->camera();
                         there.params = keep_b;
-                        portal_carry(*door, *far)(eye, there);
+                        portal_carry(*A, *door, *B, *far)(eye, there);
                         B->camera().params = there.params;
                         world = B;
                     }
