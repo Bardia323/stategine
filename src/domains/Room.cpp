@@ -301,6 +301,16 @@ using plan::Opening;
 using plan::Outline;
 using plan::P2;
 
+Params Room::overlap(Key boundary) const {
+    Params out = Spatial3D::overlap(boundary);
+    const Element* door = find(boundary);
+    if (out.empty() || !door || door->params.has(Key{"ball"})) return out;
+    // What its fields and solids do not say, its floor plan does: level
+    // ground, its floor at nought.
+    on_level_ground(out, world_pose(*this, *door), door->params.num(keys::h, 2.0), [](const void*, double, double) { return 0.0; }, nullptr);
+    return out;
+}
+
 Room::Room(Key id, double w, double d, double h, const std::string& shape, int sides, const std::string& names)
     : Spatial3D(id) {
     // Its architecture stands; what moves in it is moved by what moves it.

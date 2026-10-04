@@ -92,6 +92,15 @@ private:
 const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
                           const std::vector<std::pair<Key, Key>>& also = {}, bool wraps = false);
 
+// The standard doorway: glued (glue_doorway) and crossed - for each side
+// walked through (`walk`, and not only a way in), a transition carrying the
+// seam's travel, `walk.<name>.ab` / `.ba`, which the engine takes in the frame
+// the step goes through (Engine::cross). It is seamless as made: the overlap
+// law (laws::overlaps) holds it so. A way that is not - one way only, a cut -
+// is glue_doorway and the transitions it means, and says what `differs`.
+const Seam& walkway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb,
+                    const std::vector<std::pair<Key, Key>>& also = {}, bool wraps = false);
+
 // The seam glue_doorway declares, as data: what it is called and what it joins,
 // worked out from the names alone (its functors are made from the portals).
 Seam doorway_seam(Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also = {}, bool wraps = false);

@@ -1170,6 +1170,70 @@ std::vector<Violation> seams(const StateGraph& g) {
     return out;
 }
 
+std::vector<Violation> overlaps(const StateGraph& g) {
+    using namespace seam_detail;
+    std::vector<Violation> out;
+    // How far apart two accounts may be and still be one: a few degrees of
+    // pull, a couple of centimetres of ground.
+    constexpr double kDown = 0.05, kFloor = 0.02;
+    const Key walk{"walk"}, dx{"down.x"}, dy{"down.y"}, dz{"down.z"}, floor{"floor"};
+    for (const Seam& sm : g.seams()) {
+        const State* a = g.find(sm.a);
+        const State* b = g.find(sm.b);
+        if (!a || !b) continue;
+        const std::string where = "seam " + sm.name.str();
+        for (std::size_t i = 0; i < sm.boundary_a.size() && i < sm.boundary_b.size(); ++i) {
+            const Key pa = sm.boundary_a[i], pb = sm.boundary_b[i];
+            const Params A = a->overlap(pa), B = b->overlap(pb);
+            if (A.empty() || B.empty()) continue;
+            std::string differs = " ";
+            for (const auto& [s, k] : {std::pair{a, pa}, std::pair{b, pb}})
+                if (const Element* e = s->find(k)) differs += e->params.get_or<std::string>(Key{"differs"}, "") + " ";
+            const auto lets = [&](const char* what) { return differs.find(std::string(" ") + what + " ") != std::string::npos; };
+            const std::string sides = sm.a.str() + "." + pa.str() + " / " + sm.b.str() + "." + pb.str();
+            const auto say = [&](const std::string& what) { report(out, where, sides, "one overlap", what); };
+            if (!lets("walk") && (A.num(walk, 0.0) > 0.5) != (B.num(walk, 0.0) > 0.5))
+                say("walked through from one side only (" + (A.num(walk, 0.0) > 0.5 ? sm.a : sm.b).str() +
+                    "): make both walked, or say `differs walk`");
+            if (!lets("down") && A.has(dx) && B.has(dx)) {
+                // The far side's account turned through the doorway: out of
+                // it is into this one, and its across is the other way.
+                const double ex = A.num(dx) + B.num(dx), ey = A.num(dy) - B.num(dy), ez = A.num(dz) + B.num(dz);
+                const double off = std::sqrt(ex * ex + ey * ey + ez * ez);
+                if (off > kDown)
+                    say("down is " + std::to_string(std::lround(2.0 * std::asin(std::min(1.0, off * 0.5)) * 57.29578)) +
+                        " degrees apart on its two sides, and whoever crosses is turned: stand its doorways on like ground, or say `differs down`");
+            }
+            if (!lets("floor") && A.has(floor) && B.has(floor) && std::fabs(A.num(floor) - B.num(floor)) > kFloor)
+                say("the ground is " + std::to_string(A.num(floor)) + " m below the opening's foot in " + sm.a.str() + " and " +
+                    std::to_string(B.num(floor)) + " m in " + sm.b.str() + ", and whoever crosses steps or drops: or say `differs floor`");
+            if (!lets("eye") && A.has(Key{"eye"}) && B.has(Key{"eye"}) && std::fabs(A.num(Key{"eye"}) - B.num(Key{"eye"})) > kFloor)
+                say("the eye is carried " + std::to_string(A.num(Key{"eye"})) + " m up in " + sm.a.str() + " and " +
+                    std::to_string(B.num(Key{"eye"})) + " m in " + sm.b.str() + ", and whoever crosses rises or sinks: or say `differs eye`");
+            // Walked through, a side that gives no account of what it is
+            // checked against cannot be held to it: said, not passed.
+            if (A.num(walk, 0.0) > 0.5 && B.num(walk, 0.0) > 0.5)
+                for (const auto& [what, key] : {std::pair{"down", dx}, std::pair{"floor", floor}})
+                    if (!lets(what) && (!A.has(key) || !B.has(key))) {
+                        say(std::string("unchecked: ") + (A.has(key) ? sm.b : sm.a).str() + " gives no account of its " + what +
+                            " at the doorway (State::overlap), so whether it agrees is not known");
+                        out.back().refused = true;
+                    }
+            if (lets("crossing")) continue;
+            for (const bool from_a : {true, false}) {
+                const Params& side = from_a ? A : B;
+                if (side.num(walk, 0.0) < 0.5 || side.num(Key{"leave"}, 1.0) < 0.5) continue;
+                const Key travel = from_a ? sm.a_to_b : sm.b_to_a, from = from_a ? sm.a : sm.b;
+                const bool way = std::any_of(g.transitions().begin(), g.transitions().end(), [&](const Transition& t) {
+                    return t.functor == travel && (t.from == from || t.from == Key{"*"});
+                });
+                if (!way) say("walked into from " + from.str() + ", it leads nowhere - no transition carries " + travel.str() + ": or say `differs crossing`");
+            }
+        }
+    }
+    return out;
+}
+
 }  // namespace sg::laws
 
 namespace sg {
@@ -1208,6 +1272,7 @@ LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams, const LawO
         laws::sort_into(r, laws::lenses(g, o));
         laws::sort_into(r, laws::drives(g, o));
         laws::sort_into(r, laws::seams(g));
+        laws::sort_into(r, laws::overlaps(g));
         for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
     }
     if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));
@@ -1226,6 +1291,7 @@ LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagram>& dia
         laws::sort_into(r, laws::lenses(g, o, &cache));
         laws::sort_into(r, laws::drives(g, o, &cache));
         laws::sort_into(r, laws::seams(g));
+        laws::sort_into(r, laws::overlaps(g));
         for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
     }
     if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));

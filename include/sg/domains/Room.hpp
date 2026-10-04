@@ -209,6 +209,10 @@ public:
     // The nearest place on any wall to (x, z): which wall, how far along.
     int nearest_wall(double x, double z, double& along) const;
 
+    // At a doorway, a room is level ground at its floor unless its fields
+    // and solids say otherwise (State::overlap).
+    Params overlap(Key boundary) const override;
+
     // --- walls ---------------------------------------------------------------
     void lay_walls();
 

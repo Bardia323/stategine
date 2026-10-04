@@ -1,4 +1,5 @@
 #include "sg/core/Engine.hpp"
+#include "sg/core/Laws.hpp"
 
 namespace sg {
 
@@ -155,6 +156,9 @@ std::vector<std::string> Engine::check_graph() {
     watched_ = graph_.revision();
     last_watch_ = elapsed();
     std::vector<std::string> now = graph_.validate();
+    // And every seam seamless: what its two sides say of their overlap agrees.
+    for (const Violation& v : laws::overlaps(graph_))
+        if (!v.refused) now.push_back(v.where + ": " + v.lhs + ": " + v.detail);
     for (const std::string& p : now) report(p);
     if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
     return now;

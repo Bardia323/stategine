@@ -83,6 +83,18 @@ public:
     // with no boundaries to cross says nothing.
     virtual Params passage() const { return {}; }
     virtual bool passed(const Params& /*before*/, Key /*boundary*/) const { return false; }
+    // What whoever crosses meets at `boundary`, from this side: the domain's
+    // account of its half of a seam's overlap, in the boundary's own frame
+    // facing out through it (x out, y its up, z across). Two sides glued give
+    // the same account, the far one turned through the doorway
+    // (laws::overlaps): a seam is seamless unless it says what may differ.
+    //   walk           1 if it is a doorway walked through
+    //   leave          0 if it is only a way in: not walked out of from here
+    //   down.x/y/z     which way the pull is, just inside (a unit vector)
+    //   floor          how far the ground is below the opening's foot, at
+    //                  its threshold - where whoever crosses lands
+    //   eye            how high above it whoever crosses carries their eye
+    virtual Params overlap(Key /*boundary*/) const { return {}; }
 
     // The frame order is part of the contract, hence non-virtual. With
     // `watch`, an on_update that changes the state's data - rather than

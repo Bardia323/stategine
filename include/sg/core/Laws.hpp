@@ -534,6 +534,17 @@ bool travels(const StateGraph& g, Key f);
 
 std::vector<Violation> seams(const StateGraph& g);
 
+// A seam is seamless: whoever crosses meets the same on both sides of it.
+// Each side gives its account of the overlap (State::overlap), in the
+// doorway's frame facing out; the two must agree, the far one turned through
+// the doorway - walked from both sides alike, the pull the same way, the
+// ground at the same height, the eye carried as high - and a side walked through has a way across (a
+// transition carrying the seam's travel). What a seam lets differ it says on
+// either boundary: `differs` = the names, space separated (walk, down,
+// floor, eye, crossing). A cut, a dissolve or any other way that is not seamless
+// is not a seam: it is a transition, and owes this nothing.
+std::vector<Violation> overlaps(const StateGraph& g);
+
 }  // namespace laws
 
 // ---------------------------------------------------------------------------

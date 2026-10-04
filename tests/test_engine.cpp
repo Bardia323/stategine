@@ -1,3 +1,4 @@
+#include <memory>
 // Stategine - assertions over states, morphisms, functors, portals.
 #include <cmath>
 #include <cstdlib>
@@ -1606,8 +1607,7 @@ void test_a_step_crosses_in_its_frame() {
                    eye.params.set(sg::keys::x, eye.params.num(sg::keys::x) + ev.args.num("dx"));
                });
     g.set_initial("hall");
-    sg::glue_doorway(g, "doorway", "hall", "door", "annex", "door");
-    g.connect("hall", "walk.out", "annex", "doorway.ab");
+    sg::walkway(g, "doorway", "hall", "door", "annex", "door");
     sg::Engine e(g);
     e.set_strict(true);
     e.start();
@@ -1651,6 +1651,43 @@ void test_seams_glue_like_to_like() {
     to.params.set("ortho", 5.0);
     sg::portal_carry(static_cast<sg::Spatial3D&>(bad.state("hall")).element("frame"), flat.element("door"))(from, to);
     check(!to.params.has("ortho") && near(to.params.num(sg::keys::fov), 70.0), "a doorway carries the eye's lens with it, not the far camera's");
+}
+
+// A seam is seamless: two rooms glued at a doorway, each with its floor and
+// its pull, and what the overlap law says when one side is not like the
+// other - and that a seam saying what differs is let be.
+void test_seams_are_seamless() {
+    // `floor` how far down the far room's ground is; `pull` its gravity,
+    // sideways if it says so; `walkway` the standard doorway, or bare glue.
+    const auto room = [](double floor, bool sideways, bool standard, const std::string& differs = "") {
+        auto g = std::make_unique<sg::StateGraph>();
+        auto& hall = g->add<sg::Spatial3D>("hall");
+        auto& annex = g->add<sg::Spatial3D>("annex");
+        hall.params().set("g", 9.8);
+        annex.params().set("g", sideways ? 0.0 : 9.8);
+        if (sideways) annex.add_element("pull", "field").params.set("channel", std::string("gravity")).set("field_shape", std::string("directional")).set("strength", 9.8)
+                          .set("dx", 1.0).set("dy", 0.0).set("dz", 0.0);
+        hall.portal("door", {14.0, 1.5, 7.0}, 2.8, 3.0, 3.14159265358979).params.set("walk", 1.0);
+        annex.portal("door", {4.5, 1.5 - floor, 0.0}, 2.8, 3.0, 1.5707963267949).params.set("walk", 1.0).set("differs", differs);
+        for (auto* s : {&hall, &annex}) {
+            sg::Element& f = s->mesh("floor", 7.0, -0.2, 3.0);
+            f.params.set(sg::keys::sx, 30.0).set(sg::keys::sy, 0.2).set(sg::keys::sz, 30.0).set("solid", 1.0);
+        }
+        g->set_initial("hall");
+        if (standard) sg::walkway(*g, "doorway", "hall", "door", "annex", "door");
+        else sg::glue_doorway(*g, "doorway", "hall", "door", "annex", "door");
+        return g;
+    };
+    const auto says = [](const sg::StateGraph& g, const std::string& what) {
+        const auto v = sg::laws::overlaps(g);
+        if (what.empty()) return v.empty();
+        return std::any_of(v.begin(), v.end(), [&](const sg::Violation& x) { return x.detail.find(what) != std::string::npos; });
+    };
+    check(says(*room(0.0, false, true), ""), "the standard doorway between like rooms is seamless as made");
+    check(says(*room(0.0, false, false), "leads nowhere"), "a doorway walked into with no way across is named");
+    check(says(*room(0.3, false, true), "the ground is"), "a doorway whose far side stands higher off its ground is named: whoever crosses would drop");
+    check(says(*room(0.0, true, true), "down is"), "a doorway into a room whose pull is another way is named: whoever crosses would be turned");
+    check(says(*room(0.3, true, true, "floor down"), ""), "a seam that says what differs is let be");
 }
 
 }  // namespace
@@ -2040,6 +2077,7 @@ int main() {
     test_the_view_crosses_seams();
     test_a_step_crosses_in_its_frame();
     test_seams_glue_like_to_like();
+    test_seams_are_seamless();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }

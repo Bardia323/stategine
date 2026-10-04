@@ -1,4 +1,5 @@
 #include "sg/domains/Spatial.hpp"
+#include "sg/domains/Walk.hpp"
 
 #include "sg/spatial/Math.hpp"
 
@@ -472,6 +473,58 @@ bool SpatialState::passed(const Params& before, Key boundary) const {
     if (!door || !eye || door->kind != kinds::portal || !before.has(keys::x)) return false;
     if (door->params.num(Key{"walk"}, 0.0) < 0.5 || door->params.num(Key{"leave"}, 1.0) < 0.5) return false;
     return crossed_portal(*door, {before.num(keys::x), before.num(keys::y), before.num(keys::z)}, position_of(*eye));
+}
+
+void size_opening(Element& door, double w, double h) {
+    const double was = door.params.num(keys::h, h);
+    const Vec3d lift = up_of(local_pose(door)) * (0.5 * (h - was));
+    door.params.set(keys::x, door.params.num(keys::x) + lift.x).set(keys::y, door.params.num(keys::y) + lift.y)
+        .set(keys::z, door.params.num(keys::z) + lift.z);
+    door.params.set(keys::w, w).set(keys::h, h);
+}
+
+Vec3d out_through(const Pose& door, const Vec3d& v) {
+    const Vec3d in = facing(door), up = up_of(door), across = across_of(door);
+    return {-(v.x * in.x + v.y * in.y + v.z * in.z), v.x * up.x + v.y * up.y + v.z * up.z, -(v.x * across.x + v.y * across.y + v.z * across.z)};
+}
+
+void on_level_ground(Params& out, const Pose& door, double h, double (*ground)(const void*, double, double), const void* of) {
+    if (!out.has(Key{"down.x"})) {
+        const Vec3d d = out_through(door, {0.0, -1.0, 0.0});
+        out.set(Key{"down.x"}, d.x).set(Key{"down.y"}, d.y).set(Key{"down.z"}, d.z);
+    }
+    if (!out.has(Key{"floor"})) {
+        const Vec3d foot = place_in(door, {0.05, -0.5 * h, 0.0});
+        out.set(Key{"floor"}, foot.y - ground(of, foot.x, foot.z));
+    }
+}
+
+Params SpatialState::overlap(Key boundary) const {
+    const Element* door = find(boundary);
+    if (!door || door->kind != kinds::portal) return {};
+    Params out;
+    out.set(Key{"walk"}, door->params.num(Key{"walk"}, 0.0) > 0.5 ? 1.0 : 0.0);
+    out.set(Key{"leave"}, door->params.num(Key{"leave"}, 1.0) > 0.5 ? 1.0 : 0.0);
+    // How high whoever crosses carries their eye here (sg::walk's `height`).
+    if (const Element* eye = find(camera_id())) out.set(Key{"eye"}, eye->params.num(Key{"height"}, 1.65));
+    // A ball (a world round another) has no foot or face to measure from.
+    if (door->params.has(Key{"ball"})) return out;
+    const Pose at = world_pose(*this, *door);
+    const Vec3d in = facing(at), up = up_of(at);
+    const double h = door->params.num(keys::h, 2.0);
+    const Vec3d foot = at.position + up * (-0.5 * h) + in * 0.05;
+    field::Solver pull;
+    pull.rebuild(fields_of(*this));
+    const auto g = pull.evaluate({foot.x + up.x, foot.y + up.y, foot.z + up.z}, 0.0, {{"gravity", field::Response::Acceleration, 1.0}}).acceleration;
+    const double gl = std::sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+    if (gl > 1e-6) {
+        const Vec3d d = out_through(at, {g.x / gl, g.y / gl, g.z / gl});
+        out.set(Key{"down.x"}, d.x).set(Key{"down.y"}, d.y).set(Key{"down.z"}, d.z);
+    }
+    Vec3d hit, normal;
+    double dist = 0;
+    if (ray(*this, foot + up * 0.5, up * -1.0, 1.5, hit, normal, &dist)) out.set(Key{"floor"}, dist - 0.5);
+    return out;
 }
 
 bool opens_from(const Element& portal, const Vec3d& at) {

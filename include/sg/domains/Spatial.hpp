@@ -53,6 +53,9 @@ public:
     // (`walk`, and not only a way in - `leave` 0), front to back.
     Params passage() const override;
     bool passed(const Params& before, Key boundary) const override;
+    // At a doorway: whether it is walked, which way its pull is and where its
+    // ground is, just inside it (State::overlap).
+    Params overlap(Key boundary) const override;
 
 protected:
     virtual Key default_kind() const { return dims_ == 3 ? kinds::mesh : kinds::sprite; }
@@ -341,5 +344,20 @@ bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to);
 // behind, either is only its frame - what is seen through it is what one
 // walks into. Any other portal, and a ball, from anywhere.
 bool opens_from(const Element& portal, const Vec3d& at);
+
+// A doorway made `w` wide and `h` high, its foot where it stood: a door
+// stands on its ground whatever its size, so two sides glued (which must be
+// one size) still stand on theirs.
+void size_opening(Element& door, double w, double h);
+
+// A direction as a doorway's overlap gives it (State::overlap): out through
+// the doorway, its up, and across - the frame both sides of a seam agree in.
+Vec3d out_through(const Pose& door, const Vec3d& v);
+
+// An overlap's account (`out`, from State::overlap) of a doorway `door`, `h`
+// high, standing on level ground whose height at (x, z) is `ground`: what it
+// does not already say of its pull and its floor. A space whose own walker
+// keeps level ground (a room, a desert, a corridor) gives its account so.
+void on_level_ground(Params& out, const Pose& door, double h, double (*ground)(const void*, double, double), const void* of);
 
 }  // namespace sg

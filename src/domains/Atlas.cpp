@@ -1,5 +1,7 @@
 #include "sg/domains/Atlas.hpp"
 
+#include <algorithm>
+
 namespace sg {
 
 Doorway& Atlas::glue(Key name, Key room_a, Key portal_a, Key room_b, Key portal_b) {
@@ -118,6 +120,21 @@ const Seam& glue_doorway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, 
     g.set_functor(std::move(glue_b));
     g.set_functor(std::move(glue_a));
     return g.add_seam(std::move(seam));
+}
+
+const Seam& walkway(StateGraph& g, Key name, Key a, Key pa, Key b, Key pb, const std::vector<std::pair<Key, Key>>& also, bool wraps) {
+    const Seam& seam = glue_doorway(g, name, a, pa, b, pb, also, wraps);
+    for (const bool ab : {true, false}) {
+        const State& from = g.state(ab ? a : b);
+        const Element& door = from.element(ab ? pa : pb);
+        if (door.params.num(Key{"walk"}, 0.0) < 0.5 || door.params.num(Key{"leave"}, 1.0) < 0.5) continue;
+        const Key travel = ab ? seam.a_to_b : seam.b_to_a;
+        const bool made = std::any_of(g.transitions().begin(), g.transitions().end(), [&](const Transition& t) {
+            return t.functor == travel && t.from == from.id();
+        });
+        if (!made) g.connect(from.id(), Key{"walk." + travel.str()}, ab ? b : a, travel);
+    }
+    return seam;
 }
 
 Cover as_cover(const Atlas& atlas, StateGraph& g) {
