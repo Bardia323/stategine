@@ -151,6 +151,62 @@ std::vector<float> lathe(const std::vector<P2>& profile, int sides) {
     return out;
 }
 
+std::vector<float> lathe_smooth(const std::vector<P2>& profile, int sides, double crease) {
+    using namespace detail;
+    std::vector<float> out;
+    sides = std::max(3, sides);
+    const std::size_t n = profile.size();
+    if (n < 2) return out;
+    // Each step of the profile's own normal, outward: (rise, -run).
+    std::vector<P2> along(n - 1);
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const double dx = profile[i + 1].x - profile[i].x, dy = profile[i + 1].y - profile[i].y, l = std::hypot(dx, dy);
+        along[i] = l > 1e-12 ? P2{dy / l, -dx / l} : P2{1, 0};
+    }
+    // At a point of the profile, the normal a step uses there: shared with
+    // the step beside it, unless the two meet at an edge.
+    const auto at_point = [&](std::size_t step, std::size_t point) {
+        const std::size_t other = point == step ? step - 1 : step + 1;
+        if ((point == step && step == 0) || (point != step && step + 1 >= along.size())) return along[step];
+        const P2 a = along[step], b = along[other];
+        if (std::acos(std::clamp(a.x * b.x + a.y * b.y, -1.0, 1.0)) > crease) return a;
+        const double l = std::hypot(a.x + b.x, a.y + b.y);
+        return l > 1e-12 ? P2{(a.x + b.x) / l, (a.y + b.y) / l} : a;
+    };
+    const auto ring = [&](const P2& p, int k) {
+        const double a = 2.0 * 3.14159265358979 * k / sides;
+        return Vec3d{p.x * std::cos(a), p.y, p.x * std::sin(a)};
+    };
+    const auto turn = [&](const P2& m, int k) {
+        const double a = 2.0 * 3.14159265358979 * k / sides;
+        return unit(Vec3d{m.x * std::cos(a), m.y, m.x * std::sin(a)});
+    };
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const P2 m0 = at_point(i, i), m1 = at_point(i, i + 1);
+        for (int k = 0; k < sides; ++k) {
+            const Vec3d a = ring(profile[i], k), b = ring(profile[i], k + 1), c = ring(profile[i + 1], k + 1), d = ring(profile[i + 1], k);
+            const Vec3d na = turn(m0, k), nb = turn(m0, k + 1), nc = turn(m1, k + 1), nd = turn(m1, k);
+            const double u0 = double(k) / sides, u1 = double(k + 1) / sides, v0 = double(i) / (n - 1), v1 = double(i + 1) / (n - 1);
+            const auto face = [&](const Vec3d& p, const Vec3d& np, double up, double vp, const Vec3d& q, const Vec3d& nq, double uq, double vq,
+                                  const Vec3d& r, const Vec3d& nr, double ur, double vr) {
+                const Vec3d f = cross3(q - p, r - p);
+                if (f.x * f.x + f.y * f.y + f.z * f.z <= 1e-20) return;
+                corner(out, p, np, up, vp), corner(out, q, nq, uq, vq), corner(out, r, nr, ur, vr);
+            };
+            face(a, na, u0, v0, d, nd, u0, v1, c, nc, u1, v1);
+            face(a, na, u0, v0, c, nc, u1, v1, b, nb, u1, v0);
+        }
+    }
+    // The ends, flat: the bottom facing down, the top up.
+    const P2& lo = profile.front();
+    const P2& hi = profile.back();
+    for (int k = 0; k < sides; ++k) {
+        if (lo.x > 1e-9) tri(out, {0, lo.y, 0}, ring(lo, k), ring(lo, k + 1));
+        if (hi.x > 1e-9) tri(out, {0, hi.y, 0}, ring(hi, k + 1), ring(hi, k));
+    }
+    return out;
+}
+
 std::vector<float> placed(std::vector<float> v, const Vec3d& by, double yaw, double pitch) {
     const double cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
     const auto turn = [&](double& x, double& y, double& z) {

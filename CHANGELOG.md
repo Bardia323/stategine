@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- `shapes::lathe_smooth(profile, sides, crease)`: a profile turned and polished - its normals run on round the axis and along the profile, but where it turns sharper than `crease` it keeps an edge (a rim, a step). For turned things that should not look cut (a chess piece, a vase).
+
 - Seams need no binding by hand: `GLWorldView` binds every seam of the prepared graph itself (`bind_seams`, made again whenever the graph changes), both ways, from the eye the seam's own travel carries. `bind_world` is for what is not a seam (a projection).
 - Every crossing seen: `sg::render::check_crossings(view, graph)` walks an eye through every doorway of every seam, each way it is walked, a few centimetres a frame, drawn in whichever world it is in, and names any frame that jumps at the crossing or flickers (`sg_crossings_gl`; it can fail - a doorway shown from the wrong eye is named). A seam that means its two sides to wear different looks says `differs look`.
 - Gluing a room's opening to anything opens it (`Room::opens`): it is not filled in behind the view.

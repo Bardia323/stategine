@@ -12,7 +12,7 @@
 //             z, its edges cut back by `chamfer` - the side view of a gun, a
 //             bracket, a sign
 //   lathe     a profile, radius against height, turned about y in `sides`
-//             faces - a barrel, a turret's body, a lamp
+//             faces - a barrel, a turret's body, a lamp (lathe_smooth: polished)
 //   fit       one or more of them, into the unit box a mesh is sized from
 //             (-0.5..0.5 each way, stood on its base as a box is): its size,
 //             to give the element as sx, sy, sz, so it is drawn as made
@@ -58,6 +58,11 @@ std::vector<float> extrude(std::vector<P2> outline, double depth, double chamfer
 // `profile` - (radius, height) from the bottom up - turned about y in `sides`
 // faces; closed at either end where its radius there is not nothing.
 std::vector<float> lathe(const std::vector<P2>& profile, int sides);
+// As lathe, but turned smooth: round the axis and along the profile its
+// normals run on from face to face - a thing turned on a lathe, polished -
+// except where the profile turns sharper than `crease` (radians), which is
+// left an edge (a rim, a step).
+std::vector<float> lathe_smooth(const std::vector<P2>& profile, int sides, double crease = 0.7);
 
 // Triangles moved by `by` and turned `yaw` about y then `pitch` about z (to
 // stand a lathed barrel along x, say) - to put several together as one model.
