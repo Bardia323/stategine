@@ -1,0 +1,86 @@
+# A relation that holds at once, and contents that come to agree with it in time.
+#
+#   g                    a global state: the whole, read whole
+#   a, b                 two local states, each the whole seen from one side
+#   ra, rb : g -> a, b   restrictions - what each side must be, given g
+#   ia, ib : a, b -> g   the way back, so each side is a lens on g, and a piece
+#                        of a cover with g (the test glues it: Cover, Sheaf.hpp)
+#
+# The restriction is the relation, and it is instantaneous: whatever g is, ra
+# says at once what a should hold. It is never applied to a's own data. What is
+# carried is the target: aim_a = ra ; aim, kept, writes ra's answer into a's
+# aim and nothing else. A then relaxes toward its aim by its own arrow, driven
+# on the clock, at a rate (and with a turn) in its own params:
+#
+#     y - y*  <-  e^(-rate dt) R(spin dt) (y - y*)
+#
+# Zero time is no change, two steps are one step as long as both (the drive
+# says `additive`, and the laws check it), and every outcome of a linear step
+# is here: converging (rate > 0), going round (rate = 0, a whole number of
+# steps to a turn), or never arriving (rate = 0 otherwise, or rate < 0).
+#
+# This file is the local half, the same in both variants; g is in
+# relax_product.sg (it factorises) or relax_bond.sg (it holds a correlation of
+# its own). Both start where g puts them: every gap nothing.
+
+state time : temporal
+
+state a {
+    element a {
+        x = 1.0
+        y = 0.0
+        aim_x = 1.0
+        aim_y = 0.0
+        rate = 2.0
+        spin = 0.0
+    }
+    a -> a : relax(dt) on a.relax native relax
+}
+
+state b {
+    element b {
+        x = -1.0
+        y = 0.5
+        aim_x = -1.0
+        aim_y = 0.5
+        rate = 2.0
+        spin = 0.0
+    }
+    b -> b : relax(dt) on b.relax native relax
+}
+
+# --- the relation: restrictions, and their way back -------------------------------------
+functor ra : g -> a {
+    object ga -> a only(x, y)
+}
+functor ia : a -> g {
+    object a -> ga only(x, y)
+}
+functor rb : g -> b {
+    object gb -> b only(x, y)
+}
+functor ib : b -> g {
+    object b -> gb only(x, y)
+}
+lens ra <-> ia
+lens rb <-> ib
+
+# --- the target: the restriction's answer, put where each side aims ----------------------
+functor aim_slot_a : a -> a {
+    object a -> a swizzle(aim_x = x, aim_y = y)
+}
+functor aim_slot_b : b -> b {
+    object b -> b swizzle(aim_x = x, aim_y = y)
+}
+compose aim_a = ra ; aim_slot_a
+compose aim_b = rb ; aim_slot_b
+keep aim_a
+keep aim_b
+
+# --- the dynamics: each side's own, on the one clock --------------------------------------
+drive time -> a.relax
+    keeps always
+    additive
+drive time -> b.relax
+    keeps always
+    additive

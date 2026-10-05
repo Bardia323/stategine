@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A relation at once, its contents in time (`docs/relaxation.md`, `sg_relax`): a functor says what a state should hold, a kept functor carries that answer into the state's own aim, and the state's own driven arrow moves toward it - nothing new in the engine. Three readings of what is already there, in `sg/core/Relax.hpp`: `gap(graph, functor)`, how far a target is from what a functor says it should hold, one number per parameter; `orbit(gaps, tol)`, what a run of gaps did - converges, periodic (with its period), persists or grows - as `Cover::monodromy` says what a ring does; and `locality_defects(graph, cover, whole)`, descent's converse - whether a state is no more than its pieces, naming what it holds that no piece does (a global correlation).
+
 - A mesh made again as one surface at a budget: an imported mesh's field is now its true signed distance (nearest face, inside by winding number, faces in a tree of boxes), so it cuts and is cut as it is; `import file faces=N`, and `remesh faces=N [blend=k] | res=m` for everything so far in a block, mesh that field at the cell giving about N faces - one closed, even surface however dense or tangled the parts were.
 - `sculpt::picture` / `sculpt::png` and the `sgmodel` tool: four views of a model in one PNG, and its faces, parts, size and open edges - for whoever writes recipes to look as they go.
 

@@ -783,6 +783,7 @@ include/sg/
   core/      the engine, domain-agnostic
     Core.hpp State.hpp Functor.hpp Adjunction.hpp Kan.hpp Embedding.hpp
     StateGraph.hpp Engine.hpp Sheaf.hpp (covers, descent) Temporal.hpp
+    Relax.hpp (a relation's gap, the orbit of a step toward it, locality)
     Assets.hpp Store.hpp Text.hpp (owner folders, content, serialization)
     Laws.hpp (laws on live data)  Typed.hpp (compile-time typed handles)
     Declared.hpp (what a step does, said: affine arrows and transports)
