@@ -1180,6 +1180,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uTex", 0);
         p.set("uEnv", 7);
         p.set("uEnvMix", 0.0f);
+        p.set("uInsetTex", 6);
+        p.set("uInsetRect", 0.0f, 0.0f, 0.0f, 0.0f);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
         p.set("uViewport", vp_w_, vp_h_);
@@ -2362,7 +2364,18 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
     scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
     scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
+    // A world's feed in a part of the picture (`inset`), if the graph declares it.
+    bool inset = false;
+    if (graph_ && e.params.has(Key{"inset"}))
+        if (const Key res = render::inset_of(*graph_, e); !res.empty())
+            if (auto f = feeds.find(res); f != feeds.end() && f->second.world && declared_feed(res, *f->second.world) && f->second.shown().valid()) {
+                f->second.shown().bind_color(6);
+                const float x = static_cast<float>(e.params.num(Key{"inset_x"})), y = static_cast<float>(e.params.num(Key{"inset_y"}));
+                scene_->set("uInsetRect", x, y, x + static_cast<float>(e.params.num(Key{"inset_w"})), y + static_cast<float>(e.params.num(Key{"inset_h"})));
+                inset = true;
+            }
     quad_.draw();
+    if (inset) scene_->set("uInsetRect", 0.0f, 0.0f, 0.0f, 0.0f);
     scene_->set("uTexFlip", 0.0f);
     scene_->set("uUntone", 0.0f);
     scene_->set("uTexMix", 0.0f);

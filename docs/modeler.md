@@ -52,7 +52,7 @@ As drawn, their coordinates where they say:
 | `loft h x,z x,z ... / x,z ...` | rings of the same count, joined, equally spaced up h |
 | `tube r x,y,z x,y,z ...` | a round bar along a path |
 | `sweep x,y x,y ... / x,y,z ...` | an outline carried along a path |
-| `import file [fit=h] [base=1] [mats=1]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials |
+| `import file [fit=h] [base=1] [mats=1] [faces=N]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials, `faces` makes it again (below) |
 
 ### Options, on any shape, block or macro call
 
@@ -78,6 +78,38 @@ Only what a cut touches is meshed from a signed distance field (dual
 contouring, at `res` or the state's `cell`); the rest keeps its exact faces, so
 a castle of boxes and cylinders with a gate cut through one wall is crisp
 everywhere and costs a field only there.
+
+### Made again: one surface at a budget
+
+```
+import scan.obj faces=20000      # a mesh sent in, made again before it is used
+remesh faces=8000 [blend=0.05]   # everything so far in the block, as one surface
+remesh res=0.02                  # or at a cell, not a budget
+```
+
+A shape's field is its true signed distance - an imported mesh's too: the
+distance to its nearest face, inside where its winding number says, so meshes
+lying in one another (a heap of parts, as a scene often is) are one solid
+where any of them is. `remesh` joins the fields of everything so far
+(smoothly, with `blend`) and meshes that one field at the cell that gives
+about `faces` faces: one closed surface, even, with no faces hidden inside -
+the mesh-to-volume-to-mesh way, which simplifies a dense or tangled mesh
+better than collapsing its edges. `faces=` on any shape does it to that shape
+alone. Thin things narrower than a cell close up: give the budget they need.
+
+### Looking at it
+
+`sculpt::picture(model, w, h)` draws four views - three-quarters from above,
+front (from +z), side (from +x), top - each fitted and shaded, a colour per
+material; `sculpt::png` makes it a file. The `sgmodel` tool does it from the
+command line, and says faces, parts, size, open edges and errors:
+
+```
+sgmodel castle.recipe -s 1000 [-o castle.png] [--obj castle.obj] [--cell 0.05]
+sgmodel -e "box 2 1 2 / sub cyl 0.4 1 / remesh faces=4000"
+```
+
+Write, look, write again.
 
 ### Blocks, to `end`
 

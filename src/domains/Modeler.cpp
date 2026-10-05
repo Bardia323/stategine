@@ -1,6 +1,7 @@
 #include "sg/domains/Modeler.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 
@@ -59,6 +60,12 @@ Modeler::Modeler(Key id) : State(std::move(id)) {
         e.params.set("ops", s);
     });
     loop(Key{"clear"}, recipe_id(), clear_event(), [](State&, Element& e, Element*, const Event&) { e.params.set("ops", std::string()); });
+    // recipe --select--> recipe: the line being worked on (-1: none) - as a
+    // cursor is the document's, this is the recipe's.
+    r.params.set("selected", -1.0);
+    loop(Key{"select"}, recipe_id(), select_event(), [](State&, Element& e, Element*, const Event& ev) {
+        e.params.set("selected", std::floor(ev.args.num("line", -1.0)));
+    });
 }
 
 void Modeler::set_files(sculpt::Files f) { files() = std::move(f); }
@@ -72,7 +79,7 @@ const std::string& Modeler::text() const {
 int Modeler::count() const { return int(std::count(text().begin(), text().end(), '\n')); }
 
 void Modeler::ports(StateGraph& g) const {
-    for (Key e : {op_event(), set_event(), undo_event(), clear_event()})
+    for (Key e : {op_event(), set_event(), undo_event(), clear_event(), select_event()})
         if (!g.has_port(id(), e)) g.port(id(), e);
 }
 

@@ -193,6 +193,54 @@ int main() {
         std::printf("     castle: %zu triangles in %.0f ms; %s\n", m.triangles, ms, m.errors.c_str());
         check(m.triangles > 1000 && ms < 1500, "a castle-size recipe builds well under a second and a half");
     }
+    {
+        // A recipe read as placements, and written back from them.
+        const std::string r = "# a hut\nbox 2 1 2 mat=stone  # walls\nsub cyl 0.3 1 at=0,0,1 rot=90\ngroup towers\n  tower 1 3 1 at=4,0,0\nend\n"
+                              "cone 1 1 at=0,1,0 scale=1.5\nbox 1 1 1 at=$x,0,0\n";
+        const auto ps = sculpt::placements(r);
+        check(ps.size() == 4 && ps[0].line == 1 && ps[1].line == 2 && ps[2].line == 6 && ps[3].line == 7,
+              "what stands at the top of a recipe is placed; what is in a block, or a comment, is not");
+        check(std::abs(ps[1].at.z - 1) < 1e-9 && std::abs(ps[1].rot.y - 90) < 1e-9 && std::abs(ps[2].scale.x - 1.5) < 1e-9 && !ps[3].editable,
+              "where it stands, its turn and its size are read; an expression is read, not editable");
+        check(sculpt::place(r, 2, ps[1].at, ps[1].rot, ps[1].scale) == r, "writing back what was read changes nothing");
+        const std::string moved = sculpt::place(r, 1, {0.5, 0, -0.25}, {0, 45, 0}, {1, 1, 1});
+        const auto again = sculpt::placement(moved, 1);
+        check(moved.find("box 2 1 2 mat=stone at=0.5,0,-0.25 rot=45  # walls") != std::string::npos && std::abs(again.at.x - 0.5) < 1e-9 &&
+                  std::abs(again.rot.y - 45) < 1e-9 && sculpt::place(moved, 1, again.at, again.rot, again.scale) == moved,
+              "moved and turned, the line says so, its other words and comment kept - and reads back as written");
+        check(sculpt::place(r, 7, {1, 0, 0}, {}, {1, 1, 1}) == r && sculpt::place(r, 4, {1, 0, 0}, {}, {1, 1, 1}) == r,
+              "a line that is not editable, or not placed, is left as it is");
+        sg::StateGraph g;
+        auto& m = g.add<Modeler>("pick");
+        m.hear(sg::Event{Modeler::select_event(), sg::Params{}.set("line", 2.0)});
+        m.dispatch_pending();
+        check(m.element(Modeler::recipe_id()).params.num("selected") == 2.0, "the line worked on is the recipe's: model.select");
+    }
+    {
+        // A mesh sent in, made again: the field of its faces (inside where its
+        // winding says, so shapes in one another are one solid), meshed at a
+        // budget - one closed surface of about that many faces.
+        const std::string heap = "box 2 2 2\nbox 2 2 2 at=1,0.5,1\nsphere 1.2 at=0,2,0\ncyl 0.4 3 at=-1,0,1\n";
+        const Model parts = sculpt::build(heap);
+        const std::string obj = sculpt::to_obj(parts, "heap");
+        sculpt::Files files;
+        files.read = [&](const std::string&, std::string& text) { return text = obj, true; };
+        files.stamp = [](const std::string&) { return 0LL; };
+        const auto t0 = std::chrono::steady_clock::now();
+        const Model again = sculpt::build("import heap.obj faces=3000\n", {}, &files);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("     heap: %zu faces -> %zu in %.0f ms %s\n", parts.triangles, again.triangles, ms, again.errors.c_str());
+        check(closed(again) && again.triangles > 1500 && again.triangles < 6000, "an imported heap of shapes, made again: one closed surface, near its budget");
+        check(std::abs(volume(again) - volume(parts)) / volume(parts) < 0.6 && inside(again, 0, 1, 0) && inside(again, 1.5, 1.5, 1.5) && !inside(again, 3, 1, -2),
+              "its inside is the union of what it was made of");
+        const Model one = sculpt::build(heap + "remesh faces=2000\n");
+        check(closed(one) && one.triangles > 800 && one.triangles < 4500, "remesh: the shapes so far, one surface, at a budget");
+        const auto rgb = sculpt::picture(one, 128, 128);
+        const std::string file = sculpt::png(rgb, 128, 128);
+        bool lit = false;
+        for (std::size_t i = 0; i < rgb.size(); i += 3) lit = lit || rgb[i] > 120;
+        check(rgb.size() == 128 * 128 * 3 && lit && file.rfind("\x89PNG", 0) == 0, "and a picture of it to look at, as a PNG");
+    }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;
 }

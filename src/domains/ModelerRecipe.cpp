@@ -317,6 +317,11 @@ private:
     void close();
     Solid finish(Frame& f);
     void join_top(const Solid& s, Mode mode, double k) { kernel::join(st_.back().acc, s, mode, k); }
+    // A solid made again as one surface: its pieces' fields joined (smoothly,
+    // by `blend`), and that field meshed - at `res`, or at whatever cell gives
+    // about `faces` faces. One mesh, even and closed, however many and however
+    // tangled the pieces were.
+    Solid remeshed(const Solid& s, double faces, double res, double blend, double crease);
     void call(const std::string& name, Args& a, Mode mode, double k);
     void collect(const std::vector<std::string>& lines, std::size_t& i, std::vector<std::string>& body);
 };
@@ -468,8 +473,9 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         V3 shift{0, 0, 0};
         if (opt_num(a, "base", 0) != 0 || centre) shift = {-mid.x, centre ? -mid.y : -bb.lo.y, -mid.z};
         m.pre = scaling({s, s, s}) * translate(shift);
-        const Box nb = bb;
-        m.field = sdf_xform(sdf_box((nb.hi - nb.lo) * 0.5, 0), translate(mid));
+        // Its true field, so it cuts and is cut as it is (and can be made
+        // again from it: `faces=`).
+        m.field = sdf_mesh(*g);
         m.exact = g;
         return true;
     } else {
@@ -477,6 +483,40 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
     }
     if (m.pre.t.x == 0 && m.pre.t.y == 0 && m.pre.t.z == 0 && m.pre.m[4] == 1 && !centre && lift != 0) m.pre = translate({0, lift, 0});
     return true;
+}
+
+Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, double crease) {
+    if (s.pieces.empty() || (faces <= 0 && res <= 0)) return s;
+    std::vector<SdfP> fields;
+    for (const Piece& p : s.pieces) fields.push_back(p.field);
+    SdfP u = fields[0];
+    if (blend > 0)
+        for (std::size_t i = 1; i < fields.size(); ++i) u = sdf_blend(u, fields[i], blend);
+    else u = sdf_union(fields);
+    const V3 e = u->bb.hi - u->bb.lo;
+    const double extent = std::max({e.x, e.y, e.z, 1e-3});
+    if (res <= 0) {
+        // A trial, coarse: faces go as the area over the cell squared.
+        const double c0 = extent / 40.0;
+        Geom trial;
+        surface(*u, c0, o_.max_grid, trial, nullptr);
+        const double f0 = double(trial.t.size() / 3);
+        res = f0 > 0 ? c0 * std::sqrt(f0 / faces) : c0;
+    }
+    res = std::max(res, extent / double(std::max(8, o_.max_grid)));
+    Piece p;
+    p.field = u;
+    p.bb = u->bb;
+    p.res = res;
+    p.crease = crease;
+    p.material = s.pieces[0].material;
+    auto g = std::make_shared<Geom>();
+    surface(*u, res, o_.max_grid, *g, &errors);
+    g->crease = crease;
+    p.exact = g;
+    Solid out;
+    out.pieces.push_back(std::move(p));
+    return out;
 }
 
 Solid Interp::solid(const Made& m, const Args& a, const Defaults& d) {
@@ -668,7 +708,13 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
             else join_top(moved(it->second, place(a)), mode, k);
         } else if (shapes_known().count(head)) {
             Made m;
-            if (make(head, a, st_.back().def, m)) join_top(solid(m, a, st_.back().def), mode, k);
+            if (make(head, a, st_.back().def, m)) {
+                Solid s = solid(m, a, st_.back().def);
+                if (a.opt.count("faces")) s = remeshed(s, opt_num(a, "faces", 0), 0, 0, opt_num(a, "crease", 35));
+                join_top(s, mode, k);
+            }
+        } else if (head == "remesh") {
+            st_.back().acc = remeshed(st_.back().acc, opt_num(a, "faces", 0), opt_num(a, "res", 0), opt_num(a, "blend", 0), opt_num(a, "crease", 35));
         } else if (macros_.count(head)) {
             call(head, a, mode, k);
         } else {

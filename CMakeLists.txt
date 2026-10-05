@@ -135,6 +135,13 @@ if(SG_BUILD_DSL)
   include(cmake/StategineDsl.cmake)
 endif()
 
+# sgmodel: a recipe in, a picture of it (and its mesh) out - for whoever writes
+# recipes to look at what they made.
+if(NOT CMAKE_CROSSCOMPILING)
+  add_executable(sgmodel tools/sgmodel.cpp)
+  target_link_libraries(sgmodel PRIVATE stategine stategine_warnings stategine_static_runtime)
+endif()
+
 if(SG_BUILD_EXAMPLES)
   add_executable(sg_demo examples/demo.cpp)
   target_link_libraries(sg_demo PRIVATE stategine_dev)

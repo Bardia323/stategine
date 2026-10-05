@@ -82,6 +82,10 @@ SdfP sdf_loft(const std::vector<std::vector<P2>>& rings, double height);
 SdfP sdf_tube(const std::vector<V3>& path, double r);
 SdfP sdf_sweep(const std::vector<P2>& profile, const std::vector<V3>& path);
 SdfP sdf_xform(SdfP child, const Mat& m);
+// The field of a mesh: the distance to its nearest face, negative where its
+// winding number says inside - so meshes in one another are one solid. Its
+// faces' materials go with it.
+SdfP sdf_mesh(const Geom& g);
 SdfP sdf_union(std::vector<SdfP> children);
 SdfP sdf_sub(SdfP a, SdfP b, double k);
 SdfP sdf_and(SdfP a, SdfP b);

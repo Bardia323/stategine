@@ -102,6 +102,11 @@ std::vector<DrawInstance> portal_body(const State& host,const Element& portal,bo
 spatial::projection::Mat4 portal_face(const State& host,const Element& portal,bool window);
 spatial::projection::Mat4 sprite_transform(const State& host,const Element& sprite,const ViewCamera& camera);
 Key signal_of(const StateGraph& graph, const Element& panel);
+// A picture in a panel's picture: `inset` names an embedding, as `shows` does,
+// and `inset_x`, `inset_y`, `inset_w`, `inset_h` (0..1 of the picture, from
+// its top left) say where in it that feed is shown. The feed's resource, or
+// nothing where the panel shows none (no `inset`, or `inset_w` 0).
+Key inset_of(const StateGraph& graph, const Element& panel);
 bool declared_world(const StateGraph& graph, const State& host, const Element& portal, const State& guest);
 bool declared_feed(const StateGraph& graph, Key portal, const State& guest);
 bool declared_surface(const StateGraph& graph, const Element& panel, const Surface2D& surface);

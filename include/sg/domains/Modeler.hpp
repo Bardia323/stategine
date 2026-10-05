@@ -45,6 +45,7 @@
 //     recipe --set-->   recipe   model.set {ops}: the whole recipe
 //     recipe --undo-->  recipe   model.undo {n}: the last n lines taken back
 //     recipe --clear--> recipe   model.clear
+//     recipe --select--> recipe  model.select {line}: the line worked on (`selected`)
 #pragma once
 
 #include <functional>
@@ -99,6 +100,34 @@ std::string recipes();
 // Wavefront text of a model, one object per material.
 std::string to_obj(const Model& m, const std::string& name);
 
+// --- looking at it ---------------------------------------------------------------
+// Four views of a model in one `w` x `h` picture (rgb, a row at a time):
+// three-quarters from above, front (from +z), side (from +x) and top, each
+// fitted to its square, shaded by one light, each material its own colour.
+// For whoever writes a recipe to see it; `png` makes it a file.
+std::vector<unsigned char> picture(const Model& m, int w, int h);
+std::string png(const std::vector<unsigned char>& rgb, int w, int h);
+
+// --- a recipe, read and written as placements ---------------------------------
+// What a picture of a recipe can move: each shape (or macro, or copy) said at
+// the top of it - in no block, so where it stands is where it is - with where
+// it stands, how it is turned and how big (`at=`, `rot=` in degrees,
+// `scale=`). A line whose numbers are expressions is read, not editable.
+// Lines count from 0, as the text has them.
+struct Placed {
+    int line = -1;
+    std::string word;   // the shape, macro or `copy`
+    Vec3d at, rot, scale{1, 1, 1};
+    bool editable = false;
+};
+std::vector<Placed> placements(const std::string& recipe);
+Placed placement(const std::string& recipe, int line);
+// The recipe with that line standing, turned and sized so, its other words
+// and its comment kept, its numbers to a millimetre and a tenth of a degree.
+// The same placement again is the same text (writing back what was read
+// changes nothing).
+std::string place(const std::string& recipe, int line, const Vec3d& at, const Vec3d& rot, const Vec3d& scale);
+
 }  // namespace sculpt
 
 class Modeler : public State {
@@ -107,6 +136,7 @@ public:
     static Key op_event() { return Key{"model.op"}; }
     static Key set_event() { return Key{"model.set"}; }
     static Key undo_event() { return Key{"model.undo"}; }
+    static Key select_event() { return Key{"model.select"}; }
     static Key clear_event() { return Key{"model.clear"}; }
 
     explicit Modeler(Key id);

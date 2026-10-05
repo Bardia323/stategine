@@ -184,8 +184,22 @@ uniform float uDim;
 uniform float uUndim;         // 1: this is part of the screen the room dims round, not dimmed with it
 // How flat the tube is seen (crt_shape): 0 as it is, 1 face up to the glass.
 uniform float uFlat;
+// A picture in the picture (a panel's `inset`): a world's feed, shown in the
+// part of the panel's picture uInsetRect says (x0, y0, x1, y1 in its own
+// coordinates; empty: none) - under the same glass as the rest of it.
+uniform sampler2D uInsetTex;
+uniform vec4 uInsetRect;
 )") + crt_glsl_constants() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+
+// The panel's picture at s: its own, or the inset's where that is.
+vec3 shown_at(vec2 s) {
+    if (uInsetRect.z > uInsetRect.x) {
+        vec2 q = (s - uInsetRect.xy) / (uInsetRect.zw - uInsetRect.xy);
+        if (q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0) return texture(uInsetTex, vec2(q.x, 1.0 - q.y)).rgb;
+    }
+    return texture(uTex, s).rgb;
+}
 
 float noise(vec2 p) {
     vec2 i = floor(p), f = fract(p);
@@ -211,7 +225,7 @@ vec3 crt_sample(vec2 uv) {
     float ppx = max(fwidth(pic_sd), 1e-5);
     float picture = 1.0 - smoothstep(-ppx, ppx, pic_sd);
     vec2 s = clamp(w * 0.5 + 0.5, 0.0, 1.0);
-    vec3 col = texture(uTex, s).rgb;
+    vec3 col = shown_at(s);
     // Halation: light from the phosphor spreading in the glass - a ring of
     // samples round each point, near and farther out, added as light. Done
     // here, per pixel of the tube, so what is painted onto it stays flat.
@@ -221,8 +235,8 @@ vec3 crt_sample(vec2 uv) {
         for (int i = 0; i < 8; ++i) {
             float a = float(i) * 0.7853982 + 0.39;
             vec2 d = vec2(cos(a), sin(a));
-            near += texture(uTex, s + d * t * 2.0).rgb;
-            far += texture(uTex, s + d * t * 6.0).rgb;
+            near += shown_at(s + d * t * 2.0);
+            far += shown_at(s + d * t * 6.0);
         }
         col += uHalo * (near * 0.045 + far * 0.03);
     }
@@ -704,7 +718,7 @@ void main() {
 #ifdef SG_CUTOUT
         if (uCutout > 0.5 && texel.a < 0.5) discard;
 #endif
-        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texel.rgb;
+        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : uInsetRect.z > uInsetRect.x ? shown_at(uv) : texel.rgb;
         if (uSkinRelief > 0.0) relief_h = texel.a * uSkinRelief;
         if (uUntone > 0.5) {
             // A picture already developed - a world drawn in its own look -

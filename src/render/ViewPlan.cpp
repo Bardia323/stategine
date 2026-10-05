@@ -361,6 +361,18 @@ Key signal_of(const StateGraph &g, const Element &panel) {
         }
     return {};
 }
+Key inset_of(const StateGraph &g, const Element &panel) {
+    if (!panel.params.has("inset") || panel.params.num("inset_w", 0.0) <= 0.0 || panel.params.num("inset_h", 0.0) <= 0.0)
+        return {};
+    const Key name{panel.params.get_or<std::string>("inset", {})};
+    for (const auto &em : g.embeddings())
+        if (em.name == name) {
+            const auto *source = g.find(em.host);
+            const auto *p = source ? source->find(em.portal) : nullptr;
+            return p && p->params.num("eye") > .5 ? em.name : em.portal;
+        }
+    return {};
+}
 bool declared_world(const StateGraph &g, const State &host, const Element &p, const State &guest) {
     if (!registered(g, &host) || !registered(g, &guest) || !p.alive || host.find(p.id) != &p)
         return false;
