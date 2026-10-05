@@ -32,6 +32,15 @@ bool slurp(const std::string& path, std::string& out) {
     return true;
 }
 
+// Write `text` to `path` only if it says something else: an unchanged output
+// keeps its time stamp, so the build (ninja's restat) compiles nothing again
+// when sgc itself was only relinked against a changed engine.
+void put(const std::string& path, const std::string& text) {
+    std::string was;
+    if (slurp(path, was) && was == text) return;
+    std::ofstream(path, std::ios::binary) << text;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -88,9 +97,9 @@ int main(int argc, char** argv) {
                 std::cout << cpp;
             } else {
                 fs::create_directories(fs::path(out_path).parent_path());
-                std::ofstream(out_path, std::ios::binary) << cpp;
+                put(out_path, cpp);
             }
-            if (!facts_path.empty()) std::ofstream(facts_path, std::ios::binary) << sg::dsl::to_text(sg::dsl::facts(c.plan));
+            if (!facts_path.empty()) put(facts_path, sg::dsl::to_text(sg::dsl::facts(c.plan)));
         }
     }
     if (!errors.empty()) {

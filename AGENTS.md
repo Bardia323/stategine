@@ -178,6 +178,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `Atlas` / `Cover` (`domains/Atlas.hpp`, `core/Sheaf.hpp`) | charts glued by doorways; local pieces that must agree to glue | rooms placed by absolute coordinates; agreement checked by hand |
 | `TextStore` (`core/Store.hpp`) | texts kept in files, read once, re-read only when the stamp moves | file reads and writes of your own |
 | `Assets` (`core/Assets.hpp`) | files in `<root>/<owner>/`, with owner/path checks and legacy adoption | loose files or private asset paths; runs use `<build>/out/<state>/` |
+| `cache` (`core/Cache.hpp`) | derived data kept on disk by a digest of what made it (inputs and code), written atomically, damaged files a miss; never a source of truth | remaking costly pure data every start; a cache keyed on a hand-kept version alone |
 | `spatial` (`spatial/Math.hpp`, `Geometry.hpp`, `Index.hpp`) | pure transforms, bounds, rays, convex volumes, finite-surface projection and BVH | duplicated geometry or semantic ownership in a query cache |
 | `rigid::World`, `rope` (`physics/Rigid.hpp`, `Rope.hpp`) | bodies and cords, stepped as a state's cache, pure in restored params | hand-rolled collision or cords |
 | `field` (`physics/Field.hpp`) | named scalar/vector sources, receivers and pure query solver; directional/radial/plane or specialized const backend | private gravity/field logic, another clock or mutable captured state |
@@ -404,8 +405,15 @@ Keep native programs at the build root, static libraries in `lib/`, law checks i
 logs in `logs/`, and Wasm in `build/wasm`. Do not add nested packaging layers.
 
 ```sh
-cmake --build build && ctest --test-dir build        # engine tests: laws, graph watch, defaults, text, the DSL
+cmake --build build && ctest --test-dir build        # the fast tier: laws, graph watch, defaults, text, the DSL, every domain
+ctest --test-dir build -C full                       # everything: also the networking process runs (pong, peers)
 ```
+Run the full tier when the networking acceptance path changes and before a
+release; a test that guards only a settled path goes in it (`CONFIGURATIONS
+full` on its `add_test`, and its name in `_sg_full_tests`), never deleted.
+Derived data a program makes again each start (meshes, paint) is kept on disk
+by what made it (`sg::cache`): key it on every input and on its code's digest
+(`stategine_code_digest`), so a cold cache and a warm one show the same.
 - `graph.validate()` empty and `sg::verify(graph)` ok on every graph you touched.
 - No new state without an interface to it; no game-loop code writing into a state it does not own.
 - No module including what uses it.

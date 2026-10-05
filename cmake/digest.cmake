@@ -1,0 +1,18 @@
+# cmake -DOUT=<header> -DMACRO=<name> -DFILES=<a|b|...> -P digest.cmake
+# (stategine_code_digest): the files' contents, in order, as one SHA-256.
+string(REPLACE "|" ";" _files "${FILES}")
+set(_all "")
+foreach(_f IN LISTS _files)
+  file(SHA256 "${_f}" _h)
+  string(APPEND _all "${_h}")
+endforeach()
+string(SHA256 _digest "${_all}")
+string(SUBSTRING "${_digest}" 0 32 _digest)
+set(_text "// Written by cmake/digest.cmake: the code ${MACRO} is made by, as a digest.\n#pragma once\n#define ${MACRO} \"${_digest}\"\n")
+if(EXISTS "${OUT}")
+  file(READ "${OUT}" _was)
+  if(_was STREQUAL _text)
+    return()
+  endif()
+endif()
+file(WRITE "${OUT}" "${_text}")

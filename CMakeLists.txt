@@ -7,6 +7,17 @@ string(REGEX REPLACE "^#define SG_VERSION_STRING \"([^\"]+)\".*" "\\1" _sg_versi
        "${_sg_version_line}")
 project(stategine VERSION ${_sg_version} LANGUAGES CXX)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lib")
+# A file compiled before, with the same text and flags, is not compiled again
+# (ccache, where there is one). A project that pulls the engine in decides
+# for itself; built on its own, the engine uses it if it is there.
+option(SG_CCACHE "Compile through ccache when it is installed (top level only)" ON)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR AND SG_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+  find_program(SG_CCACHE_PROGRAM ccache)
+  if(SG_CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${SG_CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER "${SG_CCACHE_PROGRAM}")
+  endif()
+endif()
 
 # Built on its own, stategine builds its examples and tests. Pulled into a
 # project (FetchContent, add_subdirectory), it is only a library: no demos, no
@@ -41,6 +52,16 @@ add_library(stategine STATIC ${_sg_sources})
 add_library(stategine::stategine ALIAS stategine)
 target_include_directories(stategine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(stategine PUBLIC cxx_std_17)
+# The modeller's meshes are kept on disk by what made them (sg/core/Cache.hpp):
+# the recipe, and this - the code that turns a recipe into a mesh.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineDigest.cmake)
+file(GLOB _sg_modeler_code CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Modeler*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Modeler*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Shapes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Modeler.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Shapes.hpp ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/spatial/*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial/*.cpp)
+list(SORT _sg_modeler_code)
+stategine_code_digest(stategine SG_MODELER_CODE ${_sg_modeler_code})
 
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.
@@ -264,6 +285,11 @@ if(SG_BUILD_TESTS)
   add_executable(sg_rigid tests/test_rigid.cpp)
   target_link_libraries(sg_rigid PRIVATE stategine_dev)
   add_test(NAME sg_rigid COMMAND sg_rigid)
+  # Derived data kept on disk (sg/core/Cache.hpp): read back whole or not at
+  # all, and the modeller's meshes shared between two programs.
+  add_executable(sg_cache tests/test_cache.cpp)
+  target_link_libraries(sg_cache PRIVATE stategine_dev)
+  add_test(NAME sg_cache COMMAND sg_cache)
   add_executable(sg_rooms tests/test_room.cpp)
   target_link_libraries(sg_rooms PRIVATE stategine_dev)
   add_test(NAME sg_rooms COMMAND sg_rooms)
@@ -404,7 +430,7 @@ if(SG_BUILD_TESTS)
     stategine_compile_dsl(sg_net_peer NAME distributed SOURCES examples/distributed.sg)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
-      add_test(NAME sg_net_processes COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_processes.py
+      add_test(NAME sg_net_processes CONFIGURATIONS full COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_processes.py
         $<TARGET_FILE:sg_net_peer> ${CMAKE_CURRENT_BINARY_DIR}/out/network/processes)
       set_tests_properties(sg_net_processes PROPERTIES TIMEOUT 180)
     endif()
@@ -477,7 +503,7 @@ if(NOT EMSCRIPTEN AND SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
     target_link_libraries(sg_net_verified_peer PRIVATE ws2_32)
   endif()
   if(SG_BUILD_TESTS AND Python3_Interpreter_FOUND)
-    add_test(NAME sg_net_verified_processes COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_verified_processes.py
+    add_test(NAME sg_net_verified_processes CONFIGURATIONS full COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_verified_processes.py
       $<TARGET_FILE:sg_net_verified_peer> $<TARGET_FILE:sg_net_keys> ${CMAKE_CURRENT_BINARY_DIR}/out/network/verified-processes)
     set_tests_properties(sg_net_verified_processes PROPERTIES TIMEOUT 120)
   endif()
@@ -496,7 +522,7 @@ if(NOT EMSCRIPTEN AND SG_BUILD_DSL AND (SG_BUILD_EXAMPLES OR SG_BUILD_TESTS))
     endif()
   endif()
   if(SG_BUILD_TESTS AND Python3_Interpreter_FOUND)
-    add_test(NAME sg_net_pong COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_pong.py
+    add_test(NAME sg_net_pong CONFIGURATIONS full COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_pong.py
       $<TARGET_FILE:sg_net_pong> ${CMAKE_CURRENT_BINARY_DIR}/out/pong/tests $<TARGET_FILE:sg_net_keys>)
     set_tests_properties(sg_net_pong PROPERTIES TIMEOUT 180)
   endif()
@@ -514,7 +540,7 @@ endif()
 
 # Native programs stay at the build root; archives and checks have their folders.
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
-  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_rooms sg_walk sg_texture sg_modeler sg_being sg_spatial sg_fields
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_being sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
       sg_instancing_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
@@ -523,6 +549,23 @@ if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
     if(TARGET ${_check})
       set_target_properties(${_check} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+    endif()
+  endforeach()
+endif()
+
+# Two tiers of tests. `ctest` runs the fast one: the laws, the DSL and every
+# domain. `ctest -C full` runs everything - also the networking acceptance
+# runs across separate processes (pong, verified and plain peers), which
+# guard only that path and take most of the time: run them when it changes,
+# and before a release. Labels say which is which (`-L fast`, `-L full`).
+if(SG_BUILD_TESTS)
+  set(_sg_full_tests sg_net_processes sg_net_verified_processes sg_net_pong)
+  get_property(_sg_all_tests DIRECTORY PROPERTY TESTS)
+  foreach(_t IN LISTS _sg_all_tests)
+    if(_t IN_LIST _sg_full_tests)
+      set_tests_properties(${_t} PROPERTIES LABELS full)
+    else()
+      set_tests_properties(${_t} PROPERTIES LABELS fast)
     endif()
   endforeach()
 endif()

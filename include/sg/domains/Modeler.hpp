@@ -95,6 +95,14 @@ struct Model {
 // imports.
 Model build(const std::string& recipe, const Options& options = {}, const Files* files = nullptr);
 
+// Recipes about to be asked for, made now, all at once (a recipe to a core),
+// so that a Modeler asking for one finds it made. Nothing but time: a recipe
+// is a function of its text, and a Modeler makes what is not here itself.
+// What a Modeler makes is kept on disk too when a folder is set
+// (sg/core/Cache.hpp), by the recipe, its settings, the libraries a program
+// defined and the modeller's own code, so the next run reads it back.
+void prepare(const std::vector<std::string>& recipes, const Options& options = {});
+
 // The built-in macros: one to a line, its name, parameters and what it is -
 // and with a library's name, that library's (`use <name>`).
 std::string recipes(const std::string& library = {});
