@@ -49,6 +49,7 @@ constexpr GLenum GL_CONSTANT_ALPHA = 0x8003;
 constexpr GLenum GL_ONE_MINUS_CONSTANT_ALPHA = 0x8004;
 constexpr GLenum GL_TEXTURE_2D = 0x0DE1;
 constexpr GLenum GL_TEXTURE_2D_ARRAY = 0x8C1A;
+constexpr GLenum GL_TEXTURE_3D = 0x806F;
 constexpr GLenum GL_UNSIGNED_BYTE = 0x1401;
 constexpr GLenum GL_FLOAT = 0x1406;
 constexpr GLenum GL_HALF_FLOAT = 0x140B;
@@ -175,6 +176,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
       (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum))           \
     X(void, ReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*))              \
     X(void, DrawBuffer, (GLenum))                                                             \
+    X(void, DrawBuffers, (GLsizei, const GLenum*))                                            \
     X(void, ReadBuffer, (GLenum))                                                             \
     X(void, GetIntegerv, (GLenum, GLint*))                                                    \
     X(void, DepthMask, (GLboolean))                                                           \

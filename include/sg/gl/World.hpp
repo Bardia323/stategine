@@ -58,10 +58,30 @@
 // portal with `light` = 0 lets none through: its room lights it itself.
 //
 // Frame: for each world portal, render the other room into its own target from
-// that room's own camera (a View embedding aims it); then the shadow pass, the
-// scene into a multisampled HDR target, resolve, ambient occlusion (when the
-// look asks for it: the composite pass's `ao` setting is its strength, `ao.radius`
-// its reach in metres), bright pass, blur, composite.
+// that room's own camera (a View embedding aims it) - only as much of it as
+// its doorway shows on the screen; then the shadow pass, the room's lit air
+// (when its look's scene pass says the air scatters, `scatter`: see air_fs),
+// the scene into a multisampled HDR target - what stands in a room before its
+// walls, and each batch nearest first, so what is hidden is refused by depth
+// before it is shaded - resolve, ambient occlusion (when the look asks for
+// it: the composite pass's `ao` setting is its strength, `ao.radius` its
+// reach in metres), bright pass, blur, composite (the look's grade and curve,
+// and the glow thick air spreads: film_glsl, fog_bloom_glsl).
+//
+// A look's air (scene pass settings): `scatter`, how much of the light
+// passing through it a metre of the air scatters towards the eye - 0, as
+// every look is unless it says, gathers nothing and costs nothing;
+// `scatter.ahead`, how much of that goes on ahead rather than back (-1..1,
+// 0.5 unless it says); `scatter.far`, how far out from the eye it is gathered
+// (the state's `far`, up to 90 m, unless it says). Each light scatters
+// `scatter` times that (its own param, 1 unless it says). The air is
+// gathered over cells of the view, slice by slice out from the eye, by every
+// lamp and sun that lights the view, shadowed by their own maps, and dimmed
+// by the fog the look already has (`uFogDensity`, `uFogStart`); the scene
+// reads it at each pixel's distance. It is gathered for the view of the eye
+// and the views one doorway on - seen through a doorway, only the air beyond
+// it is the far world's - and gathered again only when the view, its lights
+// or their maps move.
 //
 // How each pass looks is itself a state: a LookState worn by the room (see
 // domains/Look.hpp). Each room is drawn with its own look, so fog and shaders
@@ -154,7 +174,8 @@ public:
         // casters listed, visibility indices built, a look's uniforms found by
         // name, questions put to the graph. Each is kept until what it was
         // made from changes - cheap by construction, for any room.
-        int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
+        int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;
+        int air_built = 0;  // views' air gathered again (air_fs): none while nothing it is made from moves  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
     };
     void set_timing(bool on) { timing_ = on; }
     // The state the viewer is attending to - an interface they sit at, say.
@@ -647,6 +668,11 @@ private:
                float emissive, float highlight, float mirror);
     // Everything batched, drawn: a call for each shape, in the room's frame.
     void flush_batches(const gl::Program& p, bool scene);
+    // A batch's things in the order the eye meets them, the nearest first:
+    // what stands behind is then refused by depth before it is shaded.
+    void nearest_first(std::vector<float>& data);
+    std::vector<std::pair<float, uint32_t>> order_;
+    std::vector<float> sorted_;
 
     static bool is_sprite(const Element& e);
     // One of its state's pictures, made current on unit 0 - false if it keeps
@@ -811,6 +837,23 @@ private:
         uint64_t of[kShadowMaps] = {};  // and the light it is of (a map is a light's, not a layer's)
         uint64_t used = 0;  // the frame a view last asked for it
     };
+    // A view's air, lit by its lamps (air_fs): each slice's own light, the
+    // slices added up from the eye (what the scene reads), and what they were
+    // gathered from - gathered again only when that moves: a still view of a
+    // still world gathers them once.
+    struct Air {
+        gl::LayerArray local, light;
+        uint64_t of = 0;
+        uint64_t used = 0;  // the frame a view last asked for it
+        float near = 0.3f, far = 60.0f;
+    };
+    static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
+    static constexpr int kAirSlices = 32;   // slices out from the eye
+    static constexpr std::size_t kAirs = 6;  // views' airs kept at once
+    std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;
+    std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
+    Air& air_for(const Spatial3D* world);
+
     // How many maps the views seen through other views may still draw this
     // frame: past it, a map stays as it was last drawn (with the box it was
     // drawn for), and a view whose maps were never drawn is lit without
@@ -916,6 +959,7 @@ private:
     // Ambient occlusion: the resolved depth, the occlusion and its blur, and
     // the scene with it laid on. `scene_src_` is what the post chain reads.
     gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
+    bool fog_depth_ = false;  // this frame's composite reads depth_ (uFogBloom)
     const gl::RenderTarget* scene_src_ = &resolve_;
     std::unique_ptr<gl::Program> ao_prog_, ao_blur_prog_, ao_apply_prog_;
     struct ViewParams {
@@ -948,6 +992,12 @@ private:
     // viewport in pixels.
     Rect sub_{-1, -1, 1, 1};
     float vp_w_ = 1, vp_h_ = 1;
+    // Of a doorway's view drawn whole, the part of it that is seen (its
+    // doorway's rect on the screen, with a margin): only that is drawn.
+    Rect cut_{-1, -1, 1, 1};
+    // Draw only into `r` (-1..1 each way) of a `w` x `h` picture: true if
+    // that is less than all of it, and the scissor is on.
+    static bool scissor_to(const Rect& r, int w, int h);
     // The air of the world a view is seen from, while it is drawn: the way
     // to what it shows goes through that air up to the doorway (uHostFog).
     struct HostAir {

@@ -256,4 +256,38 @@ private:
     int size_ = 0, layers_ = 0;
 };
 
+// Colour pictures stacked in one texture, a layer each, drawn into eight at
+// a time (a pass writing eight outputs) and read through one sampler: the
+// slices of a view's air (air_fs). Stacked as a volume (`volume`), they are
+// read between two layers by the sampler itself.
+class LayerArray {
+public:
+    static constexpr int kGroup = 8;  // layers drawn into at once
+
+    LayerArray() = default;
+    LayerArray(const LayerArray&) = delete;
+    LayerArray& operator=(const LayerArray&) = delete;
+    ~LayerArray() { release(); }
+
+    // `layers` pictures `w` x `h` (half floats), a multiple of kGroup. True
+    // if it was made anew.
+    bool ensure(int w, int h, int layers, bool volume = false);
+
+    // Draw into layers kGroup * group .. kGroup * group + kGroup - 1.
+    void bind_group(int group) const;
+
+    void bind_color(int unit) const;
+
+    int width() const { return w_; }
+    int height() const { return h_; }
+    int layers() const { return layers_; }
+
+private:
+    void release();
+    std::vector<GLuint> fbos_;
+    GLuint tex_ = 0;
+    GLenum target_ = GL_TEXTURE_2D_ARRAY;
+    int w_ = 0, h_ = 0, layers_ = 0;
+};
+
 }  // namespace sg::gl

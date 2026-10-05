@@ -365,4 +365,54 @@ void ShadowArray::release() {
     layers_ = 0;
 }
 
+bool LayerArray::ensure(int w, int h, int layers, bool volume) {
+    const GLenum target = volume ? GL_TEXTURE_3D : GL_TEXTURE_2D_ARRAY;
+    if (tex_ != 0 && w == w_ && h == h_ && layers == layers_ && target == target_) return false;
+    release();
+    w_ = w, h_ = h, layers_ = layers, target_ = target;
+    glGenTextures(1, &tex_);
+    glBindTexture(target, tex_);
+    glTexImage3D(target, 0, static_cast<GLint>(GL_RGBA16F), w, h, layers, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    // A framebuffer for each group of layers, each layer of it an output:
+    // made once, so drawing into them changes no attachment.
+    GLenum outputs[kGroup];
+    for (int i = 0; i < kGroup; ++i) outputs[i] = GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i);
+    fbos_.assign(static_cast<std::size_t>((layers + kGroup - 1) / kGroup), 0);
+    for (std::size_t g = 0; g < fbos_.size(); ++g) {
+        glGenFramebuffers(1, &fbos_[g]);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbos_[g]);
+        for (int i = 0; i < kGroup; ++i)
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, outputs[i], tex_, 0, std::min(static_cast<int>(g) * kGroup + i, layers - 1));
+        glDrawBuffers(kGroup, outputs);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            throw std::runtime_error("incomplete layered framebuffer");
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return true;
+}
+
+void LayerArray::bind_group(int group) const {
+    glBindFramebuffer(GL_FRAMEBUFFER, fbos_[static_cast<std::size_t>(group)]);
+    glViewport(0, 0, w_, h_);
+}
+
+void LayerArray::bind_color(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+    glBindTexture(target_, tex_);
+}
+
+void LayerArray::release() {
+    for (GLuint f : fbos_)
+        if (f) glDeleteFramebuffers(1, &f);
+    fbos_.clear();
+    if (tex_) glDeleteTextures(1, &tex_);
+    tex_ = 0;
+    w_ = h_ = layers_ = 0;
+}
+
 }  // namespace sg::gl

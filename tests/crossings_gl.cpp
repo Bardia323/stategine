@@ -62,6 +62,23 @@ int main() {
         check(walk(view, g).empty(), "through a doorway straight across, both ways: one picture");
     }
     {
+        // Air that scatters its lamps' light on both sides: the air before
+        // the doorway is this side's, lit by this side's lamp, and beyond
+        // it the other's - and walking through is still one picture.
+        sg::StateGraph g;
+        room(g, "hall", 8, 6, 2, 4.0, 0.8);
+        room(g, "annex", 5, 7, 0, 2.5, 0.2);
+        for (const char* id : {"hall", "annex"}) {
+            auto& look = g.add<sg::LookState>(sg::Key{std::string(id) + ".air"});
+            look.uniform(sg::passes::scene, "uFogDensity", 0.03).setting(sg::passes::scene, "scatter", 0.2);
+            sg::wear(g, sg::Key{id}, look.id());
+        }
+        g.set_initial("hall");
+        sg::walkway(g, "door", "hall", "hall.door", "annex", "annex.door");
+        sg::render::GLWorldView view;
+        check(walk(view, g).empty(), "through a doorway with lit air on both sides, both ways: one picture");
+    }
+    {
         sg::StateGraph g;
         room(g, "hall", 8, 6, 2, 4.0, 0.8);
         room(g, "annex", 5, 7, 1, 3.0, 0.2);
