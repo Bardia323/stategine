@@ -95,8 +95,15 @@ struct Model {
 // imports.
 Model build(const std::string& recipe, const Options& options = {}, const Files* files = nullptr);
 
-// The built-in macros: one to a line, its name, parameters and what it is.
-std::string recipes();
+// The built-in macros: one to a line, its name, parameters and what it is -
+// and with a library's name, that library's (`use <name>`).
+std::string recipes(const std::string& library = {});
+// Libraries of macros, by name, for `use <name>`: the modeller's own (the
+// architect's `arch` and its styles), and any a program adds - a style is a
+// library that says the same words (docs/modeler.md, Architecture) its way.
+void define_library(const std::string& name, const std::string& text);
+std::vector<std::string> libraries();
+unsigned library_revision();  // moves when a program defines one
 // Wavefront text of a model, one object per material.
 std::string to_obj(const Model& m, const std::string& name);
 
@@ -106,6 +113,10 @@ std::string to_obj(const Model& m, const std::string& name);
 // fitted to its square, shaded by one light, each material its own colour.
 // For whoever writes a recipe to see it; `png` makes it a file.
 std::vector<unsigned char> picture(const Model& m, int w, int h);
+// One view in perspective from `eye` - inside a room, say - turned `yaw`
+// degrees about up (0 looks along -z) and `pitch` up, `fov` degrees across;
+// a square `size` pixels.
+std::vector<unsigned char> picture_from(const Model& m, const Vec3d& eye, double yaw, double pitch, double fov, int size);
 std::string png(const std::vector<unsigned char>& rgb, int w, int h);
 
 // --- a recipe, read and written as placements ---------------------------------

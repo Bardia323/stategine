@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- The architect: `use arch` and eight styles (classical, gothic, romanesque, islamic, japanese, modern, brutalist, art deco), each a library saying the same words its own way, outside and inside; compositions `building`, `interior`, `facade`, `church`, `temple`, `street`, `courtyard`, `colonnade`, `tower` - outside only, inside only, or both (`inside=1`), a door standing open (`door=2`), a shell (`core=0`). The recipe language gains `use`, `if`/`else`, comparisons, `rand`, `if()`, `mix`, `clamp`, `mod`, and names said by variables; programs add libraries (`define_library`). `sculpt::picture_from` and `sgmodel --eye` look from inside a model.
+
 - A mesh made again as one surface at a budget: an imported mesh's field is now its true signed distance (nearest face, inside by winding number, faces in a tree of boxes), so it cuts and is cut as it is; `import file faces=N`, and `remesh faces=N [blend=k] | res=m` for everything so far in a block, mesh that field at the cell giving about N faces - one closed, even surface however dense or tangled the parts were.
 - `sculpt::picture` / `sculpt::png` and the `sgmodel` tool: four views of a model in one PNG, and its faces, parts, size and open edges - for whoever writes recipes to look as they go.
 

@@ -4,6 +4,7 @@
 // writes recipes to see what they made, as they make it: not a renderer, and
 // not of any world.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -23,7 +24,8 @@ C3 colour_of(const std::string& material) {
         {"rooftiles", {0.6, 0.25, 0.18}}, {"snow", {0.93, 0.95, 0.98}}, {"ice", {0.7, 0.85, 0.95}}, {"wood", {0.55, 0.38, 0.22}},
         {"planks", {0.6, 0.42, 0.25}},  {"bark", {0.35, 0.25, 0.16}},  {"iron", {0.45, 0.46, 0.48}}, {"metal", {0.7, 0.71, 0.73}},
         {"gold", {0.85, 0.68, 0.25}},   {"grass", {0.35, 0.55, 0.25}}, {"earth", {0.42, 0.3, 0.2}},  {"sand", {0.85, 0.76, 0.55}},
-        {"glass", {0.6, 0.8, 0.85}},    {"plaster", {0.85, 0.82, 0.76}}, {"fabric", {0.55, 0.25, 0.3}}};
+        {"glass", {0.6, 0.8, 0.85}},    {"plaster", {0.85, 0.82, 0.76}}, {"fabric", {0.55, 0.25, 0.3}},
+        {"concrete", {0.6, 0.6, 0.58}}, {"tile", {0.25, 0.5, 0.55}},     {"paper", {0.92, 0.9, 0.82}}};
     for (const auto& [n, c] : known)
         if (material == n) return c;
     if (material.empty()) return {0.72, 0.72, 0.7};
@@ -34,14 +36,17 @@ C3 colour_of(const std::string& material) {
 
 struct View {
     double yaw, pitch;  // the eye's way round the model, and up
+    bool persp = false;  // seen from a point (inside it, say) rather than fitted from afar
+    double px = 0, py = 0, pz = 0, fov = 1.5;
 };
 
 // One view into a square of the picture: every face turned to the eye,
-// fitted, filled by its depth.
+// fitted (or seen in perspective from the view's point), filled by its depth.
 void draw(const Model& m, const View& v, int x0, int y0, int size, int stride, std::vector<unsigned char>& rgb, std::vector<float>& depth) {
     const double cy = std::cos(v.yaw), sy = std::sin(v.yaw), cp = std::cos(v.pitch), sp = std::sin(v.pitch);
     // To the eye's frame: turned about y by yaw, then tipped by pitch.
     const auto eye = [&](double x, double y, double z, double& ex, double& ey, double& ez) {
+        if (v.persp) x -= v.px, y -= v.py, z -= v.pz;
         const double rx = cy * x + sy * z, rz = -sy * x + cy * z;
         ex = rx;
         ey = cp * y - sp * rz;
@@ -57,6 +62,7 @@ void draw(const Model& m, const View& v, int x0, int y0, int size, int stride, s
     if (lo[0] > hi[0]) return;
     const double span = std::max(hi[0] - lo[0], hi[1] - lo[1]) * 1.1 + 1e-9, k = size / span;
     const double mx = (lo[0] + hi[0]) * 0.5, my = (lo[1] + hi[1]) * 0.5;
+    const double f = size * 0.5 / std::tan(v.fov * 0.5);
     // The light: from over the eye's left shoulder.
     double lx, ly, lz;
     eye(-0.4, 0.8, 0.45, lx, ly, lz);
@@ -65,31 +71,53 @@ void draw(const Model& m, const View& v, int x0, int y0, int size, int stride, s
     for (const Part& p : m.parts) {
         const C3 base = colour_of(p.material);
         for (std::size_t i = 0; i + 23 < p.corners.size(); i += 24) {
+            double e[3][3];
+            for (int c = 0; c < 3; ++c) eye(p.corners[i + c * 8], p.corners[i + c * 8 + 1], p.corners[i + c * 8 + 2], e[c][0], e[c][1], e[c][2]);
+            // Its face's normal, in the eye's frame: shaded by the light, and
+            // drawn from either side (a face seen from behind is dimmer; seen
+            // in perspective, which side is the side toward the eye).
+            const double u[3] = {e[1][0] - e[0][0], e[1][1] - e[0][1], e[1][2] - e[0][2]}, w[3] = {e[2][0] - e[0][0], e[2][1] - e[0][1], e[2][2] - e[0][2]};
+            double nx = u[1] * w[2] - u[2] * w[1], ny = u[2] * w[0] - u[0] * w[2], nz = u[0] * w[1] - u[1] * w[0];
+            const double nl = std::sqrt(nx * nx + ny * ny + nz * nz) + 1e-30;
+            nx /= nl, ny /= nl, nz /= nl;
+            const bool back = v.persp ? nx * e[0][0] + ny * e[0][1] + nz * e[0][2] > 0 : nz < 0;
+            if (back) nx = -nx, ny = -ny, nz = -nz;
+            const double lit = (0.28 + 0.72 * std::max(0.0, nx * lx + ny * ly + nz * lz)) * (back ? 0.55 : 1.0);
+            // In perspective, what is behind the eye is cut away (the face
+            // clipped at a plane just before it), so a floor underfoot is seen.
+            std::vector<std::array<double, 3>> poly{{e[0][0], e[0][1], e[0][2]}, {e[1][0], e[1][1], e[1][2]}, {e[2][0], e[2][1], e[2][2]}};
+            if (v.persp) {
+                const double nearz = -0.05;
+                std::vector<std::array<double, 3>> kept;
+                for (std::size_t a = 0; a < poly.size(); ++a) {
+                    const auto& P = poly[a];
+                    const auto& Q = poly[(a + 1) % poly.size()];
+                    const bool pin = P[2] <= nearz, qin = Q[2] <= nearz;
+                    if (pin) kept.push_back(P);
+                    if (pin != qin) {
+                        const double t = (nearz - P[2]) / (Q[2] - P[2]);
+                        kept.push_back({P[0] + (Q[0] - P[0]) * t, P[1] + (Q[1] - P[1]) * t, nearz});
+                    }
+                }
+                poly.swap(kept);
+            }
+            for (std::size_t q = 1; q + 1 < poly.size(); ++q) {
+            const std::array<double, 3>* tri[3] = {&poly[0], &poly[q], &poly[q + 1]};
             double X[3], Y[3], Z[3];
             for (int c = 0; c < 3; ++c) {
-                double ex, ey, ez;
-                eye(p.corners[i + c * 8], p.corners[i + c * 8 + 1], p.corners[i + c * 8 + 2], ex, ey, ez);
-                X[c] = x0 + size * 0.5 + (ex - mx) * k;
-                Y[c] = y0 + size * 0.5 - (ey - my) * k;
+                const double ex = (*tri[c])[0], ey = (*tri[c])[1], ez = (*tri[c])[2];
+                if (v.persp) {
+                    X[c] = x0 + size * 0.5 + ex / -ez * f;
+                    Y[c] = y0 + size * 0.5 - ey / -ez * f;
+                } else {
+                    X[c] = x0 + size * 0.5 + (ex - mx) * k;
+                    Y[c] = y0 + size * 0.5 - (ey - my) * k;
+                }
                 Z[c] = ez;
             }
-            // Its face's normal, as the eye sees it: shaded by the light, and
-            // drawn from either side (a face seen from behind is dimmer).
             const double ax = X[1] - X[0], ay = Y[1] - Y[0], bx = X[2] - X[0], by = Y[2] - Y[0];
             const double area = ax * by - ay * bx;
             if (std::fabs(area) < 1e-12) continue;
-            double nx, ny, nz;
-            {
-                double e[3][3];
-                for (int c = 0; c < 3; ++c) eye(p.corners[i + c * 8], p.corners[i + c * 8 + 1], p.corners[i + c * 8 + 2], e[c][0], e[c][1], e[c][2]);
-                const double u[3] = {e[1][0] - e[0][0], e[1][1] - e[0][1], e[1][2] - e[0][2]}, w[3] = {e[2][0] - e[0][0], e[2][1] - e[0][1], e[2][2] - e[0][2]};
-                nx = u[1] * w[2] - u[2] * w[1], ny = u[2] * w[0] - u[0] * w[2], nz = u[0] * w[1] - u[1] * w[0];
-                const double nl = std::sqrt(nx * nx + ny * ny + nz * nz) + 1e-30;
-                nx /= nl, ny /= nl, nz /= nl;
-            }
-            const bool back = nz < 0;
-            if (back) nx = -nx, ny = -ny, nz = -nz;
-            const double lit = (0.28 + 0.72 * std::max(0.0, nx * lx + ny * ly + nz * lz)) * (back ? 0.55 : 1.0);
             const int bx0 = std::max(x0, int(std::floor(std::min({X[0], X[1], X[2]})))), bx1 = std::min(x0 + size - 1, int(std::ceil(std::max({X[0], X[1], X[2]}))));
             const int by0 = std::max(y0, int(std::floor(std::min({Y[0], Y[1], Y[2]})))), by1 = std::min(y0 + size - 1, int(std::ceil(std::max({Y[0], Y[1], Y[2]}))));
             for (int py = by0; py <= by1; ++py)
@@ -101,12 +129,13 @@ void draw(const Model& m, const View& v, int x0, int y0, int size, int stride, s
                     if (w0 < 0 || w1 < 0 || w2 < 0) continue;
                     const float z = float(w0 * Z[0] + w1 * Z[1] + w2 * Z[2]);
                     const std::size_t at = std::size_t(py) * std::size_t(stride) + std::size_t(px);
-                    if (z <= depth[at]) continue;
+                    if (z <= depth[at]) continue;  // (in perspective, nearer is the larger -z too)
                     depth[at] = z;
                     rgb[at * 3] = (unsigned char)std::min(255.0, 255 * std::pow(base.r * lit, 1 / 2.2));
                     rgb[at * 3 + 1] = (unsigned char)std::min(255.0, 255 * std::pow(base.g * lit, 1 / 2.2));
                     rgb[at * 3 + 2] = (unsigned char)std::min(255.0, 255 * std::pow(base.b * lit, 1 / 2.2));
                 }
+            }
         }
     }
 }
@@ -158,6 +187,15 @@ std::vector<unsigned char> picture(const Model& m, int w, int h) {
                 const std::size_t at = (std::size_t(y) * std::size_t(w) + std::size_t(x)) * 3;
                 rgb[at] = rgb[at + 1] = rgb[at + 2] = 90;
             }
+    return rgb;
+}
+
+std::vector<unsigned char> picture_from(const Model& m, const Vec3d& eye, double yaw, double pitch, double fov, int size) {
+    std::vector<unsigned char> rgb(std::size_t(size) * std::size_t(size) * 3, 30);
+    std::vector<float> depth(std::size_t(size) * std::size_t(size), -1e30f);
+    const double r = 3.14159265358979 / 180.0;
+    View v{yaw * r, pitch * r, true, eye.x, eye.y, eye.z, fov * r};
+    draw(m, v, 0, 0, size, size, rgb, depth);
     return rgb;
 }
 

@@ -160,3 +160,30 @@ roof 4.6 4.6 2 at=0,5,0 mat=slate
   normals are smooth within `crease` degrees and sharp past it.
 - Errors are reported, a line each, in `Model::errors`; a bad line is skipped,
   never fatal.
+
+## Architecture
+
+`use arch` and a style (`use gothic`, `classical`, `romanesque`, `islamic`,
+`japanese`, `modern`, `brutalist`, `artdeco`), then a composition:
+
+```
+building style=gothic w=12 d=9 floors=2 bays=5      # outside: four facades and a roof
+interior style=classical w=10 d=14 h=6 aisles=1     # inside: floor, walls' insides, ceiling (walls=0: none of its own)
+building style=classical ... inside=1               # both: hollow, its ground floor a room
+church | temple | street seed=3 | courtyard | colonnade | tower
+```
+
+A style is a library that says the same words its own way (listed at the
+top of `src/domains/ModelerArch.cpp`): `wall opening window doorway door band
+pier base cornice roof column tower` outside, `ceiling wainscot icornice
+ipier` inside, and its proportions as variables (`<style>_ww`, `_wh`,
+`_sill`, `_roof`, `_floor`). A new style is a new file; any style goes in
+any composition. `door=2` leaves the door standing open, `core=0` makes a
+shell with nothing in it (a building gone into, whose inside is a room of
+its own), `dw`/`dh` say the door's size.
+
+The language for it: `use <library>`, `if <expr> ... else ... end`,
+comparisons (`$a<2`), `rand(a, b, ...)` (the same number for the same
+arguments), `if(c, a, b)`, `mix`, `clamp`, `mod`, a variable naming a macro
+(`$style.window`) or another variable (`$${style}_ww`).
+`sgmodel recipe --eye x,y,z,yaw,pitch,fov` looks from inside.

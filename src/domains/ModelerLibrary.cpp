@@ -3,6 +3,8 @@
 // is` is listed by `sculpt::recipes()`.
 #include "ModelerLibrary.hpp"
 
+#include <algorithm>
+
 namespace sg::sculpt {
 
 const char* library() {
@@ -81,6 +83,62 @@ define rock r=0.6 flat=0.7   # a boulder: three blended stones
   blend=$r*0.5 sphere $r*0.55 at=-$r*0.5,0,-$r*0.5 scale=1,$flat,1
 end
 )LIB";
+}
+
+}  // namespace sg::sculpt
+
+#include <map>
+#include <mutex>
+#include <vector>
+
+#include "sg/domains/Modeler.hpp"
+
+namespace sg::sculpt {
+
+namespace {
+struct Shelf {
+    std::mutex m;
+    std::map<std::string, std::string> defined;
+    unsigned revision = 0;
+};
+Shelf& shelf() {
+    static Shelf s;
+    return s;
+}
+const std::pair<const char*, const char* (*)()> kBuiltIn[] = {
+    {"arch", lib_arch},         {"classical", lib_classical},   {"gothic", lib_gothic},     {"modern", lib_modern},
+    {"romanesque", lib_romanesque}, {"islamic", lib_islamic}, {"japanese", lib_japanese}, {"brutalist", lib_brutalist},
+    {"artdeco", lib_artdeco}};
+}  // namespace
+
+bool library_named(const std::string& name, std::string& text) {
+    {
+        std::lock_guard<std::mutex> g(shelf().m);
+        if (auto it = shelf().defined.find(name); it != shelf().defined.end()) return text = it->second, true;
+    }
+    for (const auto& [n, f] : kBuiltIn)
+        if (name == n) return text = f(), true;
+    return false;
+}
+
+void define_library(const std::string& name, const std::string& text) {
+    std::lock_guard<std::mutex> g(shelf().m);
+    shelf().defined[name] = text;
+    ++shelf().revision;
+}
+
+std::vector<std::string> libraries() {
+    std::vector<std::string> out;
+    for (const auto& [n, f] : kBuiltIn) out.push_back(n);
+    std::lock_guard<std::mutex> g(shelf().m);
+    for (const auto& [n, t] : shelf().defined)
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    return out;
+}
+
+unsigned library_revision() {
+    std::lock_guard<std::mutex> g(shelf().m);
+    return shelf().revision;
 }
 
 }  // namespace sg::sculpt

@@ -27,7 +27,7 @@ class Expr {
 public:
     explicit Expr(const std::string& s) : s_(s) {}
     bool run(double& v) {
-        v = sum();
+        v = cmp();
         return ok_ && i_ == s_.size();
     }
 
@@ -35,6 +35,24 @@ private:
     const std::string& s_;
     std::size_t i_ = 0;
     bool ok_ = true;
+    // a < b, a <= b, a == b, a != b, a >= b, a > b: 1 or 0.
+    double cmp() {
+        double v = sum();
+        for (;;) {
+            const char c = peek(), d = i_ + 1 < s_.size() ? s_[i_ + 1] : '\0';
+            if ((c == '<' || c == '>') && d != '=') {
+                ++i_;
+                const double r = sum();
+                v = c == '<' ? double(v < r) : double(v > r);
+            } else if ((c == '<' || c == '>' || c == '=' || c == '!') && d == '=') {
+                i_ += 2;
+                const double r = sum();
+                v = c == '<' ? double(v <= r) : c == '>' ? double(v >= r) : c == '=' ? double(std::abs(v - r) < 1e-9) : double(std::abs(v - r) >= 1e-9);
+            } else {
+                return v;
+            }
+        }
+    }
     char peek() const { return i_ < s_.size() ? s_[i_] : '\0'; }
     double sum() {
         double v = prod();
@@ -64,7 +82,7 @@ private:
     double atom() {
         if (peek() == '(') {
             ++i_;
-            const double v = sum();
+            const double v = cmp();
             if (peek() == ')') ++i_;
             else ok_ = false;
             return v;
@@ -84,7 +102,7 @@ private:
             ++i_;
             std::vector<double> a;
             while (ok_) {
-                a.push_back(sum());
+                a.push_back(cmp());
                 if (peek() == ',') ++i_;
                 else break;
             }
@@ -103,6 +121,22 @@ private:
             if (name == "min") return std::min(x, y);
             if (name == "max") return std::max(x, y);
             if (name == "pow") return std::pow(x, y);
+            // if(c, a, b): a where c is not 0, else b.
+            if (name == "if") return x != 0 ? y : (a.size() > 2 ? a[2] : 0);
+            if (name == "mix") return x + (y - x) * (a.size() > 2 ? a[2] : 0.5);
+            if (name == "clamp") return std::max(y, std::min(a.size() > 2 ? a[2] : 1.0, x));
+            if (name == "mod") return y != 0 ? x - y * std::floor(x / y) : 0;
+            // rand(a, b, ...): the same number in [0, 1) for the same arguments -
+            // variation that is a function of where it is asked, never of when.
+            if (name == "rand") {
+                uint64_t h = 1469598103934665603ull;
+                for (double q : a) {
+                    const uint64_t bits = uint64_t(int64_t(std::llround(q * 1000.0)));
+                    for (int k = 0; k < 8; ++k) h = (h ^ ((bits >> (k * 8)) & 255)) * 1099511628211ull;
+                }
+                h ^= h >> 33, h *= 0xff51afd7ed558ccdull, h ^= h >> 33;
+                return double(h >> 11) / double(1ull << 53);
+            }
             return ok_ = false, 0;
         }
         return ok_ = false, 0;
@@ -147,7 +181,7 @@ struct Args {
 };
 
 const std::set<std::string>& openers() {
-    static const std::set<std::string> s{"define", "for", "group", "array", "radial", "mirror"};
+    static const std::set<std::string> s{"define", "for", "group", "array", "radial", "mirror", "if"};
     return s;
 }
 const std::set<std::string>& shapes_known() {
@@ -199,6 +233,7 @@ public:
     Solid result() { return st_.front().acc; }
     std::string errors;
     std::vector<std::string> imports;
+    std::set<std::string> used_;  // libraries already in (use)
     std::vector<std::string> mats_;
     std::set<std::string> defined_by_library;
 
@@ -225,18 +260,37 @@ private:
         }
         return false;
     }
+    // $name, and ${name} where a word goes on after it: `$${style}_ww` is
+    // the variable whose name is the style's, then `_ww` - read inside out.
     std::string subst(const std::string& tok) {
+        std::string s = tok;
+        for (std::size_t open; (open = s.find("${")) != std::string::npos;) {
+            const std::size_t close = s.find('}', open);
+            if (close == std::string::npos) break;
+            std::string v;
+            const std::string name = s.substr(open + 2, close - open - 2);
+            if (!lookup(name, v)) err("no variable $" + name), v = "0";
+            s.replace(open, close - open + 1, v);
+        }
         std::string out;
-        for (std::size_t i = 0; i < tok.size(); ++i) {
-            if (tok[i] != '$') {
-                out += tok[i];
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            if (s[i] != '$') {
+                out += s[i];
                 continue;
             }
             std::size_t j = i + 1;
-            while (j < tok.size() && (std::isalnum(static_cast<unsigned char>(tok[j])) || tok[j] == '_')) ++j;
-            const std::string name = tok.substr(i + 1, j - i - 1);
+            while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_' || s[j] == '.')) ++j;
+            while (j > i + 1 && s[j - 1] == '.') --j;
+            std::string name = s.substr(i + 1, j - i - 1);
             std::string v;
+            // The longest name that is a variable: `$style.window` is $style, then `.window`.
+            while (!lookup(name, v)) {
+                const std::size_t dot = name.rfind('.');
+                if (dot == std::string::npos) break;
+                name.resize(dot);
+            }
             if (!lookup(name, v)) err("no variable $" + name), v = "0";
+            j = i + 1 + name.size();
             double d;
             out += number(v, d) ? "(" + v + ")" : v;
             i = j - 1;
@@ -642,7 +696,7 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
             err("a prefix with nothing after it");
             continue;
         }
-        const std::string head = t[h];
+        std::string head = t[h];
         if (head == "define") {
             if (t.size() < h + 2) {
                 err("define needs a name");
@@ -657,6 +711,66 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
             macros_[t[h + 1]] = std::move(mac);
             continue;
         }
+        if (head == "if") {
+            // if <expression> ... [else ...] end: one branch or the other, in
+            // the block it stands in (the expression written without spaces,
+            // or with - the words after `if` are one).
+            std::string cond;
+            for (std::size_t j = h + 1; j < t.size(); ++j) cond += t[j];
+            std::vector<std::string> body, yes, no;
+            collect(lines, i, body);
+            int depth = 0;
+            bool other = false;
+            for (const std::string& l : body) {
+                const auto bt = tokens(l);
+                if (!bt.empty()) {
+                    const std::size_t bh = bt.size() > 1 && (bt[0] == "add" || bt[0] == "sub" || bt[0] == "and" || bt[0].rfind("blend=", 0) == 0 || bt[0].rfind("carve=", 0) == 0);
+                    if (depth == 0 && bt[bh] == "else") {
+                        other = true;
+                        continue;
+                    }
+                    if (openers().count(bt[bh])) ++depth;
+                    else if (bt[bh] == "end") --depth;
+                }
+                (other ? no : yes).push_back(l);
+            }
+            const std::size_t fl = st_.size();
+            ++depth_;
+            exec(num(subst(cond), 0) != 0 ? yes : no, fl, 0);
+            --depth_;
+            while (st_.size() > fl) err("a block in an `if` was left open"), close();
+            continue;
+        }
+        if (head == "use") {
+            // use <library>: its macros, here - a library the modeller has by
+            // name (sculpt::libraries), or a file the program's files read.
+            for (std::size_t j = h + 1; j < t.size(); ++j) {
+                if (used_.count(t[j])) continue;
+                used_.insert(t[j]);
+                std::string text;
+                if (!library_named(t[j], text)) {
+                    if (!files_ || !files_->read || !files_->read(t[j], text)) {
+                        err("no library " + t[j]);
+                        continue;
+                    }
+                    imports.push_back(t[j]);
+                }
+                std::vector<std::string> ls;
+                std::istringstream is(text);
+                for (std::string l; std::getline(is, l);) {
+                    if (!l.empty() && l.back() == '\r') l.pop_back();
+                    ls.push_back(l);
+                }
+                const int was = line_;
+                ++depth_;
+                exec(ls, st_.size(), 0);
+                --depth_;
+                line_ = was;
+            }
+            continue;
+        }
+        // A macro's name may be said by a variable: `$style.window 2 3`.
+        if (head.find('$') != std::string::npos) head = subst(head);
         for (std::size_t j = h + 1; j < t.size(); ++j) t[j] = subst(t[j]);
         Args a;
         parse_args(t, h + 1, a);
@@ -778,9 +892,10 @@ Model build(const std::string& recipe, const Options& options, const Files* file
     return out;
 }
 
-std::string recipes() {
-    std::string out;
-    std::istringstream is(lib_text());
+std::string recipes(const std::string& library) {
+    std::string out, text = lib_text();
+    if (!library.empty() && !library_named(library, text)) return "no library " + library + "\n";
+    std::istringstream is(text);
     std::string l;
     while (std::getline(is, l)) {
         if (l.rfind("define ", 0) != 0) continue;

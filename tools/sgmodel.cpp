@@ -6,6 +6,7 @@
 //   sgmodel castle.recipe                 castle.png beside it
 //   sgmodel castle.recipe -o out.png -s 1200 --obj out.obj --cell 0.05
 //   sgmodel -e "box 1 1 1 / sub sphere 0.6" -o box.png   (' / ' between lines)
+//   sgmodel hall.recipe --eye 0,1.6,5,0,10,90     one view from inside: x,y,z,yaw,pitch,fov
 //
 // `import` reads files beside the recipe.
 #include <chrono>
@@ -58,6 +59,9 @@ int main(int argc, char** argv) {
     fs::path from = ".";
     int size = 1000;
     sg::sculpt::Options o;
+    bool eye_set = false;
+    sg::Vec3d eye;
+    double eye_yaw = 0, eye_pitch = 0, eye_fov = 90;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -65,6 +69,13 @@ int main(int argc, char** argv) {
         else if (a == "-s") size = std::max(64, std::atoi(next().c_str()));
         else if (a == "--obj") obj = next();
         else if (a == "--cell") o.cell = std::atof(next().c_str());
+        else if (a == "--eye") {
+            // x,y,z[,yaw[,pitch[,fov]]]: one view, in perspective, from there
+            const std::string e = next();
+            double v[6] = {0, 1.6, 0, 0, 0, 90};
+            std::sscanf(e.c_str(), "%lf,%lf,%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+            eye_set = true, eye = {v[0], v[1], v[2]}, eye_yaw = v[3], eye_pitch = v[4], eye_fov = v[5];
+        }
         else if (a == "-e") {
             recipe = next();
             for (std::size_t at; (at = recipe.find(" / ")) != std::string::npos;) recipe.replace(at, 3, "\n");
@@ -93,7 +104,7 @@ int main(int argc, char** argv) {
                 m.size().z, ms, open_edges(m));
     for (const auto& p : m.parts) std::printf("  %s: %zu faces\n", p.material.empty() ? "(no material)" : p.material.c_str(), p.corners.size() / 24);
     if (!m.errors.empty()) std::printf("%s", m.errors.c_str());
-    std::ofstream(out, std::ios::binary) << sg::sculpt::png(sg::sculpt::picture(m, size, size), size, size);
+    std::ofstream(out, std::ios::binary) << sg::sculpt::png(eye_set ? sg::sculpt::picture_from(m, eye, eye_yaw, eye_pitch, eye_fov, size) : sg::sculpt::picture(m, size, size), size, size);
     std::printf("picture: %s\n", out.c_str());
     if (!obj.empty()) std::ofstream(obj) << sg::sculpt::to_obj(m, fs::path(obj).stem().string()), std::printf("mesh: %s\n", obj.c_str());
     return m.errors.empty() ? 0 : 1;

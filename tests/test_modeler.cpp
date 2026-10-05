@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <sstream>
 #include <string>
 
 #include "sg/core/Laws.hpp"
@@ -240,6 +241,38 @@ int main() {
         bool lit = false;
         for (std::size_t i = 0; i < rgb.size(); i += 3) lit = lit || rgb[i] > 120;
         check(rgb.size() == 128 * 128 * 3 && lit && file.rfind("\x89PNG", 0) == 0, "and a picture of it to look at, as a PNG");
+    }
+    {
+        // The language for compositions: a branch, a variable naming a word,
+        // a number that varies by where it is asked and never by when.
+        const Model branch = sculpt::build("let n 3\nif $n>2\n  box 1 1 1\nelse\n  sphere 5\nend\n");
+        check(branch.errors.empty() && std::abs(branch.size().x - 1) < 1e-6, "if/else takes the branch its expression says");
+        const Model named = sculpt::build("define big.thing s=1\n  box $s*2 1 1\nend\nlet kind big\n$kind.thing 2\n");
+        check(named.errors.empty() && std::abs(named.size().x - 4) < 1e-6, "a macro named by a variable: `$kind.thing`");
+        const Model nested = sculpt::build("let style big\nlet big_w 3\nbox $${style}_w 1 1\n");
+        check(nested.errors.empty() && std::abs(nested.size().x - 3) < 1e-6, "a variable named by a variable: `$${style}_w`");
+        const std::string r = "for i 5\n  box 1 1+rand(7,$i)*3 1 at=$i*2,0,0\nend\n";
+        check(sculpt::build(r).size().y == sculpt::build(r).size().y && sculpt::build(r).size().y > 1.5, "rand: varied, and the same every time");
+        check(sculpt::build("use nowhere\n").errors.find("no library") != std::string::npos, "an unknown library is named, not passed over");
+        // Every style says every word: each makes a building and a tower with
+        // no error, and the composer's other compositions run in it.
+        for (const std::string& style : {"classical", "gothic", "modern", "romanesque", "islamic", "japanese", "brutalist", "artdeco"}) {
+            const Model b = sculpt::build("use arch\nuse " + style + "\nbuilding style=" + style + " w=10 d=8 floors=2 bays=4\ntower style=" + style + " at=-10,0,0\n");
+            check(b.errors.empty() && b.triangles > 2000 && b.size().y > 8, style + ": a building and a tower, every word of the style said " + b.errors);
+        }
+        const Model church = sculpt::build("use arch\nuse gothic\nchurch\n"), temple = sculpt::build("use arch\nuse classical\ntemple\n"),
+                    street = sculpt::build("use arch\nuse modern\nstreet style=modern n=3 seed=2\n");
+        // (A field meshed coarser to keep its grid down is a note, not a fault.)
+        const auto faultless = [](const Model& m) {
+            std::istringstream in(m.errors);
+            for (std::string l; std::getline(in, l);)
+                if (l.find("coarser") == std::string::npos) return false;
+            return true;
+        };
+        check(faultless(church) && faultless(temple) && faultless(street) && church.size().z > 25 && street.size().x > 20,
+              "compositions: a church, a temple, a street of houses each its own");
+        sculpt::define_library("tiny", "define tiny.wall len=1 h=1 t=1\n  box $len $h $t\nend\n");
+        check(sculpt::build("use tiny\ntiny.wall 2 2 2\n").triangles == 12, "a program adds a library of its own (define_library)");
     }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;

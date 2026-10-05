@@ -98,7 +98,7 @@ const sculpt::Model& Modeler::model() {
         o.cell = std::max(0.005, p.num(Key{"cell"}, 0.1));
         o.sides = int(p.num(Key{"sides"}, 24.0));
         o.crease = p.num(Key{"crease"}, 40.0);
-        const std::string key = std::to_string(o.cell) + "|" + std::to_string(o.sides) + "|" + std::to_string(o.crease) + "|" + text();
+        const std::string key = std::to_string(o.cell) + "|" + std::to_string(o.sides) + "|" + std::to_string(o.crease) + "|" + std::to_string(sculpt::library_revision()) + "|" + text();
         const sculpt::Files* f = files().read ? &files() : nullptr;
         const std::string& t = text();
         built_ = cached(key, [&] { return sculpt::build(t, o, f); });

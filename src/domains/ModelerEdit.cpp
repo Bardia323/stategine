@@ -78,7 +78,7 @@ Placed read(const std::string& line, int index, int depth) {
     if (w.empty() || depth > 0) return p;
     std::size_t h = prefix(w[0]) ? 1 : 0;
     if (h >= w.size()) return p;
-    static const std::set<std::string> not_placed{"define", "for", "group", "array", "radial", "mirror", "end", "let", "set", "remesh"};
+    static const std::set<std::string> not_placed{"define", "for", "group", "array", "radial", "mirror", "end", "let", "set", "remesh", "if", "else", "use"};
     if (not_placed.count(w[h])) return p;
     p.line = index;
     p.word = w[h];
@@ -104,7 +104,7 @@ int depth_after(const std::string& line, int depth) {
     const auto w = words_of(line);
     if (w.empty()) return depth;
     const std::size_t h = prefix(w[0]) && w.size() > 1 ? 1 : 0;
-    static const std::set<std::string> opens{"define", "for", "group", "array", "radial", "mirror"};
+    static const std::set<std::string> opens{"define", "for", "group", "array", "radial", "mirror", "if"};
     if (opens.count(w[h])) return depth + 1;
     if (w[h] == "end") return std::max(0, depth - 1);
     return depth;
