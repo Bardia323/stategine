@@ -108,7 +108,7 @@ Shelf& shelf() {
 const std::pair<const char*, const char* (*)()> kBuiltIn[] = {
     {"arch", lib_arch},         {"classical", lib_classical},   {"gothic", lib_gothic},     {"modern", lib_modern},
     {"romanesque", lib_romanesque}, {"islamic", lib_islamic}, {"japanese", lib_japanese}, {"brutalist", lib_brutalist},
-    {"artdeco", lib_artdeco}};
+    {"artdeco", lib_artdeco},   {"church", lib_church}};
 }  // namespace
 
 bool library_named(const std::string& name, std::string& text) {

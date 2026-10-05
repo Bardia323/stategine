@@ -142,8 +142,9 @@ define inner style=classical len=10 h=5 bays=4   # the inside of one wall, facin
   end
   $style.icornice $len at=0,$h,0
 end
-define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisles=0 floor=1 t=0.3   # a room in the style, seen from inside: its floor, walls' insides, ceiling; its own walls or none
+define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisles=0 floor=1 t=0.3 dw=0   # a room in the style, seen from inside: its floor, walls' insides, ceiling; its own walls or none; the front (+z) wall's inside open at its door, dw wide (0: the bay says)
   let sb if($sbays>0,$sbays,max(2,round($bays*$d/$w)))
+  let dw if($dw>0,$dw,min($w/$bays*0.6,1.8))
   if $floor
     box $w 0.12 $d at=0,-0.12,0 mat=$${style}_floor
   end
@@ -154,12 +155,20 @@ define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisl
       box $t $h $d at=-$w/2-$t/2,0,0 mat=plaster
       box $t $h $d at=$w/2+$t/2,0,0 mat=plaster
       if $door
-        sub $style.doorway min($w/$bays*0.6,1.8) min($h*0.6,3) $t*3 at=0,0,$d/2
+        sub $style.doorway $dw min($h*0.6,3) $t*3 at=0,0,$d/2
       end
     end
   end
   inner style=$style len=$w h=$h bays=$bays at=0,0,-$d/2
-  inner style=$style len=$w h=$h bays=$bays at=0,0,$d/2 rot=180
+  if $door
+    # the front wall's inside either side of the door, its crown carried on over it
+    let side ($w-$dw)/2-0.1
+    inner style=$style len=$side h=$h bays=max(1,round($bays*$side/$w)) at=$w/2-$side/2,0,$d/2 rot=180
+    inner style=$style len=$side h=$h bays=max(1,round($bays*$side/$w)) at=-$w/2+$side/2,0,$d/2 rot=180
+    $style.icornice $dw+0.2 at=0,$h,$d/2 rot=180
+  else
+    inner style=$style len=$w h=$h bays=$bays at=0,0,$d/2 rot=180
+  end
   inner style=$style len=$d h=$h bays=$sb at=-$w/2,0,0 rot=90
   inner style=$style len=$d h=$h bays=$sb at=$w/2,0,0 rot=-90
   $style.ceiling $w $d $h at=0,$h,0
