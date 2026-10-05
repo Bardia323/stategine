@@ -492,18 +492,20 @@ float film_hash(vec2 p) {
     q += dot(q, q.yzx + 33.33);
     return fract((q.x + q.y) * q.z);
 }
-float film_noise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(film_hash(i), film_hash(i + vec2(1, 0)), f.x),
-               mix(film_hash(i + vec2(0, 1)), film_hash(i + vec2(1, 1)), f.x), f.y);
+// Grain in clumps a pixel or two across: white noise blurred by the same
+// small kernel at every pixel, so it is as strong at one pixel as the next.
+// (Value noise on a lattice a pixel and a half across was a third weaker on
+// every third row and column: a faint grid over anything bright and flat.)
+float film_clump(vec2 p) {
+    return film_hash(p) * 0.4 + (film_hash(p + vec2(1.0, 0.0)) + film_hash(p - vec2(1.0, 0.0)) +
+                                 film_hash(p + vec2(0.0, 1.0)) + film_hash(p - vec2(0.0, 1.0))) * 0.15;
 }
 vec3 film(vec3 c, float grain, float time) {
     vec3 e = pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));
     vec2 px = gl_FragCoord.xy;
     vec2 jump = vec2(film_hash(vec2(floor(time * 24.0), 7.0)), film_hash(vec2(floor(time * 24.0), 13.0))) * 911.0;
     float y = dot(e, vec3(0.2126, 0.7152, 0.0722));
-    float g = film_noise((px + jump) / 1.5) * 0.6 + film_hash(px + jump) * 0.4 - 0.5;
+    float g = (film_clump(px + jump) - 0.5) * 1.1;
     float amount = grain * 2.4 * mix(0.45, 1.0, smoothstep(0.0, 0.3, y)) * (1.0 - 0.7 * smoothstep(0.55, 1.0, y));
     vec3 chroma = vec3(film_hash(px + jump + 3.1), film_hash(px + jump + 5.7), film_hash(px + jump + 9.3)) - 0.5;
     e += (g + chroma * 0.15) * amount;
