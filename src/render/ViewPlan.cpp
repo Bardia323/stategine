@@ -161,6 +161,7 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.floor = static_cast<float>(e.params.num("shadow_floor", -1));
     l.indirect = e.params.num("indirect") > .5;
     l.falloff = static_cast<float>(std::clamp(e.params.num("falloff"), 0.0, 1.0));
+    l.scatter = static_cast<float>(std::max(e.params.num("scatter", 1), 0.0));
     return l;
 }
 std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool window) {

@@ -50,6 +50,10 @@ struct DrawLight {
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
         float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
+        // How much of it the air scatters, times what the look's air does
+        // (its scene pass's `scatter`): the light's `scatter`, 1 unless it
+        // says - a lamp that glows in the air more, or less, than it lights.
+        float scatter = 1.0f;
         // Light from beyond a doorway comes in only through its opening: the
         // opening's middle, which way across it is, and half its width and
         // height. Such a light casts no shadow of its own.

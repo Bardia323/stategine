@@ -60,6 +60,9 @@ struct Mat4 {
     Mat4 operator*(const Mat4& o) const;
 
     Vec3 transform_point(const Vec3& p) const;
+
+    // The matrix that undoes this one: a view's clip space back to the world.
+    Mat4 inverse() const;
 };
 
 }  // namespace sg::spatial::projection

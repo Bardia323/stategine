@@ -525,7 +525,8 @@ terminal sketch and a texture on a wall at once.
 
 `sg::render::GLWorldView` draws any `Spatial3D`: portal passes, lights and
 PCF shadows (four own shadow casters plus doorway light), procedural materials,
-fog and optional ambient occlusion, then bloom, ACES tonemapping and FXAA.
+fog, air lit by its lamps (optional) and optional ambient occlusion, then
+bloom, a grade, tonemapping and FXAA (see [Air, grade and glow](#air-grade-and-glow)).
 Walls are data - a state with `wall` elements gets them drawn, one without gets a
 box. Knobs are in `sg::render::GLQuality`; elements set their own look through
 parameters (`r/g/b`, `roughness`, `intensity`, ...).
@@ -593,6 +594,60 @@ compiled mid-game because `prepare` never saw it.
 | Calm | Alert (`L`) |
 | --- | --- |
 | ![The hall in its calm look](docs/images/room.png) | ![The same view in the alert look](docs/images/alert.png) |
+
+### Air, grade and glow
+
+All of these are a look's, and fade with it; a look that says none of them
+draws exactly as before and pays nothing for them.
+
+**Lit air** (scene pass settings). Air that scatters the light passing
+through it: a lamp's cone glows, a sun falls in shafts, and what stands in
+the light throws its shadow through the glow.
+
+| Setting | Means | Unless it says |
+| --- | --- | --- |
+| `scatter` | how much of the light through it a metre of air scatters towards the eye | 0: none, and nothing is gathered |
+| `scatter.ahead` | how much of that goes on ahead rather than back, -1..1 | 0.5 |
+| `scatter.far` | how far out from the eye it is gathered, in metres | the state's `far`, up to 90 |
+
+A light scatters its own `scatter` times the look's (1 unless it says): a
+lamp that glows in the air more, or less, than it lights. Light that stands
+in for bounce (`indirect`) lights no air. The air is gathered over cells of
+the view (16 pixels each way), in 32 slices out from the eye that widen as
+they go, by every light of the view through its cone and doorway and
+shadowed by its own map, dimmed by the look's fog (`uFogDensity`,
+`uFogStart`); the scene reads it at each pixel's distance (`air_light`), and
+a doorway's view has only the air beyond the doorway - this side of it is
+this side's. It is gathered for the eye's view and the views one doorway on,
+and again only when the view, its lights or their shadow maps move
+(`FrameTimes::air_built`). Every cell of every slice is lit in one pass,
+and the slices are added up in four: a gathering costs about a tenth of a
+millisecond at 2560 x 1440 - in the lab's dev room, within what one run
+differs from the next.
+
+**Grade and curve** (composite uniforms, in every composite that pastes
+`gl::film_glsl()`: its `tonemap` grades first). In scene light, before any
+curve, so a world's feed on a screen is graded as the world is.
+
+| Uniform | Means | Unset (0) |
+| --- | --- | --- |
+| `uGradeExposure` | stops up or down | as it is |
+| `uGradeContrast` | about mid grey, in stops: 0.2 a fifth more | as it is |
+| `uGradeSaturation` | 0.3 a third more, -1 grey | as it is |
+| `uGradeShadows` | a colour lifted into the darks (vector) | none |
+| `uGradeHighlights` | the lights times 1 + it (vector) | none |
+| `uTonemap` | 1: a curve through mid grey whose channels each go to white on their own near the top (crosstalk) | the ACES blend |
+
+What a grade pushes out of the widest gamut (BT.2020) is brought back to its
+edge. (A feed shown as paint, `untone` 1, is taken back through the ACES
+blend: a world on a wall should keep that curve.)
+
+**Glow in thick air** (composite uniforms, in the standard composite and any
+that pastes `gl::fog_bloom_glsl()`): `uFogBloom`, how much more of the bloom
+is added for each unit of optical depth between the eye and what a pixel
+shows - a lamp deep in fog is haloed more than one near - and `uFogBloomCap`,
+the optical depth past which it spreads no more (3 unless it says). The
+renderer hands it the view's depth only while a look asks for it.
 
 ## The notation
 

@@ -1,5 +1,7 @@
 #include "sg/spatial/Index.hpp"
 #include "sg/render/Visibility.hpp"
+#include "sg/spatial/Projection.hpp"
+#include <cmath>
 #include <cstdio>
 
 using namespace sg::spatial;
@@ -47,5 +49,13 @@ int main() {
     check(!project(projector,wall).polygon.empty(),"oblique surfaces produce a clipped polygon");
     index.rebuild({});
     check(index.query(volume).empty(),"empty index is empty");
+    {
+        using P=sg::spatial::projection::Mat4;
+        const P view=P::perspective(1.1f,1.7f,0.05f,120.0f)*P::look_at({1,2,3},{4,1.5f,-2},{0,1,0});
+        const P e=view*view.inverse();
+        float off=0;
+        for(int k=0;k<16;++k) off+=std::fabs(e.m[k]-(k%5==0?1.0f:0.0f));
+        check(off<1e-4f,"a view's matrix undone by its inverse: clip space back to the world");
+    }
     return failed?1:0;
 }

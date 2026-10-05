@@ -28,6 +28,208 @@ std::string crt_glsl_constants() {
            ";\nconst float kFit = " + std::to_string(CrtGlass::fit) + ";\n";
 }
 
+const std::string& lights_glsl() {
+    static const std::string source = R"(
+// Up to twenty-four lights; the first `uShadowCount` carry shadow maps - a
+// room's four strongest, chosen by how bright they are, not where the viewer
+// is, so shadows do not come and go as you walk; then light from beyond its
+// doorways, whose shadows are what stands in the way of the opening. A sun is always first: it lights everything, from one direction,
+// without falling off.
+const int MAX_LIGHTS = 24;
+uniform int   uLightCount;
+uniform vec3  uLightPos[MAX_LIGHTS];
+uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
+uniform vec3  uLightColor[MAX_LIGHTS];
+uniform float uLightPower[MAX_LIGHTS];
+uniform float uCosInner[MAX_LIGHTS];
+uniform float uCosOuter[MAX_LIGHTS];
+uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
+uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
+uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
+uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
+uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
+uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
+// Light from beyond a doorway, let in only through its opening: its middle
+// and half its width, then which way across it is (x, z), half its height,
+// and whether the light is gated at all.
+uniform vec4  uLightGate[MAX_LIGHTS];
+uniform vec4  uLightGateAxis[MAX_LIGHTS];
+uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
+uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
+
+uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
+// The first `uShadowCount` lights each have a depth map, a layer each of one
+// array: where it sees from (`uShadowVP`), and how much its depth is let slip
+// (`uShadowBias` - a sun's range is far longer than a lamp's).
+const int MAX_SHADOWS = 10;
+uniform sampler2DArrayShadow uShadowMaps;
+uniform mat4 uShadowVP[MAX_SHADOWS];
+uniform float uShadowBias[MAX_SHADOWS];
+
+// How much of light `i` comes through its doorway to `p`: the way to it
+// (towards a lamp, the whole way; towards a sun, a direction) must pass
+// through the opening. The edge softens with the distance from it, as a
+// penumbra does - wide, since a lamp is not a point and an opening is not a
+// knife edge. And there is no line where the opening's plane is crossed: a
+// point on the lamp's own side of it, within a hand's breadth of the opening
+// (a door's leaf half in each room, the jamb), is lit as nothing stands in the
+// way, fading with its depth - and only there: the rest of that side is not
+// this room's, whatever lies beyond the plane.
+float through_gate(int i, vec3 p, vec3 way, bool parallel) {
+    vec4 g = uLightGateAxis[i];
+    if (g.w < 0.5 || uStraddle > 0.5) return 1.0;  // (a door's leaf stands in the opening)
+    if (g.w > 1.5) return 0.0;                      // only onto a door's leaf
+    vec4 at = uLightGate[i];
+    vec3 a = vec3(g.x, 0.0, g.y);
+    vec3 n = vec3(-a.z, 0.0, a.x);
+    float dn = dot(way, n);
+    if (abs(dn) < 1e-5) return 0.0;
+    float t = dot(at.xyz - p, n) / dn;
+    bool lamp_side = t < 0.0 || (!parallel && t > 1.0);
+    // Where the way crosses the opening's plane - or, on the lamp's side, where
+    // p itself stands over it.
+    vec3 q = lamp_side ? p : p + way * t;
+    float soft = 0.06 + 0.12 * max(t * length(way), 0.0);
+    float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
+    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v)) * uLightOpen[i];
+    if (!lamp_side) return opening;
+    return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
+}
+
+// How much of light `i` reaches `p` - its power, as it falls off with the
+// distance, its cone and its doorway - and which way it is (`l`, towards it).
+float light_reach(int i, vec3 p, out vec3 l) {
+    if (uLightSun[i] > 0.5) {
+        l = normalize(-uLightDir[i]);
+        return uLightPower[i] * through_gate(i, p, l, true);
+    }
+    vec3 toLight = uLightPos[i] - p;
+    float dist = length(toLight);
+    l = toLight / max(dist, 1e-4);
+    // Spot cone, smooth at the rim.
+    float theta = dot(-l, normalize(uLightDir[i]));
+    float cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
+    if (cone <= 0.0) return 0.0;
+    // Softly, or as real light does: the inverse square, kept finite at the
+    // lamp itself.
+    float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
+    float square = 1.0 / (1.0 + 2.0 * dist * dist);
+    return uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, p, toLight, false) * (cone * cone);
+}
+)";
+    return source;
+}
+
+const char* air_glsl() {
+    return R"(
+// The light of a world's lamps that its air scatters towards the eye, gathered
+// from the eye out to each distance (air_fs, air_sum_fs) in slices over the
+// view, and read between the two slices a distance falls between - by the
+// sampler, the slices a volume. (Unit 5; uAir.w is 0 when the air scatters
+// nothing, and then nothing is read.)
+uniform sampler3D uAirLight;
+uniform vec4 uAir;  // its first slice's distance, its last's, how many slices; 1
+vec3 air_light(float d) {
+    if (uAir.w < 0.5) return vec3(0.0);
+    float s = clamp(log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0), 0.0, uAir.z - 1.0);
+    // (Nearer than the first slice, as much less as it is nearer.)
+    return texture(uAirLight, vec3(gl_FragCoord.xy / uViewport, (s + 0.5) / uAir.z)).rgb * clamp(d / uAir.x, 0.0, 1.0);
+}
+)";
+}
+
+const char* air_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + lights_glsl() + R"(
+// Every slice of a view's air at once, each on its own: what its lamps light
+// of the air between that slice and the one before, scattered towards the
+// eye and dimmed by the air before it. (air_sum_fs adds them up.) A cell for
+// each sixteen pixels of the view; the slices go out from the eye in steps
+// that widen as they go, as detail does. They are laid side by side, eight
+// to a row: a pixel of this picture is a cell of one slice.
+uniform vec2  uAirCells;        // cells across the view, and up it
+uniform vec4  uAir;             // the first slice's distance, the last's, how many slices
+uniform mat4  uAirUnproject;    // the view's clip space back to the world
+uniform vec3  uViewPos;
+uniform float uFogDensity;      // the air, as the scene fogs it: thick
+uniform float uFogStart;        // and clear near the eye
+uniform float uScatter;         // how much of the light through it a metre of it scatters
+uniform float uScatterAhead;    // how much of that goes on ahead (-1..1, 0 every way alike)
+uniform vec4  uAirClip;         // only the air on this plane's side is this view's (a doorway's far side)
+
+float air_at(float i) { return uAir.x * pow(uAir.y / uAir.x, i / (uAir.z - 1.0)); }
+// Schlick's phase function: how much of light scattered goes off at an
+// angle whose cosine is `c` from the way it was going.
+float schlick(float c, float g) {
+    float k = 1.55 * g - 0.55 * g * g * g, d = 1.0 - k * c;
+    return (1.0 - k * k) / (12.5663706 * d * d);
+}
+float air_shadow(int layer, vec3 p) {
+    vec4 s = uShadowVP[layer] * vec4(p, 1.0);
+    vec3 q = s.xyz / max(s.w, 1e-5) * 0.5 + 0.5;
+    if (q.z > 1.0 || q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0) return 1.0;
+    return texture(uShadowMaps, vec4(q.xy, float(layer), q.z - 0.0004));
+}
+
+vec3 slice_light(vec3 dir, float k) {
+    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
+    vec3 p = uViewPos + dir * (0.5 * (a + b));
+    if (b <= a || dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
+    float ahead = clamp(uScatterAhead, -0.9, 0.9);
+    vec3 lit = vec3(0.0);
+    for (int i = 0; i < MAX_LIGHTS; ++i) {
+        if (i >= uLightCount) break;
+        // Light standing in for what bounces about lights no air of its own.
+        if (uLightIndirect[i] > 0.5 || uLightScatter[i] <= 0.0) continue;
+        vec3 l;
+        float reach = light_reach(i, p, l);
+        if (reach <= 1e-5) continue;
+        if (i < uShadowCount) reach *= air_shadow(i, p);
+        // Mostly on ahead, some back: two lobes, as haze has.
+        float c = dot(dir, l);
+        float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
+        lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
+    }
+    // (Pi: the lights carry it folded in, as the scene's diffuse does.)
+    float t = exp(-uFogDensity * max(0.5 * (a + b) - uFogStart, 0.0));
+    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t);
+    return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
+}
+
+void main() {
+    ivec2 cells = ivec2(uAirCells), px = ivec2(gl_FragCoord.xy), tile = px / cells;
+    vec2 uv = (vec2(px - tile * cells) + 0.5) / uAirCells;
+    vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(far.xyz / far.w - uViewPos);
+    FragColor = vec4(slice_light(dir, float(tile.y * 8 + tile.x)), 1.0);
+}
+)";
+    return source.c_str();
+}
+
+const char* air_sum_fs() {
+    return R"(#version 330 core
+layout(location = 0) out vec4 Slice[8];
+// Eight slices of a view's air, each what the slices from the eye to it
+// gathered (air_fs, laid eight to a row in uAirLocal): the light the air
+// scatters towards the eye up to that distance.
+uniform sampler2D uAirLocal;
+uniform vec2 uAirCells;  // cells across the view, and up it
+uniform int uAirGroup;   // the first of the eight
+void main() {
+    ivec2 cells = ivec2(uAirCells), at = ivec2(gl_FragCoord.xy);
+    vec3 sum = vec3(0.0);
+    for (int k = 0; k < uAirGroup; ++k) sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
+    for (int j = 0; j < 8; ++j) {
+        int k = uAirGroup + j;
+        sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
+        Slice[j] = vec4(sum, 1.0);
+    }
+}
+)";
+}
+
 const char* scene_fs() {
     static const std::string source = std::string(R"(#version 330 core
 #extension GL_ARB_shader_image_load_store : enable
@@ -76,34 +278,7 @@ uniform float uSkinRelief;    // > 0: the skin's alpha is how high its paint sta
 uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
 uniform float uCutout;        // 1: clear pixels are not drawn (a sprite)
 uniform float uGlow;          // extra emission for an active interface
-
-// Up to twenty-four lights; the first `uShadowCount` carry shadow maps - a
-// room's four strongest, chosen by how bright they are, not where the viewer
-// is, so shadows do not come and go as you walk; then light from beyond its
-// doorways, whose shadows are what stands in the way of the opening. A sun is always first: it lights everything, from one direction,
-// without falling off.
-const int MAX_LIGHTS = 24;
-uniform int   uLightCount;
-uniform vec3  uLightPos[MAX_LIGHTS];
-uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
-uniform vec3  uLightColor[MAX_LIGHTS];
-uniform float uLightPower[MAX_LIGHTS];
-uniform float uCosInner[MAX_LIGHTS];
-uniform float uCosOuter[MAX_LIGHTS];
-uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
-uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
-uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
-uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
-uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
-uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
-// Light from beyond a doorway, let in only through its opening: its middle
-// and half its width, then which way across it is (x, z), half its height,
-// and whether the light is gated at all.
-uniform vec4  uLightGate[MAX_LIGHTS];
-uniform vec4  uLightGateAxis[MAX_LIGHTS];
-uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
-
-uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
+)" + lights_glsl() + R"(
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -133,13 +308,6 @@ uniform vec3  uSkyHorizon;
 uniform vec3  uSunDir;        // towards the sun
 uniform vec3  uSunColor;
 
-// The first `uShadowCount` lights each have a depth map, a layer each of one
-// array: where it sees from (`uShadowVP`), and how much its depth is let slip
-// (`uShadowBias` - a sun's range is far longer than a lamp's).
-const int MAX_SHADOWS = 10;
-uniform sampler2DArrayShadow uShadowMaps;
-uniform mat4 uShadowVP[MAX_SHADOWS];
-uniform float uShadowBias[MAX_SHADOWS];
 uniform sampler2D uTex;
 uniform samplerCube uEnv;     // what is seen every way from a polished thing (a glass's reflection)
 uniform float uEnvMix;        // > 0: it reflects uEnv, by Fresnel - faint face on, strong at its edges
@@ -189,7 +357,7 @@ uniform float uFlat;
 // coordinates; empty: none) - under the same glass as the rest of it.
 uniform sampler2D uInsetTex;
 uniform vec4 uInsetRect;
-)") + crt_glsl_constants() + R"(
+)") + crt_glsl_constants() + air_glsl() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
 // The panel's picture at s: its own, or the inset's where that is.
@@ -416,36 +584,6 @@ void around_at(vec3 p, out vec3 sky, out vec3 ground) {
         sky = mix(sky, uDoorSky[i], there);
         ground = mix(ground, uDoorGround[i], there);
     }
-}
-
-// How much of light `i` comes through its doorway to `p`: the way to it
-// (towards a lamp, the whole way; towards a sun, a direction) must pass
-// through the opening. The edge softens with the distance from it, as a
-// penumbra does - wide, since a lamp is not a point and an opening is not a
-// knife edge. And there is no line where the opening's plane is crossed: a
-// point on the lamp's own side of it, within a hand's breadth of the opening
-// (a door's leaf half in each room, the jamb), is lit as nothing stands in the
-// way, fading with its depth - and only there: the rest of that side is not
-// this room's, whatever lies beyond the plane.
-float through_gate(int i, vec3 p, vec3 way, bool parallel) {
-    vec4 g = uLightGateAxis[i];
-    if (g.w < 0.5 || uStraddle > 0.5) return 1.0;  // (a door's leaf stands in the opening)
-    if (g.w > 1.5) return 0.0;                      // only onto a door's leaf
-    vec4 at = uLightGate[i];
-    vec3 a = vec3(g.x, 0.0, g.y);
-    vec3 n = vec3(-a.z, 0.0, a.x);
-    float dn = dot(way, n);
-    if (abs(dn) < 1e-5) return 0.0;
-    float t = dot(at.xyz - p, n) / dn;
-    bool lamp_side = t < 0.0 || (!parallel && t > 1.0);
-    // Where the way crosses the opening's plane - or, on the lamp's side, where
-    // p itself stands over it.
-    vec3 q = lamp_side ? p : p + way * t;
-    float soft = 0.06 + 0.12 * max(t * length(way), 0.0);
-    float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
-    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v)) * uLightOpen[i];
-    if (!lamp_side) return opening;
-    return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
 }
 
 // Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
@@ -703,7 +841,8 @@ void main() {
     }
     if (mSurface > 8.5 && mSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
-        FragColor = vec4(sky(normalize(vWorld - uViewPos)) * (1.0 - uDim), 0.0);
+        // (The lamps' light in the air before it is: air_light.)
+        FragColor = vec4((sky(normalize(vWorld - uViewPos)) + air_light(1e9)) * (1.0 - uDim), 0.0);
         return;
     }
     float rough_mod;
@@ -743,6 +882,8 @@ void main() {
             float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(gn, gv), 0.0, 1.0), 5.0);
             seen = mix(seen, texture(uEnv, reflect(-gv, gn)).rgb, clamp(fres * uEnvMix, 0.0, 1.0));
         }
+        // This side's air up to the opening is this side's to light.
+        seen += air_light(length(vWorld - uViewPos));
         FragColor = vec4(seen * (1.0 - uDim * (1.0 - uUndim)), 0.0);
         return;
     }
@@ -805,35 +946,17 @@ void main() {
         bool let_in = uStraddle > 0.5 && uLightGateAxis[i].w > 0.5;
         if (let_in && uLightIndirect[i] > 0.5) continue;
         vec3 l;
-        float atten, cone;
-        if (uLightSun[i] > 0.5) {
-            l = normalize(-uLightDir[i]);
-            atten = uLightPower[i] * through_gate(i, vLit, l, true);
-            cone = 1.0;
-        } else {
-            vec3 toLight = uLightPos[i] - vLit;
-            float dist = length(toLight);
-            l = toLight / max(dist, 1e-4);
-            // Spot cone, smooth at the rim.
-            float theta = dot(-l, normalize(uLightDir[i]));
-            cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
-            cone *= cone;
-            // Softly, or as real light does: the inverse square, kept
-            // finite at the lamp itself.
-            float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
-            float square = 1.0 / (1.0 + 2.0 * dist * dist);
-            atten = uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, vLit, toLight, false);
-        }
+        float reach = light_reach(i, vLit, l);
         // A lamp that gives this point nothing - behind it, outside its cone,
         // too far - costs it nothing either.
-        if (atten * cone <= 1e-5 || dot(n, l) <= 0.0) continue;
+        if (reach <= 1e-5 || dot(n, l) <= 0.0) continue;
         vec3 h = normalize(l + v);
 
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
         // (Only where the lamp reaches: outside its cone it adds nothing,
         // and its shadow there is nothing.)
-        if (ndl > 0.0 && cone > 0.0 && i < uShadowCount && !let_in) {
+        if (ndl > 0.0 && i < uShadowCount && !let_in) {
             float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }
@@ -851,8 +974,8 @@ void main() {
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
 
-        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * atten * cone * shadow;
-        else direct += lobe * ndl * uLightColor[i] * atten * cone * shadow;
+        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * reach * shadow;
+        else direct += lobe * ndl * uLightColor[i] * reach * shadow;
     }
 
     // Light from all round: the sky's colour from above, the floor's bounce
@@ -918,6 +1041,9 @@ void main() {
     vec3 haze = uFogColor + uSunColor * toward * 0.25 * (1.0 - uFogFull);
     fog = clamp(fog, 0.0, mix(0.85, 1.0, uFogFull));
     color = mix(color, haze, fog);
+    // And the light of this world's lamps that its air scatters towards the
+    // eye on the way (air_light: none unless its look says the air scatters).
+    color += air_light(len);
     if (uHostFog.w > 0.5) color = mix(color, uHostFogColor, clamp(1.0 - exp(-uHostFog.x * max(t - uHostFog.y, 0.0)), 0.0, mix(0.85, 1.0, uHostFog.z)));
 
     // The eye adjusted to a screen: the room around it dims, the picture
@@ -925,6 +1051,27 @@ void main() {
     FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - fog));
 })";
     return source.c_str();
+}
+
+const char* fog_bloom_glsl() {
+    return R"(
+uniform sampler2D uDepth;
+uniform vec4  uDepthView;
+uniform vec2  uAirThick;
+uniform float uFogBloom;
+uniform float uFogBloomCap;
+float fog_bloom(vec2 uv) {
+    if (uFogBloom <= 0.0) return 0.0;
+    float d = texture(uDepth, uv).r;
+    float n = uDepthView.x, f = uDepthView.y;
+    // Along the ray, not the view's axis; what nothing stands in front of
+    // is as far as the view goes.
+    float z = d >= 1.0 ? f : 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
+    vec2 p = (uv * 2.0 - 1.0) * vec2(uDepthView.z * uDepthView.w, uDepthView.z);
+    float tau = uAirThick.x * max(z * length(vec3(p, 1.0)) - uAirThick.y, 0.0);
+    return uFogBloom * min(tau, uFogBloomCap > 0.0 ? uFogBloomCap : 3.0);
+}
+)";
 }
 
 const char* composite_fs() {
@@ -942,13 +1089,13 @@ uniform float uSaturation;
 uniform float uVignette;
 uniform float uGrain;
 uniform float uTime;
-)") + film_glsl() + godrays_glsl() + fxaa_glsl() + R"(
+)") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
-    scene += texture(uBloom, vUV).rgb * uBloomStrength;
+    scene += texture(uBloom, vUV).rgb * (uBloomStrength + fog_bloom(vUV));
     scene += godrays(vUV);
     vec3 color = smooth_edges(vUV, tonemap(scene * uExposure));
 

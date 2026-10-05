@@ -2,9 +2,11 @@
 //
 // Scene: up to eight lights - spots, and suns - the nearest two with PCF
 // shadows, a hemispheric ambient term, a Cook-Torrance-ish specular lobe,
-// procedural surface detail, a sky for open worlds and distance fog, written
-// to an HDR target. Post: bright pass, separable blur and a wide mip-chain
-// glow, then the film (ACES tone curve, grain) with bloom, vignette and a light FXAA.
+// procedural surface detail, a sky for open worlds, distance fog and the
+// lamps' light the air scatters (air_fs), written to an HDR target. Post:
+// bright pass, separable blur and a wide mip-chain glow, then the film (the
+// look's grade, a tone curve, grain) with bloom - spread further in thick
+// air - vignette and a light FXAA.
 #pragma once
 
 #include <string>
@@ -108,6 +110,29 @@ CrtShape crt_shape(double flat);
 bool crt_picture(double u, double v, double& pu, double& pv, double flat = 0.0);
 
 std::string crt_glsl_constants();
+
+// The lights a pass is lit by, as every pass that lights reads them: GLSL
+// declaring the light and shadow uniforms the renderer sets, and giving
+// `light_reach(i, p, l)` (how much of light i reaches p, and which way) and
+// `through_gate` (how much of it a doorway lets through).
+const std::string& lights_glsl();
+
+// A view's air, lit: what a world's lamps light of the air in each slice of
+// the view out from the eye (cells of the view, the slices widening as they
+// go), scattered back towards the eye and shadowed by the lamps' own maps -
+// every cell of every slice at once, laid side by side eight slices to a row.
+// Built by the renderer when the look's scene pass says its air scatters
+// (`scatter`).
+const char* air_fs();
+
+// And the same slices added up from the eye out, eight a pass, each pass on
+// its own: the light gathered up to each slice's distance.
+const char* air_sum_fs();
+
+// The same air as a scene shader reads it: GLSL giving `air_light(d)`, the
+// light gathered up to `d` metres from the eye at this pixel (after
+// uViewport is declared).
+const char* air_glsl();
 
 const char* scene_fs();
 
@@ -362,9 +387,23 @@ void main() {
 
 // The film every composite develops its picture on: GLSL to paste into a
 // composite shader.
-//   vec3 tonemap(vec3 hdr)  scene light to display light: the ACES curve,
-//                           half per channel and half on luminance, so bright
-//                           colours keep most of their hue on the way to white.
+//   vec3 tonemap(vec3 hdr)  scene light to display light: the look's grade
+//                           (grade), then its curve - the ACES curve, half per
+//                           channel and half on luminance, so bright colours
+//                           keep most of their hue on the way to white; or
+//                           (`uTonemap` 1) a curve fitted through mid grey with
+//                           each channel let go to white on its own as it
+//                           nears the top (Lottes's, with crosstalk).
+//   vec3 grade(vec3 hdr)    the look's grade, in scene light, before any
+//                           curve - so it is the same whatever shows the
+//                           picture, and fades with the look as numbers do:
+//                           `uGradeExposure` (stops), `uGradeContrast` (about
+//                           mid grey, in stops: 0.2 a fifth more),
+//                           `uGradeSaturation` (0.3 a third more, -1 grey),
+//                           `uGradeShadows` (a colour lifted into the darks)
+//                           and `uGradeHighlights` (the lights times 1 + it).
+//                           All 0 - unset - it is as it was; what it pushes out
+//                           of the widest gamut (BT.2020) is brought back in.
 //   vec3 film(vec3 c, float grain, float time)
 //                           display light to the screen: encoded, then grain -
 //                           soft, a pixel and a half across, strongest in the
@@ -372,10 +411,65 @@ void main() {
 //                           frame - and a last dither, so nothing bands.
 inline const char* film_glsl() {
     return R"(
+uniform float uGradeExposure;
+uniform float uGradeContrast;
+uniform float uGradeSaturation;
+uniform vec3  uGradeShadows;
+uniform vec3  uGradeHighlights;
+uniform float uTonemap;
 vec3 film_aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
+vec3 grade(vec3 c) {
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+    c *= exp2(uGradeExposure);
+    if (uGradeContrast != 0.0) {
+        float l = max(dot(c, lum), 1e-6);
+        c *= 0.18 * exp2(log2(l / 0.18) * (1.0 + uGradeContrast)) / l;
+    }
+    if (uGradeSaturation != 0.0 || uGradeShadows != vec3(0.0) || uGradeHighlights != vec3(0.0)) {
+        float l = dot(c, lum);
+        c += uGradeShadows * 0.18 * (1.0 - smoothstep(0.0, 0.36, l));
+        c *= 1.0 + uGradeHighlights * smoothstep(0.18, 1.0, l);
+        c = mix(vec3(dot(c, lum)), c, 1.0 + uGradeSaturation);
+        // Out of BT.2020 and back: what a grade pushed past every colour
+        // there is goes to the edge of what there is.
+        const mat3 to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);
+        const mat3 from2020 = mat3(1.6605, -0.1246, -0.0182, -0.5876, 1.1329, -0.1006, -0.0728, -0.0083, 1.1187);
+        c = from2020 * max(to2020 * c, vec3(0.0));
+    }
+    return c;
+}
+// Lottes's curve: the brightest channel taken through a curve that passes
+// mid grey (0.18 to 0.267) and reaches white at 8, the others kept in
+// proportion to it - each let go towards white as the curve nears the top
+// (crosstalk), so a bright colour goes to white as film does, not to a
+// flat bright hue.
+vec3 film_crosstalk(vec3 hdr) {
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+    const float a = 1.6, d = 0.977, hdr_max = 8.0, mid_in = 0.18, mid_out = 0.267;
+    float ad = a * d, ma = pow(mid_in, a), mad = pow(mid_in, ad), ha = pow(hdr_max, a), had = pow(hdr_max, ad);
+    float b = (-ma + ha * mid_out) / ((had - mad) * mid_out);
+    float c0 = (had * ma - ha * mad * mid_out) / ((had - mad) * mid_out);
+    vec3 c = max(hdr, vec3(0.0));
+    float lc = dot(c, lum);
+    if (lc > 0.0) c *= max(dot(hdr, lum), 0.0) / lc;
+    float peak = max(max(c.r, c.g), max(c.b, 1e-8));
+    vec3 ratio = c / peak;
+    float z = pow(peak, a);
+    float t = z / (pow(z, d) * b + c0);
+    const vec3 sat = vec3(2.0), crosstalk = vec3(4.0);
+    ratio = pow(ratio, vec3(a) / sat);
+    ratio = mix(ratio, vec3(1.0), pow(vec3(t), crosstalk));
+    ratio = pow(ratio, sat);
+    return clamp(ratio * t, 0.0, 1.0);
+}
+vec3 film_curve(vec3 hdr);
 vec3 tonemap(vec3 hdr) {
+    vec3 graded = grade(hdr);
+    return uTonemap > 0.5 ? film_crosstalk(graded) : film_curve(graded);
+}
+vec3 film_curve(vec3 hdr) {
     // Per channel, the curve turns a bright orange yellow and a bright blue
     // violet; on luminance alone it keeps the hue but runs a colour past
     // white. Half of each: the tone of the one, most of the hue of the other,
@@ -493,6 +587,19 @@ vec3 smooth_edges(vec2 uv, vec3 toned) {
 }
 )";
 }
+
+// Glow that thick air spreads: the farther through the air a pixel is seen,
+// the more the bloom spreads over it - light scattered again and again on
+// its way, cheaply. GLSL to paste into a composite shader; it gives
+// `fog_bloom(uv)`, how much more of the bloom to add there (0 unless the
+// look's composite says `uFogBloom`). The renderer binds the view's depth
+// (uDepth, unit 2) and says how it was taken (uDepthView: near, far, the
+// tangent of half the field of view, the aspect) and the air of the world
+// the viewer is in (uAirThick: its density and where it starts, from the
+// look's scene pass).
+//   uFogBloom     how much more bloom for each unit of optical depth
+//   uFogBloomCap  the optical depth past which it spreads no more (0: 3)
+const char* fog_bloom_glsl();
 
 const char* composite_fs();
 
