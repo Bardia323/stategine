@@ -14,6 +14,7 @@
 #include "sg/core/Cache.hpp"
 #include "sg/core/StateGraph.hpp"
 #include "sg/domains/Shapes.hpp"
+#include "sg/domains/Spatial.hpp"
 
 namespace sg {
 
@@ -37,9 +38,14 @@ void put_text(std::string& s, const std::string& t) {
     put<uint64_t>(s, t.size());
     s += t;
 }
-std::string to_bytes(const sculpt::Model& m) {
+// What a model read: each file, and a digest of what it said then - so a
+// model that imports is kept too, and read back only while its files say
+// the same.
+using Read = std::vector<std::pair<std::string, Digest>>;
+
+std::string to_bytes(const sculpt::Model& m, const Read& read) {
     std::string s;
-    put<uint32_t>(s, 1);
+    put<uint32_t>(s, 2);
     put_text(s, m.errors);
     for (double v : {m.lo.x, m.lo.y, m.lo.z, m.hi.x, m.hi.y, m.hi.z}) put(s, v);
     put<uint64_t>(s, m.triangles);
@@ -48,6 +54,17 @@ std::string to_bytes(const sculpt::Model& m) {
         put_text(s, p.material);
         put<uint64_t>(s, p.corners.size());
         put_bytes(s, p.corners.data(), p.corners.size() * sizeof(float));
+    }
+    put<uint64_t>(s, m.openings.size());
+    for (const sculpt::Opening& o : m.openings) {
+        for (double v : {o.at.x, o.at.y, o.at.z, o.facing.x, o.facing.y, o.facing.z, o.w, o.h, o.recess}) put(s, v);
+        put_text(s, o.head);
+        put<uint32_t>(s, o.walk ? 1 : 0);
+    }
+    put<uint64_t>(s, read.size());
+    for (const auto& [path, d] : read) {
+        put_text(s, path);
+        put(s, d.hi), put(s, d.lo);
     }
     return s;
 }
@@ -75,9 +92,9 @@ struct Reader {
         return t;
     }
 };
-bool from_bytes(const std::string& s, sculpt::Model& m) {
+bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     Reader r{s};
-    if (r.get<uint32_t>() != 1) return false;
+    if (r.get<uint32_t>() != 2) return false;
     m.errors = r.text();
     double v[6];
     for (double& d : v) d = r.get<double>();
@@ -93,8 +110,29 @@ bool from_bytes(const std::string& s, sculpt::Model& m) {
         p.corners.resize(n);
         r.take(p.corners.data(), n * sizeof(float));
     }
+    const uint64_t holes = r.get<uint64_t>();
+    if (!r.ok || holes > s.size()) return false;
+    m.openings.resize(holes);
+    for (sculpt::Opening& o : m.openings) {
+        double q[9];
+        for (double& d : q) d = r.get<double>();
+        o.at = {q[0], q[1], q[2]}, o.facing = {q[3], q[4], q[5]}, o.w = q[6], o.h = q[7], o.recess = q[8];
+        o.head = r.text();
+        o.walk = r.get<uint32_t>() != 0;
+    }
+    const uint64_t files = r.get<uint64_t>();
+    if (!r.ok || files > s.size()) return false;
+    for (uint64_t i = 0; i < files && r.ok; ++i) {
+        std::string path = r.text();
+        Digest d;
+        d.hi = r.get<uint64_t>(), d.lo = r.get<uint64_t>();
+        m.imports.push_back(path);
+        read.emplace_back(std::move(path), d);
+    }
     return r.ok && r.at == s.size();
 }
+
+Digest of_text(const std::string& t) { return Hasher{}.text(t).digest(); }
 
 // What a recipe's mesh is made from, for the disk: the text, the settings, the
 // libraries a program defined, and the code that makes it.
@@ -112,15 +150,32 @@ Digest disk_key(const std::string& text, const sculpt::Options& o) {
         .digest();
 }
 
-// A recipe built, or read back from where it was kept: a recipe that reads no
-// file is a function of its key, so what was kept is what it would make.
+// A recipe built, or read back from where it was kept: a recipe is a function
+// of its key and of the files it reads, so what was kept is what it would
+// make while each of those files says what it said when it was kept.
 sculpt::Model build_kept(const std::string& text, const sculpt::Options& o, const sculpt::Files* f) {
     const Digest key = disk_key(text, o);
     std::string bytes;
     sculpt::Model m;
-    if (cache::load("modeler", key, bytes) && from_bytes(bytes, m)) return m;
+    Read was;
+    if (cache::load("modeler", key, bytes) && from_bytes(bytes, m, was)) {
+        bool same = true;
+        for (const auto& [path, d] : was) {
+            std::string now;
+            same = same && f && f->read && f->read(path, now) && of_text(now) == d;
+        }
+        if (same) return m;
+        m = sculpt::Model{};
+    }
     m = sculpt::build(text, o, f);
-    if (m.imports.empty()) cache::store("modeler", key, to_bytes(m));
+    Read read;
+    bool all = true;
+    for (const std::string& path : m.imports) {
+        std::string now;
+        all = all && f && f->read && f->read(path, now);
+        if (all) read.emplace_back(path, of_text(now));
+    }
+    if (all) cache::store("modeler", key, to_bytes(m, read));
     return m;
 }
 
@@ -156,6 +211,8 @@ std::shared_ptr<const sculpt::Model> cached(const std::string& key, const std::f
 }  // namespace
 
 namespace sculpt {
+
+Vec3d stand(const Model& m, const Vec3d& origin, double yaw) { return place_in(Pose{origin, yaw}, m.foot()); }
 
 void prepare(const std::vector<std::string>& recipes, const Options& o) {
     // Each recipe once, and only those not made already; then all at once, a

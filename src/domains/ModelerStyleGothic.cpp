@@ -11,6 +11,7 @@ let gothic_ww 0.5
 let gothic_wh 0.66
 let gothic_sill 0.16
 let gothic_roof 0.75
+let gothic_head pointed
 define gothic.arch w=1 h=2.5 d=1   # a pointed (equilateral) arch, solid: its foot on y = 0, through z
   let s $h-$w*0.866
   extrude $d -$w/2,0 $w/2,0 $w/2,$s -$w/2+$w*cos(20),$s+$w*sin(20) -$w/2+$w*cos(40),$s+$w*sin(40) 0,$s+$w*0.866 $w/2-$w*cos(40),$s+$w*sin(40) $w/2-$w*cos(20),$s+$w*sin(20) -$w/2,$s

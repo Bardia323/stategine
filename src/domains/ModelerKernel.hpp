@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -97,6 +98,40 @@ V3 perpendicular(V3 d);                    // some unit vector across d
 // The surface of a field, as dual contouring finds it (sharp where the field
 // is). `warn` says if the cell had to be made coarser.
 void surface(const Sdf& f, double cell, int max_grid, Geom& out, std::string* warn);
+// The same, only in a box of space: open where the surface leaves it. What
+// is returned is the box its grid really took (a little larger).
+Box surface_in(const Sdf& f, const Box& region, double cell, int max_grid, Geom& out, std::string* warn);
+// Dual contouring on a grid of nx * ny * nz cells of `h` from `lo`.
+void contour(const Sdf& f, V3 lo, double h, int nx, int ny, int nz, Geom& out);
+
+// --- fewer faces ---------------------------------------------------------------
+// Edges collapsed where the surface says least, cheapest first (each vertex
+// carries the planes of the faces it was made from; a collapse costs how far
+// it moves off them), while that is under `tol` metres - or, with `target`,
+// until that few faces are left. A vertex `locked` stays (by index: the exact
+// faces a cut kept); so do the ends of an open edge and where two materials
+// meet. No face is turned over and nothing is pinched: a closed surface stays
+// closed. Flat spans go to a few large faces; detail keeps its own.
+void simplify(Geom& g, double tol, std::size_t target, const std::vector<char>* locked = nullptr);
+// The points of g welded where they are one point (to 1e-7 m), faces of no
+// area between welded points dropped.
+void weld(Geom& g);
+
+// --- where a cut is ----------------------------------------------------------------
+// The faces of g outside box b, cut where they cross it: what is inside is
+// gone, and the faces cut end on the box. Every face given a material.
+Geom clip_outside(const Geom& g, const Box& b, int material);
+// Two surfaces that meet across the face of a box made one: `outer` ends on
+// the box (clip_outside), `inner` ends just inside it (surface_in); the strip
+// between each pair of their open rims is filled with faces, so the two are
+// one closed surface. False (and nothing done) if their rims do not pair up.
+bool zip(const Geom& outer, const Geom& inner, const Box& b, double cell, Geom& out);
+// A closed surface of field f meshed at `coarse` (g), made again finer -
+// as the face `budget` allows, a quarter of the cell at most - wherever it
+// misses the field by more than a tenth of its cell (a small feature, a
+// tight curve), each such place in a box of its own, zipped in. Flat spans
+// and sharp edges, which the coarse cell already meets, stay as they are.
+void refine(Geom& g, const Sdf& f, double coarse, std::size_t budget, int max_grid);
 
 // --- exact faces ----------------------------------------------------------------
 Geom g_box(V3 size);
@@ -104,6 +139,27 @@ Geom g_lathe(const std::vector<P2>& profile, int sides);
 Geom g_torus(double big, double small, int sides, int ring);
 Geom g_extrude(const std::vector<P2>& outline, double depth, double chamfer);
 Geom g_loft(const std::vector<std::vector<P2>>& rings, double height);
+// A path to carry an outline along: its points, and a frame for each of its
+// segments - the way on (t), across (n), and the third (b = t x n) - each
+// turned from the last by the least turn that takes one way on to the next,
+// so nothing twists (a rotation-minimizing frame). A path that ends where it
+// began goes round, and its frames are made to close.
+struct Frame {
+    V3 t, n, b;
+};
+struct Path {
+    std::vector<V3> points;
+    std::vector<Frame> frames;
+    bool closed = false;
+    // The outline at point i: carried in along the way in, it meets the plane
+    // half way between the ways in and out there (the mitre) - where the
+    // outline carried out meets it too, so a corner neither pinches nor twists.
+    std::vector<V3> section(std::size_t i, const std::vector<P2>& outline) const;
+};
+Path along(const std::vector<V3>& points);
+// A path with its corners rounded over radius r (no corner cut back past half
+// a side).
+std::vector<V3> rounded_path(const std::vector<V3>& path, double r, int sides);
 Geom g_sweep(const std::vector<P2>& profile, const std::vector<V3>& path, bool close_ends);
 void transform(Geom& g, const Mat& m);
 
@@ -117,20 +173,58 @@ struct Obj {
 Obj read_obj(const std::string& text);
 
 // --- solids ---------------------------------------------------------------------
+// A piece's exact faces: given (a shape as it is made), or made the first time
+// they are asked for (a cut, zipped in where it was made) - so faces nobody
+// asks for, a block made again as one surface by `remesh`, are never made.
+// None, or none made after all (a cut that would not zip): the piece is its
+// field, meshed whole.
+class Faces {
+public:
+    Faces() = default;
+    explicit Faces(std::shared_ptr<const Geom> g);
+    static Faces later(std::function<std::shared_ptr<const Geom>()> make);
+    std::shared_ptr<const Geom> get() const;    // made now, if they are to be
+    bool known() const { return bool(lazy_); }  // there are faces, or there may be
+    Faces moved(const Mat& m) const;
+
+private:
+    struct Lazy;
+    std::shared_ptr<Lazy> lazy_;
+};
+
 struct Piece {
     SdfP field;
-    std::shared_ptr<const Geom> exact;  // null: a field to mesh
+    Faces exact;  // none: a field to mesh
     Box bb;
     double res = 0;
     double crease = 40.0;
     int material = 0;
 };
+// An opening asked of the walls round a solid (`opening`): where its foot's
+// middle is, half its width across, its height up and which way it looks -
+// vectors, so whatever moves the solid moves and sizes it too.
+struct Hole {
+    V3 at, across, up, facing;
+    std::string head;
+    bool walk = false;
+    double recess = 0;
+};
 struct Solid {
     std::vector<Piece> pieces;
+    std::vector<Hole> holes;
     bool empty() const { return pieces.empty(); }
 };
 enum class Mode { Add, Sub, And, Blend, Carve };
-void join(Solid& into, const Solid& s, Mode mode, double k);
+// How a cut is meshed where it is made: the cell (a piece's or the cut's own
+// `res` is finer), the grid's limit, and where to say it was made coarser.
+struct Mesher {
+    double cell = 0.1;
+    int max_grid = 220;
+    std::string* warn = nullptr;
+};
+// A field meshed whole, closed, and then made fewer where it is flat.
+std::shared_ptr<const Geom> mesh_whole(const Sdf& f, double cell, double crease, const Mesher& m);
+void join(Solid& into, const Solid& s, Mode mode, double k, const Mesher& m);
 Solid moved(const Solid& s, const Mat& m);
 Solid unite(const Solid& a, const Solid& b);
 

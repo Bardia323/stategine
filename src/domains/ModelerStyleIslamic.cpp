@@ -11,6 +11,7 @@ let islamic_ww 0.46
 let islamic_wh 0.6
 let islamic_sill 0.18
 let islamic_roof 0.6
+let islamic_head pointed
 define islamic.arch w=1 h=2.5 d=1   # a four-centred pointed arch, solid: foot on y = 0, through z
   let s $h-$w*0.62
   extrude $d -$w/2,0 $w/2,0 $w/2,$s $w*0.48,$s+$w*0.18 $w*0.4,$s+$w*0.34 $w*0.26,$s+$w*0.48 0,$s+$w*0.62 -$w*0.26,$s+$w*0.48 -$w*0.4,$s+$w*0.34 -$w*0.48,$s+$w*0.18 -$w/2,$s

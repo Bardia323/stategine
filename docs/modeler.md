@@ -14,9 +14,15 @@ m.ports(graph);                         // model.op / .set / .undo / .clear come
 engine.send(m.id(), Modeler::set_event(), Params{}.set("ops", recipe));
 Vec3d size;
 room.model(Key{"castle"}, m.fitted(size));   // or fitted_part(i, size) per material
-room.mesh(Key{"c"}, x, y, z).params.set("shape", "model").set("model", "castle")
-    .set(keys::sx, size.x).set(keys::sy, size.y).set(keys::sz, size.z);
+const Vec3d at = sculpt::stand(m.model(), {x, y, z}, yaw);   // the recipe's origin at x, y, z
+room.mesh(Key{"c"}, at.x, at.y, at.z).params.set("shape", "model").set("model", "castle")
+    .set(keys::sx, size.x).set(keys::sy, size.y).set(keys::sz, size.z).set(keys::yaw, yaw);
 ```
+
+A thing drawn from `fitted` stands by the foot of the model's box
+(`Model::foot()`, the middle of its bottom face), as every sized thing does;
+`sculpt::stand` says where that foot goes so that the recipe's own origin is
+where it is put - a model stands where its recipe says, whatever its box.
 
 `sculpt::build(text, options, files)` is the same without the state;
 `sculpt::recipes()` lists the library; `sculpt::to_obj` writes a model out.
@@ -50,17 +56,34 @@ As drawn, their coordinates where they say:
 | `extrude depth x,y x,y ...` | an outline in x, y pushed out along z, centred |
 | `prism h x,z x,z ...` | an outline on the ground pushed up h |
 | `loft h x,z x,z ... / x,z ...` | rings of the same count, joined, equally spaced up h |
-| `tube r x,y,z x,y,z ...` | a round bar along a path |
-| `sweep x,y x,y ... / x,y,z ...` | an outline carried along a path |
+| `tube r x,y,z x,y,z ... [bend=r]` | a round bar along a path |
+| `sweep x,y x,y ... / x,y,z ... [bend=r]` | an outline carried along a path |
 | `import file [fit=h] [base=1] [mats=1] [faces=N]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials, `faces` makes it again (below) |
+| `opening w h [head=round\|pointed] [walk=1] [recess=m]` | no faces: a hole asked of the walls round it (below) |
+
+A sweep carries its outline along the path without twisting it: each
+segment's frame is the last one turned by the least turn that takes one way
+on to the next (a rotation-minimizing frame), and each corner is mitred - the
+outline meets the plane half way between the way in and the way out, so a
+corner bending any way (up, down, round) neither pinches nor turns. The
+outline's x lies across the path, level where the path starts level, its y
+the third way. A path that ends where it began goes round: no ends, its last
+corner mitred too. `bend=r` rounds each corner over r metres (never cutting
+back more than half a side).
 
 ### Options, on any shape, block or macro call
 
 `at=x,y,z` `rot=yaw` or `rot=rx,ry,rz` (degrees, x then y then z) `scale=s`
 or `scale=sx,sy,sz` `mat=<material>` (the part it belongs to) `round=r` (the
 box or cylinder rounded, from its field) `chamfer=c` (an extrusion's edges cut
-back) `sides=n` `res=metres` (the cell a cut is meshed at) `crease=degrees`
-`centre=1`.
+back) `sides=n` `res=metres` (the cell a cut is meshed at: on the cut, or on
+what it cuts - the finer) `crease=degrees` `centre=1`.
+
+A word is said once on a line. `rot=` may be said again, and the turns
+compose, the first first: `rot=90,0,0 rot=30` stands a thing up and then turns
+it about up. Any other word said twice - or a macro's parameter said both by
+its place and by its name - is an error naming it, and the line is left out
+(a block is still opened, placed nowhere, so its `end` still ends it).
 
 ### Combining
 
@@ -74,10 +97,25 @@ The word before a statement says how it joins what came before in the block:
 | `blend=k` | a smooth union, rounded over k metres |
 | `carve=k` | a smooth cut |
 
-Only what a cut touches is meshed from a signed distance field (dual
-contouring, at `res` or the state's `cell`); the rest keeps its exact faces, so
-a castle of boxes and cylinders with a gate cut through one wall is crisp
-everywhere and costs a field only there.
+A cut is meshed where it cuts, and only there. `sub`, `carve=` and `blend=`
+mesh their field (dual contouring, at `res` or the state's `cell`) in a box
+round the cut - the cutter's box, padded by the blend and two cells - and
+every piece it touches keeps its exact faces outside that box; the two are
+joined along the box's face, the strip between their rims filled face by
+face, into one closed surface. A cutter in pieces apart (a tower's slits)
+cuts each where it is. So a castle of boxes and cylinders with a gate cut
+through one wall is crisp everywhere and costs a field only round the gate,
+and a quatrefoil cut through a wall at 2 cm is a thousand faces, not a
+hundred and forty thousand. A cut that takes most of a piece, or whose two
+sides will not join, has the piece meshed whole from its field, at the cut's
+cell. `and` meshes what it keeps whole. The faces a cut makes are made only
+when they are asked for: a block made again by `remesh` never pays for them.
+
+What a field makes is then made fewer where it says least: edges collapsed by
+how far that moves the surface off the planes it was made from, cheapest
+first, never turning a face over or pinching it, closed as it was - flat
+spans become a few large faces, a curve or an edge keeps its own, and the
+exact faces round a cut stay exactly as they were.
 
 ### Made again: one surface at a budget
 
@@ -91,11 +129,34 @@ A shape's field is its true signed distance - an imported mesh's too: the
 distance to its nearest face, inside where its winding number says, so meshes
 lying in one another (a heap of parts, as a scene often is) are one solid
 where any of them is. `remesh` joins the fields of everything so far
-(smoothly, with `blend`) and meshes that one field at the cell that gives
-about `faces` faces: one closed surface, even, with no faces hidden inside -
-the mesh-to-volume-to-mesh way, which simplifies a dense or tangled mesh
-better than collapsing its edges. `faces=` on any shape does it to that shape
-alone. Thin things narrower than a cell close up: give the budget they need.
+(smoothly, with `blend`) and meshes that one field: one closed surface with no
+faces hidden inside - the mesh-to-volume-to-mesh way. With a budget, its
+resolution follows the detail: meshed at the cell the budget gives, then made
+again finer (up to a quarter of that cell, as the budget allows) wherever the
+cell misses the field by more than a tenth of itself - a bead on a slab, a
+hand - each such place in a box of its own, joined in as a cut is; then made
+fewer, flat spans first, down to the budget. So `faces=N` is at most N
+faces, fewer where the surface is plain. A field missed nearly everywhere (a
+figure all folds) has nowhere to spend more than anywhere else, and gets the
+budget's cell. With `res=` it is meshed at that cell and made fewer where
+flat. `faces=` on any shape does it to that shape alone. Thin things
+narrower than a cell close up: give the budget they need.
+
+### Openings: holes asked of the walls
+
+```
+opening 2.2 7 head=pointed recess=1 at=-7,2.5,0 rot=90   # a window in the wall at x = -7, looking +x
+```
+
+`opening w h` makes no faces. It is a request, carried with the solid as any
+shape is (blocks move, turn and size it): `Model::openings`, each with its
+foot's middle, which way it looks, its size, its head (`round`, `pointed`,
+or square), whether it is walked through (`walk=1`) and how far back in the
+wall what fills it stands (`recess`). A room whose walls the model stands
+among makes each one that falls in one of its walls an opening of it, and
+lays the wall round it by its one rule - so windows and an arcade are holes
+in a room's walls, not faces over them (sg::Room: openings one over another,
+and the wall round an arch, as `<opening>.head`).
 
 ### Looking at it
 
@@ -155,7 +216,14 @@ roof 4.6 4.6 2 at=0,5,0 mat=slate
 ## Rules it keeps
 
 - The mesh is memoised on the recipe's text and settings (and on an imported
-  file's stamp); the same text is never built twice in a run.
+  file's stamp); the same text is never built twice in a run. With a cache
+  folder (sg/core/Cache.hpp) it is kept on disk too, by the text, the
+  settings, the libraries a program defined and the modeller's own code - and,
+  for a recipe that reads files (`import`, `use <file>`), with a digest of
+  each, read back only while each file says the same.
+- A model stands where its recipe says: a thing drawn from it is stood by its
+  box's foot (`Model::foot`), and `sculpt::stand` puts that foot where the
+  recipe's origin is wanted.
 - Fields are meshed closed and wound outwards; exact shapes are closed; the
   normals are smooth within `crease` degrees and sharp past it.
 - Errors are reported, a line each, in `Model::errors`; a bad line is skipped,
@@ -177,12 +245,16 @@ A style is a library that says the same words its own way (listed at the
 top of `src/domains/ModelerArch.cpp`): `wall opening window doorway door band
 pier base cornice roof column tower` outside, `ceiling wainscot icornice
 ipier` inside, and its proportions as variables (`<style>_ww`, `_wh`,
-`_sill`, `_roof`, `_floor`). A new style is a new file; any style goes in
-any composition. `door=2` leaves the door standing open, `core=0` makes a
-shell with nothing in it (a building gone into, whose inside is a room of
-its own), `dw`/`dh` say the door's size. `interior ... walls=0` (a room
-whose walls are another's - a realm's, laid by its own rule) leaves its front
-wall's inside open at the door, `dw` wide.
+`_sill`, `_roof`, `_floor`, `_head` - its arches: `round`, `pointed` or
+`square`). A new style is a new file; any style goes in any composition.
+`door=2` leaves the door standing open, `core=0` makes a shell with nothing
+in it (a building gone into, whose inside is a room of its own), `dw`/`dh`
+say the door's size. `interior ... walls=0` (a room whose walls are
+another's - a realm's, laid by its own rule) leaves its front wall's inside
+open at the door, `dw` wide, and asks those walls for its windows down both
+sides, a bay each (`opening`; `ww wh wsill` their size, else the style's) -
+and with `arcade=1` for a blind arcade low along them, in place of the
+style's wainscot. `holes=0` asks for none.
 
 What fills a building is a library too: `use church` (`ModelerChurch.cpp`) -
 `church.pew`, `pews`, `altar`, `candlestick`, `cross`, `pulpit`, `font`,
@@ -193,15 +265,16 @@ Christ, one smooth surface). Each is its own model, facing +z on y = 0.
 
 What costs, as learned furnishing a church with it:
 
-- A cut meshes the whole piece it cuts from its field, not only where it
-  cuts: a quatrefoil cut through a pew's end, at a cell fine enough to see
-  it, makes the end some forty thousand faces. Say a moulding as a `sweep`
-  round its path, a band with a hole in it as one `extrude` of its outline
-  (the gothic vault), a carving as raised shapes - exact, a few hundred faces.
+- A cut costs a field only in a box round it - but a box at its own cell: a
+  long thin cut (a groove the length of a pew) is a long box. Say a moulding
+  as a `sweep` round its path, a band with a hole in it as one `extrude` of
+  its outline (the gothic vault), a carving as raised shapes - exact, a few
+  hundred faces.
 - A field closes anything thinner than its cell: a 5 cm panel cut at the
   default cell comes out as nothing at all.
-- `remesh` has one cell for its whole block: a figure's face is made as
-  coarse as its hem. Remesh the head in a block of its own, finer.
+- A budget is spent where the field is detailed, but a figure detailed all
+  over has its budget's cell all over: a face that must be finer still is
+  remeshed in a block of its own.
 
 The language for it: `use <library>`, `if <expr> ... else ... end`,
 comparisons (`$a<2`), `rand(a, b, ...)` (the same number for the same

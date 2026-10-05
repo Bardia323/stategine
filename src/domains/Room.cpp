@@ -1,5 +1,7 @@
 #include "sg/domains/Room.hpp"
 
+#include "sg/domains/Shapes.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -237,23 +239,67 @@ Opening opening_of(const Element& e) {
     o.w = e.params.num(keys::w, kDoorW);
     o.h = e.params.num(keys::h, kDoorH);
     o.door = e.params.num("walk", 0.0) > 0.5;
+    o.head = e.params.get_or<std::string>("head", "");
+    o.recess = e.params.num("recess", 0.0);
     return o;
 }
 
+double Opening::spring() const {
+    const double rise = head == "round" ? w * 0.5 : head == "pointed" ? w * 0.8660254 : 0.0;
+    return sill + h - std::min(rise, h);
+}
+
 std::vector<WallPiece> wall_pieces(double length, double height, std::vector<Opening> holes) {
-    std::sort(holes.begin(), holes.end(), [](const Opening& a, const Opening& b) { return a.along < b.along; });
-    std::vector<WallPiece> out;
-    double at = 0.0;
+    // Cut across at every side of every opening; then each span is the wall
+    // from the floor up, less whatever opens it there.
+    std::vector<double> cuts{0.0, length};
     for (const Opening& o : holes) {
         const double lo = std::clamp(o.lo(), 0.0, length), hi = std::clamp(o.hi(), 0.0, length);
-        if (lo > at + 1e-6) out.push_back({at, lo, 0.0, height});
-        if (hi <= lo) continue;
-        if (o.sill > 1e-6) out.push_back({lo, hi, 0.0, std::min(o.sill, height)});
-        if (o.sill + o.h < height - 1e-6) out.push_back({lo, hi, o.sill + o.h, height});
-        at = std::max(at, hi);
+        if (hi > lo) cuts.push_back(lo), cuts.push_back(hi);
     }
-    if (length > at + 1e-6) out.push_back({at, length, 0.0, height});
+    std::sort(cuts.begin(), cuts.end());
+    std::vector<WallPiece> out;
+    for (std::size_t i = 0; i + 1 < cuts.size(); ++i) {
+        const double a = cuts[i], b = cuts[i + 1];
+        if (b - a < 1e-6) continue;
+        std::vector<const Opening*> in;
+        for (const Opening& o : holes)
+            if (o.lo() <= a + 1e-9 && o.hi() >= b - 1e-9) in.push_back(&o);
+        std::sort(in.begin(), in.end(), [](const Opening* p, const Opening* q) { return p->sill < q->sill; });
+        double y = 0.0;
+        for (const Opening* o : in) {
+            if (o->sill > y + 1e-6) out.push_back({a, b, y, std::min(o->sill, height)});
+            y = std::max(y, o->sill + o->h);
+        }
+        if (y < height - 1e-6) out.push_back({a, b, y, height});
+    }
     return out;
+}
+
+std::vector<float> head_shape(const Opening& o) {
+    if (o.head != "round" && o.head != "pointed") return {};
+    const double w = o.w, rise = o.sill + o.h - o.spring();
+    if (rise < 1e-4 || w < 1e-4) return {};
+    // The arch, from the left springing to the crown: a half circle's quarter,
+    // or an arc struck from the right springing (squashed to the rise there is).
+    const int n = 12;
+    const bool round = o.head == "round";
+    const double full = round ? w * 0.5 : w * 0.8660254, squash = rise / full;
+    std::vector<shapes::P2> arc;
+    for (int k = 0; k <= n; ++k) {
+        const double t = (round ? 1.5707963267948966 : 1.0471975511965976) * k / n;
+        arc.push_back(round ? shapes::P2{-w * 0.5 * std::cos(t), w * 0.5 * std::sin(t) * squash}
+                            : shapes::P2{w * 0.5 - w * std::cos(t), w * std::sin(t) * squash});
+    }
+    arc.back() = {0.0, rise};
+    std::vector<shapes::P2> left{arc}, right{{w * 0.5, 0.0}, {w * 0.5, rise}};
+    left.push_back({-w * 0.5, rise});
+    for (std::size_t k = arc.size() - 1; k-- > 1;) right.push_back({-arc[k].x, arc[k].y});
+    right.insert(right.begin() + 2, {0.0, rise});
+    std::vector<float> v = shapes::extrude(left, 1.0, 0.0), r = shapes::extrude(right, 1.0, 0.0);
+    v.insert(v.end(), r.begin(), r.end());
+    Vec3d size;
+    return shapes::fit(std::move(v), size);
 }
 
 bool opening_fits(const Opening& o, const Outline& ol, double height, const std::vector<Opening>& others, std::string* why) {
@@ -275,7 +321,10 @@ bool opening_fits(const Opening& o, const Outline& ol, double height, const std:
     }
     for (const Opening& x : others) {
         if (x.id == o.id || x.side != o.side) continue;
-        if (o.lo() < x.hi() + 0.2 && x.lo() < o.hi() + 0.2) {
+        // One may stand over another, a hand's breadth of wall between.
+        const bool beside = o.lo() < x.hi() + 0.2 && x.lo() < o.hi() + 0.2;
+        const bool level = o.sill < x.sill + x.h + 0.2 && x.sill < o.sill + o.h + 0.2;
+        if (beside && level) {
             if (why) *why = "it would run into " + x.id.str();
             return false;
         }
@@ -512,7 +561,7 @@ void Room::lay_walls() {
             if (o.side == static_cast<int>(side)) holes.push_back(o);
         const auto around_hole = [&](const plan::WallPiece& pc) {
             for (const Opening& o : holes)
-                if (std::fabs(std::clamp(o.lo(), 0.0, len) - pc.s0) < 1e-9 && std::fabs(std::clamp(o.hi(), 0.0, len) - pc.s1) < 1e-9) return true;
+                if (std::clamp(o.lo(), 0.0, len) <= pc.s0 + 1e-9 && std::clamp(o.hi(), 0.0, len) >= pc.s1 - 1e-9) return true;
             return false;
         };
 
@@ -568,11 +617,24 @@ void Room::lay_walls() {
             }
         }
 
-        // What fills an opening onto nothing.
+        // The wall round an arch: what fills its head beside the curve, the
+        // wall's whole thickness, standing on its springing.
+        for (const Opening& o : holes) {
+            const std::vector<float> shape = plan::head_shape(o);
+            if (shape.empty()) continue;
+            const Key mesh{o.id.str() + ".head.mesh"};
+            if (!model(mesh) || *model(mesh) != shape) model(mesh, shape);
+            Element& hd = made(Key{o.id.str() + ".head"}, "head", kinds::mesh);
+            block(hd, wl.at(o.lo()), wl.at(o.hi()), 0, 0, o.spring(), o.sill + o.h, t, skin);
+            hd.params.set("shape", std::string("model")).set("model", mesh.str()).set("solid", 0.0);
+            dress(hd, "wall", 0.74, 0.72, 0.68, 2.0, 0.9);
+        }
+
+        // What fills an opening onto nothing - as far back in the wall as it says.
         for (const Opening& o : holes) {
             if (!fill) break;
             Element& bk = made(Key{o.id.str() + ".blank"}, "blank", kinds::wall);
-            block(bk, wl.at(o.lo()), wl.at(o.hi()), 0, 0, o.sill, o.sill + o.h, 0.05, 0.0);
+            block(bk, wl.at(o.lo()), wl.at(o.hi()), 0, 0, o.sill, o.sill + o.h, 0.05, -std::min(o.recess, std::max(0.0, t - 0.05)));
             bk.params.set(keys::r, 0.5).set(keys::g, 0.47).set(keys::b, 0.43);
             bk.alive = find(o.id)->params.num("onto", 0.0) < 0.5;
         }

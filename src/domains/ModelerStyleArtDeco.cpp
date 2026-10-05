@@ -11,6 +11,7 @@ let artdeco_ww 0.62
 let artdeco_wh 0.68
 let artdeco_sill 0.16
 let artdeco_roof 0.5
+let artdeco_head square
 define artdeco.wall len=10 h=7 t=0.45
   box $len $h $t at=0,0,-$t/2 mat=stone
 end

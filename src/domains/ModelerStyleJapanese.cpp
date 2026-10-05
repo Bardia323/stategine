@@ -11,6 +11,7 @@ let japanese_ww 0.7
 let japanese_wh 0.62
 let japanese_sill 0.22
 let japanese_roof 0.42
+let japanese_head square
 define japanese.eaves w=10 d=8 h=3   # a hipped roof whose slopes sweep up at the eaves, its ridge along the longer side
   let a max(0.05,abs($w-$d)*0.5)
   if $w>=$d

@@ -2,6 +2,8 @@
 // solids are joined.
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 
@@ -150,33 +152,144 @@ Geom g_loft(const std::vector<std::vector<P2>>& rings, double h) {
     return g;
 }
 
-Geom g_sweep(const std::vector<P2>& prof, const std::vector<V3>& path, bool close_ends) {
-    Geom g;
-    const std::size_t N = path.size(), n = prof.size();
-    std::vector<std::vector<int>> id(N);
-    V3 prev_n;
-    for (std::size_t i = 0; i < N; ++i) {
-        V3 t = unit(i == 0 ? path[1] - path[0] : i + 1 == N ? path[i] - path[i - 1] : unit(path[i] - path[i - 1]) + unit(path[i + 1] - path[i]));
-        V3 nrm = i == 0 ? perpendicular(t) : unit(prev_n - t * dot(prev_n, t));
-        prev_n = nrm;
-        const V3 b = cross(t, nrm);
-        // At a bend the section is widened so its width across the path holds.
-        double widen = 1;
-        if (i > 0 && i + 1 < N) widen = 1 / std::max(0.4, dot(t, unit(path[i + 1] - path[i])));
-        for (const P2& q : prof) id[i].push_back(add(g, path[i] + nrm * (q.x * widen) + b * q.y));
+Path along(const std::vector<V3>& in) {
+    Path p;
+    for (const V3& q : in)
+        if (p.points.empty() || len(q - p.points.back()) > 1e-9) p.points.push_back(q);
+    // A path that ends where it began goes round: no ends, its last corner
+    // mitred like the others.
+    if (p.points.size() >= 4 && len(p.points.front() - p.points.back()) < 1e-6) p.points.pop_back(), p.closed = true;
+    const std::size_t N = p.points.size();
+    const std::size_t S = p.closed ? N : N - 1;  // segments
+    if (N < 2) return p;
+    const auto seg = [&](std::size_t k) { return unit(p.points[(k + 1) % N] - p.points[k]); };
+    // Each segment's frame turned from the last by the least turn that takes
+    // the one direction to the next: across it, nothing twists.
+    p.frames.resize(S);
+    p.frames[0].t = seg(0);
+    p.frames[0].n = perpendicular(p.frames[0].t);
+    p.frames[0].b = cross(p.frames[0].t, p.frames[0].n);
+    const auto turn = [](V3 v, V3 a, V3 b) {
+        const V3 ax = cross(a, b);
+        const double c = dot(a, b);
+        if (c < -0.999999) {
+            // Back the way it came: a half turn about something across it.
+            const V3 k = perpendicular(a);
+            return k * (2 * dot(k, v)) - v;
+        }
+        return v + cross(ax, v) + cross(ax, cross(ax, v)) * (1 / (1 + c));
+    };
+    for (std::size_t k = 1; k <= S; ++k) {
+        const Frame& f = p.frames[k - 1];
+        const V3 t = seg(k == S ? 0 : k);
+        if (k == S) {
+            if (!p.closed) break;
+            // Round a closed path, the frame comes back turned about its own
+            // direction by however the path twists in space: that turn,
+            // shared out along the way, so it closes.
+            const V3 n_back = unit(turn(f.n, f.t, t));
+            const Frame& f0 = p.frames[0];
+            const double twist = std::atan2(dot(cross(n_back, f0.n), f0.t), dot(n_back, f0.n));
+            double total = 0;
+            for (std::size_t q = 0; q < S; ++q) total += len(p.points[(q + 1) % N] - p.points[q]);
+            double run = 0;
+            for (std::size_t q = 0; q < S; ++q) {
+                Frame& g = p.frames[q];
+                const double a = twist * run / std::max(total, 1e-12);
+                const V3 n = g.n * std::cos(a) + g.b * std::sin(a);
+                g.n = unit(n), g.b = cross(g.t, g.n);
+                run += len(p.points[(q + 1) % N] - p.points[q]);
+            }
+            break;
+        }
+        Frame g;
+        g.t = t;
+        g.n = unit(turn(f.n, f.t, t));
+        g.n = unit(g.n - t * dot(g.n, t));
+        g.b = cross(t, g.n);
+        p.frames[k] = g;
     }
-    for (std::size_t i = 0; i + 1 < N; ++i)
+    return p;
+}
+
+std::vector<V3> Path::section(std::size_t i, const std::vector<P2>& prof) const {
+    const std::size_t N = points.size(), S = frames.size();
+    std::vector<V3> out;
+    // The frame it comes in by, and the plane of the corner (half way between
+    // the way in and the way out): where the outline carried in along the way
+    // in meets that plane - the mitre, which the outline carried out meets too.
+    const bool first = !closed && i == 0, last = !closed && i + 1 == N;
+    const Frame& in = frames[first ? 0 : (i + S - 1) % S];
+    const V3 out_t = last ? in.t : frames[i % S].t;
+    V3 m = unit(in.t + out_t);
+    if (first || last) m = in.t;
+    const double c = std::max(0.25, dot(in.t, m));  // a corner past 150 degrees is mitred no further
+    for (const P2& q : prof) {
+        const V3 off = in.n * q.x + in.b * q.y;
+        out.push_back(points[i] + off - in.t * (dot(off, m) / c));
+    }
+    return out;
+}
+
+std::vector<V3> rounded_path(const std::vector<V3>& path, double r, int sides) {
+    if (r <= 0 || path.size() < 3) return path;
+    const bool closed = path.size() >= 4 && len(path.front() - path.back()) < 1e-6;
+    const std::size_t N = closed ? path.size() - 1 : path.size();
+    std::vector<V3> out;
+    if (!closed) out.push_back(path[0]);
+    for (std::size_t i = closed ? 0 : 1; i < (closed ? N : N - 1); ++i) {
+        const V3 p = path[i], a = path[(i + N - 1) % N], b = path[(i + 1) % N];
+        const V3 ti = unit(p - a), to = unit(b - p);
+        const double turn = std::acos(std::clamp(dot(ti, to), -1.0, 1.0));
+        if (turn < 1e-3) {
+            out.push_back(p);
+            continue;
+        }
+        // Cut back each way as far as a circle of radius r touching both
+        // lines needs - no further than half of either side.
+        const double d = std::min({r * std::tan(turn / 2), len(p - a) * 0.5, len(b - p) * 0.5});
+        const V3 s = p - ti * d, e = p + to * d;
+        const int k = std::max(2, int(std::ceil(turn / (2 * kPi) * std::max(8, sides))));
+        // A curve from s to e that leaves along the way in and arrives along
+        // the way out (a quadratic one: near enough a circle's arc).
+        for (int j = 0; j <= k; ++j) {
+            const double u = double(j) / k;
+            out.push_back(s * ((1 - u) * (1 - u)) + p * (2 * u * (1 - u)) + e * (u * u));
+        }
+    }
+    if (closed) out.push_back(out.front());
+    else out.push_back(path.back());
+    return out;
+}
+
+Geom g_sweep(const std::vector<P2>& prof, const std::vector<V3>& path_in, bool close_ends) {
+    Geom g;
+    const Path path = along(path_in);
+    const std::size_t N = path.points.size(), n = prof.size();
+    if (N < 2 || n < 2) return g;
+    std::vector<std::vector<int>> id(N);
+    for (std::size_t i = 0; i < N; ++i)
+        for (const V3& q : path.section(i, prof)) id[i].push_back(add(g, q));
+    // Which way round the outline runs says which way its faces look.
+    double area = 0;
+    for (std::size_t j = 0; j < n; ++j) area += prof[j].x * prof[(j + 1) % n].y - prof[(j + 1) % n].x * prof[j].y;
+    const auto tri = [&](int a, int b, int c) {
+        if (len(cross(g.p[std::size_t(b)] - g.p[std::size_t(a)], g.p[std::size_t(c)] - g.p[std::size_t(a)])) < 1e-14) return;
+        if (area >= 0) g.t.insert(g.t.end(), {a, b, c});
+        else g.t.insert(g.t.end(), {a, c, b});
+    };
+    const std::size_t rings = path.closed ? N : N - 1;
+    for (std::size_t i = 0; i < rings; ++i) {
+        const std::size_t i2 = (i + 1) % N;
         for (std::size_t j = 0; j < n; ++j) {
             const std::size_t j2 = (j + 1) % n;
-            V3 mid;
-            for (int q : id[i]) mid = mid + g.p[std::size_t(q)];
-            mid = mid * (1.0 / double(n));
-            const V3 c = (g.p[std::size_t(id[i][j])] + g.p[std::size_t(id[i][j2])]) * 0.5;
-            quad_face(g, id[i][j], id[i][j2], id[i + 1][j2], id[i + 1][j], c - mid);
+            tri(id[i][j], id[i][j2], id[i2][j2]);
+            tri(id[i][j], id[i2][j2], id[i2][j]);
         }
-    if (close_ends && n >= 3) {
-        cap(g, id.front(), unit(path[0] - path[1]));
-        cap(g, id.back(), unit(path[N - 1] - path[N - 2]));
+    }
+    if (close_ends && n >= 3 && !path.closed) {
+        cap(g, id.front(), path.frames.front().t * -1);
+        cap(g, id.back(), path.frames.back().t);
     }
     return g;
 }
@@ -280,6 +393,10 @@ Obj read_obj(const std::string& text) {
 // --- solids -------------------------------------------------------------------------
 
 namespace {
+// How closely what a field makes is kept when it is made fewer: a share of
+// its cell (simplify's tolerance).
+constexpr double kKeep = 0.06;
+
 SdfP field_of(const std::vector<const Piece*>& ps) {
     std::vector<SdfP> f;
     for (const Piece* p : ps) f.push_back(p->field);
@@ -296,20 +413,144 @@ Piece merged(const std::vector<const Piece*>& ps, SdfP field) {
     r.crease = ps.empty() ? 40.0 : ps[0]->crease;
     return r;
 }
+// The finest cell any of them asks for, or the modeller's.
+double finest(const std::vector<const Piece*>& a, const std::vector<const Piece*>& b, double cell) {
+    double r = 0;
+    for (const auto* list : {&a, &b})
+        for (const Piece* p : *list)
+            if (p->res > 0 && (r == 0 || p->res < r)) r = p->res;
+    return r > 0 ? r : cell;
+}
+Box grown(Box b, double pad) {
+    if (b.empty()) return b;
+    b.lo = b.lo - V3{pad, pad, pad}, b.hi = b.hi + V3{pad, pad, pad};
+    return b;
+}
+Box meet(const Box& a, const Box& b) {
+    Box r;
+    if (a.empty() || b.empty()) return r;
+    r.lo = {std::max(a.lo.x, b.lo.x), std::max(a.lo.y, b.lo.y), std::max(a.lo.z, b.lo.z)};
+    r.hi = {std::min(a.hi.x, b.hi.x), std::min(a.hi.y, b.hi.y), std::min(a.hi.z, b.hi.z)};
+    if (r.lo.x > r.hi.x || r.lo.y > r.hi.y || r.lo.z > r.hi.z) return Box{};
+    return r;
+}
+double volume_of(const Box& b) { return b.empty() ? 0 : (b.hi.x - b.lo.x) * (b.hi.y - b.lo.y) * (b.hi.z - b.lo.z); }
+
+// The cell a field is meshed at in a region, as surface_in takes it.
+double cell_in(const Box& region, double cell, int max_grid) {
+    const V3 e = region.hi - region.lo;
+    const double mx = std::max(e.x, std::max(e.y, e.z)) + cell;
+    return mx / cell > max_grid ? mx / max_grid : cell;
+}
+
+// Pieces made one where `region` is: their exact faces kept outside it,
+// `field` meshed inside it, the two zipped along its face and made fewer
+// where flat (what was exact stays exact). Null if they will not zip.
+std::shared_ptr<const Geom> local(const std::vector<Piece>& ps, const Sdf& field, const Box& region, double cell, double crease, const Mesher& m) {
+    std::vector<std::shared_ptr<const Geom>> faces;
+    for (const Piece& p : ps) {
+        faces.push_back(p.exact.get());
+        if (!faces.back()) return nullptr;
+    }
+    Geom inner;
+    const Box grid = surface_in(field, region, cell, m.max_grid, inner, m.warn);
+    const double h = cell_in(region, cell, m.max_grid);
+    Geom outer;
+    for (std::size_t i = 0; i < ps.size(); ++i) {
+        const Geom c = clip_outside(*faces[i], grid, ps[i].material);
+        const int base = int(outer.p.size());
+        outer.p.insert(outer.p.end(), c.p.begin(), c.p.end());
+        for (int v : c.t) outer.t.push_back(v + base);
+        outer.mat.insert(outer.mat.end(), c.mat.begin(), c.mat.end());
+    }
+    auto out = std::make_shared<Geom>();
+    if (!zip(outer, inner, grid, h, *out)) return nullptr;
+    std::vector<char> locked(out->p.size(), 0);
+    std::fill(locked.begin(), locked.begin() + long(outer.p.size()), char(1));
+    out->crease = crease;
+    simplify(*out, kKeep * h, 0, &locked);
+    return out;
+}
+
+// Pieces whose boxes overlap (padded), together: each such cluster cuts
+// where it is, apart from the others.
+std::vector<std::vector<const Piece*>> clusters(const Solid& s, double pad) {
+    const std::size_t n = s.pieces.size();
+    std::vector<int> of(n);
+    for (std::size_t i = 0; i < n; ++i) of[i] = int(i);
+    const std::function<int(int)> root = [&](int i) { return of[std::size_t(i)] == i ? i : of[std::size_t(i)] = root(of[std::size_t(i)]); };
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = i + 1; j < n; ++j)
+            if (s.pieces[i].bb.overlaps(s.pieces[j].bb, pad)) of[std::size_t(root(int(i)))] = root(int(j));
+    std::vector<std::vector<const Piece*>> out;
+    std::vector<int> slot(n, -1);
+    for (std::size_t i = 0; i < n; ++i) {
+        const int r = root(int(i));
+        if (slot[std::size_t(r)] < 0) slot[std::size_t(r)] = int(out.size()), out.emplace_back();
+        out[std::size_t(slot[std::size_t(r)])].push_back(&s.pieces[i]);
+    }
+    return out;
+}
 }  // namespace
+
+struct Faces::Lazy {
+    std::function<std::shared_ptr<const Geom>()> make;
+    std::once_flag once;
+    std::shared_ptr<const Geom> made;
+};
+
+Faces::Faces(std::shared_ptr<const Geom> g) {
+    if (!g) return;
+    lazy_ = std::make_shared<Lazy>();
+    std::call_once(lazy_->once, [&] { lazy_->made = std::move(g); });
+}
+
+Faces Faces::later(std::function<std::shared_ptr<const Geom>()> make) {
+    Faces f;
+    f.lazy_ = std::make_shared<Lazy>();
+    f.lazy_->make = std::move(make);
+    return f;
+}
+
+std::shared_ptr<const Geom> Faces::get() const {
+    if (!lazy_) return nullptr;
+    std::call_once(lazy_->once, [this] { lazy_->made = lazy_->make(), lazy_->make = nullptr; });
+    return lazy_->made;
+}
+
+Faces Faces::moved(const Mat& m) const {
+    if (!lazy_) return {};
+    return later([was = *this, m] {
+        const std::shared_ptr<const Geom> g = was.get();
+        if (!g) return std::shared_ptr<const Geom>();
+        auto out = std::make_shared<Geom>(*g);
+        transform(*out, m);
+        return std::shared_ptr<const Geom>(out);
+    });
+}
+
+std::shared_ptr<const Geom> mesh_whole(const Sdf& f, double cell, double crease, const Mesher& m) {
+    auto g = std::make_shared<Geom>();
+    surface(f, cell, m.max_grid, *g, m.warn);
+    g->crease = crease;
+    simplify(*g, kKeep * cell, 0, nullptr);
+    return g;
+}
 
 Solid moved(const Solid& s, const Mat& m) {
     Solid r;
     for (const Piece& p : s.pieces) {
         Piece q = p;
-        if (p.exact) {
-            auto g = std::make_shared<Geom>(*p.exact);
-            transform(*g, m);
-            q.exact = g;
-        }
+        q.exact = p.exact.moved(m);
         q.field = sdf_xform(p.field, m);
         q.bb = p.bb.moved(m);
         r.pieces.push_back(std::move(q));
+    }
+    const V3 o = apply(m, {0, 0, 0});
+    for (Hole h : s.holes) {
+        h.at = apply(m, h.at);
+        h.across = apply(m, h.across) - o, h.up = apply(m, h.up) - o, h.facing = apply(m, h.facing) - o;
+        r.holes.push_back(std::move(h));
     }
     return r;
 }
@@ -317,13 +558,58 @@ Solid moved(const Solid& s, const Mat& m) {
 Solid unite(const Solid& a, const Solid& b) {
     Solid r = a;
     r.pieces.insert(r.pieces.end(), b.pieces.begin(), b.pieces.end());
+    r.holes.insert(r.holes.end(), b.holes.begin(), b.holes.end());
     return r;
 }
 
-void join(Solid& into, const Solid& s, Mode mode, double k) {
-    if (s.empty() && mode != Mode::And) return;
+void join(Solid& into, const Solid& s, Mode mode, double k, const Mesher& mm) {
     if (mode == Mode::Add) {
         into = unite(into, s);
+        return;
+    }
+    if (s.empty() && mode != Mode::And) return;
+    if (mode == Mode::Sub || mode == Mode::Carve) {
+        // Each cluster of the cutter cuts where it is: the pieces it touches
+        // keep their exact faces but in a box round it, and are meshed from
+        // their field only in that box.
+        const double kk = mode == Mode::Carve ? k : 0;
+        for (const std::vector<const Piece*>& cut : clusters(s, kk + 2 * mm.cell)) {
+            Box cb;
+            for (const Piece* p : cut) cb.add(p->bb);
+            const SdfP cutter = field_of(cut);
+            Solid rest;
+            rest.holes = into.holes;
+            std::vector<const Piece*> fields;
+            for (const Piece& p : into.pieces) {
+                if (!p.bb.overlaps(cb, kk)) {
+                    rest.pieces.push_back(p);
+                    continue;
+                }
+                if (!p.exact.known()) {
+                    fields.push_back(&p);
+                    continue;
+                }
+                const double h = finest({&p}, cut, mm.cell);
+                Piece q = p;
+                q.field = sdf_sub(p.field, cutter, kk);
+                // Its cell is the cut's: what will not zip is meshed whole at it.
+                q.res = h;
+                const Box whole = grown(p.bb, 3 * h), region = meet(grown(cb, kk + 2 * h), whole);
+                q.exact = Faces{};
+                if (volume_of(region) < 0.6 * volume_of(whole)) {
+                    const SdfP field = q.field;
+                    const double crease = p.crease;
+                    q.exact = Faces::later([was = p, field, region, h, crease, mm] { return local({was}, *field, region, h, crease, mm); });
+                }
+                rest.pieces.push_back(std::move(q));
+            }
+            if (!fields.empty()) {
+                // Pieces that were a field already: one field, as they were.
+                Piece m = merged(fields, sdf_sub(field_of(fields), cutter, kk));
+                rest.pieces.push_back(std::move(m));
+            }
+            into = std::move(rest);
+        }
         return;
     }
     Box cb;
@@ -332,9 +618,9 @@ void join(Solid& into, const Solid& s, Mode mode, double k) {
     const SdfP cutter = s.empty() ? nullptr : field_of(cut);
     std::vector<const Piece*> over;
     Solid rest;
-    const double pad = mode == Mode::Blend || mode == Mode::Carve ? k : 0;
+    rest.holes = into.holes;
     for (const Piece& p : into.pieces) {
-        if (mode == Mode::And ? p.bb.overlaps(cb, 0) : p.bb.overlaps(cb, pad)) over.push_back(&p);
+        if (mode == Mode::And ? p.bb.overlaps(cb, 0) : p.bb.overlaps(cb, k)) over.push_back(&p);
         else if (mode != Mode::And) rest.pieces.push_back(p);
     }
     if (mode == Mode::And && s.empty()) {
@@ -358,19 +644,38 @@ void join(Solid& into, const Solid& s, Mode mode, double k) {
             into = unite(into, s);
             return;
         }
+        Box bb;
+        for (const Piece* p : bo) bb.add(p->bb);
         Piece m = merged(over, sdf_blend(field_of(over), field_of(bo), k));
         for (const Piece* p : bo) m.bb.add(p->bb);
         m.bb.lo = m.bb.lo - V3{k, k, k}, m.bb.hi = m.bb.hi + V3{k, k, k};
+        // Where the two meet, and only there, the smooth union is meshed:
+        // apart from there it is the plain union of their exact faces.
+        bool exact = true;
+        for (const auto* list : {&over, &bo})
+            for (const Piece* p : *list) exact = exact && p->exact.known();
+        m.res = finest(over, bo, mm.cell);
+        if (exact) {
+            const double h = m.res;
+            std::vector<Piece> all;
+            for (const auto* list : {&over, &bo})
+                for (const Piece* p : *list) all.push_back(*p);
+            const Box whole = grown(m.bb, 3 * h), region = meet(grown(meet(grown(ab, k), grown(bb, k)), 2 * h), whole);
+            if (!region.empty() && volume_of(region) < 0.6 * volume_of(whole)) {
+                const SdfP field = m.field;
+                const double crease = m.crease;
+                m.exact = Faces::later([all, field, region, h, crease, mm] { return local(all, *field, region, h, crease, mm); });
+            }
+        }
         into = rest;
         into.pieces.push_back(std::move(m));
         into = unite(into, bother);
+        into.holes.insert(into.holes.end(), s.holes.begin(), s.holes.end());
         return;
     }
-    Piece m = merged(over, mode == Mode::And ? sdf_and(field_of(over), cutter) : sdf_sub(field_of(over), cutter, mode == Mode::Carve ? k : 0));
-    if (mode == Mode::And) {
-        m.bb.lo = {std::max(m.bb.lo.x, cb.lo.x), std::max(m.bb.lo.y, cb.lo.y), std::max(m.bb.lo.z, cb.lo.z)};
-        m.bb.hi = {std::min(m.bb.hi.x, cb.hi.x), std::min(m.bb.hi.y, cb.hi.y), std::min(m.bb.hi.z, cb.hi.z)};
-    }
+    Piece m = merged(over, sdf_and(field_of(over), cutter));
+    m.bb.lo = {std::max(m.bb.lo.x, cb.lo.x), std::max(m.bb.lo.y, cb.lo.y), std::max(m.bb.lo.z, cb.lo.z)};
+    m.bb.hi = {std::min(m.bb.hi.x, cb.hi.x), std::min(m.bb.hi.y, cb.hi.y), std::min(m.bb.hi.z, cb.hi.z)};
     into = rest;
     into.pieces.push_back(std::move(m));
 }
