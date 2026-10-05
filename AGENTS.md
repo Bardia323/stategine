@@ -184,6 +184,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `net::Cellular`, `net::Reconcile` (`net/Cellular.hpp`, `Reconcile.hpp`) | stalks, overlaps, restrictions and CPU/CUDA reconciliation derived from an ordinary state's data | network entities, a second world, private reconciliation ticks or GPU-owned reality |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; extruded and lathed models | lighting maths or mesh code inside a game |
 | `Modeler` (`domains/Modeler.hpp`) | a shape from a recipe, as text: primitives, cuts, arrays, macros, an imported `.obj` - its mesh a pure function of the recipe, closed, sharp where it should be; what Paint is to a texture (`docs/modeler.md`) | boxes placed by hand, a mesh built inside a game, a model loader of your own |
+| `Being` (`domains/Being.hpp`) | a creature: skeleton (joints), body (parts or a skin read from glTF), spirit (one driven arrow - clips blended, joints held, IK goals, each joint relaxing to its target at its stiffness), its own tempo from its scale | an animation player, a skeleton or IK of your own, a creature's private clock |
 
 Solvers and renderers are machinery inside the owning state, not new semantic
 worlds. Derive their inputs from its params; its arrows write results. Physics,
