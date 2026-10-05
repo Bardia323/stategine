@@ -544,6 +544,9 @@ std::vector<Violation> seams(const StateGraph& g);
 // floor, eye, crossing, look). A cut, a dissolve or any other way that is not seamless
 // is not a seam: it is a transition, and owes this nothing.
 std::vector<Violation> overlaps(const StateGraph& g);
+// The same for the `count` seams from the `first`th (fewer at the end): what
+// the engine's watch takes a few at a frame.
+std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::size_t count);
 
 }  // namespace laws
 

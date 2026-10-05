@@ -155,6 +155,7 @@ void Engine::focus_embed(Key name, bool on) {
 std::vector<std::string> Engine::check_graph() {
     watched_ = graph_.revision();
     last_watch_ = elapsed();
+    sweeping_ = false;  // all of it, now: a check in slices is no longer wanted
     std::vector<std::string> now = graph_.validate();
     // And every seam seamless: what its two sides say of their overlap agrees.
     for (const Violation& v : laws::overlaps(graph_))
@@ -162,6 +163,41 @@ std::vector<std::string> Engine::check_graph() {
     for (const std::string& p : now) report(p);
     if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
     return now;
+}
+
+// The watch's check, a slice of a frame at a time: first the graph's own
+// validate, then the seams' overlaps from where it left off, as many as fit in
+// the slice (one at least). Done, it reports what it found and the graph
+// counts as watched at the revision it began at - a graph that moved since is
+// looked at again, at the interval. What costs to find out is found out in
+// small pieces, never all in one frame's path.
+void Engine::watch_slice() {
+    const auto began = Clock::now();
+    if (!sweeping_) {
+        sweeping_ = true;
+        swept_structure_ = false;
+        sweep_revision_ = graph_.revision();
+        sweep_seam_ = 0;
+        sweep_found_.clear();
+    }
+    if (!swept_structure_) {
+        sweep_found_ = graph_.validate();
+        swept_structure_ = true;
+        return;
+    }
+    const double budget = watch_slice_ms_ * 1e-3;
+    while (sweep_seam_ < graph_.seams().size()) {
+        for (const Violation& v : laws::overlaps(graph_, sweep_seam_, 1))
+            if (!v.refused) sweep_found_.push_back(v.where + ": " + v.lhs + ": " + v.detail);
+        ++sweep_seam_;
+        if (std::chrono::duration<double>(Clock::now() - began).count() >= budget) break;
+    }
+    if (sweep_seam_ < graph_.seams().size()) return;
+    sweeping_ = false;
+    watched_ = sweep_revision_;
+    last_watch_ = elapsed();
+    for (const std::string& p : sweep_found_) report(p);
+    sweep_found_.clear();
 }
 
 const State* Engine::focused() const {
@@ -218,7 +254,15 @@ void Engine::tick(double dt) {
     });
     follow_portals();
     if (stack_.empty()) running_ = false;
-    if (graph_.revision() != watched_ && elapsed() - last_watch_ >= watch_interval_) check_graph();
+    if (graph_.revision() != watched_) {
+        // A strict engine, or one with no interval to spread it over, checks
+        // all of it the frame the graph moved; any other a slice a frame.
+        if (strict_ || watch_interval_ <= 0 || watch_slice_ms_ <= 0) {
+            if (elapsed() - last_watch_ >= watch_interval_) check_graph();
+        } else if (sweeping_ || elapsed() - last_watch_ >= watch_interval_) {
+            watch_slice();
+        }
+    }
 }
 
 void Engine::run(double target_fps, uint64_t max_frames) {

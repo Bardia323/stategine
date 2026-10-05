@@ -126,14 +126,12 @@ void GLWorldView::bind_feed(Key portal_element, const Spatial3D* world, int w, i
     if (f.world != world) f.drawn = false;
     f.world = world;
     f.live = live;
-    if (f.w != w || f.h != h || !f.out[0].valid()) {
+    const bool sized = f.w != w || f.h != h || !f.outs[0][0].valid();
+    if (sized) {
         f.w = std::max(1, w), f.h = std::max(1, h);
         f.rw = f.w, f.rh = f.h, f.div = 1, f.slack = 0;
-        // Written as the composite writes the screen, encoded; read back
-        // as the panel reads any picture, decoded. Two: one drawn while
-        // the other is shown, so a feed that sees its own screen sees the
-        // picture it made the frame before.
-        for (gl::RenderTarget& o : f.out) o.create(f.w, f.h, gl::GL_SRGB8_ALPHA8, 0, false);
+        for (auto& pair : f.outs)
+            for (gl::RenderTarget& o : pair) o.destroy();
         f.drawn = false;
     }
     if (!f.view) {
@@ -142,6 +140,40 @@ void GLWorldView::bind_feed(Key portal_element, const Spatial3D* world, int w, i
         f.view = std::make_unique<GLWorldView>(q);
     }
     f.view->set_fixed_step(fixed_step_);
+    f.view->keeps_sizes_ = true;
+    if (sized) {
+        // Written as the composite writes the screen, encoded; read back
+        // as the panel reads any picture, decoded. Two: one drawn while
+        // the other is shown, so a feed that sees its own screen sees the
+        // picture it made the frame before. Made at every size the screen
+        // may ask for (feed_detail) and kept, with the targets its view
+        // draws it with: the picture follows how big the screen is seen by
+        // taking the set that is there - not by making one mid-frame.
+        std::vector<std::pair<int, int>> sizes;
+        for (int d : {1, 2, 4, 8}) {
+            if (d > 1 && (!f.live || f.h / d < 64)) break;
+            for (gl::RenderTarget& o : f.outs[Feed::slot_of(d)]) {
+                o.create(std::max(1, f.w / d), std::max(1, f.h / d), gl::GL_SRGB8_ALPHA8, 0, false);
+                o.mipmap();  // (its levels made now: the first time is not when it is first drawn)
+            }
+            sizes.emplace_back(std::max(1, f.w / d), std::max(1, f.h / d));
+        }
+        f.view->sizes_ = std::move(sizes);
+        f.view->sizes_kept_ = false;
+    }
+}
+
+void GLWorldView::unbind_feed(Key portal_element) {
+    auto it = feeds_.find(portal_element);
+    if (it == feeds_.end()) return;
+    release_feed(it->second);
+    feeds_.erase(it);
+}
+
+void GLWorldView::release_feed(Feed& f) {
+    for (auto& pair : f.outs)
+        for (gl::RenderTarget& o : pair) o.destroy();
+    if (f.view) f.view->release_targets();
 }
 
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
@@ -208,14 +240,23 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             // seen from; any other shows the world from its own camera.
             f.eye = panel->params.num(Key{"eye"}, 0.0) > 0.5 ? panel : nullptr;
         }
-        for (auto it = feeds_.begin(); it != feeds_.end();)
-            it = it->second.from_graph && !it->second.seen ? feeds_.erase(it) : std::next(it);
+        for (auto it = feeds_.begin(); it != feeds_.end();) {
+            const bool gone = it->second.from_graph && !it->second.seen;
+            if (gone) release_feed(it->second);
+            it = gone ? feeds_.erase(it) : std::next(it);
+        }
     }
     // Feeds first, each whole, into its own picture: a screen showing a
     // world shows it as it is this frame. A feed is drawn if its screen
     // is in view here - or stands in a world another feed drawn shows.
     const auto feeds_from = std::chrono::steady_clock::now();
     int feed_views = 0;
+    // The sizes a feed's picture may be drawn at are made now (the picture
+    // having been made, or sized, since the last frame): not when a screen is
+    // walked up to.
+    if (!root_)
+        for (auto& [id, f] : feeds_)
+            if (f.view && !f.view->sizes_kept_) f.view->keep_sizes(f.view->sizes_);
     if (!root_) {
         std::vector<std::pair<Key, Feed*>> due;
         std::vector<const Spatial3D*> shown;
@@ -280,7 +321,10 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
                 const int nw = std::max(1, f.w / f.div), nh = std::max(1, f.h / f.div);
                 if (nw != f.rw || nh != f.rh) {
                     f.rw = nw, f.rh = nh;
-                    for (gl::RenderTarget& o : f.out) o.create(f.rw, f.rh, gl::GL_SRGB8_ALPHA8, 0, false);
+                    // (Made already, with the feed; one asked for since -
+                    // a feed that was not `live` then - is made now.)
+                    for (int i = 0; i < 2; ++i)
+                        if (!f.out()[i].valid()) f.out()[i].create(f.rw, f.rh, gl::GL_SRGB8_ALPHA8, 0, false);
                 }
             }
             // Nothing it is made from has changed: the picture it has is the one.
@@ -289,12 +333,12 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             f.drawn_of = key;
             f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
             f.view->root_ = this;
-            f.view->output_ = &f.out[1 - f.front];
+            f.view->output_ = &f.out()[1 - f.front];
             f.view->eye_override_ = f.eye;
             f.view->render(*f.world, f.rw, f.rh);
             f.view->output_ = nullptr;
             f.view->eye_override_ = nullptr;
-            f.out[1 - f.front].mipmap();
+            f.out()[1 - f.front].mipmap();
             f.front = 1 - f.front;
             ++feed_views;
         }
@@ -442,6 +486,10 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         if (root_views >= root_pool_.size()) {
             if (root_pool_.size() >= kRootViewsMost) continue;
             make_root_view(root_pool_.emplace_back(), target_w_, target_h_);
+            // (The same for the sizes this view is also drawn at, so that a
+            // picture changing size does not make one then.)
+            for (Targets& t : parked_)
+                while (t.roots.size() < root_pool_.size() && t.roots.size() < kRootViewsMost) make_root_view(t.roots.emplace_back(), t.w, t.h);
         }
         RootView& view = root_pool_[root_views++];
         host_air_ = air_of(world);
@@ -553,6 +601,76 @@ void GLWorldView::ensure_resources() {
 
 void GLWorldView::ensure_targets(int w, int h) {
     if (w == target_w_ && h == target_h_) return;
+    if (keeps_sizes_) {
+        // The set that was drawn into is put by, and the one of this size
+        // taken (or made: the first time only).
+        if (target_w_ > 0) {
+            Targets old;
+            swap_targets(old);
+            old.w = target_w_, old.h = target_h_;
+            parked_.push_back(std::move(old));
+        }
+        const auto at = std::find_if(parked_.begin(), parked_.end(), [&](const Targets& t) { return t.w == w && t.h == h; });
+        if (at != parked_.end()) {
+            swap_targets(*at);
+            parked_.erase(at);
+            target_w_ = w;
+            target_h_ = h;
+            return;
+        }
+    }
+    make_targets(w, h);
+}
+
+void GLWorldView::swap_targets(Targets& t) {
+    std::swap(scene_target_, t.scene);
+    std::swap(resolve_, t.resolve);
+    std::swap(depth_, t.depth);
+    std::swap(lit_, t.lit);
+    std::swap(ao_a_, t.ao_a);
+    std::swap(ao_b_, t.ao_b);
+    std::swap(bloom_a_, t.bloom_a);
+    std::swap(bloom_b_, t.bloom_b);
+    for (int i = 0; i < kBloomLevels; ++i) std::swap(bloom_chain_[i], t.chain[i]);
+    std::swap(bloom_levels_, t.levels);
+    root_pool_.swap(t.roots);  // (the vectors' own storage goes with them: doorways hold their pictures)
+    pool_.swap(t.nested);
+}
+
+void GLWorldView::keep_sizes(const std::vector<std::pair<int, int>>& sizes) {
+    sizes_kept_ = true;
+    const auto wanted = [&](int w, int h) { return std::find(sizes.begin(), sizes.end(), std::make_pair(w, h)) != sizes.end(); };
+    // What is kept is what the picture may be made at: the sets of sizes it
+    // is no longer are given back.
+    const auto give_back = [](Targets& t) {
+        for (gl::RenderTarget* r : {&t.scene, &t.resolve, &t.depth, &t.lit, &t.ao_a, &t.ao_b, &t.bloom_a, &t.bloom_b}) r->destroy();
+        for (gl::RenderTarget& r : t.chain) r.destroy();
+        for (RootView& v : t.roots) v.ms.destroy(), v.target.destroy();
+        for (Nested& n : t.nested) n.target.destroy();
+    };
+    for (auto it = parked_.begin(); it != parked_.end();)
+        if (wanted(it->w, it->h)) ++it;
+        else give_back(*it), it = parked_.erase(it);
+    if (target_w_ > 0 && !wanted(target_w_, target_h_)) {
+        Targets old;
+        swap_targets(old);
+        give_back(old);
+        target_w_ = target_h_ = 0;
+    }
+    if (sizes.empty()) return;
+    // Each made now - when the picture is made or sized, not when somebody
+    // walks up to a screen - with no pictures for doorways yet: those are
+    // made as the world in the picture first shows one (render).
+    ensure_resources();
+    for (const auto& [w, h] : sizes) ensure_targets(w, h);
+}
+
+void GLWorldView::release_targets() {
+    keep_sizes({});
+    parked_.clear();
+}
+
+void GLWorldView::make_targets(int w, int h) {
     target_w_ = w;
     target_h_ = h;
     // As many samples as asked for, if the driver has them.
@@ -565,14 +683,18 @@ void GLWorldView::ensure_targets(int w, int h) {
     lit_.create(w, h, gl::GL_RGBA16F, 0, false);
     // The views through doorways seen through doorways, and the last frame's
     // picture: made now, with the rest, so that no step through a doorway
-    // waits on one being made.
+    // waits on one being made. (A view drawn for another - a feed's, a
+    // doorway's own look - makes them as a doorway is first seen in it: most
+    // show none, and each is the size of the picture.)
     root_pool_.reserve(kRootViewsMost);  // (never moved: doorways hold their pictures)
-    root_pool_.resize(std::max(root_pool_.size(), kRootViews));
-    for (RootView& v : root_pool_) make_root_view(v, w, h);
-    pool_.resize(std::max(pool_.size(), kViewPool));
-    for (Nested& n : pool_) {
-        fit(n, w / 4, h / 4, true);
-        n.frame = 0;
+    if (!keeps_sizes_ && !root_) {
+        root_pool_.resize(std::max(root_pool_.size(), kRootViews));
+        for (RootView& v : root_pool_) make_root_view(v, w, h);
+        pool_.resize(std::max(pool_.size(), kViewPool));
+        for (Nested& n : pool_) {
+            fit(n, w / 4, h / 4, true);
+            n.frame = 0;
+        }
     }
     // Full resolution: at half, the occlusion's edges stair-step over the
     // antialiased picture.
@@ -625,8 +747,9 @@ void GLWorldView::aim_rays(const Spatial3D& first) {
 
 auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> std::vector<Light> {
     std::vector<Light> out;
-    for (const auto& e : room.elements()) {
-        if (e.kind != kinds::light || !e.alive) continue;
+    for (const Element* ep : index_of(room).lights) {
+        const Element& e = *ep;
+        if (!e.alive) continue;
         Light l=light_of(room,e,pose);
         if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
             l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
@@ -784,8 +907,64 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
     scene_->set("uDoorCount", count);
 }
 
+namespace {
+uint64_t fnv(uint64_t h, uint64_t v) { return (h ^ v) * 1099511628211ULL; }
+uint64_t bits_of(double v) {
+    uint64_t b = 0;
+    std::memcpy(&b, &v, sizeof b);
+    return b;
+}
+// The pixels of a light's depth map (n square) that a sphere can fall on, a
+// pixel to spare; the whole map if it could fall anywhere (it reaches behind
+// the light).
+void depth_rect(const gl::Mat4& vp, const gl::Vec3& c, float r, int n, int rect[4]) {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (int k = 0; k < 8; ++k) {
+        const float x = c.x + ((k & 1) ? r : -r), y = c.y + ((k & 2) ? r : -r), z = c.z + ((k & 4) ? r : -r);
+        const float w = vp.m[3] * x + vp.m[7] * y + vp.m[11] * z + vp.m[15];
+        if (w <= 1e-3f) {
+            rect[0] = rect[1] = 0, rect[2] = rect[3] = n;
+            return;
+        }
+        const float u = (vp.m[0] * x + vp.m[4] * y + vp.m[8] * z + vp.m[12]) / w;
+        const float v = (vp.m[1] * x + vp.m[5] * y + vp.m[9] * z + vp.m[13]) / w;
+        x0 = std::min(x0, u), x1 = std::max(x1, u), y0 = std::min(y0, v), y1 = std::max(y1, v);
+    }
+    const float h = static_cast<float>(n) * 0.5f;
+    rect[0] = std::clamp(static_cast<int>(std::floor((x0 + 1.0f) * h)) - 1, 0, n);
+    rect[1] = std::clamp(static_cast<int>(std::floor((y0 + 1.0f) * h)) - 1, 0, n);
+    rect[2] = std::clamp(static_cast<int>(std::ceil((x1 + 1.0f) * h)) + 1, 0, n);
+    rect[3] = std::clamp(static_cast<int>(std::ceil((y1 + 1.0f) * h)) + 1, 0, n);
+}
+}  // namespace
+
 float GLWorldView::covered(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut) const {
-    return portal_occlusion(room,portal,door,half_w,half_h,shut);
+    // What stands in a doorway is what stands near it: found by walking every
+    // thing in the room, so kept while the doorway is as it was, nothing at
+    // rest has changed or come to rest (the room's flips), and nothing that
+    // moves is near it.
+    const RoomCasters* rc = nullptr;
+    for (const auto& entry : room_casters_)
+        if (entry.second->state == &room && entry.second->refreshed == frame_count_) rc = entry.second.get();
+    if (!rc) return portal_occlusion(room,portal,door,half_w,half_h,shut);
+    uint64_t key = fnv(fnv(chain_stamp(room, portal), rc->flip_count), reinterpret_cast<std::uintptr_t>(rc));
+    key = fnv(key, rc->structure);
+    // (Only what stands within reach of the doorway is looked at by
+    // portal_occlusion, in the room's own frame.)
+    const double reach = half_w + 1.6;
+    for (uint32_t k : rc->movers) {
+        const Caster& c = rc->list[k];
+        const double dx = c.lx - door.position.x, dz = c.lz - door.position.z;
+        if (dx * dx + dz * dz <= reach * reach) key = fnv(fnv(key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+    }
+    OccMemo& memo = occlusion_[&portal];
+    if (memo.key != key || !memo.known) {
+        bool is_shut = false;
+        memo.value = portal_occlusion(room,portal,door,half_w,half_h,is_shut);
+        memo.shut = is_shut, memo.key = key, memo.known = true;
+    }
+    shut = memo.shut;
+    return memo.value;
 }
 
 auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed) -> std::vector<Light> {
@@ -847,6 +1026,27 @@ const Element* GLWorldView::back_portal(const Spatial3D& guest, const Spatial3D&
     return nullptr;
 }
 
+// One layer of a depth array copied to the same layer of another (or the part of it in `rect`): a
+// map's still casters kept, or laid again under what moves.
+void GLWorldView::copy_depth(const gl::ShadowArray& from, const gl::ShadowArray& to, int layer, const int* rect) {
+    constexpr gl::GLenum kFramebufferBinding = 0x8CA6;
+    gl::GLint read = 0, draw = 0;
+    from.bind_layer(layer);
+    gl::glGetIntegerv(kFramebufferBinding, &read);
+    to.bind_layer(layer);
+    gl::glGetIntegerv(kFramebufferBinding, &draw);
+    const int n = to.size();
+    const int whole[4] = {0, 0, n, n};
+    if (!rect) rect = whole;
+    if (rect[0] < rect[2] && rect[1] < rect[3]) {
+        gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, static_cast<gl::GLuint>(read));
+        gl::glBindFramebuffer(gl::GL_DRAW_FRAMEBUFFER, static_cast<gl::GLuint>(draw));
+        gl::glBlitFramebuffer(rect[0], rect[1], rect[2], rect[3], rect[0], rect[1], rect[2], rect[3], gl::GL_DEPTH_BUFFER_BIT, gl::GL_NEAREST);
+    }
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, static_cast<gl::GLuint>(draw));
+    gl::glViewport(0, 0, n, n);
+}
+
 void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera& cam, float aspect, gl::RenderTarget& target, int depth, float znear, Key skip_portal, const std::vector<HalfSpace>& clips) {
     // A space that wraps is seen in every copy of it the eye can reach -
     // from inside it or through any doorway onto it: every view is drawn
@@ -874,9 +1074,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
     }
     std::size_t shadowed = 0;
+    // What casts, in each room seen: kept from frame to frame, read again
+    // only where its own stamps moved (refresh_casters).
+    const auto sig_from = std::chrono::steady_clock::now();
+    std::vector<RoomCasters*> entries(rooms.size(), nullptr);
+    for (std::size_t r = 0; r < rooms.size(); ++r)
+        if (rooms[r].room && !rooms[r].image) entries[r] = &casters_in(rooms[r], r);
+    times_.signature += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sig_from).count();
     const auto lights_from = std::chrono::steady_clock::now();
-    const uint64_t rooms_at_now = rooms_key(rooms);
-    const uint64_t lit_key = (rooms_at_now ^ worlds_stamp()) * 1099511628211ULL;
+    const uint64_t lit_key = (lights_key(rooms, entries) ^ worlds_stamp()) * 1099511628211ULL;
     if (lights_memo_.size() > 64) lights_memo_.clear();
     auto lit_memo = lights_memo_.find(lit_key);
     if (lit_memo == lights_memo_.end()) {
@@ -983,22 +1189,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lit = (lit ^ reinterpret_cast<std::uintptr_t>(root_)) * 1099511628211ULL;
     }
     ShadowSet& maps = shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
-    if (maps.array.ensure(shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1))))
-        for (uint64_t& s : maps.sig) s = 0;
-    const auto sig_from = std::chrono::steady_clock::now();
-    if (casters_memo_.size() > 64) casters_memo_.clear();
-    auto cast_memo = casters_memo_.find(rooms_at_now);
-    if (cast_memo == casters_memo_.end()) cast_memo = casters_memo_.emplace(rooms_at_now, casters_of(rooms)).first, ++times_.casters_listed;
-    const std::vector<Caster>& casters = cast_memo->second;
-    times_.signature += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sig_from).count();
-    // Where each room stands is part of where its things are.
-    uint64_t rooms_at = 1469598103934665603ULL;
-    for (const PlacedRoom& placed : rooms) {
-        if (!placed.room) continue;
-        rooms_at = mix_bits(rooms_at, static_cast<float>(placed.pose.position.x));
-        rooms_at = mix_bits(rooms_at, static_cast<float>(placed.pose.position.z));
-        rooms_at = mix_bits(rooms_at, static_cast<float>(placed.pose.yaw));
-    }
+    if (maps.array.ensure(shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
+    // Which rooms' casters these maps are laid from (their lists, and where
+    // each room stands, which is part of the key of each).
+    uint64_t layout_now = 1469598103934665603ULL;
+    for (const RoomCasters* rc : entries)
+        if (rc) layout_now = fnv(layout_now, reinterpret_cast<std::uintptr_t>(rc));
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glEnable(gl::GL_CULL_FACE);
     // Faces towards the lamp: the shadow starts where the thing does (its
@@ -1037,73 +1233,145 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (room_now < rooms.size()) flush_batches(caster, false);
     };
     const auto layers_from = std::chrono::steady_clock::now();
-    std::vector<const Caster*> sees;
+    std::vector<const Caster*> sees, movers_in, extras_in;
     bool unshadowed = false;
-    // The view of the eye's own room draws every map whose casters moved,
-    // the frame they moved: a shadow is where its thing is, never a frame or
-    // two behind it - and, of several lamps, never some shadows behind the
-    // others, out of step. The views one doorway on draw a few a frame,
-    // taking turns from frame to frame; past that a map stands as last
-    // drawn, with its own box, and the frame does not wait on every lamp at
-    // once. (One never drawn is drawn now.) Only a map whose box is fixed
-    // where it is may wait: one whose box goes with the eye (a sun's) stood
-    // as it was covers where the eye was, not where it is, and is drawn every
-    // frame it changes.
-    int own_budget = kOwnShadowMaps;
+    // A map holds what stands still in the volume its light sees, and what
+    // moves in it, drawn over. What stands still is laid once, and kept as it
+    // was laid (ShadowSet::still) while nothing at rest in that volume has
+    // changed or come to rest (the rooms' flips): a creature moving every
+    // frame costs a copy and its own few casters, never the room's again.
+    // A map is laid again only when what stands still has changed in the
+    // volume - or its lamp, or its box, has - and then: the view of the eye's
+    // own room lays every map that must, the frame it must: a shadow is where
+    // its thing is, never a frame or two behind it - and, of several lamps,
+    // never some shadows behind the others, out of step. The views one doorway
+    // on lay a few a frame, taking turns from frame to frame; past that a map
+    // stands as last drawn, with its own box, and the frame does not wait on
+    // every lamp at once. (One never drawn is drawn now.) Only a map whose box
+    // is fixed where it is may wait: one whose box goes with the eye (a sun's)
+    // stood as it was covers where the eye was, not where it is, and is laid
+    // every frame it changes. What moves is drawn the frame it moves.
+    // The views seen through doorways share the frame's maps (shadow_budget_):
+    // the ones that have waited longest go first, then the nearest the eye,
+    // so that a view that has only just come into sight takes a few frames to
+    // be lit by every lamp, never a frame to be lit by them all.
+    std::array<std::size_t, kShadowMaps> order{};
+    for (std::size_t n = 0; n < layers; ++n) order[n] = (n + frame_count_) % layers;
+    if (depth >= 1 && layers > 1) {
+        const auto far_of = [&](std::size_t k) {
+            const Light& l = lights[layer_light[k]];
+            if (l.sun) return 0.0f;
+            const gl::Vec3 d = l.pos - cam.eye;
+            return gl::dot(d, d);
+        };
+        std::stable_sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(layers), [&](std::size_t a, std::size_t b) {
+            if (maps.waits[a] != maps.waits[b]) return maps.waits[a] > maps.waits[b];
+            return far_of(a) < far_of(b);
+        });
+    }
+    const int layer_count = static_cast<int>(std::max<std::size_t>(layers, 1));
+    // The still layers are made when something first moves in a map, and
+    // grown with the maps: grown, they are empty, and the maps that had
+    // something laid in them lay it again when they next change.
+    const auto keep_still = [&](std::size_t i) {
+        if (maps.still.ensure(shadow_px, layer_count))
+            for (std::size_t j = 0; j < kShadowMaps; ++j)
+                if (j != i) maps.base[j] = false, maps.still_at[j] = 0;
+    };
     for (std::size_t n = 0; n < layers; ++n) {
-        const std::size_t i = (n + frame_count_) % layers;
-        // What this lamp's map holds: the casters in the volume it sees. A
-        // map stands while those stand - a mug moved in another corner of the
-        // house is nothing to it - and it is drawn with those alone.
+        const std::size_t i = order[n];
         const Light& li = lights[layer_light[i]];
-        const bool with_eye = li.sun && !li.pinned;
-        // Which light this layer holds now: a map is that light's, and one
-        // that was another's (the lights came in another order) is drawn now,
-        // never left standing as some other lamp's shadow.
-        uint64_t of = (mix_bits(1469598103934665603ULL, li.sun ? 1.0f : 0.0f) ^ li.gate) * 1099511628211ULL;
-        for (float f : {li.color.x, li.color.y, li.color.z, li.power, li.extent, near_of[layer_light[i]] == static_cast<float>(i) ? 1.0f : 0.0f})
-            of = mix_bits(of, f);
-        if (!li.sun) of = mix_bits(mix_bits(mix_bits(of, li.pos.x), li.pos.y), li.pos.z);
-        const bool same = maps.of[i] == of;
+        // Which light this layer holds now, as far as a depth map goes: a map
+        // is that light's, and one that was another's (the lights came in
+        // another order) is laid now, never left standing as some other
+        // lamp's shadow. (Colour and power are not in a depth map: a sun's go
+        // with the hour.)
+        const uint64_t ident = fnv(fnv(fnv(li.sun ? 1 : 2, li.gate), near_of[layer_light[i]] == static_cast<float>(i) ? 1 : 0), li.sun ? 0 : 1);
         const Frustum volume = frustum_of(light_vp[i]);
-        uint64_t sig = rooms_at ^ (0x9E3779B97F4A7C15ULL * (i + 1));
-        for (float f : light_vp[i].m) sig = mix_bits(sig, f);
-        sees.clear();
-        for (const Caster& c : casters) {
-            if (!shades(c, volume, li)) continue;
-            sig = (sig ^ reinterpret_cast<std::uintptr_t>(c.element)) * 1099511628211ULL;
-            sig = (sig ^ c.where) * 1099511628211ULL;
-            sees.push_back(&c);
-        }
-        if (maps.sig[i] == sig) continue;
-        // A view seen through another view draws within the frame's budget.
-        const bool may_wait = same && !with_eye;
-        if (depth > 1 && shadow_budget_ <= 0 && may_wait) {
-            if (maps.sig[i] == 0) unshadowed = true;  // never drawn: nothing to cast with yet
-            else light_vp[i] = maps.vp[i];            // as last drawn, with its own box
-            continue;
-        }
-        if (depth == 1 && maps.sig[i] != 0 && may_wait) {
-            if (own_budget <= 0) {
-                light_vp[i] = maps.vp[i];
-                continue;
+        // What moves in the volume, and the terrain and panels in it.
+        movers_in.clear(), extras_in.clear();
+        uint64_t movers_sig = 0, layout = layout_now;
+        for (const RoomCasters* rc : entries) {
+            if (!rc) continue;
+            for (uint32_t k : rc->movers) {
+                const Caster& c = rc->list[k];
+                if (!shades(c, volume, li)) continue;
+                movers_in.push_back(&c);
+                movers_sig = fnv(fnv(movers_sig, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
             }
-            --own_budget;
+            for (const Caster& c : rc->extras) {
+                if (!shades(c, volume, li)) continue;
+                extras_in.push_back(&c);
+                layout = fnv(fnv(layout, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+            }
         }
-        if (depth > 1) --shadow_budget_;
-        maps.sig[i] = sig;
-        maps.vp[i] = light_vp[i];
-        maps.of[i] = of;
+        // Whether what stands still, as laid, still holds: the same light, box
+        // and rooms - and nothing at rest that this light sees has changed.
+        bool at_rest = maps.still_at[i] != 0 && maps.ident[i] == ident && maps.layout[i] == layout &&
+                       std::memcmp(maps.vp[i].m, light_vp[i].m, sizeof light_vp[i].m) == 0;
+        for (std::size_t r = 0; at_rest && r < entries.size(); ++r) {
+            const RoomCasters* rc = entries[r];
+            if (!rc) continue;
+            if (rc->trimmed > maps.still_at[i]) at_rest = false;
+            for (auto f = rc->flips.rbegin(); at_rest && f != rc->flips.rend() && f->at > maps.still_at[i]; ++f) {
+                Caster there;
+                there.centre = f->centre, there.radius = f->radius, there.bounded = !f->all;
+                if (f->all || shades(there, volume, li)) at_rest = false;
+            }
+        }
+        if (at_rest && maps.sig[i] != 0 && maps.movers[i] == movers_sig) continue;
+        if (!at_rest) {
+            if (depth >= 1) {
+                // A map that is out of date waits its turn, standing as last
+                // drawn, with its own box: the box of a sun that goes with
+                // the eye is moved in whole texels, so what stands in its
+                // overlap is the same - it may wait a few frames, not for ever.
+                const bool first = maps.sig[i] == 0;  // never drawn: it is drawn now, if there are maps
+                const bool may_wait = !first && maps.ident[i] == ident && maps.waits[i] < kShadowWaits;
+                if (shadow_budget_ <= (first ? -kFirstShadowMaps : may_wait ? 0 : -kNestedShadowMaps)) {
+                    ++maps.waits[i];
+                    if (first) unshadowed = true;  // nothing to cast with yet
+                    else light_vp[i] = maps.vp[i];  // as last drawn, with its own box
+                    continue;
+                }
+                --shadow_budget_;
+            }
+            maps.waits[i] = 0;
+        }
         ++times_.shadow_maps;
-        times_.shadow_casters += static_cast<int>(sees.size());
         if (!caster_ready) {
             caster.use();
             apply_uniforms(caster, post_, passes::shadow);
             caster.set("uInstanced", 0);
             caster_ready = true;
         }
-        maps.array.bind_layer(static_cast<int>(i));
-        gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
+        const int layer = static_cast<int>(i);
+        // Where on the map what moves falls: that much is laid again from what
+        // stands still, never the whole map.
+        int rect[4] = {0, 0, 0, 0};
+        for (const Caster* c : movers_in) {
+            int r[4];
+            depth_rect(light_vp[i], c->centre, c->radius, shadow_px, r);
+            if (rect[0] >= rect[2]) std::copy(r, r + 4, rect);
+            else rect[0] = std::min(rect[0], r[0]), rect[1] = std::min(rect[1], r[1]), rect[2] = std::max(rect[2], r[2]), rect[3] = std::max(rect[3], r[3]);
+        }
+        if (!at_rest) {
+            maps.vp[i] = light_vp[i];
+            maps.ident[i] = ident;
+            maps.array.bind_layer(layer);
+            gl::glClear(gl::GL_DEPTH_BUFFER_BIT);
+        } else if (maps.base[i]) {
+            copy_depth(maps.still, maps.array, layer, maps.mrect[i]);
+        } else if (!movers_in.empty()) {
+            // Laid with nothing moving in it, and something now does: what
+            // stands in it is what stands still, kept.
+            keep_still(i);
+            copy_depth(maps.array, maps.still, layer);
+            maps.base[i] = true;
+            maps.array.bind_layer(layer);  // what moves is drawn on the map, never on what stands still
+        } else {
+            maps.array.bind_layer(layer);
+        }
         caster.set("uLightViewProj", light_vp[i]);
         // Light from beyond a doorway is kept out only by what stands on
         // this side of it - the room behind the opening's plane is the
@@ -1116,7 +1384,35 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             gl::glDisable(gl::GL_CLIP_DISTANCE0);
             caster.set("uCasterSide", 0.0f, 0.0f, 0.0f, 1.0f);
         }
-        draw_casters(sees);
+        if (!at_rest) {
+            sees.clear();
+            for (const RoomCasters* rc : entries) {
+                if (!rc) continue;
+                for (const Caster& c : rc->list)
+                    if (c.on && !c.mover && shades(c, volume, li)) sees.push_back(&c);
+            }
+            sees.insert(sees.end(), extras_in.begin(), extras_in.end());
+            times_.shadow_casters += static_cast<int>(sees.size());
+            draw_casters(sees);
+            maps.still_at[i] = flip_clock_;
+            maps.layout[i] = layout;
+            maps.base[i] = false;
+            // Something moves in it: what stands still is kept, to be laid under
+            // it each frame it moves.
+            if (!movers_in.empty()) {
+                keep_still(i);
+                copy_depth(maps.array, maps.still, layer);
+                maps.base[i] = true;
+                maps.array.bind_layer(layer);
+            }
+        }
+        if (!movers_in.empty()) {
+            times_.shadow_casters += static_cast<int>(movers_in.size());
+            draw_casters(movers_in);
+        }
+        maps.movers[i] = movers_sig;
+        std::copy(rect, rect + 4, maps.mrect[i]);
+        maps.sig[i] = fnv(fnv(maps.layout[i], maps.still_at[i]), movers_sig) | 1;
     }
     times_.layers_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - layers_from).count();
     gl::glDisable(gl::GL_CLIP_DISTANCE0);
@@ -1479,11 +1775,15 @@ GLWorldView::HostAir GLWorldView::air_of(const Spatial3D& world) const {
 
 void GLWorldView::fit(Nested& n, int w, int h, bool anew) {
     // As big as the part of the screen it is given - grown in steps of 128
-    // pixels, never past the screen: a few sizes, each made once.
+    // pixels, never past the screen: a few sizes, each made once. Grown ahead
+    // of what it is asked for (a quarter more, and half as much again as it
+    // was): a doorway coming near grows by a pixel or two a frame, and would
+    // otherwise be made again at every step of 128.
     const auto step = [](int v, int most) { return std::min(most, (std::max(v, 1) + 127) / 128 * 128); };
     if (!anew && n.target.valid() && n.target.width() >= w && n.target.height() >= h) return;
     const int was_w = anew || !n.target.valid() ? 0 : n.target.width(), was_h = anew || !n.target.valid() ? 0 : n.target.height();
-    n.target.create(step(std::max(w, was_w), target_w_), step(std::max(h, was_h), target_h_), gl::GL_RGBA16F, 0, true);
+    const auto ahead = [](int need, int was) { return was > 0 ? std::max(need + need / 4, was + was / 2) : need; };
+    n.target.create(step(ahead(w, was_w), target_w_), step(ahead(h, was_h), target_h_), gl::GL_RGBA16F, 0, true);
     n.target.bind();
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 }
@@ -2257,22 +2557,75 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
     }
     // ...each drawn before the view that shows it, the deepest first.
     std::stable_sort(draw.begin(), draw.end(), [&](std::size_t x, std::size_t y) { return jobs_[x].depth > jobs_[y].depth; });
+    // Drawn only where its doorway is on the screen, at the screen's own
+    // pixels, into a picture as big as that: a view costs what of the
+    // screen it covers. (Its rect to the pixel, a pixel over, so that it
+    // is sampled one to one.)
+    const float W = static_cast<float>(target_w_), H = static_cast<float>(target_h_);
+    struct Place {
+        float x0, y0, x1, y1;
+        int w() const { return static_cast<int>(x1 - x0); }
+        int h() const { return static_cast<int>(y1 - y0); }
+    };
+    std::vector<Place> places(draw.size());
+    for (std::size_t k = 0; k < draw.size(); ++k) {
+        const Rect& seen = jobs_[draw[k]].seen;
+        places[k] = Place{std::max(0.0f, std::floor((seen.x0 + 1) * 0.5f * W) - 1), std::max(0.0f, std::floor((seen.y0 + 1) * 0.5f * H) - 1),
+                          std::min(W, std::ceil((seen.x1 + 1) * 0.5f * W) + 1), std::min(H, std::ceil((seen.y1 + 1) * 0.5f * H) + 1)};
+    }
+    // A view keeps the slot it had (by the way the eye came to it): the
+    // pictures are handed out by what a view is, not by where it ranks in
+    // the frame's sizes - which two views of a size swap as one grows past
+    // the other, and each would be made again at the other's size. A view
+    // with none is given the free slot that holds it most snugly; if none
+    // does, the biggest free one, grown (the fewest pixels made again).
+    std::vector<std::size_t> slot(draw.size(), pool_.size());
+    std::vector<char> taken(pool_.size(), 0);
+    for (std::size_t k = 0; k < draw.size(); ++k) {
+        const auto b = bound_.find(jobs_[draw[k]].key);
+        if (b == bound_.end() || b->second >= pool_.size() || taken[b->second] || pool_[b->second].owner != b->first) continue;
+        slot[k] = b->second;
+        taken[b->second] = 1;
+    }
+    std::vector<std::size_t> loose;
+    for (std::size_t k = 0; k < draw.size(); ++k)
+        if (slot[k] == pool_.size()) loose.push_back(k);
+    std::stable_sort(loose.begin(), loose.end(), [&](std::size_t x, std::size_t y) { return places[x].w() * places[x].h() > places[y].w() * places[y].h(); });
+    for (std::size_t k : loose) {
+        const int need_w = places[k].w(), need_h = places[k].h();
+        std::size_t snug = pool_.size(), biggest = pool_.size();
+        long snug_area = 0, biggest_area = -1;
+        for (std::size_t c = 0; c < pool_.size(); ++c) {
+            if (taken[c]) continue;
+            const gl::RenderTarget& t = pool_[c].target;
+            const long area = static_cast<long>(t.width()) * t.height();
+            if (t.valid() && t.width() >= need_w && t.height() >= need_h && (snug == pool_.size() || area < snug_area)) snug = c, snug_area = area;
+            if (area > biggest_area) biggest = c, biggest_area = area;
+        }
+        std::size_t pick = snug != pool_.size() ? snug : biggest;
+        if (pick == pool_.size()) {  // none free: another slot
+            pool_.emplace_back();
+            taken.push_back(0);
+            pick = pool_.size() - 1;
+        }
+        slot[k] = pick;
+        taken[pick] = 1;
+    }
+    // (Views gone from sight leave their names behind: let those go.)
+    if (bound_.size() > 4 * pool_.size() + 64)
+        for (auto it = bound_.begin(); it != bound_.end();)
+            it = it->second >= pool_.size() || pool_[it->second].owner != it->first ? bound_.erase(it) : std::next(it);
     slot_.clear();
     for (std::size_t k = 0; k < draw.size(); ++k) {
         const std::size_t i = draw[k];
         const ViewJob& j = jobs_[i];
-        if (k >= pool_.size()) pool_.emplace_back();
-        Nested& n = pool_[k];
-        slot_[j.key] = k;
+        Nested& n = pool_[slot[k]];
+        slot_[j.key] = slot[k];
+        n.owner = j.key;
+        bound_[j.key] = slot[k];
         const Element* back = !j.wp->back.empty() ? j.wp->world->find(j.wp->back) : back_portal(*j.wp->world, *j.host);
         path_ = j.key;
-        // Drawn only where its doorway is on the screen, at the screen's own
-        // pixels, into a picture as big as that: a view costs what of the
-        // screen it covers. (Its rect to the pixel, a pixel over, so that it
-        // is sampled one to one.)
-        const float W = static_cast<float>(target_w_), H = static_cast<float>(target_h_);
-        const float px0 = std::max(0.0f, std::floor((j.seen.x0 + 1) * 0.5f * W) - 1), px1 = std::min(W, std::ceil((j.seen.x1 + 1) * 0.5f * W) + 1);
-        const float py0 = std::max(0.0f, std::floor((j.seen.y0 + 1) * 0.5f * H) - 1), py1 = std::min(H, std::ceil((j.seen.y1 + 1) * 0.5f * H) + 1);
+        const float px0 = places[k].x0, py0 = places[k].y0, px1 = places[k].x1, py1 = places[k].y1;
         fit(n, static_cast<int>(px1 - px0), static_cast<int>(py1 - py0));
         n.rect = Rect{px0 / W * 2 - 1, py0 / H * 2 - 1, px1 / W * 2 - 1, py1 / H * 2 - 1};
         n.fx = (px1 - px0) / static_cast<float>(n.target.width()), n.fy = (py1 - py0) / static_cast<float>(n.target.height());
@@ -2983,6 +3336,13 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
     return names[i][static_cast<std::size_t>(field)].c_str();
 }
 
+void GLWorldView::ShadowSet::forget() {
+    for (std::size_t i = 0; i < kShadowMaps; ++i) {
+        sig[i] = ident[i] = still_at[i] = layout[i] = movers[i] = 0, waits[i] = 0, base[i] = false;
+        mrect[i][0] = mrect[i][1] = mrect[i][2] = mrect[i][3] = 0;
+    }
+}
+
 auto GLWorldView::shadows_for(const void* world, const void* view) -> ShadowSet& {
     // Never more than the views there can be: past that, the set asked for
     // longest ago goes - one, never all of them at once (every view would
@@ -3066,94 +3426,227 @@ uint64_t GLWorldView::stamp_of(const State& s) const {
     return at.second;
 }
 
-uint64_t GLWorldView::rooms_key(const std::vector<PlacedRoom>& rooms) const {
-    uint64_t h = 1469598103934665603ULL;
-    const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
-    for (const PlacedRoom& p : rooms) {
-        if (!p.room || p.image) continue;
-        mix(reinterpret_cast<std::uintptr_t>(p.room));
-        mix(stamp_of(*p.room));
-        for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) {
-            uint64_t b = 0;
-            std::memcpy(&b, &v, sizeof b);
-            mix(b);
-        }
-        for (Key d : p.doorways) mix(std::hash<Key>{}(d));
+auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
+    KindIndex& ix = kind_index_[&s];
+    if (ix.structure == s.structure()) return ix;
+    ix.structure = s.structure();
+    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear();
+    for (const Element& e : s.elements()) {
+        if (e.kind == kinds::light) ix.lights.push_back(&e);
+        else if (e.kind == kinds::portal) ix.portals.push_back(&e);
+        else if (e.kind == terrain_kind()) ix.terrains.push_back(&e);
     }
+    return ix;
+}
+
+uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std::vector<RoomCasters*>& casters) const {
+    // What a room's lights are: its lamps (where each hangs, what it gives),
+    // where its doorways are and what they let through - and so what stands
+    // in them. Not the room's data as a whole, and never the camera: a
+    // creature moving about, or the viewer walking, lights nothing again.
+    uint64_t h = 1469598103934665603ULL;
+    for (std::size_t r = 0; r < rooms.size(); ++r) {
+        const PlacedRoom& p = rooms[r];
+        if (!p.room || p.image) continue;
+        const State& room = *p.room;
+        h = fnv(h, reinterpret_cast<std::uintptr_t>(p.room));
+        h = fnv(h, room.structure());
+        for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) h = fnv(h, bits_of(v));
+        for (Key d : p.doorways) h = fnv(h, std::hash<Key>{}(d));
+        const KindIndex& ix = index_of(room);
+        for (const Element* e : ix.lights) h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+        const RoomCasters& rc = *casters[r];
+        h = fnv(h, rc.flip_count);
+        for (const Element* e : ix.portals) {
+            h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+            // What stands in a doorway lets less through (covered): what
+            // moves near one is part of its light.
+            if (!e->alive || is_screen(*e) || e->params.num(Key{"light"}, 1.0) < 0.5) continue;
+            auto it = worlds_.find(e->id);
+            if (it == worlds_.end() || !it->second.world || rc.movers.empty()) continue;
+            const Pose door = pose_of(room, *e);
+            const double reach = e->params.num(keys::w, 3.0) * 0.5 + 1.6;
+            for (uint32_t k : rc.movers) {
+                const Caster& c = rc.list[k];
+                const double dx = c.lx - door.position.x, dz = c.lz - door.position.z;
+                if (dx * dx + dz * dz <= reach * reach) h = fnv(fnv(h, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+            }
+        }
+    }
+    for (const auto& [id, sp] : spills_)
+        if (sp.from && sp.begun)
+            for (double v : {sp.r, sp.g, sp.b, sp.intensity}) h = fnv(h, bits_of(v));
     return h;
 }
 
 uint64_t GLWorldView::worlds_stamp() const {
     // Every world a doorway opens onto - its lights - and how it is seen:
-    // what comes in through a doorway is theirs.
+    // what comes in through a doorway is theirs. (Asked by every view in a
+    // frame, and the same for all: worked out once.)
+    auto& memo = worlds_memo_;
+    if (memo.first == frame_count_ + 1) return memo.second;
     uint64_t h = 1469598103934665603ULL;
     for (const auto& [id, wp] : worlds_) {
         if (!wp.world) continue;
         h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
         // Its lights, not all it holds: snow falling in it lets in no more
         // light than it did.
-        for (const auto& e : wp.world->elements())
-            if (e.kind == kinds::light) h = (h ^ e.params.stamp() ^ (e.alive ? 1u : 0u)) * 1099511628211ULL;
-        h = (h ^ stamp_of(look_of(*wp.world))) * 1099511628211ULL;
+        for (const Element* e : index_of(*wp.world).lights) h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
+        // And the sky it lets in (through_doorways), not the look as a whole:
+        // grain and clouds move every frame, and light nothing again.
+        static const Key sky[] = {Key{"uAmbient"}, Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}};
+        const LookState& look = look_of(*wp.world);
+        for (const Key& k : sky) h = fnv(h, bits_of(value(look, passes::scene, k, -1.0)));
     }
+    memo = {frame_count_ + 1, h};
     return h;
 }
 
-std::vector<GLWorldView::Caster> GLWorldView::casters_of(const std::vector<PlacedRoom>& rooms) {
-    std::vector<Caster> out;
-    for (std::size_t r = 0; r < rooms.size(); ++r) {
-        const PlacedRoom& placed = rooms[r];
-        if (!placed.room || placed.image) continue;
-        set_frame(placed.pose);
-        uint64_t frame_hash = 1469598103934665603ULL;
-        for (float f : frame_matrix_.m) frame_hash = mix_bits(frame_hash, f);
-        for (const auto& e : placed.room->elements()) {
-            if (!e.alive) continue;
+void GLWorldView::flipped(RoomCasters& rc, gl::Vec3 centre, float radius, bool all) {
+    ++rc.flip_count;
+    rc.flips.push_back({++flip_clock_, centre, radius, all});
+    if (rc.flips.size() > 48) {
+        // (A map laid before these asks again, whatever it sees.)
+        const std::size_t drop = rc.flips.size() / 2;
+        rc.trimmed = rc.flips[drop - 1].at;
+        rc.flips.erase(rc.flips.begin(), rc.flips.begin() + static_cast<std::ptrdiff_t>(drop));
+    }
+}
+
+auto GLWorldView::casters_in(const PlacedRoom& placed, std::size_t r) -> RoomCasters& {
+    // A room's casters as one placement of it sees them: kept by where the
+    // room stands (its pose is part of where things are) and which of the
+    // rooms drawn it is.
+    uint64_t key = fnv(1469598103934665603ULL, reinterpret_cast<std::uintptr_t>(placed.room));
+    key = fnv(key, r);
+    for (double v : {placed.pose.position.x, placed.pose.position.y, placed.pose.position.z, placed.pose.yaw, placed.pose.pitch, placed.pose.roll}) key = fnv(key, bits_of(v));
+    auto& slot = room_casters_[key];
+    if (!slot) {
+        slot = std::make_unique<RoomCasters>();
+        slot->room = r;
+        slot->state = placed.room;
+        if (room_casters_.size() > 48)
+            for (auto it = room_casters_.begin(); it != room_casters_.end();)
+                it = (it->second && it->second != slot && it->second->used + 600 < frame_count_) ? room_casters_.erase(it) : std::next(it);
+    }
+    slot->used = frame_count_;
+    refresh_casters(*slot, placed);
+    return *slot;
+}
+
+void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
+    if (rc.refreshed == frame_count_) return;
+    rc.refreshed = frame_count_;
+    const Spatial3D& room = *placed.room;
+    set_frame(placed.pose);
+    uint64_t frame_hash = 1469598103934665603ULL;
+    for (float f : frame_matrix_.m) frame_hash = mix_bits(frame_hash, f);
+    const bool fresh = rc.structure != room.structure();
+    if (fresh) {
+        rc.structure = room.structure();
+        rc.list.clear();
+        rc.flips.clear();
+        rc.trimmed = 0;
+        for (const Element& e : room.elements()) {
+            if (e.kind != kinds::mesh && e.kind != kinds::wall) continue;
             Caster c;
-            c.room = r, c.element = &e;
-            if ((e.kind == kinds::mesh || e.kind == kinds::wall) && !is_sprite(e)) {
-                // A lamp's own shade does not shadow its lamp; a sprite, a
-                // picture turned to the eye, has no shape to cast.
-                if (e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+            c.room = rc.room, c.element = &e, c.hold = kMoverFrames;
+            c.stamp = ~uint64_t{0};  // (never read: read below)
+            rc.list.push_back(c);
+        }
+        flipped(rc, {}, 0.0f, true);
+    }
+    rc.movers.clear();
+    rc.movers_key = 0;
+    for (std::size_t k = 0; k < rc.list.size(); ++k) {
+        Caster& c = rc.list[k];
+        const Element& e = *c.element;
+        // (What hangs off nothing is its own stamp: asked every frame of every
+        // thing, so cheap.)
+        const uint64_t stamp = c.chained ? chain_stamp(room, e) : e.params.stamp();
+        if (stamp != c.stamp || e.alive != c.alive) {
+            const bool was_on = c.on, was_at_rest = !c.mover;
+            const gl::Vec3 was_at = c.centre;
+            const float was_r = c.radius;
+            const uint64_t was_where = c.where;
+            c.chained = e.params.has(keys::parent);
+            c.stamp = c.chained ? chain_stamp(room, e) : e.params.stamp();
+            c.alive = e.alive, c.on = false;
+            // A lamp's own shade does not shadow its lamp; a sprite, a
+            // picture turned to the eye, has no shape to cast.
+            if (e.alive && !is_sprite(e) && e.params.num(Key{"cast"}, 1.0) >= 0.5) {
                 // Where it is and what shape: worked out once each time
                 // its parameters (or its anchor's) change - a change of
                 // colour or glow is no change to a shadow.
-                Placed& p = placed_of(*placed.room, e);
+                Placed& p = placed_of(room, e);
                 if (!p.hashed) {
                     // To the tenth of a millimetre: a cord settling by less
                     // than that draws no shadow again.
                     uint64_t w = 1469598103934665603ULL;
-                    for (float f : box_matrix(*placed.room, e).m.m) w = mix_bits(w, std::round(f * 1e4f));
-                    w = (w ^ reinterpret_cast<std::uintptr_t>(&shape_of(*placed.room, e))) * 1099511628211ULL;
+                    for (float f : box_matrix(room, e).m.m) w = mix_bits(w, std::round(f * 1e4f));
+                    w = (w ^ reinterpret_cast<std::uintptr_t>(&shape_of(room, e))) * 1099511628211ULL;
                     p.where = w, p.hashed = true;
                 }
                 if (p.held_in != frame_hash) {
-                    const DrawBound b = query_bounds(box_matrix(*placed.room, e));
+                    const DrawBound b = query_bounds(box_matrix(room, e));
                     p.held_at = b.centre, p.held_r = b.radius, p.held_in = frame_hash;
                 }
-                c.centre = p.held_at, c.radius = p.held_r, c.bounded = true, c.where = p.where;
-            } else if (e.kind == terrain_kind()) {
-                auto t = terrains_.find(e.id);
-                if (t == terrains_.end()) continue;
-                uint64_t w = 1469598103934665603ULL;
-                w = mix_bits(w, static_cast<float>(t->second.cx));
-                w = mix_bits(w, static_cast<float>(t->second.cz));
-                w = mix_bits(w, static_cast<float>(t->second.rev));
-                c.where = w;
-            } else if (e.kind == kinds::portal && !is_doorway(*placed.room, e) && has_surface(e)) {
-                const RoomMatrix frame = portal_frame_model(*placed.room, e);
-                uint64_t w = 1469598103934665603ULL;
-                for (float f : frame.m.m) w = mix_bits(w, f);
-                const DrawBound b = query_bounds(frame);
-                c.centre = b.centre, c.radius = b.radius, c.bounded = true, c.where = w;
-            } else {
-                continue;
+                c.centre = p.held_at, c.radius = p.held_r, c.bounded = true, c.where = p.where, c.on = true;
+                c.lx = static_cast<float>(pose_of(room, e).position.x), c.lz = static_cast<float>(pose_of(room, e).position.z);
             }
-            out.push_back(c);
+            if (!fresh && (c.on != was_on || (c.on && c.where != was_where))) {
+                // What the maps that laid it at rest have of it is where it was.
+                if (was_on && was_at_rest) flipped(rc, was_at, was_r, false);
+                if (c.moved) c.hold = std::min<uint32_t>(c.hold * 2, 4096);  // it started again: it stays a mover longer
+                c.moved = frame_count_;
+            }
+        }
+        const bool mover = c.on && c.moved && frame_count_ - c.moved < c.hold;
+        if (mover != c.mover) {
+            // Come to rest: laid with the rest from where it is now.
+            if (!mover && c.on) flipped(rc, c.centre, c.radius, false);
+            c.mover = mover;
+        }
+        if (mover) {
+            rc.movers.push_back(static_cast<uint32_t>(k));
+            rc.movers_key = fnv(fnv(rc.movers_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
         }
     }
+    // Terrain and panels (a screen's frame, a ball's glass) depend on more
+    // than the room's own data - the terrain streamed in, a doorway declared
+    // - and there are few: asked again each frame.
+    const KindIndex& ix = index_of(room);
+    rc.extras.clear();
+    rc.extras_key = 1469598103934665603ULL;
+    for (const Element* ep : ix.terrains) {
+        const Element& e = *ep;
+        if (!e.alive) continue;
+        auto t = terrains_.find(e.id);
+        if (t == terrains_.end()) continue;
+        Caster c;
+        c.room = rc.room, c.element = &e;
+        uint64_t w = 1469598103934665603ULL;
+        w = mix_bits(w, static_cast<float>(t->second.cx));
+        w = mix_bits(w, static_cast<float>(t->second.cz));
+        w = mix_bits(w, static_cast<float>(t->second.rev));
+        c.where = w;
+        rc.extras_key = fnv(fnv(rc.extras_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+        rc.extras.push_back(c);
+    }
+    for (const Element* ep : ix.portals) {
+        const Element& e = *ep;
+        if (!e.alive || is_doorway(room, e) || !has_surface(e)) continue;
+        Caster c;
+        c.room = rc.room, c.element = &e;
+        const RoomMatrix frame = portal_frame_model(room, e);
+        uint64_t w = 1469598103934665603ULL;
+        for (float f : frame.m.m) w = mix_bits(w, f);
+        const DrawBound b = query_bounds(frame);
+        c.centre = b.centre, c.radius = b.radius, c.bounded = true, c.where = w;
+        rc.extras_key = fnv(fnv(rc.extras_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+        rc.extras.push_back(c);
+    }
     set_frame(Pose{});
-    return out;
 }
 
 bool GLWorldView::shades(const Caster& c, const Frustum& sees, const Light& light) {

@@ -1414,6 +1414,85 @@ void test_the_graph_is_watched() {
           "restored, a state is exactly as it started");
 }
 
+// A state that gives an account of its doorway the other side does not agree
+// with, slowly enough that checking many of them is a cost.
+struct Doorway : sg::State {
+    bool walked;
+    Doorway(const char* name, bool w) : sg::State(sg::Key{name}), walked(w) { add_element("d", "portal"); }
+    sg::Params overlap(sg::Key) const override {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(150);
+        while (std::chrono::steady_clock::now() < until) {}
+        return sg::Params{}.set("walk", walked ? 1.0 : 0.0);
+    }
+};
+
+sg::Seam disagreeing_seams(sg::StateGraph& g, int n) {
+    sg::Seam last;
+    g.add<sg::State>("hub");
+    for (int i = 0; i < n; ++i) {
+        const std::string a = "a" + std::to_string(i), b = "b" + std::to_string(i);
+        g.add<Doorway>(a.c_str(), true);
+        g.add<Doorway>(b.c_str(), false);
+        sg::Seam seam;
+        seam.name = sg::Key{a + "|" + b};
+        seam.a = sg::Key{a}, seam.b = sg::Key{b};
+        seam.boundary_a = {sg::Key{"d"}}, seam.boundary_b = {sg::Key{"d"}};
+        last = g.add_seam(seam);
+    }
+    g.set_initial("a0");
+    return last;
+}
+
+void test_the_watch_takes_a_slice_of_a_frame() {
+    // Checking the graph again is a seam at a time, a few at a frame, never
+    // all in the frame the graph moved - and a strict engine, or one with no
+    // interval, still finds it the frame the graph moved.
+    const int kSeams = 24;
+    sg::StateGraph g;
+    disagreeing_seams(g, kSeams);
+    sg::Engine engine(g);
+    std::vector<std::string> said;
+    engine.on_problem = [&](const std::string& p) { said.push_back(p); };
+    engine.set_watch_interval(0.001);
+    engine.set_watch_slice(0.25);
+    engine.start();
+    int ticks = 0;
+    while (said.size() < static_cast<std::size_t>(kSeams) && ticks < 400) {
+        engine.tick(0.01);
+        ++ticks;
+    }
+    const std::vector<std::string> all = sg::Engine(g).check_graph();
+    check(ticks > 3, "a check of the graph is spread over frames, not made in one");
+    int walked = 0;
+    for (const std::string& p : said) walked += p.find("walked through from one side only") != std::string::npos;
+    check(walked == kSeams, "and finds every seam that does not agree, as the whole check does");
+    check(said.size() == all.size(), "no more and no less than the check made at once");
+
+    // The watch is told to be whole: the frame the graph moved.
+    sg::StateGraph h;
+    disagreeing_seams(h, kSeams);
+    sg::Engine whole(h);
+    std::vector<std::string> heard;
+    whole.on_problem = [&](const std::string& p) { heard.push_back(p); };
+    whole.set_watch_interval(0.0);
+    whole.start();
+    whole.tick(0.01);
+    check(heard.size() == all.size(), "an engine with no interval finds all of it in the frame the graph moved");
+
+    sg::StateGraph k;
+    disagreeing_seams(k, kSeams);
+    sg::Engine strict(k);
+    strict.set_strict(true);
+    bool threw = false;
+    try {
+        strict.start();
+        strict.tick(0.01);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    check(threw, "a strict engine throws in the first frame, with the graph broken");
+}
+
 void test_light() {
     const sg::Daylight noon = sg::daylight(12.0), night = sg::daylight(0.0), dusk = sg::daylight(18.0);
     check(noon.sun.y > 0.8 && noon.day > 0.99 && noon.stars < 0.01, "at noon the sun is overhead and it is day");
@@ -2145,6 +2224,7 @@ int main() {
     test_looks();
     test_light();
     test_the_graph_is_watched();
+    test_the_watch_takes_a_slice_of_a_frame();
     test_text_and_store();
     test_assets_a_folder_per_state();
     test_rooms_are_adjacent();

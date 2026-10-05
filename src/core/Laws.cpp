@@ -1170,14 +1170,18 @@ std::vector<Violation> seams(const StateGraph& g) {
     return out;
 }
 
-std::vector<Violation> overlaps(const StateGraph& g) {
+std::vector<Violation> overlaps(const StateGraph& g) { return overlaps(g, 0, g.seams().size()); }
+
+std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::size_t count) {
     using namespace seam_detail;
     std::vector<Violation> out;
     // How far apart two accounts may be and still be one: a few degrees of
     // pull, a couple of centimetres of ground.
     constexpr double kDown = 0.05, kFloor = 0.02;
     const Key walk{"walk"}, dx{"down.x"}, dy{"down.y"}, dz{"down.z"}, floor{"floor"};
-    for (const Seam& sm : g.seams()) {
+    const std::size_t last = std::min(g.seams().size(), first + count);
+    for (std::size_t n = first; n < last; ++n) {
+        const Seam& sm = g.seams()[n];
         const State* a = g.find(sm.a);
         const State* b = g.find(sm.b);
         if (!a || !b) continue;

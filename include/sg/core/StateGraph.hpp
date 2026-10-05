@@ -183,7 +183,7 @@ public:
     State& state(Key id);
     const State& state(Key id) const;
 
-    bool contains(Key id) const { return states_.count(id) != 0; }
+    bool contains(Key id) const { return state_index_.count(id) != 0; }
     std::size_t size() const { return states_.size(); }
 
     // Every state, in place: for whoever holds the graph (the engine, once a
@@ -475,6 +475,7 @@ private:
                               Key want_from, Key want_to) const;
 
     std::map<Key, StatePtr> states_;  // ordered: deterministic dot output
+    std::unordered_map<Key, State*> state_index_;  // the same states by name, found in constant time
     std::deque<Transition> transitions_;
     std::unordered_map<Key, std::vector<std::size_t>> by_trigger_;
     std::unordered_map<Key, std::size_t> transition_by_name_;
@@ -500,6 +501,10 @@ private:
         bool valid = false;
         uint64_t structure = 0;
         std::vector<std::string> errors;
+        // The triggers its arrows answer to, made when a drive first asks and
+        // kept as long as the structure is what it was.
+        bool triggers_made = false;
+        std::unordered_set<Key> triggers;
     };
     struct FunctorCheck {
         bool valid = false;

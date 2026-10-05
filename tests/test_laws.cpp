@@ -683,6 +683,25 @@ void test_time_is_a_state() {
     bool named = false;
     for (const auto& p : wrong.validate()) named = named || p.find("no arrow of pond is fired by nothing") != std::string::npos;
     check(named, "a drive that moves no arrow is named");
+
+    // Two drives on one line name each other, the first named by the second;
+    // and what is kept between validations answers as one made fresh, also
+    // when an arrow arrives that the drive was waiting for.
+    wrong.drive(sg::Drive{"twin", "clock", "pond", "nothing", false, "idle"});
+    const auto said = wrong.validate(false);
+    const auto kept = wrong.validate(true);
+    const auto kept_again = wrong.validate(true);
+    check(said == kept && said == kept_again, "validation kept between calls says what a fresh one says");
+    bool idle_names_twin = false, twin_names_idle = false;
+    for (const auto& p : said) {
+        idle_names_twin = idle_names_twin || p == "drive idle: timeline idle of clock also keeps time for drive twin - a line keeps one state's time; give each its own";
+        twin_names_idle = twin_names_idle || p == "drive twin: timeline idle of clock also keeps time for drive idle - a line keeps one state's time; give each its own";
+    }
+    check(idle_names_twin && twin_names_idle, "two drives on one line name each other");
+    wrong.state("pond").loop("hears", "ripple", "nothing", [](sg::State&, sg::Element&, sg::Element*, const sg::Event&) {});
+    bool still = false;
+    for (const auto& p : wrong.validate(true)) still = still || p.find("no arrow of pond is fired by nothing") != std::string::npos;
+    check(!still && wrong.validate(true) == wrong.validate(false), "an arrow added later answers the drive that waited for it, kept or fresh");
 }
 
 void test_time_acts_as_time() {

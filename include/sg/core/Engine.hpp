@@ -106,6 +106,13 @@ public:
     void set_watch_updates(bool on) { watch_updates_ = on; }
     void set_watch_hooks(bool on) { watch_updates_ = on; }
     void set_watch_interval(double seconds) { watch_interval_ = seconds; }
+    // How much of a frame the watch may take, in milliseconds. Checking the
+    // graph again is a seam at a time (validate, then each seam's overlap), a
+    // few at a frame, so a graph that moved in play costs the frame a slice
+    // and not the whole check. 0 checks it all at once. A strict engine, and a
+    // watch with no interval, always check all of it in the frame the graph
+    // moved: what a test asks of the watch is the same frame.
+    void set_watch_slice(double milliseconds) { watch_slice_ms_ = milliseconds; }
     const std::vector<std::string>& problems() const { return problems_; }
     // Check now, whatever changed: what is wrong, all of it.
     std::vector<std::string> check_graph();
@@ -352,6 +359,15 @@ private:
     bool strict_ = false;
     uint64_t watched_ = ~uint64_t{0};
     double watch_interval_ = 1.0, last_watch_ = -1e9;
+    // The watch in slices (watch_slice): where a check of the graph has got
+    // to - the revision it began at, whether its validate is done, the next
+    // seam to look at, and what it has found.
+    void watch_slice();
+    double watch_slice_ms_ = 0.25;
+    bool sweeping_ = false, swept_structure_ = false;
+    uint64_t sweep_revision_ = 0;
+    std::size_t sweep_seam_ = 0;
+    std::vector<std::string> sweep_found_;
     std::vector<std::string> problems_;
 };
 

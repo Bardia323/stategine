@@ -252,7 +252,7 @@ public:
     // Bound again with another world or size, it follows. Not `live`, it
     // holds the last picture it drew - a paused tape.
     void bind_feed(Key portal_element, const Spatial3D* world, int w, int h, bool live = true);
-    void unbind_feed(Key portal_element) { feeds_.erase(portal_element); }
+    void unbind_feed(Key portal_element);
     bool has_feed(Key portal_element) const { return feeds_.count(portal_element) != 0; }
 
     // Ground for a `terrain` element: its height at any (x, z) of the state.
@@ -403,7 +403,17 @@ private:
 
     void ensure_resources();
 
+    // The targets a picture of this size is drawn into. A view that draws a
+    // feed keeps the targets of each size the picture has been made at
+    // (`keep_sizes`): going from one size to another is taking the set that
+    // is already made - nothing is allocated mid-frame - while any other
+    // view makes them again, as the window it draws is sized.
     void ensure_targets(int w, int h);
+    struct Targets;
+    void swap_targets(Targets& t);
+    void make_targets(int w, int h);
+    void keep_sizes(const std::vector<std::pair<int, int>>& sizes);
+    void release_targets();
 
     // Each spilling lamp, a frame further towards what its picture shows.
     struct Spill {
@@ -832,10 +842,22 @@ private:
 
     struct ShadowSet {
         gl::ShadowArray array;  // a layer for each light that casts, made as wanted
-        uint64_t sig[kShadowMaps] = {};
+        // What stands still, kept apart (a layer for each light that has
+        // something moving in it): a map is this laid under what moves, so
+        // a thing that moves every frame costs its own few draws and a copy,
+        // not the whole room's casters drawn again.
+        gl::ShadowArray still;
+        uint64_t sig[kShadowMaps] = {};  // what each map holds (0: never drawn)
         gl::Mat4 vp[kShadowMaps];  // the box each map was drawn for
-        uint64_t of[kShadowMaps] = {};  // and the light it is of (a map is a light's, not a layer's)
+        uint64_t ident[kShadowMaps] = {};  // which light, as far as what a map holds goes
+        uint64_t still_at[kShadowMaps] = {};  // the flip clock when what stands still was laid (0: not laid)
+        uint64_t layout[kShadowMaps] = {};  // and the rooms' casters it was laid from
+        uint64_t movers[kShadowMaps] = {};  // what moves, as drawn over it (0: nothing)
+        bool base[kShadowMaps] = {};  // `still` holds what stands still, for this map
+        int mrect[kShadowMaps][4] = {};  // the pixels of the map what moves was drawn on
+        uint32_t waits[kShadowMaps] = {};  // frames each has stood out of date
         uint64_t used = 0;  // the frame a view last asked for it
+        void forget();  // every map to be laid again
     };
     // A view's air, lit by its lamps (air_fs): each slice's own light (laid
     // eight to a row), the slices added up from the eye (what the scene
@@ -855,28 +877,87 @@ private:
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
     Air& air_for(const Spatial3D* world);
 
-    // How many maps the views seen through other views may still draw this
-    // frame: past it, a map stays as it was last drawn (with the box it was
-    // drawn for), and a view whose maps were never drawn is lit without
-    // them until they are - a frame or two, never a stall.
-    static constexpr int kNestedShadowMaps = 8;
-    static constexpr int kOwnShadowMaps = 3;  // drawn again a frame, at most, in a view one doorway on (stale ones wait their turn; the eye's own view draws all it must)
+    // How many maps the views seen through doorways may still lay this
+    // frame, between them: past it, a map stays as it was last laid (with the
+    // box it was laid for) and waits its turn; a view whose maps were never
+    // laid is lit without them until they are (`kFirstShadowMaps` more, for
+    // those, that a view that has just come into sight has a few at once) - a
+    // few frames, never a stall. The eye's own view lays every map it must,
+    // the frame it must.
+    static constexpr int kNestedShadowMaps = 6;
+    static constexpr int kFirstShadowMaps = 2;
+    static constexpr uint32_t kShadowWaits = 3;  // frames a map may stand out of date, in a view through a doorway
     int shadow_budget_ = kNestedShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
+    static void copy_depth(const gl::ShadowArray& from, const gl::ShadowArray& to, int layer, const int* rect = nullptr);
     static uint64_t mix_bits(uint64_t h, float f);
-    // Everything that casts a shadow, and where it is now: its matrix, bit for
-    // bit, and the sphere that holds it in the world being drawn. Terrain and
-    // the like (`bounded` false) are held by nothing: they are in every map.
+    // Everything that casts a shadow in a room, and where it is: its matrix,
+    // bit for bit, and the sphere that holds it in the world being drawn.
+    // Each is read again only when its own parameters (or those of what it
+    // hangs off) have a new stamp - never the room's data as a whole, never
+    // the camera: a creature moving, or a viewer walking, re-reads what
+    // moved and nothing else. A thing that has changed lately is a mover; the
+    // rest stand still, and a shadow map keeps them apart (ShadowSet::still).
     struct Caster {
         std::size_t room = 0;  // which of the rooms being drawn
         const Element* element = nullptr;
         gl::Vec3 centre;
         float radius = 0;
-        bool bounded = false;
+        float lx = 0, lz = 0;  // where it stands in its room, on the ground
+        bool bounded = false;  // terrain and the like are held by nothing: they are in every map
         uint64_t where = 0;
+        uint64_t stamp = 0;  // what it was last read at
+        uint64_t moved = 0;  // the frame it last changed (0: not since it was listed)
+        uint32_t hold = 0;   // frames it stays a mover once it stops (longer each time it starts again)
+        bool chained = false;  // it hangs off another (its stamp is the chain's)
+        bool alive = false, on = false;  // on: it casts (a shape, not a sprite, not shaded off)
+        bool mover = false;
     };
-    std::vector<Caster> casters_of(const std::vector<PlacedRoom>& rooms);
+    // A thing at rest that has changed, or come to rest: where it was, or is,
+    // for the maps that laid it (`at` is the flip clock then).
+    struct Flip {
+        uint64_t at = 0;
+        gl::Vec3 centre;
+        float radius = 0;
+        bool all = false;  // the list was made again
+    };
+    struct RoomCasters {
+        uint64_t structure = ~uint64_t{0};
+        uint64_t refreshed = ~uint64_t{0};  // the frame it was last read
+        uint64_t used = 0;
+        std::size_t room = 0;
+        const State* state = nullptr;
+        std::vector<Caster> list;        // meshes and walls, in element order
+        std::vector<uint32_t> movers;    // of them, the ones that have changed lately
+        uint64_t movers_key = 0;         // where they are
+        std::vector<Caster> extras;      // terrain and panels: asked again each frame
+        uint64_t extras_key = 0;
+        std::vector<Flip> flips;         // newest last
+        uint64_t trimmed = 0;            // flips up to here were let go
+        uint64_t flip_count = 0;
+    };
+    static constexpr uint32_t kMoverFrames = 60;
+    // How much of a doorway what stands in it covers, as last asked (covered).
+    struct OccMemo {
+        uint64_t key = 0;
+        float value = 0;
+        bool shut = false, known = false;
+    };
+    mutable std::unordered_map<const Element*, OccMemo> occlusion_;
+    std::unordered_map<uint64_t, std::unique_ptr<RoomCasters>> room_casters_;
+    uint64_t flip_clock_ = 1;  // (never 0: 0 is "not laid")
+    RoomCasters& casters_in(const PlacedRoom& placed, std::size_t r);
+    void refresh_casters(RoomCasters& rc, const PlacedRoom& placed);
+    void flipped(RoomCasters& rc, gl::Vec3 centre, float radius, bool all);
+    // What each state holds of the kinds the renderer reads on their own
+    // (lamps, doorways, terrain), found again only when its structure moves.
+    struct KindIndex {
+        uint64_t structure = ~uint64_t{0};
+        std::vector<const Element*> lights, portals, terrains;
+    };
+    mutable std::unordered_map<const State*, KindIndex> kind_index_;
+    const KindIndex& index_of(const State& s) const;
     // The lights and the casters of rooms are functions of their data (and
     // of the worlds their doorways open onto): kept by it, so the views of
     // one world in a frame - and every frame nothing changed in - read them
@@ -886,11 +967,13 @@ private:
         std::size_t shadowed = 0;
     };
     std::unordered_map<uint64_t, LightsMemo> lights_memo_;
-    std::unordered_map<uint64_t, std::vector<Caster>> casters_memo_;
     mutable std::unordered_map<const State*, std::pair<uint64_t, uint64_t>> stamps_;  // a state's data version, this frame
     uint64_t stamp_of(const State& s) const;
-    uint64_t rooms_key(const std::vector<PlacedRoom>& rooms) const;
+    // What the lights of these rooms are a function of: their lamps, their
+    // doorways, and what moves across a doorway - not the room's other data.
+    uint64_t lights_key(const std::vector<PlacedRoom>& rooms, const std::vector<RoomCasters*>& casters) const;
     uint64_t worlds_stamp() const;
+    mutable std::pair<uint64_t, uint64_t> worlds_memo_{~uint64_t{0}, 0};  // that, and the frame it was worked out in
     // A look's uniforms as a program last took them - where each is, what it
     // was set to - kept by the look's data and its mix: set again straight
     // from this, no name looked up, while neither changes.
@@ -925,13 +1008,21 @@ private:
         int slack = 0;         // frames a smaller picture would have done
         bool live = true, drawn = false;
         bool from_graph = false, seen = false;
-        gl::RenderTarget out[2];
+        // Its picture, made at each size it may be drawn at (by `div`: 1, 2, 4,
+        // 8) and kept, so that a screen coming near or leaving is only a
+        // change of which is drawn into - never made again mid-frame.
+        gl::RenderTarget outs[4][2];
+        static int slot_of(int div) { return div >= 8 ? 3 : div >= 4 ? 2 : div >= 2 ? 1 : 0; }
+        gl::RenderTarget* out() { return outs[slot_of(div)]; }
+        const gl::RenderTarget* out() const { return outs[slot_of(div)]; }
         int front = 0;  // the one shown; the other is drawn into
         uint64_t drawn_of = 0;  // what its picture was drawn from (feed_key): drawn again only when that moves
-        const gl::RenderTarget& shown() const { return out[front]; }
+        const gl::RenderTarget& shown() const { return out()[front]; }
         std::unique_ptr<GLWorldView> view;
     };
     std::unordered_map<Key, Feed> feeds_;
+    // A feed let go: its pictures and its view's targets are given back.
+    static void release_feed(Feed& f);
     // The denominator of the fraction of a `declared` pixels tall picture that
     // is enough for a screen `shown` pixels tall: a pixel and six tenths of the
     // picture to each of the screen's, so it is never seen coarser than it is
@@ -985,6 +1076,7 @@ private:
         // eye's frame, to the pixel), in the corner of `target` it filled.
         Rect rect{-1, -1, 1, 1};
         float fx = 1, fy = 1;
+        std::string owner;  // the view it last drew (its path): kept by it from frame to frame
     };
     // The least of the screen (of 4, the whole) a view through a doorway is drawn for.
     static constexpr float kLeastView = 1e-5f;
@@ -1029,6 +1121,24 @@ private:
     std::vector<RootView> root_pool_;
     static constexpr std::size_t kRootViews = 8, kRootViewsMost = 32;
     void make_root_view(RootView& v, int w, int h);
+    // Everything ensure_targets makes for one size of picture.
+    struct Targets {
+        int w = 0, h = 0;
+        gl::RenderTarget scene, resolve, depth, lit, ao_a, ao_b, bloom_a, bloom_b, chain[kBloomLevels];
+        int levels = 0;
+        std::vector<RootView> roots;
+        std::vector<Nested> nested;
+    };
+    // The sets of the other sizes this view has been drawn at (see keep_sizes),
+    // and whether it keeps them: a view that draws a feed does.
+    std::vector<Targets> parked_;
+    bool keeps_sizes_ = false;
+    std::vector<std::pair<int, int>> sizes_;  // the sizes a feed's picture may be drawn at
+    bool sizes_kept_ = true;                  // and that their sets are made
+    // A view through a doorway lives in a slot of the pool; the slot it had
+    // the frame before is its again (by path), so it is not handed to another
+    // and regrown.
+    std::unordered_map<std::string, std::size_t> bound_;
     struct ViewJob {
         std::string key;
         const Spatial3D* host;

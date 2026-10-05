@@ -9,13 +9,13 @@ State& StateGraph::add(StatePtr s) {
 }
 
 State* StateGraph::find(Key id) {
-    auto it = states_.find(id);
-    return it == states_.end() ? nullptr : it->second.get();
+    auto it = state_index_.find(id);
+    return it == state_index_.end() ? nullptr : it->second;
 }
 
 const State* StateGraph::find(Key id) const {
-    auto it = states_.find(id);
-    return it == states_.end() ? nullptr : it->second.get();
+    auto it = state_index_.find(id);
+    return it == state_index_.end() ? nullptr : it->second;
 }
 
 State& StateGraph::state(Key id) {
@@ -432,6 +432,7 @@ void StateGraph::rollback(const Checkpoint& c) {
             continue;
         }
         state_checks_.erase(it->second.get());
+        state_index_.erase(it->first);
         it = states_.erase(it);
     }
     initial_ = c.initial;
@@ -501,7 +502,7 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
             continue;
         }
         StateCheck& c = state_checks_[&st];
-        if (!c.valid || c.structure != st.structure()) c = StateCheck{true, st.structure(), st.validate()};
+        if (!c.valid || c.structure != st.structure()) c = StateCheck{true, st.structure(), st.validate(), false, {}};
         for (const auto& e : c.errors) errors.push_back(e);
     }
 
@@ -574,6 +575,52 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
         for (const auto& e : c.errors) errors.push_back(e);
     }
 
+    // Drives are checked against two indices, not each against all the rest:
+    // the first two drives on each (clock, line), in declaration order (the
+    // first that is not this one is the one named), made here once; and, for
+    // each driven state, the triggers its arrows answer to (kept with the
+    // state's own check while its structure is what it was).
+    struct LineKey {
+        Key clock, line;
+        bool operator==(const LineKey& o) const { return clock == o.clock && line == o.line; }
+    };
+    struct LineHash {
+        std::size_t operator()(const LineKey& k) const {
+            const std::size_t a = std::hash<Key>{}(k.clock), b = std::hash<Key>{}(k.line);
+            return a ^ (b + 0x9e3779b97f4a7c15ull + (a << 6) + (a >> 2));
+        }
+    };
+    struct FirstTwo {
+        const Drive* at[2] = {nullptr, nullptr};
+    };
+    std::unordered_map<LineKey, FirstTwo, LineHash> on_line;
+    on_line.reserve(drives_.size());
+    for (const Drive& d : drives_) {
+        FirstTwo& two = on_line[LineKey{d.clock, d.line.empty() ? d.state : d.line}];
+        if (!two.at[0]) two.at[0] = &d;
+        else if (!two.at[1]) two.at[1] = &d;
+    }
+    std::unordered_map<const State*, std::unordered_set<Key>> answers;  // when nothing is kept
+    const auto answers_of = [&](const State& st) -> const std::unordered_set<Key>& {
+        const auto fill = [&st](std::unordered_set<Key>& into) {
+            for (const Morphism& m : st.morphisms()) into.insert(m.trigger);
+        };
+        if (reuse) {
+            StateCheck& c = state_checks_[&st];  // made above, for every state
+            if (!c.triggers_made) {
+                c.triggers.clear();
+                fill(c.triggers);
+                c.triggers_made = true;
+            }
+            return c.triggers;
+        }
+        auto an = answers.find(&st);
+        if (an == answers.end()) {
+            an = answers.emplace(&st, std::unordered_set<Key>{}).first;
+            fill(an->second);
+        }
+        return an->second;
+    };
     for (const Drive& d : drives_) {
         const State* c = find(d.clock);
         const State* s = find(d.state);
@@ -581,24 +628,19 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
         if (!c) errors.push_back("drive " + d.name.str() + ": unknown clock " + d.clock.str());
         else if (c->kind() != Key{"temporal"})
             errors.push_back("drive " + d.name.str() + ": " + d.clock.str() + " is not a clock");
-        else if (!c->find(line) || c->find(line)->kind != Key{"timeline"})
+        else if (const Element* tl = c->find(line); !tl || tl->kind != Key{"timeline"})
             errors.push_back("drive " + d.name.str() + ": clock " + d.clock.str() +
                              " has no timeline " + line.str());
         if (!s) {
             errors.push_back("drive " + d.name.str() + ": unknown state " + d.state.str());
             continue;
         }
-        for (const Drive& other : drives_)
-            if (&other != &d && other.clock == d.clock &&
-                (other.line.empty() ? other.state : other.line) == line) {
-                errors.push_back("drive " + d.name.str() + ": timeline " + line.str() + " of " +
-                                 d.clock.str() + " also keeps time for drive " + other.name.str() +
-                                 " - a line keeps one state's time; give each its own");
-                break;
-            }
-        bool moved = false;
-        for (const Morphism& m : s->morphisms()) moved = moved || m.trigger == d.trigger;
-        if (!moved)
+        const FirstTwo& two = on_line.find(LineKey{d.clock, line})->second;
+        if (const Drive* other = two.at[0] != &d ? two.at[0] : two.at[1])
+            errors.push_back("drive " + d.name.str() + ": timeline " + line.str() + " of " +
+                             d.clock.str() + " also keeps time for drive " + other->name.str() +
+                             " - a line keeps one state's time; give each its own");
+        if (!answers_of(*s).count(d.trigger))
             errors.push_back("drive " + d.name.str() + ": no arrow of " + d.state.str() +
                              " is fired by " + d.trigger.str());
     }
@@ -757,10 +799,12 @@ std::unordered_set<Key> StateGraph::reach() const {
 
 void StateGraph::insert(StatePtr s) {
     const Key id = s->id();
-    if (states_.count(id)) throw std::runtime_error("duplicate state " + id.str());
+    if (state_index_.count(id)) throw std::runtime_error("duplicate state " + id.str());
     rev_.rewired("add state");
     s->revision_ = &rev_;
+    State* raw = s.get();
     states_.emplace(id, std::move(s));
+    state_index_.emplace(id, raw);
     if (initial_.empty()) initial_ = id;
 }
 
