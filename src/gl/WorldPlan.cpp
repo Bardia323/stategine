@@ -120,7 +120,7 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
         Frustum back=view;
         for(auto& p:back.planes) p.offset+=p.normal.x*o.x+p.normal.y*o.y+p.normal.z*o.z;
         auto visible=plan.visibility.visible(back);
-        visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return !shown(i,o); }),visible.end());
+        visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return plan.mover[i] || !shown(i,o); }),visible.end());
         for(const auto i:plan.movers) if(shown(i,o)) visible.push_back(i);
         visible.insert(visible.end(),plan.unbounded.begin(),plan.unbounded.end());
         std::sort(visible.begin(),visible.end());
@@ -142,31 +142,46 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
         if(!placement.boxed) placement.box=box_model(room,e),placement.boxed=true;
         auto& bound=plan.bounds[i];
         if(!same_frame || bound.element!=&e || bound.stamp!=placement.stamp) {
-            // Moved (not made, nor seen from a moved frame): out of the index.
-            if(same_frame && bound.element==&e && !plan.mover[i]) plan.mover[i]=1, remake=true;
+            // Moved (not made, nor seen from a moved frame): culled on its
+            // own from now on. Its entry in the index is left where it was
+            // (and passed over), so a hundred books starting to fall one
+            // after another never build the index again.
+            if(same_frame && bound.element==&e && !plan.mover[i]) plan.mover[i]=1;
             if(bound.element!=&e) plan.mover[i]=0, remake=true;
             bound=query_bounds(placement.box);bound.element=&e;bound.stamp=placement.stamp;
         }
         if(plan.mover[i]) plan.movers.push_back(i);
-        else bounds.push_back({i,bound.bounds});
+        if(remake || !plan.mover[i]) bounds.push_back({i,bound.bounds});
     }
-    // (The index is the bounds of what stands: while nothing came, went or
-    // first moved, it stands.)
-    if(const std::size_t n=bounds.size(); remake || plan.indexed!=n) plan.visibility.update(std::move(bounds)), plan.indexed=n, ++times_.indices_built;
+    // (The index is the bounds of what stands: while nothing came or went,
+    // it stands - a thing that moved keeps its old entry, passed over.)
+    if(const std::size_t n=lists.solids.size(); remake || plan.indexed!=n) {
+        if(!remake) { bounds.clear(); for(const auto i:lists.solids) bounds.push_back({i,plan.bounds[i].bounds}); }
+        plan.visibility.update(std::move(bounds)), plan.indexed=n, ++times_.indices_built;
+    }
     auto visible=plan.visibility.visible(view);
-    visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return !shown(i,{0,0,0}); }),visible.end());
+    visible.erase(std::remove_if(visible.begin(),visible.end(),[&](std::size_t i) { return plan.mover[i] || !shown(i,{0,0,0}); }),visible.end());
     for(const auto i:plan.movers) if(shown(i,{0,0,0})) visible.push_back(i);
     visible.insert(visible.end(),plan.unbounded.begin(),plan.unbounded.end());
     std::sort(visible.begin(),visible.end());
     plan.frame=frame_matrix_; plan.framed=true;
     return visible;
 }
+// What of a portal its being declared reads - whether it is there, what it
+// shows, whether it is a feed - and not the rest of its parameters: a thing
+// that moves (a book falling, a glass carried) is asked again every frame
+// otherwise, and each asking walks the whole graph.
+static uint64_t declares(const Element& portal) {
+    uint64_t h = std::hash<std::string>{}(portal.params.get_or<std::string>("shows", {}));
+    h = (h ^ (portal.alive ? 1u : 2u)) * 1099511628211ULL;
+    return (h ^ static_cast<uint64_t>(portal.params.num("feed", 0.0) > 0.5)) * 1099511628211ULL;
+}
 bool GLWorldView::declared_world(const State& host,const Element& portal,const Spatial3D& guest) const {
     const StateGraph* g=graph_?graph_:(root_?root_->graph_:nullptr);
     if(!g) return false;
     auto& memo=world_access_[&portal];
-    if(memo.graph==g && memo.host==&host && memo.guest==&guest && memo.revision==g->revision() && memo.stamp==portal.params.stamp()) return memo.allowed;
-    memo={g,&host,&guest,g->revision(),portal.params.stamp(),render::declared_world(*g,host,portal,guest)}; ++times_.graph_queries;
+    if(memo.graph==g && memo.host==&host && memo.guest==&guest && memo.revision==g->revision() && memo.stamp==declares(portal)) return memo.allowed;
+    memo={g,&host,&guest,g->revision(),declares(portal),render::declared_world(*g,host,portal,guest)}; ++times_.graph_queries;
     return memo.allowed;
 }
 bool GLWorldView::declared_feed(Key portal,const Spatial3D& guest) const {
@@ -177,8 +192,8 @@ bool GLWorldView::declared_surface(const Element& portal,const Surface2D& surfac
     const StateGraph* g=graph_?graph_:(root_?root_->graph_:nullptr);
     if(!g) return false;
     auto& memo=surface_access_[&portal];
-    if(memo.graph==g && memo.surface==&surface && memo.revision==g->revision() && memo.stamp==portal.params.stamp()) return memo.allowed;
-    memo={g,&surface,g->revision(),portal.params.stamp(),render::declared_surface(*g,portal,surface)};
+    if(memo.graph==g && memo.surface==&surface && memo.revision==g->revision() && memo.stamp==declares(portal)) return memo.allowed;
+    memo={g,&surface,g->revision(),declares(portal),render::declared_surface(*g,portal,surface)};
     return memo.allowed;
 }
 } // namespace sg::render

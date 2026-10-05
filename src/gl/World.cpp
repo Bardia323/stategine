@@ -47,13 +47,15 @@ GLWorldView::Rect GLWorldView::ball_rect(const Spatial3D& world, const Element& 
 void GLWorldView::capture_glass(const Spatial3D& world, const Element& e, WorldPortal& wp) {
     constexpr int kSize = 128;
     const bool fresh = !wp.env.valid();
-    // A face a frame while the glass moves (carried, shaken); standing, a
-    // face every eighth frame - what is round it keeps up, slowly.
+    // A face a frame while the glass moves (carried, shaken), until all six
+    // are taken from where it came to rest; standing, none - a reflection is
+    // a hint of the room, not worth a room drawn again every few frames.
     const Vec3d at = pose_of(world, e).position;
     const bool moved = at.x != wp.env_at.x || at.y != wp.env_at.y || at.z != wp.env_at.z;
     wp.env_at = at;
-    if (!fresh && !moved && ++wp.env_wait < 8) return;
-    wp.env_wait = 0;
+    if (moved) wp.env_wait = 6;
+    if (!fresh && !moved && wp.env_wait <= 0) return;
+    if (!moved) --wp.env_wait;
     wp.env.create(kSize);
     if (fresh) wp.env_face.create(kSize, kSize, gl::GL_RGBA16F, 0, true);
     const gl::Vec3 c = to_vec3(pose_of(world, e).position);
@@ -1492,7 +1494,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                             l.sun ? 1.0f : 0.0f, l.indirect ? 1.0f : 0.0f, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f})
                 of = mix_bits(of, f);
         for (std::size_t i = 0; i < layers; ++i) {
-            of = (of ^ maps.sig[i]) * 1099511628211ULL;
+            // What stands still in each map, not what moves over it: a book
+            // falling through a lamp's cone throws no shadow in the air
+            // anyone could see, and gathering the air again in every view,
+            // every frame something moves, is what it would cost.
+            of = fnv(fnv(of, maps.layout[i]), maps.still_at[i] != 0 ? maps.still_at[i] : maps.sig[i]);
             for (float f : light_vp[i].m) of = mix_bits(of, f);
         }
         for (float f : {scatter, ahead, density, start, static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y),

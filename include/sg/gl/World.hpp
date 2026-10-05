@@ -871,7 +871,7 @@ private:
         float near = 0.3f, far = 60.0f;
     };
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
-    static constexpr int kAirSlices = 64;   // slices out from the eye
+    static constexpr int kAirSlices = 32;   // slices out from the eye, two points in each (64 cost twice as much, for bands hardly seen)
     static constexpr std::size_t kAirs = 6;  // views' airs kept at once
     std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
