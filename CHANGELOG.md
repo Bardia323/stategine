@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- Fabric's weave is fine (a millimetre or so on a lamp's shade) and is averaged away where its threads are finer than a few pixels: measured coarsely in a thing's unit box, it showed as a lattice of diagonal stripes on a shade across the room.
+
 - Whether a portal is declared to wear a surface is read from an index of the graph made once each time the graph changes (who owns each element, what each portal and functor leads to), not by walking every embedding and functor for each thing that wears a picture: the frame the graph moved, a room of a hundred books walked it a hundred times.
 - `warm` makes every picture a thing wears on the card, not only those its views happened to see: one first seen through a doorway or round a corner is not uploaded in the frame it is seen.
 

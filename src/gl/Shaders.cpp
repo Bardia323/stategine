@@ -819,9 +819,14 @@ vec3 surface_albedo(out float rough_mod) {
         return mAlbedo * (0.96 + 0.06 * speck) * mix(1.0, 0.78, smoothstep(0.45, 0.5, edge));
     }
     if (mSurface > 6.5) {
-        // Fabric: a weave, matte.
-        vec2 p = (vObject.xz + vObject.yy) * 260.0;
-        float weave = 0.5 + 0.25 * (sin(p.x) + sin(p.y));
+        // Fabric: a weave, matte - fine, a millimetre or so on a lamp's
+        // shade, a few on a seat (it goes with the thing, carried or not);
+        // finer on the screen than a few pixels, averaged away, as cloth is
+        // seen across a room - sampled coarser than it is woven, it was a
+        // lattice of diagonal stripes.
+        vec2 p = (vObject.xz + vObject.yy) * 1500.0;
+        float fine = max(length(fwidth(p.x)), length(fwidth(p.y)));
+        float weave = 0.5 + 0.25 * (sin(p.x) + sin(p.y)) * (1.0 - smoothstep(0.6, 1.6, fine));
         rough_mod = 0.2;
         return mAlbedo * (0.85 + 0.2 * weave) * mix(1.0, 0.85, smoothstep(0.46, 0.5, edge));
     }
