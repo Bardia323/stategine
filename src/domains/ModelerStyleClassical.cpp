@@ -11,6 +11,7 @@ let classical_ww 0.42
 let classical_wh 0.52
 let classical_sill 0.26
 let classical_roof 0.22
+let classical_head square
 define classical.wall len=10 h=7 t=0.5
   box $len $h $t at=0,0,-$t/2 mat=plaster
 end

@@ -11,6 +11,7 @@ let romanesque_ww 0.3
 let romanesque_wh 0.5
 let romanesque_sill 0.3
 let romanesque_roof 0.3
+let romanesque_head round
 define romanesque.wall len=10 h=7 t=0.9
   box $len $h $t at=0,0,-$t/2 mat=stone
 end

@@ -102,7 +102,10 @@ int main(int argc, char** argv) {
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("%zu faces in %zu parts, %.3f x %.3f x %.3f m, built in %.0f ms; %zu open edges\n", m.triangles, m.parts.size(), m.size().x, m.size().y,
                 m.size().z, ms, open_edges(m));
+    std::printf("  from %.3f,%.3f,%.3f to %.3f,%.3f,%.3f; its foot (where a thing drawn from it stands) at %.3f,%.3f,%.3f\n", m.lo.x, m.lo.y, m.lo.z, m.hi.x,
+                m.hi.y, m.hi.z, m.foot().x, m.foot().y, m.foot().z);
     for (const auto& p : m.parts) std::printf("  %s: %zu faces\n", p.material.empty() ? "(no material)" : p.material.c_str(), p.corners.size() / 24);
+    if (!m.openings.empty()) std::printf("  %zu openings asked of the walls round it\n", m.openings.size());
     if (!m.errors.empty()) std::printf("%s", m.errors.c_str());
     std::ofstream(out, std::ios::binary) << sg::sculpt::png(eye_set ? sg::sculpt::picture_from(m, eye, eye_yaw, eye_pitch, eye_fov, size) : sg::sculpt::picture(m, size, size), size, size);
     std::printf("picture: %s\n", out.c_str());

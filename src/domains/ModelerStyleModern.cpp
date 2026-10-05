@@ -11,6 +11,7 @@ let modern_ww 0.86
 let modern_wh 0.7
 let modern_sill 0.14
 let modern_roof 0.08
+let modern_head square
 define modern.wall len=10 h=7 t=0.4
   box $len $h $t at=0,0,-$t/2 mat=plaster
 end

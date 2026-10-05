@@ -8,6 +8,9 @@
 #include <sstream>
 #include <string>
 
+#include <filesystem>
+
+#include "sg/core/Cache.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/core/StateGraph.hpp"
 #include "sg/domains/Modeler.hpp"
@@ -231,7 +234,7 @@ int main() {
         const Model again = sculpt::build("import heap.obj faces=3000\n", {}, &files);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         std::printf("     heap: %zu faces -> %zu in %.0f ms %s\n", parts.triangles, again.triangles, ms, again.errors.c_str());
-        check(closed(again) && again.triangles > 1500 && again.triangles < 6000, "an imported heap of shapes, made again: one closed surface, near its budget");
+        check(closed(again) && again.triangles > 600 && again.triangles <= 3000, "an imported heap of shapes, made again: one closed surface, within its budget");
         check(std::abs(volume(again) - volume(parts)) / volume(parts) < 0.6 && inside(again, 0, 1, 0) && inside(again, 1.5, 1.5, 1.5) && !inside(again, 3, 1, -2),
               "its inside is the union of what it was made of");
         const Model one = sculpt::build(heap + "remesh faces=2000\n");
@@ -273,6 +276,131 @@ int main() {
               "compositions: a church, a temple, a street of houses each its own");
         sculpt::define_library("tiny", "define tiny.wall len=1 h=1 t=1\n  box $len $h $t\nend\n");
         check(sculpt::build("use tiny\ntiny.wall 2 2 2\n").triangles == 12, "a program adds a library of its own (define_library)");
+    }
+    {
+        // A cut meshes only where it cuts: a quatrefoil through a wall, fine,
+        // and the rest of the wall the eight corners it began as.
+        const std::string foil = "box 4 3 0.3 res=0.02\nsub group\n  cyl 0.25 1 at=0.2,1.5,0 rot=90,0,0 centre=1\n  cyl 0.25 1 at=-0.2,1.5,0 rot=90,0,0 centre=1\n"
+                                 "  cyl 0.25 1 at=0,1.7,0 rot=90,0,0 centre=1\n  cyl 0.25 1 at=0,1.3,0 rot=90,0,0 centre=1\nend\n";
+        const auto t0 = std::chrono::steady_clock::now();
+        const Model m = sculpt::build(foil);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("     quatrefoil at 2 cm: %zu faces in %.0f ms\n", m.triangles, ms);
+        check(closed(m) && m.triangles < 6000, "a fine cut in a wall is meshed where it cuts only: closed, and thousands of faces, not a hundred thousand");
+        check(!inside(m, 0, 1.5, 0) && !inside(m, 0.3, 1.5, 0) && inside(m, 0.6, 1.5, 0) && inside(m, 1.5, 0.5, 0.1), "the foil is open, the wall round it solid");
+        bool corner = false, far_flat = true;
+        for (const Tri& t : tris(m))
+            for (const double* p : {t.a, t.b, t.c}) {
+                corner = corner || (std::abs(p[0] - 2) < 1e-6 && std::abs(p[1] - 3) < 1e-6 && std::abs(std::abs(p[2]) - 0.15) < 1e-6);
+                // away from the cut, nothing but the wall's own planes
+                if (std::abs(p[0]) > 1 && std::abs(std::abs(p[2]) - 0.15) > 1e-6 && std::abs(std::abs(p[0]) - 2) > 1e-6 && p[1] > 1e-6 && p[1] < 3 - 1e-6) far_flat = false;
+            }
+        check(corner && far_flat, "the wall away from the cut keeps its exact faces");
+        const Model gate = sculpt::build("wall 8 4 0.8 res=0.05\nsub arch 2 3 4 at=0,0,0\n");
+        check(closed(gate) && gate.triangles < 20000, "a gate cut fine through a wall: closed, meshed only round the gate (" + std::to_string(gate.triangles) + " faces)");
+        const Model slits = sculpt::build("tower 2 7 3\n");
+        check(closed(slits) && slits.triangles < 6000, "a tower's slits each cut where they are, not the tower remeshed (" + std::to_string(slits.triangles) + ")");
+    }
+    {
+        // Remeshing follows the detail: a small bead on a broad slab, made at
+        // a budget, keeps its faces on the bead and few on the flat.
+        const Model m = sculpt::build("box 4 0.2 4\nsphere 0.15 at=0,0.2,0\nremesh faces=3000 blend=0.03\n");
+        std::size_t near = 0;
+        for (const Tri& t : tris(m)) {
+            const double c[3] = {(t.a[0] + t.b[0] + t.c[0]) / 3, (t.a[1] + t.b[1] + t.c[1]) / 3, (t.a[2] + t.b[2] + t.c[2]) / 3};
+            if (std::hypot(std::hypot(c[0], c[1] - 0.35), c[2]) < 0.3) ++near;
+        }
+        std::printf("     bead on a slab: %zu faces, %zu on the bead\n", m.triangles, near);
+        check(closed(m) && m.triangles <= 3000 && near > 250, "remesh at a budget spends it where the detail is (" + std::to_string(near) + " faces on the bead)");
+        const Model flat = sculpt::build("box 2 2 2\nremesh res=0.05\n");
+        check(closed(flat) && flat.triangles < 400 && std::abs(volume(flat) - 8) < 0.05, "a flat thing remeshed at a cell is a few large faces, not thousands (" + std::to_string(flat.triangles) + ")");
+    }
+    {
+        // A sweep carries its outline round corners without twisting it, and
+        // its corners are mitred: neither pinched nor turned.
+        const std::string ell = "0,0 0.3,0 0.3,0.1 0.1,0.1 0.1,0.3 0,0.3";
+        const std::string path = "0,0,0 0,2,0 2,2,0 2,2,2 0,3,2";
+        const Model m = sculpt::build("sweep " + ell + " / " + path + "\n");
+        check(closed(m) && m.errors.empty(), "a sweep up, across and round is closed " + m.errors);
+        // A square swept along a mitred path holds its area times the length
+        // of the path its middle follows.
+        const Model sq = sculpt::build("sweep -0.1,-0.1 0.1,-0.1 0.1,0.1 -0.1,0.1 / 0,0,0 0,0,-2 0,2,-2 2,2,-2\n");
+        check(closed(sq) && std::abs(volume(sq) - 0.04 * 6) < 0.04 * 6 * 0.01, "a square swept round a bend upward and one sideways keeps its section: area x length (" + std::to_string(volume(sq)) + ")");
+        const Model f = sculpt::build("sweep " + ell + " / " + path + "\nremesh res=0.02\n");
+        int agree = 0, n = 0;
+        for (double s = 0.1; s < 0.95; s += 0.05)
+            for (const auto& p : {std::array<double, 3>{0.05, s * 2, 0.05}, std::array<double, 3>{s * 2, 2.05, 0.2}, std::array<double, 3>{2.2, 2.05, s * 2}}) {
+                ++n;
+                agree += inside(m, p[0], p[1], p[2]) == inside(f, p[0], p[1], p[2]);
+            }
+        check(agree >= n - 3, "its exact faces and its field agree on where it is, leg after leg (" + std::to_string(agree) + " of " + std::to_string(n) + ")");
+        const Model ring = sculpt::build("sweep " + ell + " / 0,0,0 3,0,0 3,0,3 0,1,3 0,0,0\n");
+        check(closed(ring) && ring.triangles == 6 * 4 * 2, "a path that ends where it began goes round: no ends, every corner mitred");
+        const Model round = sculpt::build("tube 0.1 0,0,0 2,0,0 2,0,2 bend=0.5\n");
+        check(closed(round) && round.triangles > sculpt::build("tube 0.1 0,0,0 2,0,0 2,0,2\n").triangles, "bend= rounds a path's corners");
+    }
+    {
+        // A word said twice on a line is never quietly dropped: turns compose,
+        // anything else is refused by name.
+        const Model turned = sculpt::build("box 2 1 1 rot=0,0,90 rot=90,0,0\n");
+        check(turned.errors.empty() && std::abs(turned.size().x - 1) < 1e-6 && std::abs(turned.size().z - 2) < 1e-6,
+              "two rot= compose, the first first " + turned.errors);
+        const Model twice = sculpt::build("box 1 1 1 at=1,0,0 at=2,0,0\n");
+        check(twice.triangles == 0 && twice.errors.find("at= said twice") != std::string::npos, "at= said twice: the line is refused, by name");
+        const Model block = sculpt::build("group at=1,0,0 at=2,0,0\n  box 1 1 1\nend\nbox 1 1 1 at=5,0,0\n");
+        check(block.errors.find("said twice") != std::string::npos && block.errors.find("nothing to end") == std::string::npos && block.triangles == 24,
+              "a block said so still ends where it ends");
+        const Model both = sculpt::build("define post h=2\n  box 0.2 $h 0.2\nend\npost 3 h=4\n");
+        check(both.triangles == 0 && both.errors.find("said twice") != std::string::npos, "a macro's parameter said by place and by name is said twice");
+        check(!sculpt::placement("box 1 1 1 rot=90 rot=0,0,90\n", 0).editable, "a line with two turns is read, not written back as one");
+    }
+    {
+        // Openings asked of the walls: no faces, carried as the solid is.
+        const Model m = sculpt::build("group rot=90 at=5,0,0\n  array n=3 step=2,0,0\n    opening 1 2 head=pointed at=0,1,0\n  end\nend\nbox 1 1 1\n");
+        check(m.triangles == 12 && m.openings.size() == 3, "three openings in an array, and no faces of theirs");
+        const auto& o = m.openings[1];
+        check(std::abs(o.at.x - 5) < 1e-9 && std::abs(o.at.y - 1) < 1e-9 && std::abs(o.at.z + 2) < 1e-9 && std::abs(o.w - 1) < 1e-9 && std::abs(o.h - 2) < 1e-9 &&
+                  std::abs(o.facing.x - 1) < 1e-9 && o.head == "pointed",
+              "each where the blocks put it, sized and turned with them");
+        check(sculpt::build("opening 1 2 head=ogee\n").errors.find("round, pointed or square") != std::string::npos, "an opening's head is one there is");
+        const Model in = sculpt::build("use arch\nuse gothic\ninterior style=gothic w=14 d=30 h=10 sbays=4 walls=0 arcade=1 ww=2.2 wh=6 wsill=2.5\n");
+        std::size_t windows = 0, arches = 0;
+        for (const auto& q : in.openings) (q.h > 3 ? windows : arches) += 1;
+        check(in.errors.empty() && windows == 8 && arches > 8 && in.openings[0].head == "pointed", "an interior with the room's walls asks them for its windows and its arcade " + in.errors);
+        const Model own = sculpt::build("use arch\nuse gothic\ninterior style=gothic w=14 d=30 h=10 sbays=4\n");
+        check(own.openings.empty(), "an interior with walls of its own asks nothing of anyone's");
+        const Vec3d at = sculpt::stand(sculpt::build("box 1 1 1 at=3,-1,0\n"), {10, 0, 0}, 0.0);
+        check(std::abs(at.x - 13) < 1e-9 && std::abs(at.y + 1) < 1e-9, "a model stands where its recipe says: its box's foot carried from the origin");
+    }
+    {
+        // A model that imports is kept on disk too, and read back only while
+        // what it imports says the same.
+        const std::string dir = "modeler_cache_test";
+        sg::cache::set_folder(dir);
+        std::string obj = sculpt::to_obj(sculpt::build("box 1 2 3\n"), "a");
+        sculpt::Files f;
+        f.read = [&](const std::string&, std::string& text) { return text = obj, true; };
+        f.stamp = [&](const std::string&) { return (long long)obj.size(); };
+        Modeler::set_files(f);
+        const auto made = [&](const char* id) {
+            StateGraph g;
+            auto& m = g.add<Modeler>(Key{id});
+            m.hear(Event{Modeler::set_event(), Params{}.set("ops", std::string("import a.obj\nsphere 0.3 at=4,0,0\n"))});
+            m.dispatch_pending();
+            return m.model();
+        };
+        const Model first = made("one");
+        const auto before = sg::cache::stats();
+        const Model again = made("two");
+        const auto after = sg::cache::stats();
+        check(after.hits == before.hits + 1 && again.all() == first.all(), "a model that imports is read back from the disk");
+        obj = sculpt::to_obj(sculpt::build("box 3 1 1\n"), "a");
+        const Model changed = made("three");
+        check(std::abs(changed.size().x - first.size().x) > 0.5, "and made again when the file it imports says something else");
+        Modeler::set_files({});
+        sg::cache::set_folder("");
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
     }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;

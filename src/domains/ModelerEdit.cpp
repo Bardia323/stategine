@@ -84,11 +84,14 @@ Placed read(const std::string& line, int index, int depth) {
     p.word = w[h];
     p.editable = true;
     std::vector<double> n;
+    std::set<std::string> said;
     for (std::size_t i = h + 1; i < w.size(); ++i) {
         const std::size_t eq = w[i].find('=');
         if (eq == std::string::npos) continue;
         const std::string k = w[i].substr(0, eq), v = w[i].substr(eq + 1);
         if (k != "at" && k != "rot" && k != "scale") continue;
+        // Said again (turns composed, or a line refused): read, not written back.
+        if (!said.insert(k).second) p.editable = false;
         if (!numbers(v, n)) {
             p.editable = false;
             continue;

@@ -28,7 +28,9 @@
 // wall, its index in the outline), `along` (how far along it its middle is),
 // `sill`, `w`, `h` and `walk` (1 for a door). Its pose follows from those; on
 // a curved wall it spans the chord between its two ends. `onto` = 1 says it
-// opens onto something. What hangs on an opening - a frame, a switch beside
+// opens onto something. `head` = "round" or "pointed" arches its top (the
+// wall round the arch laid as `<opening>.head`), and `recess` sets what fills
+// it that far back into the wall. What hangs on an opening - a frame, a switch beside
 // a door, a window's bars - hangs off an anchor that says so: `hangs_on` = the
 // opening, `hang_yaw` = the opening's yaw it was built square to. The anchor
 // stands at the opening's foot, turned as the opening has turned, wherever
@@ -42,6 +44,7 @@
 //   <names>wall_<w>_<n>         its face, if the room's walls have faces
 //   <names>skirt_<w><n>         skirting along its foot, but across a doorway
 //   <opening>.blank             what fills an opening onto nothing
+//   <opening>.head              the wall round an arched opening's arch
 //
 // <w> is the wall: n, e, s or w in a rectangle, its index in any other shape.
 // What it makes again is the same element by the same name, so whatever was
@@ -136,9 +139,15 @@ struct Opening {
     int side = 0;
     double along = 0, sill = 0, w = kDoorW, h = kDoorH;
     bool door = true;  // walked through; a window is only looked through
+    // Its top: "" square, "round" (a half circle) or "pointed" (two arcs
+    // meeting, each struck from the other's springing) - `h` to its crown.
+    std::string head;
+    double recess = 0;  // how far back from the wall's face what fills it stands
 
     double lo() const { return along - w * 0.5; }
     double hi() const { return along + w * 0.5; }
+    // Where its head springs: its sides rise straight to here.
+    double spring() const;
 };
 
 Opening opening_of(const Element& e);
@@ -149,9 +158,17 @@ struct WallPiece {
     double s0, s1, y0, y1;
 };
 
-// A wall `length` long and `height` high, less its openings: full-height
-// pieces between them, and a piece under and over each.
+// A wall `length` long and `height` high, less its openings: cut across at
+// every opening's sides, each span of it whole where nothing opens it, and
+// between, under and over the openings in it where they do - so openings may
+// stand one over another (an arcade under a clerestory).
 std::vector<WallPiece> wall_pieces(double length, double height, std::vector<Opening> holes);
+
+// What fills the head of an opening round its arch, as triangles in the unit
+// box a mesh is sized from (sg/domains/Shapes.hpp): the two spandrels
+// between the arch and the square it stands in, pushed through the wall.
+// Empty for a square head.
+std::vector<float> head_shape(const Opening& o);
 
 // Can `o` go where it says, on the walls of `ol`, `height` high, beside
 // `others`? The reason if not.

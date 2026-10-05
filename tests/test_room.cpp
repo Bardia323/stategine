@@ -97,6 +97,38 @@ int main() {
         const sg::LawReport rep = sg::verify(g);
         check(rep.ok(), "a room keeps the laws: its walls are fixtures, with no arrows of their own");
     }
+    {
+        // Openings one over another - an arcade under a clerestory - and
+        // arched heads, laid round by the one rule.
+        sg::Room r(Key{"nave"}, 12, 8, 8);
+        r.lay_walls();
+        std::string why;
+        sg::Element* low = r.add_opening("arch", 0, 6.0, 1.2, 2.0, 0.2, false, &why);
+        sg::Element* high = r.add_opening("window", 0, 6.0, 2.0, 3.5, 3.0, false, &why);
+        check(low && high, "a window over an arch on one wall, a hand's breadth of wall between " + why);
+        check(!r.add_opening("clash", 0, 6.4, 1.0, 1.5, 1.5, false, &why) && why.find("run into") != std::string::npos,
+              "but not one that runs into either");
+        const auto pieces = sg::plan::wall_pieces(12.0, 8.0, r.openings());
+        double open = 0, wall = 0;
+        for (const auto& p : pieces) wall += (p.s1 - p.s0) * (p.y1 - p.y0);
+        for (const auto& o : r.openings())
+            if (o.side == 0) open += o.w * o.h;
+        check(std::abs(wall + open - 12.0 * 8.0) < 1e-9, "the wall's pieces and its openings make the whole wall, nothing twice and nothing missed");
+        bool between = false;
+        for (const auto& p : pieces) between = between || (std::abs(p.y0 - 2.2) < 1e-9 && std::abs(p.y1 - 3.0) < 1e-9 && p.s0 >= 5.4 - 1e-9 && p.s1 <= 6.6 + 1e-9);
+        check(between, "between them, the wall");
+        high->params.set("head", std::string("pointed"));
+        low->params.set("head", std::string("round")).set("recess", 0.15);
+        r.lay_walls();
+        const sg::Element* head = r.find(Key{"window.head"});
+        const sg::plan::Opening w = sg::plan::opening_of(*high);
+        check(head && head->alive && std::abs(head->params.num(sg::keys::sy) - 2.0 * 0.8660254) < 1e-6 && std::abs(head->params.num(sg::keys::y) - w.spring()) < 1e-9 &&
+                  r.model(Key{"window.head.mesh"}) && !r.model(Key{"window.head.mesh"})->empty(),
+              "a pointed head: the wall round its arch, from its springing to its crown");
+        check(std::abs(sg::plan::opening_of(*low).spring() - (0.2 + 2.0 - 0.6)) < 1e-9 && r.find(Key{"arch.head"}), "a round head springs half its width below its crown");
+        const sg::Element& blank = r.element(Key{"arch.blank"});
+        check(std::abs(blank.params.num(sg::keys::z) - (-0.025 - 0.15)) < 1e-6, "what fills an opening stands as far back in the wall as it says");
+    }
 
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;

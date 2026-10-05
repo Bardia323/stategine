@@ -19,7 +19,8 @@
 //
 // and its proportions, as variables: `<s>_ww` a window's width in a bay,
 // `<s>_wh` its height in a floor, `<s>_sill` its sill in a floor, `<s>_roof`
-// its roof's height in the building's depth.
+// its roof's height in the building's depth, `<s>_head` its arches (`round`, `pointed` or
+// `square`: what an opening's head is).
 //
 // Everything is along x, facing +z, standing on y = 0; turn and place it with
 // `at=` and `rot=`. The numbers are parameters: every composition below is
@@ -79,7 +80,7 @@ define building style=classical w=12 d=9 floors=2 fh=3.6 bays=5 sbays=4 t=0.5 ba
   facade style=$style w=$d floors=$floors fh=$fh bays=$sbays t=$t base=$base door=0 at=-$w/2,0,0 rot=-90
   if $inside
     box $w-$t*2 0.05 $d-$t*2 at=0,$base+$fh-0.05,0 mat=plaster
-    interior style=$style w=$w-$t*2 d=$d-$t*2 h=$fh-0.35 bays=$bays sbays=$sbays walls=0 at=0,$base,0
+    interior style=$style w=$w-$t*2 d=$d-$t*2 h=$fh-0.35 bays=$bays sbays=$sbays walls=0 holes=0 at=0,$base,0
   else
     if $core
       box $w-$t $base+$floors*$fh-0.05 $d-$t
@@ -135,16 +136,39 @@ define courtyard style=classical w=30 d=24 depth=8 floors=2   # four ranges roun
   wing style=$style w=$d-$depth*2 d=$depth floors=$floors bays=max(2,floor(($d-$depth*2)/3)) at=$w/2-$depth/2,0,0 rot=90
   wing style=$style w=$d-$depth*2 d=$depth floors=$floors bays=max(2,floor(($d-$depth*2)/3)) at=-$w/2+$depth/2,0,0 rot=-90
 end
-define inner style=classical len=10 h=5 bays=4   # the inside of one wall, facing +z: a wainscot, a pier between bays, a crown
-  $style.wainscot $len
+define inner style=classical len=10 h=5 bays=4 wainscot=1   # the inside of one wall, facing +z: a wainscot, a pier between bays, a crown
+  if $wainscot
+    $style.wainscot $len
+  end
   for b $bays+1
     $style.ipier $h at=-$len/2+$len/$bays*$b,0,0
   end
   $style.icornice $len at=0,$h,0
 end
-define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisles=0 floor=1 t=0.3 dw=0   # a room in the style, seen from inside: its floor, walls' insides, ceiling; its own walls or none; the front (+z) wall's inside open at its door, dw wide (0: the bay says)
+define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisles=0 floor=1 t=0.3 dw=0 holes=1 arcade=0 ww=0 wh=0 wsill=0   # a room in the style, seen from inside: its floor, walls' insides, ceiling; its own walls or none; the front (+z) wall's inside open at its door, dw wide (0: the bay says). With walls=0 the walls are a room's own, laid by its rule: its windows down both sides (ww, wh, wsill: 0, the style says) and, arcade=1, a blind arcade low along them are asked of those walls as openings
   let sb if($sbays>0,$sbays,max(2,round($bays*$d/$w)))
   let dw if($dw>0,$dw,min($w/$bays*0.6,1.8))
+  let open $holes*($walls==0)
+  let bay $d/$sb
+  let ww if($ww>0,$ww,$bay*$${style}_ww)
+  let wh if($wh>0,$wh,$h*$${style}_wh)
+  let wsill if($wsill>0,$wsill,$h*$${style}_sill)
+  if $open
+    # the windows, a bay each, as holes in the walls; their glass is someone else's
+    for i $sb
+      opening $ww $wh head=$${style}_head recess=1 at=-$w/2,$wsill,-$d/2+$bay*($i+0.5) rot=90
+      opening $ww $wh head=$${style}_head recess=1 at=$w/2,$wsill,-$d/2+$bay*($i+0.5) rot=-90
+    end
+    if $arcade
+      # under them, arches let a little way into the wall
+      let n max(1,floor($bay/2.4))
+      let ah min(2,$wsill-0.4)
+      for i $sb*$n
+        opening $bay/$n*0.6 $ah head=$${style}_head recess=0.12 at=-$w/2,0.15,-$d/2+$bay/$n*($i+0.5) rot=90
+        opening $bay/$n*0.6 $ah head=$${style}_head recess=0.12 at=$w/2,0.15,-$d/2+$bay/$n*($i+0.5) rot=-90
+      end
+    end
+  end
   if $floor
     box $w 0.12 $d at=0,-0.12,0 mat=$${style}_floor
   end
@@ -169,8 +193,8 @@ define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisl
   else
     inner style=$style len=$w h=$h bays=$bays at=0,0,$d/2 rot=180
   end
-  inner style=$style len=$d h=$h bays=$sb at=-$w/2,0,0 rot=90
-  inner style=$style len=$d h=$h bays=$sb at=$w/2,0,0 rot=-90
+  inner style=$style len=$d h=$h bays=$sb wainscot=1-$open*$arcade at=-$w/2,0,0 rot=90
+  inner style=$style len=$d h=$h bays=$sb wainscot=1-$open*$arcade at=$w/2,0,0 rot=-90
   $style.ceiling $w $d $h at=0,$h,0
   if $aisles
     for i $sb-1

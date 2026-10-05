@@ -296,14 +296,32 @@ SdfP sdf_tube(const std::vector<V3>& path, double r) {
     return sdf_union(parts);
 }
 
-SdfP sdf_sweep(const std::vector<P2>& prof, const std::vector<V3>& path) {
+SdfP sdf_sweep(const std::vector<P2>& prof, const std::vector<V3>& points) {
+    // Each segment the outline pushed along it in the segment's own frame (the
+    // path's, which does not twist), long enough to reach past its corners,
+    // and cut at the corners' mitre planes: so the segments meet face to face.
+    const Path path = along(points);
+    const std::size_t N = path.points.size(), S = path.frames.size();
+    double reach = 0;
+    for (const P2& q : prof) reach = std::max(reach, std::hypot(q.x, q.y));
+    const auto mitre = [&](std::size_t i) {
+        if (!path.closed && i == 0) return path.frames.front().t;
+        if (!path.closed && i + 1 == N) return path.frames.back().t;
+        return unit(path.frames[(i + S - 1) % S].t + path.frames[i % S].t);
+    };
     std::vector<SdfP> parts;
-    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
-        const V3 d = path[i + 1] - path[i];
-        const double l = len(d);
-        if (l < 1e-9) continue;
-        const V3 z = d * (1 / l), x = perpendicular(z), y = cross(z, x);
-        parts.push_back(sdf_xform(sdf_extrude(prof, l / 2, 0), basis((path[i] + path[i + 1]) * 0.5, x, y, z)));
+    for (std::size_t k = 0; k < S; ++k) {
+        const V3 a = path.points[k], b = path.points[(k + 1) % N];
+        const double l = len(b - a);
+        const Frame& f = path.frames[k];
+        // A corner past 150 degrees is mitred no further (as the exact faces are).
+        const double over = reach * 4;
+        const SdfP bar = sdf_xform(sdf_extrude(prof, l / 2 + over, 0), basis((a + b) * 0.5, f.n, f.b, f.t));
+        const V3 ma = mitre(k), mb = mitre((k + 1) % N);
+        const auto cut = std::make_shared<Fn>();
+        cut->bb = bar->bb;
+        cut->f = [bar, a, b, ma, mb](V3 p) { return std::max({bar->d(p), -dot(p - a, ma), dot(p - b, mb)}); };
+        parts.push_back(cut);
     }
     return sdf_union(parts);
 }
@@ -433,6 +451,28 @@ void surface(const Sdf& f, double cell, int max_grid, Geom& out, std::string* wa
     const V3 lo = bb.lo - V3{2.5 * h, 2.5 * h, 2.5 * h};
     const int nx = int(std::ceil((bb.hi.x + 2 * h - lo.x) / h)), ny = int(std::ceil((bb.hi.y + 2 * h - lo.y) / h)),
               nz = int(std::ceil((bb.hi.z + 2 * h - lo.z) / h));
+    contour(f, lo, h, nx, ny, nz, out);
+}
+
+Box surface_in(const Sdf& f, const Box& region, double cell, int max_grid, Geom& out, std::string* warn) {
+    double h = cell;
+    const V3 ext = region.hi - region.lo;
+    const double mx = std::max(ext.x, std::max(ext.y, ext.z)) + h;
+    if (mx / h > max_grid) {
+        h = mx / max_grid;
+        if (warn) *warn += "a cut was meshed coarser (" + std::to_string(h) + " m) to keep its grid down\n";
+    }
+    // Off by a little over a third of a cell, as above: no node on a round number.
+    const V3 lo = region.lo - V3{0.37 * h, 0.37 * h, 0.37 * h};
+    const int nx = std::max(1, int(std::ceil((region.hi.x - lo.x) / h))), ny = std::max(1, int(std::ceil((region.hi.y - lo.y) / h))),
+              nz = std::max(1, int(std::ceil((region.hi.z - lo.z) / h)));
+    contour(f, lo, h, nx, ny, nz, out);
+    Box grid;
+    grid.lo = lo, grid.hi = lo + V3{nx * h, ny * h, nz * h};
+    return grid;
+}
+
+void contour(const Sdf& f, V3 lo, double h, int nx, int ny, int nz, Geom& out) {
     const std::size_t sx = std::size_t(nx) + 1, sy = std::size_t(ny) + 1, sz = std::size_t(nz) + 1;
     const auto node = [&](int i, int j, int k) { return (std::size_t(k) * sy + std::size_t(j)) * sx + std::size_t(i); };
     const auto at = [&](int i, int j, int k) { return lo + V3{i * h, j * h, k * h}; };

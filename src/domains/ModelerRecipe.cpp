@@ -178,6 +178,8 @@ std::vector<std::string> tokens(const std::string& line) {
 struct Args {
     std::vector<std::string> pos;
     std::map<std::string, std::string> opt;
+    std::vector<std::string> rots;  // every rot=, in order: turns compose
+    std::string twice;              // a word said twice on the line (but rot): the line is refused
 };
 
 const std::set<std::string>& openers() {
@@ -319,16 +321,17 @@ private:
     // at, rot, scale: where it goes.
     Mat place(const Args& a) {
         V3 at, sc{1, 1, 1};
-        double rx = 0, ry = 0, rz = 0;
         if (auto it = a.opt.find("at"); it != a.opt.end()) {
             const auto v = nums(it->second);
             if (v.size() == 3) at = {v[0], v[1], v[2]};
             else err("at= takes x,y,z");
         }
-        if (auto it = a.opt.find("rot"); it != a.opt.end()) {
-            const auto v = nums(it->second);
-            if (v.size() == 1) ry = v[0];
-            else if (v.size() == 3) rx = v[0], ry = v[1], rz = v[2];
+        // Each rot= in turn, the first first: `rot=90,0,0 rot=30` stands it up, then turns it.
+        Mat turn;
+        for (const std::string& r : a.rots) {
+            const auto v = nums(r);
+            if (v.size() == 1) turn = rotation(0, v[0], 0) * turn;
+            else if (v.size() == 3) turn = rotation(v[0], v[1], v[2]) * turn;
             else err("rot= takes a, or x,y,z degrees");
         }
         if (auto it = a.opt.find("scale"); it != a.opt.end()) {
@@ -337,7 +340,7 @@ private:
             else if (v.size() == 3) sc = {v[0], v[1], v[2]};
             else err("scale= takes s, or x,y,z");
         }
-        return translate(at) * rotation(rx, ry, rz) * scaling(sc);
+        return translate(at) * turn * scaling(sc);
     }
     std::vector<P2> pairs(const std::vector<std::string>& t, std::size_t from, std::size_t to) {
         std::vector<P2> out;
@@ -370,7 +373,7 @@ private:
     void open(const std::string& head, Args& a, Mode mode, double k);
     void close();
     Solid finish(Frame& f);
-    void join_top(const Solid& s, Mode mode, double k) { kernel::join(st_.back().acc, s, mode, k); }
+    void join_top(const Solid& s, Mode mode, double k) { kernel::join(st_.back().acc, s, mode, k, Mesher{o_.cell, o_.max_grid, &errors}); }
     // A solid made again as one surface: its pieces' fields joined (smoothly,
     // by `blend`), and that field meshed - at `res`, or at whatever cell gives
     // about `faces` faces. One mesh, even and closed, however many and however
@@ -384,8 +387,14 @@ void Interp::parse_args(const std::vector<std::string>& t, std::size_t from, Arg
     for (std::size_t i = from; i < t.size(); ++i) {
         const std::size_t eq = t[i].find('=');
         const bool word = eq != std::string::npos && eq > 0 && std::isalpha(static_cast<unsigned char>(t[i][0])) && t[i].find_first_of("(,") > eq;
-        if (word) a.opt[t[i].substr(0, eq)] = t[i].substr(eq + 1);
-        else a.pos.push_back(t[i]);
+        if (word) {
+            const std::string k = t[i].substr(0, eq), v = t[i].substr(eq + 1);
+            if (k == "rot") a.rots.push_back(v);
+            else if (a.opt.count(k) && a.twice.empty()) a.twice = k;
+            a.opt[k] = v;
+        } else {
+            a.pos.push_back(t[i]);
+        }
     }
 }
 
@@ -492,7 +501,7 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
     } else if (head == "tube") {
         if (a.pos.size() < 3) return err("tube needs a radius and a path"), false;
         const double r = num(a.pos[0], 0.1);
-        const auto path = triples(a.pos, 1);
+        const auto path = rounded_path(triples(a.pos, 1), opt_num(a, "bend", 0), sides);
         if (path.size() < 2) return false;
         std::vector<P2> prof;
         for (int i = 0; i < sides; ++i) prof.push_back({r * std::cos(2 * kPi * i / sides), r * std::sin(2 * kPi * i / sides)});
@@ -503,7 +512,7 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         if (slash == a.pos.end()) return err("sweep needs outline / path"), false;
         const std::size_t cut = std::size_t(slash - a.pos.begin());
         const auto prof = pairs(a.pos, 0, cut);
-        const auto path = triples(std::vector<std::string>(a.pos.begin() + long(cut) + 1, a.pos.end()), 0);
+        const auto path = rounded_path(triples(std::vector<std::string>(a.pos.begin() + long(cut) + 1, a.pos.end()), 0), opt_num(a, "bend", 0), sides);
         if (prof.size() < 3 || path.size() < 2) return err("sweep needs an outline of 3+ points and a path of 2+"), false;
         m.field = sdf_sweep(prof, path);
         m.exact = std::make_shared<Geom>(g_sweep(prof, path, true));
@@ -557,7 +566,11 @@ Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, d
         const double f0 = double(trial.t.size() / 3);
         res = f0 > 0 ? c0 * std::sqrt(f0 / faces) : c0;
     }
-    res = std::max(res, extent / double(std::max(8, o_.max_grid)));
+    // Meshed at the cell; at a budget, made again a quarter as fine wherever
+    // that cell misses the field (a face, a hand), and then made fewer where
+    // it says least - flat spans first - down to the budget: so a face is as
+    // fine as its features and a hem as coarse as its folds allow.
+    const double h = std::max(res, extent / double(std::max(8, o_.max_grid)));
     Piece p;
     p.field = u;
     p.bb = u->bb;
@@ -565,11 +578,19 @@ Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, d
     p.crease = crease;
     p.material = s.pieces[0].material;
     auto g = std::make_shared<Geom>();
-    surface(*u, res, o_.max_grid, *g, &errors);
+    surface(*u, h, o_.max_grid, *g, &errors);
     g->crease = crease;
-    p.exact = g;
+    if (faces > 0) {
+        refine(*g, *u, h, std::size_t(faces), o_.max_grid);
+        simplify(*g, 0.02 * h, 0, nullptr);
+        if (double(g->t.size() / 3) > faces) simplify(*g, 0, std::size_t(faces), nullptr);
+    } else {
+        simplify(*g, 0.05 * h, 0, nullptr);
+    }
+    p.exact = Faces(g);
     Solid out;
     out.pieces.push_back(std::move(p));
+    out.holes = s.holes;
     return out;
 }
 
@@ -590,7 +611,7 @@ Solid Interp::solid(const Made& m, const Args& a, const Defaults& d) {
         auto g = std::make_shared<Geom>(*m.exact);
         g->crease = p.crease;
         transform(*g, full);
-        p.exact = g;
+        p.exact = Faces(g);
     }
     s.pieces.push_back(std::move(p));
     return s;
@@ -652,6 +673,10 @@ void Interp::close() {
 void Interp::call(const std::string& name, Args& a, Mode mode, double k) {
     const Macro mac = macros_[name];
     if (depth_ > 24) return err("macros nest too deep at " + name);
+    // A parameter said both by its place and by its name is said twice.
+    for (std::size_t i = 0; i < mac.params.size() && i < a.pos.size(); ++i)
+        if (a.opt.count(mac.params[i].first))
+            return err(name + ": " + mac.params[i].first + " said twice (by its place and by " + mac.params[i].first + "=), so the line is left out");
     Frame f;
     f.kind = Frame::Macro;
     f.mode = mode, f.k = k, f.args = a;
@@ -774,6 +799,12 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
         for (std::size_t j = h + 1; j < t.size(); ++j) t[j] = subst(t[j]);
         Args a;
         parse_args(t, h + 1, a);
+        if (!a.twice.empty()) {
+            // (A block is still opened, so its `end` ends it - but placed nowhere.)
+            err(a.twice + "= said twice on one line, which is left out (only rot= may be said again: turns compose)");
+            if (!openers().count(head)) continue;
+            a.opt.clear(), a.rots.clear();
+        }
         if (head == "end") {
             if (st_.size() > floor) close();
             else err("`end` with nothing to end");
@@ -804,6 +835,7 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
             open("group", a, mode, k);
             st_.back().args = Args{};
             for (const auto& [kk, vv] : a.opt) st_.back().args.opt[kk] = vv;
+            st_.back().args.rots = a.rots;
             const std::size_t fl = st_.size();
             for (int q = 0; q < n; ++q) {
                 st_.back().vars[a.pos[0]] = std::to_string(q);
@@ -827,6 +859,32 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
                 if (a.opt.count("faces")) s = remeshed(s, opt_num(a, "faces", 0), 0, 0, opt_num(a, "crease", 35));
                 join_top(s, mode, k);
             }
+        } else if (head == "opening") {
+            // opening w h [head=round|pointed] [walk=1]: no faces, a hole asked
+            // of the walls this stands among - its foot's middle at the origin,
+            // looking along +z, placed as anything is.
+            if (a.pos.size() < 2) {
+                err("opening w h [head=round|pointed] [walk=1]");
+                continue;
+            }
+            Hole hole;
+            const Mat m = place(a);
+            const V3 o = apply(m, {0, 0, 0});
+            hole.at = o;
+            hole.across = apply(m, {num(a.pos[0], 1) * 0.5, 0, 0}) - o;
+            hole.up = apply(m, {0, num(a.pos[1], 2), 0}) - o;
+            hole.facing = apply(m, {0, 0, 1}) - o;
+            hole.head = a.opt.count("head") ? a.opt.at("head") : "";
+            if (hole.head == "square" || hole.head == "flat") hole.head.clear();
+            if (!hole.head.empty() && hole.head != "round" && hole.head != "pointed") {
+                err("an opening's head is round, pointed or square - not " + hole.head);
+                hole.head.clear();
+            }
+            hole.walk = opt_num(a, "walk", 0) != 0;
+            hole.recess = opt_num(a, "recess", 0);
+            Solid s;
+            s.holes.push_back(hole);
+            kernel::join(st_.back().acc, s, Mode::Add, 0, Mesher{o_.cell, o_.max_grid, &errors});
         } else if (head == "remesh") {
             st_.back().acc = remeshed(st_.back().acc, opt_num(a, "faces", 0), opt_num(a, "res", 0), opt_num(a, "blend", 0), opt_num(a, "crease", 35));
         } else if (macros_.count(head)) {
@@ -868,13 +926,8 @@ Model build(const std::string& recipe, const Options& options, const Files* file
     Model out;
     std::vector<std::vector<float>> by;
     for (const Piece& p : s.pieces) {
-        Geom g;
-        if (p.exact) g = *p.exact;
-        else {
-            surface(*p.field, p.res > 0 ? p.res : options.cell, options.max_grid, g, &in.errors);
-            g.crease = p.crease;
-        }
-        shade(g, by, p.material);
+        if (const std::shared_ptr<const Geom> g = p.exact.get()) shade(*g, by, p.material);
+        else shade(*mesh_whole(*p.field, p.res > 0 ? p.res : options.cell, p.crease, Mesher{options.cell, options.max_grid, &in.errors}), by, p.material);
     }
     Box bb;
     for (std::size_t m = 0; m < by.size(); ++m) {
@@ -889,6 +942,15 @@ Model build(const std::string& recipe, const Options& options, const Files* file
     if (!bb.empty()) out.lo = {bb.lo.x, bb.lo.y, bb.lo.z}, out.hi = {bb.hi.x, bb.hi.y, bb.hi.z};
     out.errors = in.errors;
     out.imports = in.imports;
+    for (const Hole& h : s.holes) {
+        Opening o;
+        o.at = {h.at.x, h.at.y, h.at.z};
+        const V3 f = unit(h.facing);
+        o.facing = {f.x, f.y, f.z};
+        o.w = 2 * len(h.across), o.h = len(h.up);
+        o.head = h.head, o.walk = h.walk, o.recess = h.recess;
+        out.openings.push_back(o);
+    }
     return out;
 }
 

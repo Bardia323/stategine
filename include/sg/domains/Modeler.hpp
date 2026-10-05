@@ -20,16 +20,21 @@
 //     prism h x,z x,z ...       an outline in the ground plane, pushed up
 //     loft h ring / ring ...    rings x,z (same count) joined, equally high
 //     tube r x,y,z ...         a round bar along a path
-//     sweep x,y ... / x,y,z ... an outline carried along a path
+//     sweep x,y ... / x,y,z ... an outline carried along a path, untwisted,
+//                               its corners mitred (bend=r rounds them)
 //     import file               a Wavefront .obj, read by the program's files
-//   options on any of them: at=x,y,z  rot=ry | rx,ry,rz (degrees)  scale=s |
-//     sx,sy,sz  mat=<material>  round=r (rounded: made from its field)
-//     chamfer=c  sides=n  res=metres  crease=degrees  centre=1
+//     opening w h               no faces: a hole asked of the walls round it
+//                               (head=round|pointed walk=1 recess=m)
+//   options on any of them: at=x,y,z  rot=ry | rx,ry,rz (degrees; said again,
+//     the turns compose)  scale=s | sx,sy,sz  mat=<material>  round=r
+//     (rounded: made from its field)  chamfer=c  sides=n  res=metres
+//     crease=degrees  centre=1. Any other word said twice is an error.
 //
 //   combining, the word before a statement: add (the default), sub, and, and
 //   smooth ones `blend=k` and `carve=k` (a radius k): what came before in the
-//   block is the left hand. Only what a cut touches is meshed from a field;
-//   what it does not touch stays the exact faces it began as.
+//   block is the left hand. A cut is meshed from its field only in a box
+//   round it, joined to the exact faces kept everywhere else; what a field
+//   makes is made fewer where it is flat.
 //
 //   blocks, to `end`:  group [name]   array n=N step=dx,dy,dz [turn=deg]
 //     radial n=N [axis=y] [arc=360]   mirror x|y|z
@@ -80,16 +85,38 @@ struct Part {
     std::vector<float> corners;  // 8 floats a corner, 3 corners a face
 };
 
+// A hole a recipe asks of the walls it stands among (`opening`): no faces of
+// its own, but a request - a room whose walls it stands in opens them there,
+// as data on its walls (sg::Room), and its one rule lays them round it.
+struct Opening {
+    Vec3d at;               // the middle of its foot, in the recipe's own frame
+    Vec3d facing{0, 0, 1};  // which way it looks: across the wall it is in
+    double w = 1, h = 2;    // how wide, and how high from its foot to its top
+    std::string head;       // its top: "" square, "round" or "pointed"
+    bool walk = false;      // a door (walked through) or a window (looked through)
+    double recess = 0;      // how far back in the wall what fills it stands (a window's reveal)
+};
+
 struct Model {
     std::vector<Part> parts;
     Vec3d lo, hi;                 // the box round it all
     std::size_t triangles = 0;
     std::string errors;           // what the recipe got wrong, a line each
     std::vector<std::string> imports;
+    std::vector<Opening> openings;
 
     std::vector<float> all() const;
     Vec3d size() const { return hi - lo; }
+    // The middle of the foot of its box, in the recipe's own frame: where a
+    // thing drawn from `fitted` stands.
+    Vec3d foot() const { return {(lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5}; }
 };
+
+// Where to stand a thing drawn from a model (fitted, posed by its foot) so
+// that the recipe's own origin is at `origin`, the recipe turned `yaw`
+// radians about up: a model stands where its recipe says, not where its box
+// happens to be.
+Vec3d stand(const Model& m, const Vec3d& origin, double yaw);
 
 // The mesh of a recipe: a function of the text, the options and the files it
 // imports.

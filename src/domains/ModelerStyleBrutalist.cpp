@@ -11,6 +11,7 @@ let brutalist_ww 0.62
 let brutalist_wh 0.5
 let brutalist_sill 0.28
 let brutalist_roof 0.1
+let brutalist_head square
 define brutalist.wall len=10 h=7 t=0.6
   box $len $h $t at=0,0,-$t/2 mat=concrete
 end
