@@ -180,7 +180,28 @@ ipier` inside, and its proportions as variables (`<style>_ww`, `_wh`,
 `_sill`, `_roof`, `_floor`). A new style is a new file; any style goes in
 any composition. `door=2` leaves the door standing open, `core=0` makes a
 shell with nothing in it (a building gone into, whose inside is a room of
-its own), `dw`/`dh` say the door's size.
+its own), `dw`/`dh` say the door's size. `interior ... walls=0` (a room
+whose walls are another's - a realm's, laid by its own rule) leaves its front
+wall's inside open at the door, `dw` wide.
+
+What fills a building is a library too: `use church` (`ModelerChurch.cpp`) -
+`church.pew`, `pews`, `altar`, `candlestick`, `cross`, `pulpit`, `font`,
+`chandelier`, `lights` and `rose` (stained glass, pane by pane, each pane a
+coloured glass: `ruby cobalt amber emerald`, leaded), `organ`, `arcade` (a
+style's piers and pointed arches), `redeemer` and `plinth` (a statue of
+Christ, one smooth surface). Each is its own model, facing +z on y = 0.
+
+What costs, as learned furnishing a church with it:
+
+- A cut meshes the whole piece it cuts from its field, not only where it
+  cuts: a quatrefoil cut through a pew's end, at a cell fine enough to see
+  it, makes the end some forty thousand faces. Say a moulding as a `sweep`
+  round its path, a band with a hole in it as one `extrude` of its outline
+  (the gothic vault), a carving as raised shapes - exact, a few hundred faces.
+- A field closes anything thinner than its cell: a 5 cm panel cut at the
+  default cell comes out as nothing at all.
+- `remesh` has one cell for its whole block: a figure's face is made as
+  coarse as its hem. Remesh the head in a block of its own, finer.
 
 The language for it: `use <library>`, `if <expr> ... else ... end`,
 comparisons (`$a<2`), `rand(a, b, ...)` (the same number for the same

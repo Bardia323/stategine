@@ -118,23 +118,26 @@ end
 define gothic.icornice len=10
   box $len 0.14 0.12 at=0,-0.14,0.06 mat=stone
 end
-define gothic.ceiling w=10 d=14 h=6   # a pointed vault along the longer side, a rib across it at every bay
+define gothic.archband w=4 h=4 t=0.4 d=1   # the band between a pointed arch and one t outside it, exact (no cut, so no field): a vault's shell, a rib; foot on y = 0, through z
+  let s $h-$w*0.866
+  let R $w+$t
+  extrude $d -$w/2-$t,0 -$w/2,0 -$w/2,$s $w/2-$w*cos(10),$s+$w*sin(10) $w/2-$w*cos(20),$s+$w*sin(20) $w/2-$w*cos(30),$s+$w*sin(30) $w/2-$w*cos(40),$s+$w*sin(40) $w/2-$w*cos(50),$s+$w*sin(50) 0,$s+$w*0.866 -$w/2+$w*cos(50),$s+$w*sin(50) -$w/2+$w*cos(40),$s+$w*sin(40) -$w/2+$w*cos(30),$s+$w*sin(30) -$w/2+$w*cos(20),$s+$w*sin(20) -$w/2+$w*cos(10),$s+$w*sin(10) $w/2,$s $w/2,0 $w/2+$t,0 $w/2+$t,$s -$w/2+$R*cos(10),$s+$R*sin(10) -$w/2+$R*cos(20),$s+$R*sin(20) -$w/2+$R*cos(30),$s+$R*sin(30) -$w/2+$R*cos(40),$s+$R*sin(40) -$w/2+$R*cos(50),$s+$R*sin(50) 0,$s+sqrt($R*$R-$w*$w/4) $w/2-$R*cos(50),$s+$R*sin(50) $w/2-$R*cos(40),$s+$R*sin(40) $w/2-$R*cos(30),$s+$R*sin(30) $w/2-$R*cos(20),$s+$R*sin(20) $w/2-$R*cos(10),$s+$R*sin(10) -$w/2-$t,$s
+end
+define gothic.ceiling w=10 d=14 h=6   # a pointed vault along the longer side: its shell, a rib across it at every bay, the ridge rib, a moulding where it springs - all exact
   let a min($w,$d)
   let l max($w,$d)
   let n max(2,round($l/($a*0.6)))
   group rot=0,if($d>=$w,0,90),0
-    group
-      gothic.arch $a+0.6 $a*0.866+0.35 $l mat=stone
-      sub gothic.arch $a $a*0.866 $l+1
-    end
+    gothic.archband $a $a*0.866 0.4 $l mat=stone
     # the end walls closed up into the vault
     gothic.arch $a+0.2 $a*0.866+0.1 0.3 at=0,0,-$l/2-0.15 mat=stone
     gothic.arch $a+0.2 $a*0.866+0.1 0.3 at=0,0,$l/2+0.15 mat=stone
     for i $n+1
-      group
-        gothic.arch $a $a*0.866 0.3 at=0,0,-$l/2+$l/$n*$i mat=stone
-        sub gothic.arch $a-0.5 $a*0.866-0.3 1 at=0,0,-$l/2+$l/$n*$i
-      end
+      gothic.archband $a-0.5 ($a-0.5)*0.866 0.25 0.3 at=0,0,-$l/2+$l/$n*$i mat=stone
+    end
+    box 0.24 0.18 $l at=0,$a*0.866-0.16,0 mat=stone
+    mirror x
+      box 0.3 0.22 $l at=$a/2-0.15,0,0 mat=stone
     end
   end
 end

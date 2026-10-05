@@ -92,6 +92,13 @@ namespace sg::shapes {
 std::vector<float> extrude(std::vector<P2> outline, double depth, double chamfer) {
     using namespace detail;
     std::vector<float> out;
+    // A corner said twice is one corner: an arch with no legs puts its
+    // springing where its foot is, and a corner of no size is never an ear.
+    std::vector<P2> once;
+    for (const P2& q : outline)
+        if (once.empty() || std::hypot(q.x - once.back().x, q.y - once.back().y) > 1e-9) once.push_back(q);
+    while (once.size() > 1 && std::hypot(once.front().x - once.back().x, once.front().y - once.back().y) <= 1e-9) once.pop_back();
+    outline.swap(once);
     if (outline.size() < 3) return out;
     if (area(outline) < 0) std::reverse(outline.begin(), outline.end());
     const std::size_t n = outline.size();
