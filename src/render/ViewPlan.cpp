@@ -3,6 +3,8 @@
 #include "sg/domains/Atlas.hpp"
 #include <cmath>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace sg::render {
 ViewCamera view_camera(const Element &c) {
@@ -362,18 +364,6 @@ Key signal_of(const StateGraph &g, const Element &panel) {
         }
     return {};
 }
-Key inset_of(const StateGraph &g, const Element &panel) {
-    if (!panel.params.has("inset") || panel.params.num("inset_w", 0.0) <= 0.0 || panel.params.num("inset_h", 0.0) <= 0.0)
-        return {};
-    const Key name{panel.params.get_or<std::string>("inset", {})};
-    for (const auto &em : g.embeddings())
-        if (em.name == name) {
-            const auto *source = g.find(em.host);
-            const auto *p = source ? source->find(em.portal) : nullptr;
-            return p && p->params.num("eye") > .5 ? em.name : em.portal;
-        }
-    return {};
-}
 bool declared_world(const StateGraph &g, const State &host, const Element &p, const State &guest) {
     if (!registered(g, &host) || !registered(g, &guest) || !p.alive || host.find(p.id) != &p)
         return false;
@@ -402,27 +392,67 @@ bool declared_feed(const StateGraph &g, Key p, const State &guest) {
         }
     return false;
 }
+namespace {
+// What declares a surface to a portal, gathered once for each revision of a
+// graph: who owns each element, which guests each portal and embedding name
+// opens on, what each functor carries each object to, and what each state
+// leads on to. Asked of every thing that wears a picture, each frame; walked
+// through the whole graph for each, a frame in which the graph moved paid for
+// a room's hundred books a hundred times.
+struct SurfaceIndex {
+    const StateGraph *graph = nullptr;
+    uint64_t revision = ~uint64_t{0};
+    std::unordered_map<const Element *, const State *> owner;
+    std::unordered_set<const State *> states;
+    std::unordered_map<uint64_t, std::vector<Key>> by_portal, by_object;
+    std::unordered_map<Key, std::vector<Key>> by_name, next;
+};
+uint64_t pair_key(Key a, Key b) { return std::hash<Key>{}(a) * 1099511628211ULL ^ std::hash<Key>{}(b); }
+const SurfaceIndex &surface_index(const StateGraph &g) {
+    thread_local SurfaceIndex ix;
+    if (ix.graph == &g && ix.revision == g.revision())
+        return ix;
+    ix = SurfaceIndex{};
+    ix.graph = &g, ix.revision = g.revision();
+    for (Key id : g.ids())
+        if (const State *s = g.find(id)) {
+            ix.states.insert(s);
+            for (const Element &e : s->elements())
+                ix.owner[&e] = s;
+        }
+    for (const auto &em : g.embeddings()) {
+        ix.by_portal[pair_key(em.host, em.portal)].push_back(em.guest);
+        ix.by_name[em.name].push_back(em.guest);
+        ix.next[em.host].push_back(em.guest);
+    }
+    for (const auto &named : g.functors()) {
+        const Functor &f = named.second;
+        ix.next[f.from()].push_back(f.to());
+        f.for_each_object([&](Key from, Key to) {
+            ix.by_object[pair_key(f.from(), from)].push_back(f.to());
+            if (f.to() != f.from())  // (one way only, within a state)
+                ix.by_object[pair_key(f.to(), to)].push_back(f.from());
+        });
+    }
+    return ix;
+}
+} // namespace
+
 bool declared_surface(const StateGraph &g, const Element &p, const Surface2D &surface) {
-    const auto *owner = owner_of(g, p);
-    if (!owner || !p.alive || !registered(g, &surface))
+    const SurfaceIndex &ix = surface_index(g);
+    const auto own = ix.owner.find(&p);
+    const State *owner = own == ix.owner.end() ? nullptr : own->second;
+    if (!owner || !p.alive || !ix.states.count(&surface))
         return false;
     std::vector<Key> pending, seen;
-    const Key signal = signal_of(g, p);
-    for (const auto &em : g.embeddings())
-        if ((em.host == owner->id() && em.portal == signal) ||
-            (p.params.has("shows") && em.name == Key{p.params.get_or<std::string>("shows", {})}))
-            pending.push_back(em.guest);
-    for (const auto &named : g.functors())
-        if (named.second.from() == owner->id())
-            named.second.for_each_object([&](Key from, Key) {
-                if (from == p.id)
-                    pending.push_back(named.second.to());
-            });
-        else if (named.second.to() == owner->id())
-            named.second.for_each_object([&](Key, Key to) {
-                if (to == p.id)
-                    pending.push_back(named.second.from());
-            });
+    const auto add = [&](const auto &map, const auto &key) {
+        if (const auto it = map.find(key); it != map.end())
+            pending.insert(pending.end(), it->second.begin(), it->second.end());
+    };
+    add(ix.by_portal, pair_key(owner->id(), signal_of(g, p)));
+    if (p.params.has("shows"))
+        add(ix.by_name, Key{p.params.get_or<std::string>("shows", {})});
+    add(ix.by_object, pair_key(owner->id(), p.id));
     while (!pending.empty()) {
         const Key id = pending.back();
         pending.pop_back();
@@ -431,12 +461,7 @@ bool declared_surface(const StateGraph &g, const Element &p, const Surface2D &su
         if (std::find(seen.begin(), seen.end(), id) != seen.end())
             continue;
         seen.push_back(id);
-        for (const auto &em : g.embeddings())
-            if (em.host == id)
-                pending.push_back(em.guest);
-        for (const auto &f : g.functors())
-            if (f.second.from() == id)
-                pending.push_back(f.second.to());
+        add(ix.next, id);
     }
     return false;
 }

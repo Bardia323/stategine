@@ -183,6 +183,11 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     const Mix post = post_;
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
+    // And every picture a thing wears, made on the card now: one first seen
+    // through a doorway, or round a corner, is not made in the frame it is
+    // seen (a painted floor's maps take tens of milliseconds to upload).
+    for (auto& [id, bound] : surfaces_)
+        if (bound.surface) upload_skin(bound);
     gl::glFinish();
     fader_ = fader;
     post_ = post;
@@ -1464,11 +1469,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     if (scatter > 0.0f && depth <= 1) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
-        // As far out as the look says (`scatter.far`), within what is drawn;
-        // unless it says, as far as the air goes: across a room with walls
-        // (its box's diagonal, a little more), not past them - so the
-        // slices lie in the room, fine enough that a shaft crossing them is
-        // not cut into bands - and up to 90 m under a sky.
+        // As far out as the look says (`scatter.far`), within what is drawn.
+        // As far out as the look says (`scatter.far`); unless it says, as far
+        // as the air goes: across a room with walls (its box's diagonal, a
+        // little more), not past them, and up to 90 m under a sky.
         const PlacedRoom& here = rooms.front();
         float reach = std::min(zfar, 90.0f);
         if (here.room->params().num(Key{"sky"}, 0.0) < 0.5 && here.room->params().has(Key{"room_w"})) {
@@ -1494,10 +1498,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                             l.sun ? 1.0f : 0.0f, l.indirect ? 1.0f : 0.0f, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f})
                 of = mix_bits(of, f);
         for (std::size_t i = 0; i < layers; ++i) {
-            // What stands still in each map, not what moves over it: a book
-            // falling through a lamp's cone throws no shadow in the air
-            // anyone could see, and gathering the air again in every view,
-            // every frame something moves, is what it would cost.
+            // What stands still in each map, not what moves over it: a thing
+            // moving through a lamp's cone throws no shadow in the air anyone
+            // could see, and the air gathered again in every view, every frame
+            // something moves, is what it would cost.
             of = fnv(fnv(of, maps.layout[i]), maps.still_at[i] != 0 ? maps.still_at[i] : maps.sig[i]);
             for (float f : light_vp[i].m) of = mix_bits(of, f);
         }
@@ -1605,8 +1609,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uTex", 0);
         p.set("uEnv", 7);
         p.set("uEnvMix", 0.0f);
-        p.set("uInsetTex", 6);
-        p.set("uInsetRect", 0.0f, 0.0f, 0.0f, 0.0f);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
         p.set("uViewport", vp_w_, vp_h_);
@@ -2902,18 +2904,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
     scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
     scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
-    // A world's feed in a part of the picture (`inset`), if the graph declares it.
-    bool inset = false;
-    if (graph_ && e.params.has(Key{"inset"}))
-        if (const Key res = render::inset_of(*graph_, e); !res.empty())
-            if (auto f = feeds.find(res); f != feeds.end() && f->second.world && declared_feed(res, *f->second.world) && f->second.shown().valid()) {
-                f->second.shown().bind_color(6);
-                const float x = static_cast<float>(e.params.num(Key{"inset_x"})), y = static_cast<float>(e.params.num(Key{"inset_y"}));
-                scene_->set("uInsetRect", x, y, x + static_cast<float>(e.params.num(Key{"inset_w"})), y + static_cast<float>(e.params.num(Key{"inset_h"})));
-                inset = true;
-            }
     quad_.draw();
-    if (inset) scene_->set("uInsetRect", 0.0f, 0.0f, 0.0f, 0.0f);
     scene_->set("uTexFlip", 0.0f);
     scene_->set("uUntone", 0.0f);
     scene_->set("uTexMix", 0.0f);

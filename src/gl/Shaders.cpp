@@ -131,8 +131,10 @@ uniform sampler3D uAirLight;
 uniform vec4 uAir;  // its first slice's distance, its last's, how many slices; 1
 vec3 air_light(float d) {
     if (uAir.w < 0.5) return vec3(0.0);
-    float s = log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0);
-    s = clamp(s, 0.0, uAir.z - 1.0);
+    // (Read a little nearer or further at each pixel, by half a slice at most,
+    // so the steps between slices are a grain, not a line.)
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5;
+    float s = clamp(log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0) + jit, 0.0, uAir.z - 1.0);
     // (Nearer than the first slice, as much less as it is nearer.)
     return texture(uAirLight, vec3(gl_FragCoord.xy / uViewport, (s + 0.5) / uAir.z)).rgb * clamp(d / uAir.x, 0.0, 1.0);
 }
@@ -173,9 +175,18 @@ float air_shadow(int layer, vec3 p) {
     return texture(uShadowMaps, vec4(q.xy, float(layer), q.z - 0.0004));
 }
 
-// The light at one point of the air, seen from `dir`.
-vec3 point_light(vec3 p, vec3 dir) {
-    if (dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
+// A noise that differs from each cell to the next and never lines up
+// (interleaved gradient noise): where in its cell each one is sampled.
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// A cell of a slice, sampled once - at a point of it the noise picks, across
+// and down, not at its middle: a lamp's shaft crossing the cells is caught by
+// some and missed by their neighbours, a fine grain, never caught or missed by
+// a whole slice at once (bands along the walls, at one distance from the eye).
+vec3 slice_light(vec3 dir, float k, float down) {
+    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
+    vec3 p = uViewPos + dir * mix(a, b, down);
+    if (b <= a || dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
     float ahead = clamp(uScatterAhead, -0.9, 0.9);
     vec3 lit = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
@@ -191,39 +202,22 @@ vec3 point_light(vec3 p, vec3 dir) {
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
         lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
     }
-    return lit;
-}
-
-// A cell of a slice: the light through it, not at its middle only - two
-// points, a quarter of the cell either way of its middle across and the
-// first and last quarter of the slice down, so a shaft's edge or a lamp's
-// falloff crossing the cell is averaged over it rather than caught or missed
-// whole. Caught or missed whole, it steps from slice to slice - bands along
-// the walls, the same distance from the eye - and the bands crawl as the eye
-// moves. (Measured against air gathered four times as finely each way and
-// twice as finely down, two points in 64 slices err a half to a third as
-// much as one point in 32 did.)
-vec3 slice_light(vec2 uv, float k) {
-    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
-    if (b <= a) return vec3(0.0);
-    const vec2 across[2] = vec2[2](vec2(-0.25, -0.25), vec2(0.25, 0.25));
-    const float down[2] = float[2](0.25, 0.75);
-    vec3 lit = vec3(0.0);
-    for (int s = 0; s < 2; ++s) {
-        vec4 far = uAirUnproject * vec4((uv + across[s] / uAirCells) * 2.0 - 1.0, 1.0, 1.0);
-        vec3 dir = normalize(far.xyz / far.w - uViewPos);
-        lit += point_light(uViewPos + dir * mix(a, b, down[s]), dir);
-    }
     // (Pi: the lights carry it folded in, as the scene's diffuse does.)
     float t = exp(-uFogDensity * max(0.5 * (a + b) - uFogStart, 0.0));
-    vec3 s = lit * (0.5 * 3.14159265 * uScatter * (b - a) * t);
+    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t);
     return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
 }
 
 void main() {
     ivec2 cells = ivec2(uAirCells), px = ivec2(gl_FragCoord.xy), tile = px / cells;
-    vec2 uv = (vec2(px - tile * cells) + 0.5) / uAirCells;
-    FragColor = vec4(slice_light(uv, float(tile.y * 8 + tile.x)), 1.0);
+    vec2 cell = vec2(px - tile * cells);
+    float k = float(tile.y * 8 + tile.x);
+    vec2 seed = cell + vec2(k * 5.588238, k * 3.0);
+    vec2 across = vec2(ign(seed), ign(seed + vec2(17.0, 59.0))) - 0.5;
+    vec2 uv = (cell + 0.5 + across) / uAirCells;
+    vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(far.xyz / far.w - uViewPos);
+    FragColor = vec4(slice_light(dir, k, ign(seed + vec2(41.0, 7.0))), 1.0);
 }
 )";
     return source.c_str();
@@ -373,22 +367,8 @@ uniform float uDim;
 uniform float uUndim;         // 1: this is part of the screen the room dims round, not dimmed with it
 // How flat the tube is seen (crt_shape): 0 as it is, 1 face up to the glass.
 uniform float uFlat;
-// A picture in the picture (a panel's `inset`): a world's feed, shown in the
-// part of the panel's picture uInsetRect says (x0, y0, x1, y1 in its own
-// coordinates; empty: none) - under the same glass as the rest of it.
-uniform sampler2D uInsetTex;
-uniform vec4 uInsetRect;
 )") + crt_glsl_constants() + air_glsl() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
-
-// The panel's picture at s: its own, or the inset's where that is.
-vec3 shown_at(vec2 s) {
-    if (uInsetRect.z > uInsetRect.x) {
-        vec2 q = (s - uInsetRect.xy) / (uInsetRect.zw - uInsetRect.xy);
-        if (q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0) return texture(uInsetTex, vec2(q.x, 1.0 - q.y)).rgb;
-    }
-    return texture(uTex, s).rgb;
-}
 
 float noise(vec2 p) {
     vec2 i = floor(p), f = fract(p);
@@ -414,7 +394,7 @@ vec3 crt_sample(vec2 uv) {
     float ppx = max(fwidth(pic_sd), 1e-5);
     float picture = 1.0 - smoothstep(-ppx, ppx, pic_sd);
     vec2 s = clamp(w * 0.5 + 0.5, 0.0, 1.0);
-    vec3 col = shown_at(s);
+    vec3 col = texture(uTex, s).rgb;
     // Halation: light from the phosphor spreading in the glass - a ring of
     // samples round each point, near and farther out, added as light. Done
     // here, per pixel of the tube, so what is painted onto it stays flat.
@@ -424,8 +404,8 @@ vec3 crt_sample(vec2 uv) {
         for (int i = 0; i < 8; ++i) {
             float a = float(i) * 0.7853982 + 0.39;
             vec2 d = vec2(cos(a), sin(a));
-            near += shown_at(s + d * t * 2.0);
-            far += shown_at(s + d * t * 6.0);
+            near += texture(uTex, s + d * t * 2.0).rgb;
+            far += texture(uTex, s + d * t * 6.0).rgb;
         }
         col += uHalo * (near * 0.045 + far * 0.03);
     }
@@ -878,7 +858,7 @@ void main() {
 #ifdef SG_CUTOUT
         if (uCutout > 0.5 && texel.a < 0.5) discard;
 #endif
-        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : uInsetRect.z > uInsetRect.x ? shown_at(uv) : texel.rgb;
+        vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texel.rgb;
         if (uSkinRelief > 0.0) relief_h = texel.a * uSkinRelief;
         if (uUntone > 0.5) {
             // A picture already developed - a world drawn in its own look -

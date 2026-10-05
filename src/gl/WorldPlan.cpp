@@ -51,11 +51,8 @@ void GLWorldView::set_frame(const Pose& p) {
 const Element* GLWorldView::shown_in(const State& room, Key id) const {
     static const Key shows{"shows"};
     if (!graph_) return nullptr;
-    static const Key inset{"inset"};
     for (const Element& e : room.elements())
-        if (e.kind == kinds::portal && e.id != id &&
-            ((e.params.has(shows) && signal_of(e) == id) || (e.params.has(inset) && render::inset_of(*graph_, e) == id)))
-            return &e;
+        if (e.kind == kinds::portal && e.params.has(shows) && signal_of(e) == id && e.id != id) return &e;
     return nullptr;
 }
 

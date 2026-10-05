@@ -614,7 +614,8 @@ A light scatters its own `scatter` times the look's (1 unless it says): a
 lamp that glows in the air more, or less, than it lights. Light that stands
 in for bounce (`indirect`) lights no air. The air is gathered over cells of
 the view (16 pixels each way), in 64 slices out from the eye that widen as
-they go, by every light of the view through its cone and doorway and
+they go - each cell lit once, at a point of it a noise picks, so a shaft
+crossing slices is a grain, never bands - by every light of the view through its cone and doorway and
 shadowed by its own map, dimmed by the look's fog (`uFogDensity`,
 `uFogStart`); the scene reads it at each pixel's distance (`air_light`), and
 a doorway's view has only the air beyond the doorway - this side of it is

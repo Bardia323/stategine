@@ -73,8 +73,8 @@
 // every look is unless it says, gathers nothing and costs nothing;
 // `scatter.ahead`, how much of that goes on ahead rather than back (-1..1,
 // 0.5 unless it says); `scatter.far`, how far out from the eye it is gathered
-// (unless it says: across a room with walls, its box's diagonal; else the
-// state's `far`, up to 90 m). Each light scatters `scatter` times that (its own param, 1 unless it says). The air is
+// (the state's `far`, up to 90 m, unless it says). Each light scatters
+// `scatter` times that (its own param, 1 unless it says). The air is
 // gathered over cells of the view, slice by slice out from the eye, by every
 // lamp and sun that lights the view, shadowed by their own maps, and dimmed
 // by the fog the look already has (`uFogDensity`, `uFogStart`); the scene
@@ -871,7 +871,7 @@ private:
         float near = 0.3f, far = 60.0f;
     };
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
-    static constexpr int kAirSlices = 32;   // slices out from the eye, two points in each (64 cost twice as much, for bands hardly seen)
+    static constexpr int kAirSlices = 64;   // slices out from the eye, each sampled once at a point jittered within it
     static constexpr std::size_t kAirs = 6;  // views' airs kept at once
     std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
