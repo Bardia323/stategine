@@ -425,6 +425,15 @@ if(SG_BUILD_TESTS)
     target_link_libraries(sg_dsl_strong PRIVATE stategine_dev stategine_dsl)
     stategine_compile_dsl(sg_dsl_strong NAME strongworld SOURCES src/dsl/compiler.sg tests/dsl/desk.sg)
     add_test(NAME sg_dsl_strong COMMAND sg_dsl_strong)
+
+    # A relation that holds at once, and contents that reach it in time: a
+    # global state and two local ones, glued by a cover, each side relaxing
+    # toward what its restriction says by its own driven arrow.
+    add_executable(sg_relax tests/test_relax.cpp)
+    target_link_libraries(sg_relax PRIVATE stategine_dev stategine_dsl)
+    stategine_compile_dsl(sg_relax NAME relax_product SOURCES tests/dsl/relax.sg tests/dsl/relax_product.sg)
+    stategine_compile_dsl(sg_relax NAME relax_bond SOURCES tests/dsl/relax.sg tests/dsl/relax_bond.sg)
+    add_test(NAME sg_relax COMMAND sg_relax)
   endif()
 
   add_executable(sg_bench tests/bench.cpp)

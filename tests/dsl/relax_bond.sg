@@ -1,0 +1,36 @@
+# The global state with a correlation of its own: ga.x + gb.x = bond.total.
+# Neither a nor b can hold it - each sees one of the two terms - and it is not
+# a function of what they hold: total is g's own datum. g's arrows keep it:
+#
+#   kick(d)      ga.x += d, gb.x -= d    a correlated move; the sum is kept
+#   retotal(d)   total += d              the correlation itself moved; no
+#                                        restriction sees it
+#   settle(dt)   ga.x, gb.x close the gap to total, equally, at `share`;
+#                g's own dynamics, on the clock
+#   couple(k)    share = k               turns g's own dynamics on
+
+initial g
+state g {
+    element ga {
+        x = 1.0
+        y = 0.0
+    }
+    element gb {
+        x = -1.0
+        y = 0.5
+    }
+    element bond {
+        total = 0.0
+        share = 0.0
+    }
+    bond -> bond : kick(d) on g.kick native kick_pair
+    bond -> bond : retotal(d) on g.retotal native shift_total
+    bond -> bond : couple(k) on g.couple native set_share
+    bond -> bond : settle(dt) on g.settle native settle
+}
+port g.kick
+port g.retotal
+port g.couple
+drive time -> g.settle
+    keeps always
+    additive

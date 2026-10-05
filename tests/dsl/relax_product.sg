@@ -1,0 +1,17 @@
+# The global state that is only its parts: everything g holds, a or b holds.
+# Its perturbation is a pair of local ones - each side's own observable moved.
+
+initial g
+state g {
+    element ga {
+        x = 1.0
+        y = 0.0
+    }
+    element gb {
+        x = -1.0
+        y = 0.5
+    }
+    ga -> ga : kick_a(d) on g.kick native shift_x
+    gb -> gb : kick_b(d) on g.kick native shift_y
+}
+port g.kick
