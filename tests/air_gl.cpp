@@ -4,7 +4,8 @@
 // A lamp shines down a dark room through air its look says scatters: the
 // air in the lamp's cone glows, and a board held in the cone throws a
 // shadow through the glow - darker below the board than beside it. A view
-// that does not move, of a world that does not move, gathers its air once.
+// that does not move, of a world that does not move, gathers its air a few
+// times - each at other points of its cells, averaged - and then rests.
 // A look that says nothing of its air gathers none and draws as it did. The
 // look's grade is the look's: brighter by a stop, grey without saturation,
 // and as it was with none. And a lamp's glow spreads further the deeper into
@@ -105,9 +106,14 @@ int main() {
     sg::set_look(room, "room.air");
     shot();
     check(view.times().air_built > 0, "air that scatters: it is gathered");
-    for (int i = 0; i < 2; ++i) shot();
+    int gathered = 1;
+    for (int i = 0; i < 24; ++i) {
+        shot();
+        gathered += view.times().air_built;
+    }
     const Picture lit = shot();
-    check(view.times().air_built == 0, "a still view of a still world gathers its air once");
+    check(view.times().air_built == 0 && gathered > 1 && gathered <= 16,
+          "a still view of a still world gathers its air a few times, averaged, and then rests");
     if (const char* dump = std::getenv("SG_AIR_DUMP")) {
         for (const auto& [name, p] : {std::pair{"/air-without.ppm", &plain}, std::pair{"/air-with.ppm", &lit}})
             if (FILE* f = std::fopen((std::string(dump) + name).c_str(), "wb")) {

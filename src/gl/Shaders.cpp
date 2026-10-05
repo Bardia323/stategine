@@ -131,10 +131,7 @@ uniform sampler3D uAirLight;
 uniform vec4 uAir;  // its first slice's distance, its last's, how many slices; 1
 vec3 air_light(float d) {
     if (uAir.w < 0.5) return vec3(0.0);
-    // (Read a little nearer or further at each pixel, by half a slice at most,
-    // so the steps between slices are a grain, not a line.)
-    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5;
-    float s = clamp(log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0) + jit, 0.0, uAir.z - 1.0);
+    float s = clamp(log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0), 0.0, uAir.z - 1.0);
     // (Nearer than the first slice, as much less as it is nearer.)
     return texture(uAirLight, vec3(gl_FragCoord.xy / uViewport, (s + 0.5) / uAir.z)).rgb * clamp(d / uAir.x, 0.0, 1.0);
 }
@@ -160,6 +157,7 @@ uniform float uFogStart;        // and clear near the eye
 uniform float uScatter;         // how much of the light through it a metre of it scatters
 uniform float uScatterAhead;    // how much of that goes on ahead (-1..1, 0 every way alike)
 uniform vec4  uAirClip;         // only the air on this plane's side is this view's (a doorway's far side)
+uniform float uAirSpin;         // which gathering this is: each samples its cells at other points
 
 float air_at(float i) { return uAir.x * pow(uAir.y / uAir.x, i / (uAir.z - 1.0)); }
 // Schlick's phase function: how much of light scattered goes off at an
@@ -213,11 +211,14 @@ void main() {
     vec2 cell = vec2(px - tile * cells);
     float k = float(tile.y * 8 + tile.x);
     vec2 seed = cell + vec2(k * 5.588238, k * 3.0);
-    vec2 across = vec2(ign(seed), ign(seed + vec2(17.0, 59.0))) - 0.5;
+    // (Moved on by an even step each gathering - the plastic numbers - so the
+    // gatherings averaged cover each cell evenly.)
+    vec3 step3 = uAirSpin * vec3(0.8191725, 0.6710436, 0.5497005);
+    vec2 across = fract(vec2(ign(seed), ign(seed + vec2(17.0, 59.0))) + step3.xy) - 0.5;
     vec2 uv = (cell + 0.5 + across) / uAirCells;
     vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
     vec3 dir = normalize(far.xyz / far.w - uViewPos);
-    FragColor = vec4(slice_light(dir, k, ign(seed + vec2(41.0, 7.0))), 1.0);
+    FragColor = vec4(slice_light(dir, k, fract(ign(seed + vec2(41.0, 7.0)) + step3.z)), 1.0);
 }
 )";
     return source.c_str();
@@ -621,7 +622,10 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     float edge = smoothstep(0.82, 0.98, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
     if (edge >= 1.0) return 1.0;
     float bias = 0.00006;
-    float turn = ign(gl_FragCoord.xy) * 6.2831853;
+    // (Turned again each 24th of a second of the world's time, as the film's
+    // grain is: a dither that stood still was a layer of noise on the screen,
+    // the same wherever the eye looked.)
+    float turn = fract(ign(gl_FragCoord.xy) + floor(uTime * 24.0) * 0.618034) * 6.2831853;
     float c = cos(turn), s = sin(turn);
     mat2 spin = mat2(c, s, -s, c) * 2.4 * spread;
     vec2 texel2 = uShadowTexel;

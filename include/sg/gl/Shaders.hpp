@@ -535,8 +535,6 @@ uniform vec3  uRayColor;
 uniform float uRayCut;
 uniform float uRaySpread;
 
-float ray_hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-
 vec3 godrays(vec2 uv) {
     if (uRays <= 0.0) return vec3(0.0);
     vec3 f = normalize(uCamFwd);
@@ -554,7 +552,13 @@ vec3 godrays(vec2 uv) {
 
     const int N = 56;
     vec2 stp = (src - uv) / float(N) * 0.92;
-    vec2 p = uv + stp * ray_hash(uv * 911.0);  // jittered, so the steps do not band
+    // Each pixel's march starts a little further along, so the steps do not
+    // band - by an amount moved on each 24th of a second of the composite's
+    // time (uTime, which every composite that pastes this declares), as the
+    // grain is: an offset that stood still was a layer of noise stuck to the
+    // screen over everything bright.
+    float start = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + floor(uTime * 24.0) * 0.618034);
+    vec2 p = uv + stp * start;
     float w = 1.0;
     vec3 sum = vec3(0.0);
     for (int i = 0; i < N; ++i) {

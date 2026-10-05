@@ -869,7 +869,12 @@ private:
         uint64_t of = 0;
         uint64_t used = 0;  // the frame a view last asked for it
         float near = 0.3f, far = 60.0f;
+        // How many gatherings of what it is made from now are in it, averaged,
+        // and how many there have been in all (each samples other points).
+        int gathered = 0;
+        uint32_t spin = 0;
     };
+    static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
     static constexpr int kAirSlices = 64;   // slices out from the eye, each sampled once at a point jittered within it
     static constexpr std::size_t kAirs = 6;  // views' airs kept at once
@@ -999,6 +1004,10 @@ private:
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
+    // Seen through a window or doorway by another view: its film is the
+    // viewer's, laid over the whole picture - its own grain would be a second
+    // layer, and a still one wherever the world beyond keeps its time still.
+    bool film_of_viewer_ = false;
     struct Feed {
         const Spatial3D* world = nullptr;
         const Element* eye = nullptr;  // seen from this (a camera's lens), not the world's camera

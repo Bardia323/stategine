@@ -466,6 +466,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             wp.own->root_ = root_ ? root_ : this;
             wp.own->output_ = &wp.own_out;
             wp.own->eye_override_ = &eye;
+            wp.own->film_of_viewer_ = true;
             // Cut as any view through a doorway is: nothing between the
             // carried eye and the far doorway, and that doorway's own view
             // left out - right at the threshold the eye stands in its frame.
@@ -1516,7 +1517,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             a.local.create(gx * group, gy * (kAirSlices / group), gl::GL_RGBA16F, 0, false);
             made = true;
         }
-        if (made || a.of != of) {
+        // Gathered again when what it is made from moves - and, while nothing
+        // does, again and again, each time at other points of each cell,
+        // averaged, until there are enough to stand for the whole of each
+        // cell: then it rests. (One gathering alone, each cell sampled at one
+        // point, is noise that stands still on the screen near a lamp.)
+        if (made || a.of != of) a.gathered = 0;
+        if (a.gathered < kAirGatherings) {
             a.of = of;
             if (!air_prog_) {
                 air_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::air_fs(), "air");
@@ -1542,8 +1549,17 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             // Every slice's own light in one pass; then the slices added up
             // from the eye, eight at a time, no pass waiting on another.
             p.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
+            p.set("uAirSpin", static_cast<float>(a.spin++ % 4096u));
             a.local.bind();
+            if (a.gathered > 0) {
+                // Into the average: this gathering one part in as many as there are now.
+                gl::glEnable(gl::GL_BLEND);
+                gl::glBlendColor(0.0f, 0.0f, 0.0f, 1.0f / static_cast<float>(a.gathered + 1));
+                gl::glBlendFunc(gl::GL_CONSTANT_ALPHA, gl::GL_ONE_MINUS_CONSTANT_ALPHA);
+            }
             screen_.draw();
+            gl::glDisable(gl::GL_BLEND);
+            ++a.gathered;
             const gl::Program& sum = *air_sum_prog_;
             sum.use();
             sum.set("uAirLocal", 5);
@@ -3059,6 +3075,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         p.use();
         apply_uniforms(p, post_, passes::composite);
         apply_attended(p, passes::composite);
+        if (film_of_viewer_) p.set("uGrain", 0.0f);
         if (rays_on_) {
             p.set("uRayDir", to_vec3(rays_dir_));
             p.set("uCamFwd", to_vec3(rays_fwd_));

@@ -8,6 +8,10 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- No noise stands still on the screen. Each pixel's turn of the soft-shadow filter, and the start of each pixel's march of the god rays, are moved on each 24th of a second of the world's time (`uTime`), as the grain is: fixed to the pixel, each was a still layer of noise over everything lit and everything bright, and the rays' steps a slight banding near a light. **Breaking** for a composite that pastes `godrays_glsl` without declaring `uniform float uTime` before it.
+- Lit air is gathered again and again while nothing it is made from moves, each time at other points of its cells, and averaged (`kAirGatherings`, 16) - then it rests: one gathering, each cell sampled at one point, was noise that stood still near a lamp. The scene reads it without a dither.
+- A view drawn for a window or doorway (a far room in its own look) leaves out its film grain: the viewer's film is laid over the whole picture.
+
 - Film grain is white noise blurred by the same small kernel at every pixel (`film_clump`, in GLSL and WGSL), not value noise on a lattice a pixel and a half across - which made it a third weaker on every third row and column, a faint grid over anything bright and flat. **Breaking** for a composite that called `film_noise` itself.
 
 - Fabric's weave is fine (a millimetre or so on a lamp's shade) and is averaged away where its threads are finer than a few pixels: measured coarsely in a thing's unit box, it showed as a lattice of diagonal stripes on a shade across the room.
