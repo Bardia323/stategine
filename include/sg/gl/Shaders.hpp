@@ -120,8 +120,9 @@ const std::string& lights_glsl();
 // A view's air, lit: what a world's lamps light of the air in each slice of
 // the view out from the eye (cells of the view, the slices widening as they
 // go), scattered back towards the eye and shadowed by the lamps' own maps -
-// eight slices a pass, every pass on its own. Built by the renderer when the
-// look's scene pass says its air scatters (`scatter`).
+// every cell of every slice at once, laid side by side eight slices to a row.
+// Built by the renderer when the look's scene pass says its air scatters
+// (`scatter`).
 const char* air_fs();
 
 // And the same slices added up from the eye out, eight a pass, each pass on

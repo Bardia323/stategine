@@ -620,7 +620,10 @@ shadowed by its own map, dimmed by the look's fog (`uFogDensity`,
 a doorway's view has only the air beyond the doorway - this side of it is
 this side's. It is gathered for the eye's view and the views one doorway on,
 and again only when the view, its lights or their shadow maps move
-(`FrameTimes::air_built`). It costs about 0.4 ms a gathering at 2560 x 1440.
+(`FrameTimes::air_built`). Every cell of every slice is lit in one pass,
+and the slices are added up in four: a gathering costs about a tenth of a
+millisecond at 2560 x 1440 - in the lab's dev room, within what one run
+differs from the next.
 
 **Grade and curve** (composite uniforms, in every composite that pastes
 `gl::film_glsl()`: its `tonemap` grades first). In scene light, before any

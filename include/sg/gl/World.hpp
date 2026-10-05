@@ -837,12 +837,13 @@ private:
         uint64_t of[kShadowMaps] = {};  // and the light it is of (a map is a light's, not a layer's)
         uint64_t used = 0;  // the frame a view last asked for it
     };
-    // A view's air, lit by its lamps (air_fs): each slice's own light, the
-    // slices added up from the eye (what the scene reads), and what they were
-    // gathered from - gathered again only when that moves: a still view of a
-    // still world gathers them once.
+    // A view's air, lit by its lamps (air_fs): each slice's own light (laid
+    // eight to a row), the slices added up from the eye (what the scene
+    // reads), and what they were gathered from - gathered again only when
+    // that moves: a still view of a still world gathers them once.
     struct Air {
-        gl::LayerArray local, light;
+        gl::RenderTarget local;
+        gl::LayerArray light;
         uint64_t of = 0;
         uint64_t used = 0;  // the frame a view last asked for it
         float near = 0.3f, far = 60.0f;

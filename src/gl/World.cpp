@@ -1189,7 +1189,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                         static_cast<float>(clip.normal.z), static_cast<float>(clip.offset), a.near, a.far,
                         static_cast<float>(gx), static_cast<float>(gy), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
             of = mix_bits(of, f);
-        const bool made = a.local.ensure(gx, gy, kAirSlices) | a.light.ensure(gx, gy, kAirSlices, /*volume=*/true);
+        // (Each slice's own light laid eight to a row, a pixel a cell.)
+        constexpr int group = gl::LayerArray::kGroup;
+        bool made = a.light.ensure(gx, gy, kAirSlices, /*volume=*/true);
+        if (!a.local.valid() || a.local.width() != gx * group || a.local.height() != gy * (kAirSlices / group)) {
+            a.local.create(gx * group, gy * (kAirSlices / group), gl::GL_RGBA16F, 0, false);
+            made = true;
+        }
         if (made || a.of != of) {
             a.of = of;
             if (!air_prog_) {
@@ -1213,18 +1219,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set("uScatterAhead", ahead);
             p.set("uAirClip", static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y), static_cast<float>(clip.normal.z),
                   static_cast<float>(clip.offset));
-            // Each slice's own light, eight at a time; then the slices added
-            // up from the eye, eight at a time. No pass waits on another of
-            // its kind.
-            constexpr int group = gl::LayerArray::kGroup;
-            for (int g = 0; g < kAirSlices / group; ++g) {
-                a.local.bind_group(g);
-                p.set("uAirGroup", static_cast<float>(g * group));
-                screen_.draw();
-            }
+            // Every slice's own light in one pass; then the slices added up
+            // from the eye, eight at a time, no pass waiting on another.
+            p.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
+            a.local.bind();
+            screen_.draw();
             const gl::Program& sum = *air_sum_prog_;
             sum.use();
             sum.set("uAirLocal", 5);
+            sum.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
             a.local.bind_color(5);
             for (int g = 0; g < kAirSlices / group; ++g) {
                 a.light.bind_group(g);

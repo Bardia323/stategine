@@ -140,15 +140,15 @@ vec3 air_light(float d) {
 
 const char* air_fs() {
     static const std::string source = std::string(R"(#version 330 core
-in vec2 vUV;
-layout(location = 0) out vec4 Slice[8];
+out vec4 FragColor;
 )") + lights_glsl() + R"(
-// Eight slices of a view's air, each on its own: what its lamps light of the
-// air between that slice and the one before, scattered towards the eye and
-// dimmed by the air before it. (air_sum_fs adds them up.) A cell for each
-// sixteen pixels of the view; the slices go out from the eye in steps that
-// widen as they go, as detail does.
-uniform float uAirGroup;        // the first of the eight slices
+// Every slice of a view's air at once, each on its own: what its lamps light
+// of the air between that slice and the one before, scattered towards the
+// eye and dimmed by the air before it. (air_sum_fs adds them up.) A cell for
+// each sixteen pixels of the view; the slices go out from the eye in steps
+// that widen as they go, as detail does. They are laid side by side, eight
+// to a row: a pixel of this picture is a cell of one slice.
+uniform vec2  uAirCells;        // cells across the view, and up it
 uniform vec4  uAir;             // the first slice's distance, the last's, how many slices
 uniform mat4  uAirUnproject;    // the view's clip space back to the world
 uniform vec3  uViewPos;
@@ -198,9 +198,11 @@ vec3 slice_light(vec3 dir, float k) {
 }
 
 void main() {
-    vec4 far = uAirUnproject * vec4(vUV * 2.0 - 1.0, 1.0, 1.0);
+    ivec2 cells = ivec2(uAirCells), px = ivec2(gl_FragCoord.xy), tile = px / cells;
+    vec2 uv = (vec2(px - tile * cells) + 0.5) / uAirCells;
+    vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
     vec3 dir = normalize(far.xyz / far.w - uViewPos);
-    for (int j = 0; j < 8; ++j) Slice[j] = vec4(slice_light(dir, uAirGroup + float(j)), 1.0);
+    FragColor = vec4(slice_light(dir, float(tile.y * 8 + tile.x)), 1.0);
 }
 )";
     return source.c_str();
@@ -210,16 +212,18 @@ const char* air_sum_fs() {
     return R"(#version 330 core
 layout(location = 0) out vec4 Slice[8];
 // Eight slices of a view's air, each what the slices from the eye to it
-// gathered (air_fs, uAirLocal): the light the air scatters towards the eye
-// up to that distance.
-uniform sampler2DArray uAirLocal;
-uniform int uAirGroup;  // the first of the eight
+// gathered (air_fs, laid eight to a row in uAirLocal): the light the air
+// scatters towards the eye up to that distance.
+uniform sampler2D uAirLocal;
+uniform vec2 uAirCells;  // cells across the view, and up it
+uniform int uAirGroup;   // the first of the eight
 void main() {
-    ivec2 at = ivec2(gl_FragCoord.xy);
+    ivec2 cells = ivec2(uAirCells), at = ivec2(gl_FragCoord.xy);
     vec3 sum = vec3(0.0);
-    for (int k = 0; k < uAirGroup; ++k) sum += texelFetch(uAirLocal, ivec3(at, k), 0).rgb;
+    for (int k = 0; k < uAirGroup; ++k) sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
     for (int j = 0; j < 8; ++j) {
-        sum += texelFetch(uAirLocal, ivec3(at, uAirGroup + j), 0).rgb;
+        int k = uAirGroup + j;
+        sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
         Slice[j] = vec4(sum, 1.0);
     }
 }
