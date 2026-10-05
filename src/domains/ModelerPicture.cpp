@@ -63,9 +63,11 @@ void draw(const Model& m, const View& v, int x0, int y0, int size, int stride, s
     const double span = std::max(hi[0] - lo[0], hi[1] - lo[1]) * 1.1 + 1e-9, k = size / span;
     const double mx = (lo[0] + hi[0]) * 0.5, my = (lo[1] + hi[1]) * 0.5;
     const double f = size * 0.5 / std::tan(v.fov * 0.5);
-    // The light: from over the eye's left shoulder.
+    // The light: from over the eye's left shoulder - a direction, so turned
+    // with the eye but never moved with it (seen from a point, the eye's
+    // place is not taken from it).
     double lx, ly, lz;
-    eye(-0.4, 0.8, 0.45, lx, ly, lz);
+    eye(-0.4 + (v.persp ? v.px : 0.0), 0.8 + (v.persp ? v.py : 0.0), 0.45 + (v.persp ? v.pz : 0.0), lx, ly, lz);
     const double ll = std::sqrt(lx * lx + ly * ly + lz * lz);
     lx /= ll, ly /= ll, lz /= ll;
     for (const Part& p : m.parts) {

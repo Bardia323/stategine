@@ -20,4 +20,6 @@ const char* lib_islamic();
 const char* lib_japanese();
 const char* lib_brutalist();
 const char* lib_artdeco();
+// And what fills a building: a church's furnishings (`use church`).
+const char* lib_church();
 }  // namespace sg::sculpt
