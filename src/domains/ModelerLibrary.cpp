@@ -136,6 +136,13 @@ std::vector<std::string> libraries() {
     return out;
 }
 
+std::string defined_libraries() {
+    std::lock_guard<std::mutex> g(shelf().m);
+    std::string out;
+    for (const auto& [n, t] : shelf().defined) out += n + "\n" + std::to_string(t.size()) + "\n" + t;
+    return out;
+}
+
 unsigned library_revision() {
     std::lock_guard<std::mutex> g(shelf().m);
     return shelf().revision;
