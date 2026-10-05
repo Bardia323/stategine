@@ -1039,13 +1039,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const auto layers_from = std::chrono::steady_clock::now();
     std::vector<const Caster*> sees;
     bool unshadowed = false;
-    // The eye's own views draw a few maps a frame, taking turns from frame
-    // to frame; past that a map stands as last drawn, with its own box - a
-    // shadow that moves follows a frame or two later, and the frame does not
-    // wait on every lamp at once. (One never drawn is drawn now.) Only a map
-    // whose box is fixed where it is may wait: one whose box goes with the
-    // eye (a sun's) stood as it was covers where the eye was, not where it
-    // is, and is drawn every frame it changes.
+    // The view of the eye's own room draws every map whose casters moved,
+    // the frame they moved: a shadow is where its thing is, never a frame or
+    // two behind it - and, of several lamps, never some shadows behind the
+    // others, out of step. The views one doorway on draw a few a frame,
+    // taking turns from frame to frame; past that a map stands as last
+    // drawn, with its own box, and the frame does not wait on every lamp at
+    // once. (One never drawn is drawn now.) Only a map whose box is fixed
+    // where it is may wait: one whose box goes with the eye (a sun's) stood
+    // as it was covers where the eye was, not where it is, and is drawn every
+    // frame it changes.
     int own_budget = kOwnShadowMaps;
     for (std::size_t n = 0; n < layers; ++n) {
         const std::size_t i = (n + frame_count_) % layers;
@@ -1080,7 +1083,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             else light_vp[i] = maps.vp[i];            // as last drawn, with its own box
             continue;
         }
-        if (depth <= 1 && maps.sig[i] != 0 && may_wait) {
+        if (depth == 1 && maps.sig[i] != 0 && may_wait) {
             if (own_budget <= 0) {
                 light_vp[i] = maps.vp[i];
                 continue;
@@ -1163,8 +1166,19 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     if (scatter > 0.0f && depth <= 1) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
-        // As far out as the look says (`scatter.far`), within what is drawn.
-        a.far = std::clamp(static_cast<float>(setting(first, passes::scene, "scatter.far", std::min(zfar, 90.0f))), 4.0f, std::max(zfar, 4.0f));
+        // As far out as the look says (`scatter.far`), within what is drawn;
+        // unless it says, as far as the air goes: across a room with walls
+        // (its box's diagonal, a little more), not past them - so the
+        // slices lie in the room, fine enough that a shaft crossing them is
+        // not cut into bands - and up to 90 m under a sky.
+        const PlacedRoom& here = rooms.front();
+        float reach = std::min(zfar, 90.0f);
+        if (here.room->params().num(Key{"sky"}, 0.0) < 0.5 && here.room->params().has(Key{"room_w"})) {
+            const double w = here.room->params().num(Key{"room_w"}), d = here.room->params().num(Key{"room_d"}),
+                         h = here.room->params().num(Key{"room_h"}, 3.0);
+            reach = std::min(reach, std::ceil(static_cast<float>(1.1 * std::sqrt(w * w + d * d + h * h))));
+        }
+        a.far = std::clamp(static_cast<float>(setting(first, passes::scene, "scatter.far", reach)), 4.0f, std::max(zfar, 4.0f));
         const int gx = std::max(1, (static_cast<int>(vp_w_) + kAirTile - 1) / kAirTile);
         const int gy = std::max(1, (static_cast<int>(vp_h_) + kAirTile - 1) / kAirTile);
         const float ahead = static_cast<float>(setting(first, passes::scene, "scatter.ahead", 0.5));
