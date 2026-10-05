@@ -131,7 +131,8 @@ uniform sampler3D uAirLight;
 uniform vec4 uAir;  // its first slice's distance, its last's, how many slices; 1
 vec3 air_light(float d) {
     if (uAir.w < 0.5) return vec3(0.0);
-    float s = clamp(log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0), 0.0, uAir.z - 1.0);
+    float s = log(max(d, 1e-4) / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0);
+    s = clamp(s, 0.0, uAir.z - 1.0);
     // (Nearer than the first slice, as much less as it is nearer.)
     return texture(uAirLight, vec3(gl_FragCoord.xy / uViewport, (s + 0.5) / uAir.z)).rgb * clamp(d / uAir.x, 0.0, 1.0);
 }
@@ -172,10 +173,9 @@ float air_shadow(int layer, vec3 p) {
     return texture(uShadowMaps, vec4(q.xy, float(layer), q.z - 0.0004));
 }
 
-vec3 slice_light(vec3 dir, float k) {
-    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
-    vec3 p = uViewPos + dir * (0.5 * (a + b));
-    if (b <= a || dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
+// The light at one point of the air, seen from `dir`.
+vec3 point_light(vec3 p, vec3 dir) {
+    if (dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
     float ahead = clamp(uScatterAhead, -0.9, 0.9);
     vec3 lit = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
@@ -191,18 +191,39 @@ vec3 slice_light(vec3 dir, float k) {
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
         lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
     }
+    return lit;
+}
+
+// A cell of a slice: the light through it, not at its middle only - two
+// points, a quarter of the cell either way of its middle across and the
+// first and last quarter of the slice down, so a shaft's edge or a lamp's
+// falloff crossing the cell is averaged over it rather than caught or missed
+// whole. Caught or missed whole, it steps from slice to slice - bands along
+// the walls, the same distance from the eye - and the bands crawl as the eye
+// moves. (Measured against air gathered four times as finely each way and
+// twice as finely down, two points in 64 slices err a half to a third as
+// much as one point in 32 did.)
+vec3 slice_light(vec2 uv, float k) {
+    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
+    if (b <= a) return vec3(0.0);
+    const vec2 across[2] = vec2[2](vec2(-0.25, -0.25), vec2(0.25, 0.25));
+    const float down[2] = float[2](0.25, 0.75);
+    vec3 lit = vec3(0.0);
+    for (int s = 0; s < 2; ++s) {
+        vec4 far = uAirUnproject * vec4((uv + across[s] / uAirCells) * 2.0 - 1.0, 1.0, 1.0);
+        vec3 dir = normalize(far.xyz / far.w - uViewPos);
+        lit += point_light(uViewPos + dir * mix(a, b, down[s]), dir);
+    }
     // (Pi: the lights carry it folded in, as the scene's diffuse does.)
     float t = exp(-uFogDensity * max(0.5 * (a + b) - uFogStart, 0.0));
-    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t);
+    vec3 s = lit * (0.5 * 3.14159265 * uScatter * (b - a) * t);
     return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
 }
 
 void main() {
     ivec2 cells = ivec2(uAirCells), px = ivec2(gl_FragCoord.xy), tile = px / cells;
     vec2 uv = (vec2(px - tile * cells) + 0.5) / uAirCells;
-    vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
-    vec3 dir = normalize(far.xyz / far.w - uViewPos);
-    FragColor = vec4(slice_light(dir, float(tile.y * 8 + tile.x)), 1.0);
+    FragColor = vec4(slice_light(uv, float(tile.y * 8 + tile.x)), 1.0);
 }
 )";
     return source.c_str();

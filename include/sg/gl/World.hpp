@@ -73,8 +73,8 @@
 // every look is unless it says, gathers nothing and costs nothing;
 // `scatter.ahead`, how much of that goes on ahead rather than back (-1..1,
 // 0.5 unless it says); `scatter.far`, how far out from the eye it is gathered
-// (the state's `far`, up to 90 m, unless it says). Each light scatters
-// `scatter` times that (its own param, 1 unless it says). The air is
+// (unless it says: across a room with walls, its box's diagonal; else the
+// state's `far`, up to 90 m). Each light scatters `scatter` times that (its own param, 1 unless it says). The air is
 // gathered over cells of the view, slice by slice out from the eye, by every
 // lamp and sun that lights the view, shadowed by their own maps, and dimmed
 // by the fog the look already has (`uFogDensity`, `uFogStart`); the scene
@@ -849,7 +849,7 @@ private:
         float near = 0.3f, far = 60.0f;
     };
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
-    static constexpr int kAirSlices = 32;   // slices out from the eye
+    static constexpr int kAirSlices = 64;   // slices out from the eye
     static constexpr std::size_t kAirs = 6;  // views' airs kept at once
     std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
@@ -860,7 +860,7 @@ private:
     // drawn for), and a view whose maps were never drawn is lit without
     // them until they are - a frame or two, never a stall.
     static constexpr int kNestedShadowMaps = 8;
-    static constexpr int kOwnShadowMaps = 3;  // drawn again a frame, at most, in a view of the eye's own (stale ones wait their turn)
+    static constexpr int kOwnShadowMaps = 3;  // drawn again a frame, at most, in a view one doorway on (stale ones wait their turn; the eye's own view draws all it must)
     int shadow_budget_ = kNestedShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
