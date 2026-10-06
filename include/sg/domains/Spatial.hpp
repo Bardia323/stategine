@@ -134,7 +134,19 @@ public:
     void picture(Key name, int w, int h, std::vector<unsigned char> rgba);
     const Picture* picture(Key name) const;
 
+    // --- ground -------------------------------------------------------------------
+    // Ground that is a function: a `terrain` element stands for the height
+    // of the land at any (x, z) of the state (sg::terrain::Land's, or any
+    // pure function - one called from several threads at once). The walker
+    // stands on it, a ray stops at it, and the renderer draws it, resampled
+    // round the eye however far it goes. Made as the state is built, as its
+    // models are: what the land is, not what it is doing.
+    using Height = std::function<double(double, double)>;
+    Element& terrain(Key id, Height height);
+    const Height* ground(Key id) const;
+
 private:
+    std::map<std::string, std::shared_ptr<const Height>> grounds_;
     std::map<std::string, std::shared_ptr<const std::vector<float>>> models_;
     std::map<std::string, std::shared_ptr<Picture>> pictures_;
     uint64_t picture_revisions_ = 0;

@@ -242,6 +242,19 @@ const std::vector<float>* Spatial3D::model(Key name) const {
     return it == models_.end() ? nullptr : it->second.get();
 }
 
+Element& Spatial3D::terrain(Key id, Height height) {
+    Element& e = find(id) ? element(id) : add_element(id, Key{"terrain"});
+    grounds_[id.str()] = std::make_shared<const Height>(std::move(height));
+    // Drawn again from its new function (the renderer's resample).
+    e.params.set("rev", e.params.num("rev", 0.0) + 1.0);
+    return e;
+}
+
+auto Spatial3D::ground(Key id) const -> const Height* {
+    const auto it = grounds_.find(id.str());
+    return it == grounds_.end() ? nullptr : it->second.get();
+}
+
 void Spatial3D::picture(Key name, int w, int h, std::vector<unsigned char> rgba) {
     auto& p = pictures_[name.str()];
     if (!p) p = std::make_shared<Picture>();

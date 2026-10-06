@@ -47,6 +47,7 @@ endif()
 file(GLOB _sg_sources CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/algebra/*.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/modeler/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/terrain/*.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial/*.cpp)
 add_library(stategine STATIC ${_sg_sources})
@@ -63,6 +64,12 @@ file(GLOB _sg_modeler_code CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial/*.cpp)
 list(SORT _sg_modeler_code)
 stategine_code_digest(stategine SG_MODELER_CODE ${_sg_modeler_code})
+# And a terrain's land, by its recipe and the code that makes it.
+file(GLOB _sg_terrain_code CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/terrain/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/terrain/*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Terrain.hpp)
+list(SORT _sg_terrain_code)
+stategine_code_digest(stategine SG_TERRAIN_CODE ${_sg_terrain_code})
 
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.
@@ -162,6 +169,9 @@ endif()
 if(NOT CMAKE_CROSSCOMPILING)
   add_executable(sgmodel tools/sgmodel.cpp)
   target_link_libraries(sgmodel PRIVATE stategine stategine_warnings stategine_static_runtime)
+  # sgterrain: a terrain recipe in, a picture of the land (and its mesh) out.
+  add_executable(sgterrain tools/sgterrain.cpp)
+  target_link_libraries(sgterrain PRIVATE stategine stategine_warnings stategine_static_runtime)
 endif()
 
 if(SG_BUILD_EXAMPLES)
@@ -185,6 +195,12 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
     GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(glfw)
 
+  # sgland: a terrain recipe drawn by the renderer itself, as a game would.
+  add_executable(sgland tools/sgland.cpp)
+  target_link_libraries(sgland PRIVATE stategine_dev glfw)
+  if(WIN32)
+    target_link_libraries(sgland PRIVATE opengl32)
+  endif()
   add_executable(sg_room3d examples/room3d.cpp)
   target_link_libraries(sg_room3d PRIVATE stategine_dev glfw)
   if(WIN32)
@@ -303,6 +319,9 @@ if(SG_BUILD_TESTS)
   add_executable(sg_modeler tests/test_modeler.cpp)
   target_link_libraries(sg_modeler PRIVATE stategine_dev)
   add_test(NAME sg_modeler COMMAND sg_modeler)
+  add_executable(sg_terrain tests/test_terrain.cpp)
+  target_link_libraries(sg_terrain PRIVATE stategine_dev)
+  add_test(NAME sg_terrain COMMAND sg_terrain)
   add_executable(sg_being tests/test_being.cpp)
   target_link_libraries(sg_being PRIVATE stategine_dev)
   add_test(NAME sg_being COMMAND sg_being)
@@ -541,7 +560,7 @@ endif()
 
 # Native programs stay at the build root; archives and checks have their folders.
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
-  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_being sg_spatial sg_fields
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_terrain sg_being sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
       sg_instancing_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl

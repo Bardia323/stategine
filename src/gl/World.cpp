@@ -1110,7 +1110,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     for (const PlacedRoom& placed : rooms)
         if (placed.room)
             for (const auto& e : placed.room->elements())
-                if (e.alive && e.kind == terrain_kind()) ensure_terrain(e, cam);
+                if (e.alive && e.kind == terrain_kind()) {
+                    // The state's own ground, unless the program bound one.
+                    TerrainMesh& t = terrains_[e.id];
+                    if (!t.height)
+                        if (const auto* space = dynamic_cast<const Spatial3D*>(placed.room))
+                            if (const Spatial3D::Height* h = space->ground(e.id)) t.height = *h;
+                    ensure_terrain(e, cam);
+                }
     // The strongest lamps get a shadow map each. What the scene shader is told
     // of each map is how wide a texel of it is in the world, at a unit's
     // distance from a lamp (or anywhere, for a sun's box): it keeps its
@@ -1729,7 +1736,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             // own body, seen from inside it).
             if (e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
             if (e.kind == terrain_kind()) {
-                draw_terrain(e);
+                draw_terrain(room, e);
             } else if (e.kind == kinds::mesh) {
                 if (is_sprite(e)) sprites.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
@@ -1968,7 +1975,7 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     });
 }
 
-void GLWorldView::draw_terrain(const Element& e) {
+void GLWorldView::draw_terrain(const State& st, const Element& e) {
     auto it = terrains_.find(e.id);
     if (it == terrains_.end() || !it->second.mesh.valid()) return;
     set_model(room_local(gl::Mat4::identity()));
@@ -1979,8 +1986,42 @@ void GLWorldView::draw_terrain(const Element& e) {
     scene_->set("uHighlight", 0.0f);
     scene_->set("uTexMix", 0.0f);
     scene_->set("uGlow", 0.0f);
+    const bool land = bind_land(st, e);
     it->second.mesh.draw();
+    if (land) unbind_land();
 }
+
+bool GLWorldView::bind_land(const State& st, const Element& e) {
+    static const Key splat{"splat"};
+    if (!e.params.has(splat) || !bind_picture(st, e.params.get_or<std::string>(splat, ""), true)) return false;
+    const auto three = [](const std::string& t, gl::Vec3 fallback) {
+        float v[3] = {fallback.x, fallback.y, fallback.z};
+        std::sscanf(t.c_str(), "%f,%f,%f", &v[0], &v[1], &v[2]);
+        return gl::Vec3{v[0], v[1], v[2]};
+    };
+    if (e.kind == terrain_kind()) {
+        // Ground: each layer's share over the land's own rectangle.
+        scene_->set("uSplat", 1.0f);
+        const float w = static_cast<float>(e.params.num(Key{"splat_w"}, 1.0)), d = static_cast<float>(e.params.num(Key{"splat_d"}, 1.0));
+        scene_->set("uSplatRect", static_cast<float>(e.params.num(Key{"splat_x"}, 0.0)), static_cast<float>(e.params.num(Key{"splat_z"}, 0.0)),
+                    1.0f / std::max(w, 1e-3f), 1.0f / std::max(d, 1e-3f));
+        float sf[4] = {16, 16, 16, 16};
+        std::sscanf(e.params.get_or<std::string>(Key{"layers"}, "").c_str(), "%f,%f,%f,%f", &sf[0], &sf[1], &sf[2], &sf[3]);
+        scene_->set("uLayerSurface", sf[0], sf[1], sf[2], sf[3]);
+        for (int k = 0; k < 4; ++k)
+            scene_->set(("uLayerColor[" + std::to_string(k) + "]").c_str(), three(e.params.get_or<std::string>(Key{"layer" + std::to_string(k)}, ""), {0.35f, 0.42f, 0.22f}));
+    } else {
+        // Water: how deep it is under each point of its own uv.
+        scene_->set("uSplat", 2.0f);
+        scene_->set("uCalm", static_cast<float>(e.params.num(Key{"calm"}, 0.0)));
+        scene_->set("uWaterDeepest", static_cast<float>(e.params.num(Key{"deepest"}, 4.0)));
+        scene_->set("uWaterDeep", gl::Vec3{static_cast<float>(e.params.num(Key{"deep_r"}, 0.03)), static_cast<float>(e.params.num(Key{"deep_g"}, 0.07)),
+                                           static_cast<float>(e.params.num(Key{"deep_b"}, 0.08))});
+    }
+    return true;
+}
+
+void GLWorldView::unbind_land() { scene_->set("uSplat", 0.0f), scene_->set("uCalm", 0.0f); }
 
 bool GLWorldView::is_doorway(const State& host,const Element& e) const {
     auto it = worlds_.find(e.id);
@@ -2100,7 +2141,9 @@ void GLWorldView::draw_wall_element(const State& st, const Element& e) {
 
 bool GLWorldView::instanceable(const Element& e) const {
     static const Key worn{"skin"}, hung{"straddle"};
-    if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5) return false;
+    if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(Key{"splat"}) ||
+        e.params.num(Key{"lines"}, 0.0) > 0.5)
+        return false;
     const auto skin = surfaces_.find(e.id);
     if (skin != surfaces_.end() && skin->second.surface) return false;
     // Hung from a thing that wears a texture, it wears it too: drawn on its
@@ -2333,13 +2376,13 @@ bool GLWorldView::is_sprite(const Element& e) {
     return e.params.has(shape) && e.params.get_or<std::string>(shape, "") == "sprite";
 }
 
-bool GLWorldView::bind_picture(const State& st, const std::string& name) {
+bool GLWorldView::bind_picture(const State& st, const std::string& name, bool data) {
     const auto* space = dynamic_cast<const Spatial3D*>(&st);
     const Spatial3D::Picture* pic = space ? space->picture(Key{name}) : nullptr;
     if (!pic || pic->w <= 0 || pic->h <= 0) return false;
-    PictureTexture& t = picture_textures_[pic];
+    PictureTexture& t = (data ? data_textures_ : picture_textures_)[pic];
     if (!t.texture.valid() || t.texture.width() != pic->w || t.texture.height() != pic->h) {
-        t.texture.create(pic->w, pic->h, /*mipmaps=*/false, /*srgb=*/true, /*pixel=*/true);
+        t.texture.create(pic->w, pic->h, /*mipmaps=*/false, /*srgb=*/!data, /*pixel=*/!data);
         t.revision = ~uint64_t{0};
     }
     if (t.revision != pic->revision) {
@@ -2430,6 +2473,25 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // light from all round - glossy stone, still water, under a sky.
     const float mirror = static_cast<float>(e.params.num(Key{"mirror"}, 0.0));
     scene_->set("uMirror", mirror);
+    // A land's water, how deep; a road's lines.
+    struct Land {
+        GLWorldView* view;
+        bool on;
+        float lines;
+        ~Land() {
+            if (on) view->unbind_land();
+            if (lines > 0.5f) view->scene_->set("uLines", 0.0f);
+        }
+    } land{this, false, static_cast<float>(e.params.num(Key{"lines"}, 0.0))};
+    if (land.lines > 0.5f) scene_->set("uLines", 1.0f);
+    if (e.params.has(Key{"splat"}) && bind_land(st, e)) {
+        land.on = true;
+        scene_->set("uTexMix", 0.0f);
+        scene_->set("uSkin", 0.0f);
+        shape_of(st, e).draw();
+        if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
+        return;
+    }
     // A picture of its state's, tiled over the world - or, if it says `uv`,
     // worn by its faces' own places on it (a model made with them).
     if (e.params.has(Key{"skin"}) && bind_picture(st, e.params.get_or<std::string>(Key{"skin"}, ""))) {

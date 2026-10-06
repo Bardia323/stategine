@@ -169,6 +169,28 @@ void clear_pass(const std::vector<Solid>& solids, const std::vector<Opening>& op
 
 // The turn of `m` taken `angle` further about `axis`.
 M3 turned(const M3& m, V3 axis, double angle) { return spatial::axis_angle(spatial::normalize(axis), angle) * m; }
+
+// The ground its terrain says is under (x, z) - the highest, if it has more
+// than one (Spatial3D::terrain): land, stood on whichever way its walker is
+// turned, under the world's own up.
+struct Grounds {
+    std::vector<const Spatial3D::Height*> heights;
+    explicit Grounds(const State& space) {
+        if (const auto* s3 = dynamic_cast<const Spatial3D*>(&space))
+            for (const Element& e : space.elements())
+                if (e.alive && e.kind == Key{"terrain"})
+                    if (const Spatial3D::Height* h = s3->ground(e.id)) heights.push_back(h);
+    }
+    bool any() const { return !heights.empty(); }
+    bool under(double x, double z, double& h) const {
+        bool found = false;
+        for (const Spatial3D::Height* f : heights) {
+            const double v = (*f)(x, z);
+            if (!found || v > h) h = v, found = true;
+        }
+        return found;
+    }
+};
 }  // namespace
 
 bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist, Key* what) {
@@ -180,6 +202,36 @@ bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, V
         double t;
         V3 n;
         if (ray_solid(s, o, d, t, n) && t < best) best = t, bn = n, id = s.id;
+    }
+    // The land: marched until under it, then halved down to where it is met.
+    const Grounds land(space);
+    double gh;
+    if (land.any() && land.under(o.x, o.z, gh) && o.y > gh) {
+        const double step = 0.25;
+        double was = 0;
+        for (double t = step; t < best; t += step) {
+            const V3 p = o + d * t;
+            if (land.under(p.x, p.z, gh) && p.y <= gh) {
+                double a = was, b = t;
+                for (int k = 0; k < 12; ++k) {
+                    const double m = (a + b) * 0.5;
+                    const V3 q = o + d * m;
+                    double g2;
+                    (land.under(q.x, q.z, g2) && q.y <= g2 ? b : a) = m;
+                }
+                const V3 q = o + d * b;
+                double hx0, hx1, hz0, hz1;
+                land.under(q.x - 0.05, q.z, hx0), land.under(q.x + 0.05, q.z, hx1), land.under(q.x, q.z - 0.05, hz0), land.under(q.x, q.z + 0.05, hz1);
+                best = b, bn = spatial::normalize(V3{-(hx1 - hx0) / 0.1, 1.0, -(hz1 - hz0) / 0.1}), id = Key{};
+                for (const Element& e : space.elements())
+                    if (e.alive && e.kind == Key{"terrain"}) {
+                        id = e.id;
+                        break;
+                    }
+                break;
+            }
+            was = t;
+        }
     }
     if (best >= reach) return false;
     hit = vd(o + d * best), normal = vd(bn);
@@ -196,6 +248,10 @@ void stand_clear(const State& space, Element& walker, double radius) {
     const std::vector<Solid> solids = solids_of(space, vd(eye), height + 1.0);
     const std::vector<Opening> open = openings_of(space);
     for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, height, radius);
+    // Feet on the land, never in it.
+    const Grounds land(space);
+    double gh;
+    if (land.under(eye.x, eye.z, gh) && eye.y - height < gh) eye.y = gh + height;
     set_position(walker, vd(eye));
 }
 
@@ -319,6 +375,7 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     // solid: its feet, its middle and its head each a ball.
     const std::vector<Solid> solids = solids_of(space, vd(eye), spatial::length(v * dt) + body + 2.0);
     const std::vector<Opening> open = openings_of(space);
+    const Grounds land(space);
     const V3 travel = v * dt;
     const int steps = std::max(1, static_cast<int>(std::ceil(spatial::length(travel) / (r * 0.5))));
     bool landed = false;
@@ -341,6 +398,12 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
         eye = moved;
         bool stopped_low = false;
         for (int pass = 0; pass < 2; ++pass) clear_pass(solids, open, eye, up, body, r, &v, &landed, &stopped_low);
+        // On the land: lifted onto it where it rises under the feet.
+        double gh;
+        if (land.under(eye.x, eye.z, gh) && eye.y - body < gh) {
+            eye.y = gh + body, landed = true;
+            if (v.y < 0) v.y = 0;
+        }
         // Stopped at the feet by something low, on one's feet: step up onto
         // it, if there is room, and down onto its top - the feet, at once;
         // the eye stays where it was, the walker that much lower (stoop).
@@ -353,6 +416,15 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
             landed = true;
             const double along_up = spatial::dot(v, up);
             if (along_up < 0) v = v - up * along_up;
+        }
+    }
+    // Walking down a slope of the land, the feet keep to it (a stride's drop,
+    // not a fall).
+    {
+        double gh;
+        if (!landed && grounded && land.under(eye.x, eye.z, gh) && eye.y - body - gh < 0.5 && v.y <= 0.5) {
+            eye.y = gh + body, landed = true;
+            if (v.y < 0) v.y = 0;
         }
     }
     grounded = landed;

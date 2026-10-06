@@ -553,6 +553,35 @@ a recipe makes with `sgmodel <recipe> -s 1000` (four views, its faces and
 open edges); `sgmodel --obj` exports it. The implementation is in
 `src/domains/modeler/`.
 
+## Land
+
+A land is made from a recipe too ([terrain.md](docs/terrain.md),
+`sg/domains/Terrain.hpp`): any size at any fineness, noise, hills, ridges,
+terraces, rain's erosion; roads graded along curves, paths, rivers cut
+downhill, lakes filled to where they would spill, the sea, swamps; up to four
+layers of covering (grass, earth, rock, sand, gravel, asphalt, snow) by
+height, slope, wetness and nearness to road and water; and things strewn by
+the same rules - any modeller recipe, the `trees` library's plants grown from
+L-systems among them (`grow`, docs/modeler.md, *Growing*).
+
+```
+size 600 600 cell=1.5
+noise 40 300 oct=5
+ridge -30 160 0,-300 0,300
+erode drops=150000
+road 7 -40,-300 -10,-150 30,-40 0,80 -30,200 10,300 bank=6
+layer grass grass
+layer rock rock slope=30,90 noise=0.3
+thing pine variants=4 : use trees / tree.pine h=12 seed=$v low=1
+scatter pine density=0.3 road=6, slope=0,30 spacing=5 scale=0.8,1.3
+```
+
+`terrain::lay(world, name, land)` puts it in any 3D state: its ground is the
+state's own (`Spatial3D::terrain`), which the walker stands on, rays stop at
+and the renderer draws round the eye however far it goes. `sgterrain` draws a
+land's map and says what it is; `sgland` draws it as a game would, sky, sun,
+shadows and air (`--fog`).
+
 ## Rendering
 
 Domain states never know about pixels, and renderers never know about a game:
@@ -883,8 +912,9 @@ include/sg/
   algebra/   the laws compiled: Operator, Program, Backend (CPU), Compile
   gpu/       the algebra's batches on a GPU: AlgebraBackend.hpp (src/gpu: CUDA, ROCm, Vulkan, Metal)
   domains/   state vocabulary: Spatial, Atlas, Console, Surface, Look, Camera,
-    Light, Shapes, Modeler (uses core; the modeller and its libraries are
-    implemented in src/domains/modeler/)
+    Light, Shapes, Modeler, Terrain (uses core; the modeller and its
+    libraries are implemented in src/domains/modeler/, the terrain in
+    src/domains/terrain/)
   spatial/   pure geometry: Math.hpp, Geometry.hpp, Index.hpp (no state ownership)
   physics/   solvers a state can step in its arrows, plain data in and out:
     Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)

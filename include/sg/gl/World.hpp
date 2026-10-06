@@ -40,8 +40,9 @@
 //
 // An open world - `sky` = 1 on the state - has a sky instead of a ceiling and
 // walls, and may carry a `terrain` element: ground that goes on for ever,
-// sampled from a height function bound with bind_terrain and rebuilt around
-// the viewer as they walk. A state with `own_time` among its params keeps its own
+// sampled from a height function - the state's own (Spatial3D::terrain), or
+// one bound with bind_terrain - and rebuilt around the viewer as they walk. A
+// terrain that says `splat` (sg::terrain::lay) is covered by its layers. A state with `own_time` among its params keeps its own
 // time: its shaders move by it (`uTime`), or its declared Temporal line - still
 // when it is still. A thing with `unseen` = 1 is in no picture but casts its
 // shadow (a walker's own body, seen from inside it). A light with `sun` = 1 is parallel light with an
@@ -520,7 +521,11 @@ private:
     // (`rev`, as when a desert shifts its origin), does the frame wait.
     void ensure_terrain(const Element& e, const Camera& cam);
 
-    void draw_terrain(const Element& e);
+    void draw_terrain(const State& st, const Element& e);
+    // A land's ground or water says what its picture is (`splat`): bound,
+    // and the uniforms that read it set (sg::terrain); false if it says none.
+    bool bind_land(const State& st, const Element& e);
+    void unbind_land();
 
     // A doorway (a portal bound to another room) has no solid frame in the
     // shadow pass: light should pass between the rooms.
@@ -688,7 +693,7 @@ private:
     static bool is_sprite(const Element& e);
     // One of its state's pictures, made current on unit 0 - false if it keeps
     // none by that name.
-    bool bind_picture(const State& st, const std::string& name);
+    bool bind_picture(const State& st, const std::string& name, bool data = false);
     // A sprite: its picture on a flat card at its place, turned to the eye -
     // round about the upright, or (`face`) wholly, to lie square to the view.
     void draw_sprite(const State& st, const Element& e);
@@ -833,7 +838,9 @@ private:
         gl::Texture texture;
         uint64_t revision = ~uint64_t{0};
     };
-    std::unordered_map<const Spatial3D::Picture*, PictureTexture> picture_textures_;
+    // A picture as pixel art (sampled nearest, in colour), and as data (a
+    // land's shares or depths: smooth, linear) - two textures of one picture.
+    std::unordered_map<const Spatial3D::Picture*, PictureTexture> picture_textures_, data_textures_;
     gl::Vec3 cam_forward_{0, 0, -1}, cam_up_{0, 1, 0};  // and which way it looks
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.

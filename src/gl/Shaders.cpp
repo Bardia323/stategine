@@ -337,6 +337,21 @@ uniform float uClouds;        // how much of the sky is cloud, 0 for none
 uniform vec3  uCloudColor;    // a cloud's lit side
 uniform vec3  uCloudShade;    // and its shaded underside
 uniform float uMirror;        // how much of the real sky a surface reflects
+// Land (sg::terrain): uSplat 1 - ground (surface 19) whose uTex is each of
+// four layers' share at each point (RGBA), over the room's xz by
+// uSplatRect (its corner, one over its size); each layer a surface of these
+// (uLayerSurface) in its colour (uLayerColor). uSplat 2 - water (surface 18)
+// whose uTex's red is how deep it is under each point of its own uv, as a
+// share of uWaterDeepest metres, deepening to uWaterDeep. uLines: a road's
+// painted lines (asphalt, by its uv: across 0..1, along in metres).
+uniform float uSplat;
+uniform vec4  uSplatRect;
+uniform vec4  uLayerSurface;
+uniform vec3  uLayerColor[4];
+uniform vec3  uWaterDeep;
+uniform float uWaterDeepest;
+uniform float uLines;
+uniform float uCalm;          // water: 0 its full swell, 1 still
 
 // The material this fragment is of: the uniforms, or - drawn as one of many
 // at once - what its instance carries.
@@ -747,15 +762,97 @@ vec3 room_material(out float rough_mod) {
         vec3 stone = mAlbedo * (0.96 + 0.05 * hash(slab));
         return mix(mix(stone, veins, vein * 0.55 + fine * 0.25), mAlbedo * 0.8, 1.0 - seam);
     }
+    if (mSurface > 19.5 && mSurface < 20.5) {
+        // Earth: clods and crumbs, darker where it lies in hollows, a few stones.
+        float m = noise(p * 0.6) * 0.45 + noise(p * 3.3) * 0.3 + noise(p * 17.0) * 0.25;
+        float stones = smoothstep(0.78, 0.86, noise(p * 9.0 + 3.7)) * 0.25;
+        rough_mod = 0.1;
+        return mAlbedo * (0.72 + 0.5 * m) * (1.0 + stones * 1.6);
+    }
+    if (mSurface > 20.5 && mSurface < 21.5) {
+        // Asphalt: fine aggregate, patched, cracked; and a road's lines.
+        float agg = noise(p * 60.0) * 0.5 + noise(p * 13.0) * 0.3 + noise(p * 1.1) * 0.2;
+        float mend = smoothstep(0.62, 0.66, noise(p * 0.18 + 5.0)) * 0.08;
+        float crack = 1.0 - smoothstep(0.0, 0.025, abs(noise(p * 0.7 + 11.0) - 0.5)) * smoothstep(0.55, 0.7, noise(p * 0.25));
+        vec3 c = mAlbedo * (0.82 + 0.35 * agg) * (1.0 - mend) * (1.0 - 0.35 * crack);
+        if (uLines > 0.5) {
+            float u = vUV.x, v = vUV.y;
+            float aa = fwidth(u) * 1.5;
+            float centre = (1.0 - smoothstep(0.012, 0.012 + aa, abs(u - 0.5))) * step(fract(v / 9.0), 0.45);
+            float edges = (1.0 - smoothstep(0.01, 0.01 + aa, abs(u - 0.04))) + (1.0 - smoothstep(0.01, 0.01 + aa, abs(u - 0.96)));
+            float worn = smoothstep(0.25, 0.6, noise(vec2(u * 30.0, v * 0.8)));
+            c = mix(c, vec3(0.72, 0.70, 0.62), clamp(centre + edges, 0.0, 1.0) * worn);
+        }
+        rough_mod = 0.15;
+        return c;
+    }
+    if (mSurface > 21.5 && mSurface < 22.5) {
+        // Rock: weathered stone seen from every side (three ways, blended by
+        // the way it faces), banded, lichened in the flat.
+        vec3 n = abs(normalize(vNormal));
+        n = n / (n.x + n.y + n.z);
+        vec3 q = vRoom;
+        float a = noise(q.zy * 0.7) * 0.5 + noise(q.zy * 3.1) * 0.3 + noise(q.zy * 13.0) * 0.2;
+        float b = noise(q.xz * 0.7) * 0.5 + noise(q.xz * 3.1) * 0.3 + noise(q.xz * 13.0) * 0.2;
+        float c = noise(q.xy * 0.7) * 0.5 + noise(q.xy * 3.1) * 0.3 + noise(q.xy * 13.0) * 0.2;
+        float m = a * n.x + b * n.y + c * n.z;
+        float bands = 0.5 + 0.5 * sin(q.y * 1.7 + m * 3.0);
+        float lichen = smoothstep(0.6, 0.75, noise(q.xz * 1.3)) * n.y;
+        rough_mod = 0.05;
+        return mix(mAlbedo * (0.68 + 0.45 * m) * (0.9 + 0.12 * bands), mAlbedo * vec3(0.8, 0.9, 0.6), lichen * 0.4);
+    }
+    if (mSurface > 22.5 && mSurface < 23.5) {
+        // Snow: soft drifts, a little blue in their hollows, a glint.
+        float d = noise(p * 0.4) * 0.6 + noise(p * 2.7) * 0.4;
+        float glint = step(0.985, hash(floor(p * 40.0))) * 0.3;
+        rough_mod = -0.1;
+        return mAlbedo * mix(vec3(0.86, 0.9, 1.0), vec3(1.0), d) + glint;
+    }
     if (mSurface > 17.5 && mSurface < 18.5) {
-        // Water: its colour; the waves are in its normal (main).
+        // Water: its colour; the waves are in its normal (main). Over land
+        // that says how deep it is, shallow at the shore and dark where deep,
+        // with a pale lap of foam at the edge.
         rough_mod = -0.2;
+        if (uSplat > 1.5) {
+            float d = texture(uTex, vUV).r * uWaterDeepest;
+            vec3 c = mix(mAlbedo, uWaterDeep, 1.0 - exp(-d * 0.5));
+            float lap = (1.0 - smoothstep(0.0, 0.05, d)) * smoothstep(0.45, 0.75, noise(p * 2.5 + vec2(uTime * 0.25, 0.0)));
+            return mix(c, mAlbedo * 2.2 + 0.04, lap * 0.35);
+        }
         return mAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05));
     }
     // Grass: clumps of green and dry.
     float c = noise(p * 3.0) * 0.5 + noise(p * 17.0) * 0.3 + noise(p * 80.0) * 0.2;
     rough_mod = 0.3;
     return mAlbedo * mix(vec3(0.75, 0.8, 0.5), vec3(1.1, 1.15, 0.9), c);
+}
+
+vec3 surface_albedo(out float rough_mod);
+
+vec3 ground_albedo(out float rough_mod) {
+    vec2 p = vRoom.xz;
+    vec4 w = texture(uTex, (p - uSplatRect.xy) * uSplatRect.zw);
+    vec4 jag = vec4(noise(p * 0.8), noise(p * 0.8 + 17.0), noise(p * 0.8 + 31.0), noise(p * 0.8 + 53.0)) * 0.6
+             + vec4(noise(p * 4.3), noise(p * 4.3 + 7.0), noise(p * 4.3 + 13.0), noise(p * 4.3 + 29.0)) * 0.4;
+    w = w * (0.4 + 1.2 * jag);
+    w = w * w * w;
+    w /= max(w.x + w.y + w.z + w.w, 1e-4);
+    vec3 keep = mAlbedo;
+    vec3 sum = vec3(0.0);
+    float rough = 0.0, most = -1.0, kept = 19.0;
+    for (int i = 0; i < 4; ++i) {
+        if (w[i] < 0.01) continue;
+        mSurface = uLayerSurface[i];
+        mAlbedo = uLayerColor[i];
+        float rm;
+        sum += surface_albedo(rm) * w[i];
+        rough += rm * w[i];
+        if (w[i] > most) most = w[i], kept = uLayerSurface[i];
+    }
+    mSurface = kept > 17.5 && kept < 18.5 ? 19.0 : kept;
+    mAlbedo = keep;
+    rough_mod = rough;
+    return sum;
 }
 
 vec3 surface_albedo(out float rough_mod) {
@@ -856,7 +953,7 @@ void main() {
         return;
     }
     float rough_mod;
-    vec3 albedo = surface_albedo(rough_mod);
+    vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
     float relief_h = -1.0;  // how high a skin's paint stands here, if it says
     if (uTexMix > 0.0) {
         vec2 uv = uScreenUV > 0.5 ? (gl_FragCoord.xy / uViewport - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4))
@@ -934,6 +1031,7 @@ void main() {
             float phase = dot(dirs[i], p) * k - t * sqrt(9.8 * k) + float(i) * 1.7;
             slope += dirs[i] * cos(phase) * a * k * fade / k * 1.6;
         }
+        slope *= 1.0 - uCalm;
         n = normalize(n - vec3(slope.x, 0.0, slope.y));
     }
     float ndv = clamp(dot(n, v), 1e-3, 1.0);

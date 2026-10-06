@@ -135,6 +135,11 @@ Model build(const std::string& recipe, const Options& options = {}, const Files*
 // defined and the modeller's own code, so the next run reads it back.
 void prepare(const std::vector<std::string>& recipes, const Options& options = {});
 
+// A recipe's model as a Modeler would have it: made once and remembered, and
+// kept on disk (and read back) when a cache folder is set - for whoever puts
+// a recipe in a world without a Modeler of its own (a terrain's trees).
+std::shared_ptr<const Model> made(const std::string& recipe, const Options& options = {}, const Files* files = nullptr);
+
 // The built-in macros: one to a line, its name, parameters and what it is -
 // and with a library's name, that library's (`use <name>`).
 std::string recipes(const std::string& library = {});
@@ -144,6 +149,9 @@ std::string recipes(const std::string& library = {});
 void define_library(const std::string& name, const std::string& text);
 std::vector<std::string> libraries();
 unsigned library_revision();  // moves when a program defines one
+// A number of the recipe language: an expression (`2*sin(30)+1`, `min(3,4)`),
+// as a recipe reads one. False if it is not one.
+bool evaluate(const std::string& expression, double& value);
 // Wavefront text of a model, one object per material.
 std::string to_obj(const Model& m, const std::string& name);
 

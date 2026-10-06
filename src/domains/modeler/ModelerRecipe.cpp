@@ -194,7 +194,7 @@ const std::set<std::string>& openers() {
     return s;
 }
 const std::set<std::string>& shapes_known() {
-    static const std::set<std::string> s{"box", "cyl", "cylinder", "cone", "sphere", "torus", "capsule", "lathe", "extrude", "prism", "loft", "tube", "sweep", "import"};
+    static const std::set<std::string> s{"box", "cyl", "cylinder", "cone", "sphere", "torus", "capsule", "lathe", "extrude", "prism", "loft", "tube", "sweep", "import", "grow"};
     return s;
 }
 
@@ -524,6 +524,44 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         if (prof.size() < 3 || path.size() < 2) return err("sweep needs an outline of 3+ points and a path of 2+"), false;
         m.field = sdf_sweep(prof, path);
         m.exact = std::make_shared<Geom>(g_sweep(prof, path, true));
+    } else if (head == "grow") {
+        // grow <axiom> <rule> ... : a plant from its L-system (ModelerGrow.cpp).
+        if (a.pos.empty()) return err("grow needs an axiom and its rules"), false;
+        Growth gr;
+        gr.axiom = a.pos[0];
+        gr.rules.assign(a.pos.begin() + 1, a.pos.end());
+        gr.n = int(opt_num(a, "n", gr.n));
+        gr.angle = opt_num(a, "angle", gr.angle);
+        gr.len = opt_num(a, "len", gr.len);
+        gr.width = opt_num(a, "width", gr.width);
+        gr.shorten = opt_num(a, "shorten", gr.shorten);
+        gr.branch = opt_num(a, "branch", gr.branch);
+        gr.jitter = opt_num(a, "jitter", gr.jitter);
+        gr.bend = opt_num(a, "bend", gr.bend);
+        if (auto it = a.opt.find("toward"); it != a.opt.end()) {
+            const auto v = nums(it->second);
+            if (v.size() == 3) gr.tropism = {v[0], v[1], v[2]};
+            else err("toward= takes x,y,z");
+        }
+        gr.height = opt_num(a, "height", gr.height);
+        gr.seed = uint64_t(std::llround(std::fabs(opt_num(a, "seed", 1))));
+        gr.sides = int(opt_num(a, "sides", gr.sides));
+        gr.leaf = opt_num(a, "leaf", gr.leaf);
+        gr.leaves = int(opt_num(a, "leaves", gr.leaves));
+        gr.leaf_detail = int(opt_num(a, "detail", gr.leaf_detail));
+        gr.leafy = int(opt_num(a, "leafy", gr.leafy));
+        gr.min = opt_num(a, "min", gr.min);
+        gr.merge = opt_num(a, "merge", gr.merge);
+        gr.pipe = std::max(1.0, opt_num(a, "pipe", gr.pipe));
+        const int wood = a.opt.count("mat") ? mat_id(a.opt.at("mat")) : d.mat ? d.mat : mat_id("bark");
+        const int leaf = mat_id(a.opt.count("leafmat") ? a.opt.at("leafmat") : std::string("leaf"));
+        std::string why;
+        auto g = std::make_shared<Geom>(kernel::grow(gr, wood, leaf, why));
+        if (!why.empty()) err(why.substr(0, why.size() - 1));
+        if (g->t.empty()) return false;
+        m.field = sdf_mesh(*g);
+        m.exact = g;
+        return true;
     } else if (head == "import") {
         if (a.pos.empty() || !files_ || !files_->read) return err("import needs a file and the program's files"), false;
         std::string text;
@@ -931,6 +969,8 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
 std::string lib_text() { return library(); }
 
 }  // namespace
+
+bool evaluate(const std::string& expression, double& value) { return number(expression, value); }
 
 std::vector<float> Model::all() const {
     std::vector<float> v;

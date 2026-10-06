@@ -180,6 +180,38 @@ Obj read_obj(const std::string& text);
 // A material library (.mtl): each material's picture (`map_Kd`), as written.
 std::map<std::string, std::string> read_mtl(const std::string& text);
 
+// --- growing ---------------------------------------------------------------------
+// A plant grown from an L-system (ModelerGrow.cpp): the axiom rewritten by its
+// rules `n` times, the word walked by a turtle - F a step of wood (G too), f
+// a step without, + - a turn about up, & ^ a pitch, \ / a roll (each by
+// `angle` degrees, or by its own: `+(30)`), | a turn about, [ ] a branch
+// (its steps `branch` times as long), ' a step `shorten` times as long, L
+// leaves here, ! no leaves at the tips of what grows after it (roots). Its wood is as thick as the pipe model says, `width` at the
+// foot; every tip, and every L, carries leaves.
+struct Growth {
+    std::string axiom = "F";
+    std::vector<std::string> rules;  // `A:rhs`, or `A:weight:rhs`
+    int n = 4;
+    double angle = 25, len = 1, width = 0.15;
+    double shorten = 0.9, branch = 0.8;
+    double jitter = 0;                // degrees each turn and step wanders, at random
+    double bend = 0;                  // how hard the tropism pulls (radians a step at right angles)
+    V3 tropism{0, -1, 0};             // the way it pulls: down (droop), up (to the light)
+    double height = 0;                // > 0: scaled to stand this high
+    uint64_t seed = 1;
+    int sides = 7;                    // faces round the trunk; fewer round thinner wood
+    double leaf = 0.35;               // a clump's radius, or a card's half width
+    int leaves = 1;                   // 0 none, 1 clumps, 2 crossed cards
+    int leaf_detail = 1;              // how round a clump is (0: eight faces)
+    int leafy = 1;                    // clumps at a tip
+    double min = 0.004;               // wood thinner than this is pruned
+    double merge = 4;                 // degrees within which a run of steps is made one span
+    double pipe = 2.2;                // the pipe model's exponent (2: area kept)
+    int most = 60000;                 // steps of wood at most
+};
+// Wood faces of material `wood`, leaves of `leaf`; what went wrong to `errors`.
+Geom grow(const Growth& g, int wood, int leaf, std::string& errors);
+
 // --- solids ---------------------------------------------------------------------
 // A piece's exact faces: given (a shape as it is made), or made the first time
 // they are asked for (a cut, zipped in where it was made) - so faces nobody

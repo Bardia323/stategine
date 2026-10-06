@@ -113,7 +113,9 @@ const std::pair<const char*, const char* (*)()> kBuiltIn[] = {
     // geometry: mouldings, the orders, pointed-arch geometry, girih and
     // muqarnas, structure - and the style that is a point in their space.
     {"mould", lib_mould},       {"orders", lib_orders},         {"pointed", lib_pointed},   {"girih", lib_girih},
-    {"structure", lib_structure}, {"param", lib_param},   {"city", lib_city}};
+    {"structure", lib_structure}, {"param", lib_param},   {"city", lib_city},
+    // What grows: trees and plants from their L-systems.
+    {"trees", lib_trees}};
 }  // namespace
 
 bool library_named(const std::string& name, std::string& text) {

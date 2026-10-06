@@ -214,6 +214,10 @@ std::shared_ptr<const sculpt::Model> cached(const std::string& key, const std::f
 
 namespace sculpt {
 
+std::shared_ptr<const Model> made(const std::string& recipe, const Options& o, const Files* f) {
+    return cached(memory_key(recipe, o), [&] { return build_kept(recipe, o, f); });
+}
+
 Vec3d stand(const Model& m, const Vec3d& origin, double yaw) { return place_in(Pose{origin, yaw}, m.foot()); }
 
 void prepare(const std::vector<std::string>& recipes, const Options& o) {

@@ -55,4 +55,8 @@ const char* lib_param();
 //              blocks, houses, terraces, sheds, shops; lots, blocks, streets
 //              and districts of them
 const char* lib_city();
+//   trees      plants grown from L-systems: oak, pine, birch, dead, willow,
+//              swamp, palm, bush, grass, reeds - each by height and seed,
+//              and its low-poly self (ModelerTrees.cpp)
+const char* lib_trees();
 }  // namespace sg::sculpt

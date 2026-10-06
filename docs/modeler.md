@@ -60,6 +60,7 @@ As drawn, their coordinates where they say:
 | `sweep x,y x,y ... / x,y,z ... [bend=r]` | an outline carried along a path |
 | `import file [fit=h] [base=1] [mats=1] [faces=N]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials, `faces` makes it again (below). Its faces keep their places on its pictures (`vt`), and each part says the picture its material wears (`Part::texture`, from the .mtl beside it) - a thing wears it by them with `skin` and `uv` = 1 |
 | `opening w h [head=round\|pointed] [walk=1] [recess=m]` | no faces: a hole asked of the walls round it (below) |
+| `grow axiom rule ... [n= angle= ...]` | a plant from an L-system (below, *Growing*) |
 
 A sweep carries its outline along the path without twisting it: each
 segment's frame is the last one turned by the least turn that takes one way
@@ -229,6 +230,44 @@ roof 4.6 4.6 2 at=0,5,0 mat=slate
   normals are smooth within `crease` degrees and sharp past it.
 - Errors are reported, a line each, in `Model::errors`; a bad line is skipped,
   never fatal.
+
+## Growing
+
+`grow <axiom> <rule> ...` grows a plant from an L-system: each rule is a
+symbol, `:` and what it becomes (`A:F[&A]/A`), or several for one symbol with
+weights (`F:0.7:F F:0.3:F/(20)F`, chosen at random by the seed). The axiom is
+rewritten `n` times and the word walked by a turtle:
+
+| symbol | what the turtle does |
+| --- | --- |
+| `F` `G` | a step of wood, `len` long (`f`: a step with none) |
+| `+` `-` | turn about up, by `angle` degrees - or its own, `+(30)` |
+| `&` `^` | pitch down, up |
+| `\` `/` | roll |
+| `\|` | turn about |
+| `[` `]` | a branch: what it says, then back to where it began (its steps `branch` times as long) |
+| `'` | its steps from here `shorten` times as long |
+| `L` | leaves here, as well as at the tips |
+| `!` | no leaves at the tips of what grows after it (a root) |
+
+The wood is as thick as the pipe model says - a branch as thick as the
+twigs it carries together (`pipe`, 2.2, the exponent), `width` at the foot -
+so the trunk is thickest and the twigs finest. Wood thinner than `min` is
+pruned (its leaves kept at the cut), runs of steps within `merge` degrees made
+one span, and fewer faces go round thinner wood (`sides` round the trunk).
+Each branch is a tube tapering node to node, untwisted, its end a point;
+every tip carries leaves - clumps (`leaves=1`, `leaf` their size, `detail`
+how round, `leafy` how many), crossed cards (`leaves=2`) or none
+(`leaves=0`). `jitter` degrees of wander at every turn and step; a pull
+`bend` towards `toward=x,y,z` (down for a droop, up for the light);
+`height` scales it to stand that high; `seed` which of its kind. Its wood is
+`mat=` (bark), its leaves `leafmat=` (leaf). The same recipe and seed grow the
+same plant.
+
+`use trees` is a library of them: `tree.oak pine birch dead willow swamp
+palm`, `bush`, `plant.grass`, `plant.reeds`, each by `h` and `seed`, and its
+low-poly self with `low=1` (fewer steps and sides, leaves of eight faces,
+twigs pruned). A land strews them ([terrain.md](terrain.md)).
 
 ## Architecture
 
