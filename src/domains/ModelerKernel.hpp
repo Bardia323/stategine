@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,6 +54,10 @@ struct Geom {
     std::vector<V3> p;
     std::vector<int> t;
     std::vector<int> mat;  // per face, or empty
+    // Where each corner is on its material's picture (u, v; v down, as a
+    // picture's rows are), two numbers a corner of `t` - or empty: faces made
+    // here are given where they stand instead (shade).
+    std::vector<float> uv;
     double crease = 40.0;
 };
 
@@ -168,9 +173,12 @@ void shade(const Geom& g, std::vector<std::vector<float>>& by_material, int defa
 struct Obj {
     Geom geom;
     std::vector<std::string> materials;
+    std::string mtllib;  // the material library it names, if it does
     bool ok = false;
 };
 Obj read_obj(const std::string& text);
+// A material library (.mtl): each material's picture (`map_Kd`), as written.
+std::map<std::string, std::string> read_mtl(const std::string& text);
 
 // --- solids ---------------------------------------------------------------------
 // A piece's exact faces: given (a shape as it is made), or made the first time

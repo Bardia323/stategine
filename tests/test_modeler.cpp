@@ -187,6 +187,39 @@ int main() {
         check(std::abs(big.hi.y - 8) < 1e-3, "an import fitted to a height, then scaled");
     }
     {
+        // A quad painted from a picture: its corners keep their places on it
+        // (rows down), and its material says which picture.
+        const std::string obj =
+            "mtllib quad.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 1\n"
+            "usemtl paint\nf 1/1/1 2/2/1 3/3/1 4/4/1\n";
+        const std::string mtl = "newmtl paint\nKd 1 1 1\nmap_Kd -s 1 1 1 colormap.png\n";
+        sculpt::Files f;
+        f.read = [&](const std::string& p, std::string& out) {
+            out = p.find(".mtl") != std::string::npos ? mtl : obj;
+            return true;
+        };
+        f.stamp = [](const std::string&) { return 1LL; };
+        const Model m = sculpt::build("import kit/quad.obj mats=1", {}, &f);
+        check(m.parts.size() == 1 && m.parts[0].texture == "kit/colormap.png",
+              "an import's material says its picture, beside its library: " + (m.parts.empty() ? std::string() : m.parts[0].texture));
+        bool kept = !m.parts.empty();
+        if (kept) {
+            const std::vector<float>& c = m.parts[0].corners;
+            // A corner at (x, y) was painted at (x, 1 - y).
+            for (std::size_t i = 0; i + 7 < c.size(); i += 8)
+                kept = kept && std::abs(c[i + 6] - c[i]) < 1e-5 && std::abs(c[i + 7] - (1.0f - c[i + 1])) < 1e-5;
+        }
+        check(kept, "and its corners keep their places on it");
+        check(std::find(m.imports.begin(), m.imports.end(), "kit/quad.mtl") != m.imports.end(), "its library is among what it read");
+        const Model flipped = sculpt::build("import kit/quad.obj mats=1 scale=-1,1,1", {}, &f);
+        bool still = !flipped.parts.empty();
+        if (still) {
+            const std::vector<float>& c = flipped.parts[0].corners;
+            for (std::size_t i = 0; i + 7 < c.size(); i += 8) still = still && std::abs(c[i + 6] + c[i]) < 1e-5;
+        }
+        check(still, "mirrored, each corner keeps its own place");
+    }
+    {
         const std::string castle =
             "wall 12 4 0.9 at=0,0,-6\nsub arch 2.2 3 3 at=0,0,-6\nwall 12 4 0.9 at=0,0,6\nwall 12 4 0.9 at=-6,0,0 rot=90\nwall 12 4 0.9 at=6,0,0 rot=90\n"
             "tower 2 7 3 at=-6,0,-6\ntower 2 7 3 at=6,0,-6\ntower 2 7 3 at=-6,0,6\ntower 2 7 3 at=6,0,6\n"

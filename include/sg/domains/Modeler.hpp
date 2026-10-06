@@ -83,6 +83,11 @@ struct Files {
 struct Part {
     std::string material;
     std::vector<float> corners;  // 8 floats a corner, 3 corners a face
+    // The picture its faces wear by their own uv (the last two floats of a
+    // corner): an imported material's map (`map_Kd` of the .obj's .mtl), as
+    // a file path beside it - for whoever shows the model to read and give
+    // to a thing (`skin` = the picture, `uv` = 1). Empty: none.
+    std::string texture;
 };
 
 // A hole a recipe asks of the walls it stands among (`opening`): no faces of

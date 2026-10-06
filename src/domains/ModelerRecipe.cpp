@@ -237,6 +237,7 @@ public:
     std::vector<std::string> imports;
     std::set<std::string> used_;  // libraries already in (use)
     std::vector<std::string> mats_;
+    std::map<int, std::string> textures_;  // a material's picture, as an import's library names it
     std::set<std::string> defined_by_library;
 
 private:
@@ -525,7 +526,25 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         if (!ob.ok) return err("nothing to read in " + a.pos[0]), false;
         auto g = std::make_shared<Geom>(std::move(ob.geom));
         const bool keep = opt_num(a, "mats", 0) != 0;
-        for (int& f : g->mat) f = keep ? mat_id(ob.materials[std::size_t(f)]) : d.mat;
+        // Its materials' pictures, from the library beside it: each a file
+        // beside the library, for whoever shows the model to read (the
+        // modeller reads no picture).
+        std::map<std::string, std::string> pictures;
+        if (!ob.mtllib.empty()) {
+            const std::string& file = a.pos[0];
+            const std::size_t cut = file.find_last_of("/\\");
+            const std::string dir = cut == std::string::npos ? std::string() : file.substr(0, cut + 1);
+            std::string lib;
+            if (files_->read(dir + ob.mtllib, lib)) {
+                imports.push_back(dir + ob.mtllib);
+                for (const auto& [name, pic] : read_mtl(lib)) pictures[name] = dir + pic;
+            }
+        }
+        for (int& f : g->mat) {
+            const std::string& name = ob.materials[std::size_t(f)];
+            f = keep ? mat_id(name) : d.mat;
+            if (auto it = pictures.find(name); it != pictures.end() && !textures_.count(f)) textures_[f] = it->second;
+        }
         Box bb;
         for (const V3& q : g->p) bb.grow(q);
         // fit=h scales it to that height; centre=1 puts its middle on the origin; base=1 its foot there
@@ -934,6 +953,7 @@ Model build(const std::string& recipe, const Options& options, const Files* file
         if (by[m].empty()) continue;
         Part part;
         part.material = m < in.mats_.size() ? in.mats_[m] : "";
+        if (auto it = in.textures_.find(int(m)); it != in.textures_.end()) part.texture = it->second;
         part.corners = std::move(by[m]);
         for (std::size_t i = 0; i + 7 < part.corners.size(); i += 8) bb.grow(V3{part.corners[i], part.corners[i + 1], part.corners[i + 2]});
         out.triangles += part.corners.size() / 24;

@@ -118,7 +118,8 @@ public:
     // What its things may wear: RGBA pixels, row 0 at the top, kept by name.
     // A box with `skin` = a picture's name wears it tiled across its faces,
     // one picture every `tile` metres of the world (pixel art: sampled
-    // nearest, not smoothed). A thing with `shape` = "sprite" and `picture`
+    // nearest, not smoothed). A model that says `uv` = 1 as well wears it by
+    // its faces' own places on it (sculpt::Part::texture: an imported mesh's). A thing with `shape` = "sprite" and `picture`
     // = its name is a flat picture turned to whoever looks at it, `sx` wide
     // and `sy` tall - a Doom thing - showing cell `frame` of `frames` laid
     // side by side; clear pixels (alpha under a half) are not drawn. With

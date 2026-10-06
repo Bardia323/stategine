@@ -1725,6 +1725,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         const gl::Vec3 moved = shift * -1.0f;
         for (const auto i : plan_draws(room, view, placed.image ? &moved : nullptr)) {
             const auto& e=room.elements()[i];
+            // `unseen`: no eye sees it - it still casts its shadow (a walker's
+            // own body, seen from inside it).
+            if (e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
             if (e.kind == terrain_kind()) {
                 draw_terrain(e);
             } else if (e.kind == kinds::mesh) {
@@ -2427,10 +2430,11 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // light from all round - glossy stone, still water, under a sky.
     const float mirror = static_cast<float>(e.params.num(Key{"mirror"}, 0.0));
     scene_->set("uMirror", mirror);
-    // A picture of its state's, tiled over the world.
+    // A picture of its state's, tiled over the world - or, if it says `uv`,
+    // worn by its faces' own places on it (a model made with them).
     if (e.params.has(Key{"skin"}) && bind_picture(st, e.params.get_or<std::string>(Key{"skin"}, ""))) {
         scene_->set("uTexMix", 1.0f);
-        scene_->set("uSkin", 2.0f);
+        scene_->set("uSkin", e.params.num(Key{"uv"}, 0.0) > 0.5 ? 0.0f : 2.0f);
         scene_->set("uTile", static_cast<float>(e.params.num(Key{"tile"}, 1.0)));
         scene_->set("uScreenUV", 0.0f);
         scene_->set("uCRT", 0.0f);

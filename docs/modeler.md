@@ -58,7 +58,7 @@ As drawn, their coordinates where they say:
 | `loft h x,z x,z ... / x,z ...` | rings of the same count, joined, equally spaced up h |
 | `tube r x,y,z x,y,z ... [bend=r]` | a round bar along a path |
 | `sweep x,y x,y ... / x,y,z ... [bend=r]` | an outline carried along a path |
-| `import file [fit=h] [base=1] [mats=1] [faces=N]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials, `faces` makes it again (below) |
+| `import file [fit=h] [base=1] [mats=1] [faces=N]` | a Wavefront .obj; `fit` scales it to that height, `base` stands it on y = 0, `mats` keeps its materials, `faces` makes it again (below). Its faces keep their places on its pictures (`vt`), and each part says the picture its material wears (`Part::texture`, from the .mtl beside it) - a thing wears it by them with `skin` and `uv` = 1 |
 | `opening w h [head=round\|pointed] [walk=1] [recess=m]` | no faces: a hole asked of the walls round it (below) |
 
 A sweep carries its outline along the path without twisting it: each

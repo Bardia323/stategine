@@ -296,8 +296,14 @@ Geom g_sweep(const std::vector<P2>& prof, const std::vector<V3>& path_in, bool c
 
 void transform(Geom& g, const Mat& m) {
     for (V3& p : g.p) p = apply(m, p);
-    if (det(m) < 0)
-        for (std::size_t i = 0; i + 2 < g.t.size(); i += 3) std::swap(g.t[i + 1], g.t[i + 2]);
+    if (det(m) < 0) {
+        const bool uv = g.uv.size() == g.t.size() * 2;
+        for (std::size_t i = 0; i + 2 < g.t.size(); i += 3) {
+            std::swap(g.t[i + 1], g.t[i + 2]);
+            // A corner's place on its picture goes with the corner.
+            if (uv) std::swap(g.uv[(i + 1) * 2], g.uv[(i + 2) * 2]), std::swap(g.uv[(i + 1) * 2 + 1], g.uv[(i + 2) * 2 + 1]);
+        }
+    }
 }
 
 // --- shading ------------------------------------------------------------------------
@@ -326,6 +332,7 @@ void shade(const Geom& g, std::vector<std::vector<float>>& out, int default_mate
         for (int c = 0; c < 3; ++c) around[std::size_t(wid[std::size_t(g.t[f * 3 + std::size_t(c)])])].push_back(int(f));
     }
     const double cc = std::cos(g.crease * kPi / 180);
+    const bool has_uv = g.uv.size() == g.t.size() * 2;
     for (std::size_t f = 0; f < nf; ++f) {
         const double l = len(fn[f]);
         if (l < 1e-14) continue;
@@ -342,7 +349,9 @@ void shade(const Geom& g, std::vector<std::vector<float>>& out, int default_mate
             const V3 n = len(sum) > 1e-12 ? unit(sum) : nf0;
             const V3 p = g.p[std::size_t(vi)];
             const double ax = std::abs(nf0.x), ay = std::abs(nf0.y), az = std::abs(nf0.z);
-            const double u = ay >= ax && ay >= az ? p.x : ax >= az ? p.z : p.x, v = ay >= ax && ay >= az ? p.z : p.y;
+            double u = ay >= ax && ay >= az ? p.x : ax >= az ? p.z : p.x, v = ay >= ax && ay >= az ? p.z : p.y;
+            // Faces that came with their place on a picture keep it.
+            if (has_uv) u = g.uv[(f * 3 + std::size_t(c)) * 2], v = g.uv[(f * 3 + std::size_t(c)) * 2 + 1];
             out[std::size_t(m)].insert(out[std::size_t(m)].end(), {float(p.x), float(p.y), float(p.z), float(n.x), float(n.y), float(n.z), float(u), float(v)});
         }
     }
@@ -356,6 +365,9 @@ Obj read_obj(const std::string& text) {
     std::istringstream in(text);
     std::string line;
     std::vector<V3> v;
+    std::vector<std::pair<float, float>> vt;
+    std::vector<float> uv;
+    bool any_uv = false;
     int cur = 0;
     while (std::getline(in, line)) {
         std::istringstream ls(line);
@@ -365,6 +377,13 @@ Obj read_obj(const std::string& text) {
             V3 p;
             ls >> p.x >> p.y >> p.z;
             v.push_back(p);
+        } else if (w == "vt") {
+            float a = 0, b = 0;
+            ls >> a >> b;
+            vt.emplace_back(a, 1.0f - b);  // a picture's rows run down
+        } else if (w == "mtllib") {
+            std::getline(ls >> std::ws, o.mtllib);
+            while (!o.mtllib.empty() && (o.mtllib.back() == '\r' || o.mtllib.back() == ' ')) o.mtllib.pop_back();
         } else if (w == "usemtl") {
             std::string name;
             ls >> name;
@@ -373,21 +392,54 @@ Obj read_obj(const std::string& text) {
             if (it == o.materials.end()) o.materials.push_back(name);
         } else if (w == "f") {
             std::vector<int> idx;
+            std::vector<std::pair<float, float>> at;
             std::string tok;
             while (ls >> tok) {
+                // v, v/vt, v//vn or v/vt/vn
                 const long k = std::strtol(tok.c_str(), nullptr, 10);
                 const long i = k < 0 ? long(v.size()) + k : k - 1;
-                if (i >= 0 && std::size_t(i) < v.size()) idx.push_back(int(i));
+                if (i < 0 || std::size_t(i) >= v.size()) continue;
+                idx.push_back(int(i));
+                std::pair<float, float> here{0.0f, 0.0f};
+                const std::size_t slash = tok.find('/');
+                if (slash != std::string::npos && slash + 1 < tok.size() && tok[slash + 1] != '/') {
+                    const long q = std::strtol(tok.c_str() + slash + 1, nullptr, 10);
+                    const long j = q < 0 ? long(vt.size()) + q : q - 1;
+                    if (j >= 0 && std::size_t(j) < vt.size()) here = vt[std::size_t(j)], any_uv = true;
+                }
+                at.push_back(here);
             }
             for (std::size_t k = 1; k + 1 < idx.size(); ++k) {
                 o.geom.t.insert(o.geom.t.end(), {idx[0], idx[k], idx[k + 1]});
                 o.geom.mat.push_back(cur);
+                for (std::size_t c : {std::size_t(0), k, k + 1}) uv.push_back(at[c].first), uv.push_back(at[c].second);
             }
         }
     }
     o.geom.p = v;
+    if (any_uv) o.geom.uv = std::move(uv);
     o.ok = !v.empty() && !o.geom.t.empty();
     return o;
+}
+
+std::map<std::string, std::string> read_mtl(const std::string& text) {
+    std::map<std::string, std::string> out;
+    std::istringstream in(text);
+    std::string line, cur;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::istringstream ls(line);
+        std::string w;
+        ls >> w;
+        if (w == "newmtl") ls >> cur;
+        else if (w == "map_Kd" && !cur.empty()) {
+            // The file is the last word: options (-s, -o ...) come before it.
+            std::string word, last;
+            while (ls >> word) last = word;
+            out[cur] = last;
+        }
+    }
+    return out;
 }
 
 // --- solids -------------------------------------------------------------------------

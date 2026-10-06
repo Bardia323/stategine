@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- An imported mesh keeps its faces' places on its pictures. `import` reads an .obj's `vt` and the .mtl it names, and each `sculpt::Part` says the picture its material wears (`texture`, a path beside the .mtl's - the modeller reads no picture itself); the corners' uv are those places. A thing with `skin` = a picture and `uv` = 1 wears it by them, as the model was painted. Faces made by a cut or `remesh` are given where they stand, as before. The modeller's disk cache moves to a new version (made again once).
+- A thing that says `unseen` = 1 is drawn by no eye, and still casts its shadow: a walker's own body, seen from inside it.
 - No noise stands still on the screen. Each pixel's turn of the soft-shadow filter, and the start of each pixel's march of the god rays, are moved on each 24th of a second of the world's time (`uTime`), as the grain is: fixed to the pixel, each was a still layer of noise over everything lit and everything bright, and the rays' steps a slight banding near a light. **Breaking** for a composite that pastes `godrays_glsl` without declaring `uniform float uTime` before it.
 - Lit air is gathered again and again while nothing it is made from moves, each time at other points of its cells, and averaged (`kAirGatherings`, 16) - then it rests: one gathering, each cell sampled at one point, was noise that stood still near a lamp. The scene reads it without a dither.
 - A view drawn for a window or doorway (a far room in its own look) leaves out its film grain: the viewer's film is laid over the whole picture.
