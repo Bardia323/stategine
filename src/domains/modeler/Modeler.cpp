@@ -177,7 +177,9 @@ sculpt::Model build_kept(const std::string& text, const sculpt::Options& o, cons
         all = all && f && f->read && f->read(path, now);
         if (all) read.emplace_back(path, of_text(now));
     }
-    if (all) cache::store("modeler", key, to_bytes(m, read));
+    // Kept only as made whole: a recipe that went wrong may have gone wrong
+    // for want of a file it could not yet read, and is made again next time.
+    if (all && m.errors.empty()) cache::store("modeler", key, to_bytes(m, read));
     return m;
 }
 
@@ -205,7 +207,7 @@ std::shared_ptr<const sculpt::Model> seen_before(const std::string& key) {
 std::shared_ptr<const sculpt::Model> cached(const std::string& key, const std::function<sculpt::Model()>& make) {
     if (auto was = seen_before(key)) return was;
     auto built = std::make_shared<const sculpt::Model>(make());
-    if (!built->imports.empty()) return built;
+    if (!built->imports.empty() || !built->errors.empty()) return built;
     std::lock_guard<std::mutex> g(seen_mutex());
     if (seen().size() > 128) seen().clear();
     return seen().emplace(key, built).first->second;

@@ -8,6 +8,7 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- The modeller keeps on disk (and in memory) only models made whole: one that went wrong - an `import` asked for before the program had given its file reader, say - is made again next time instead of read back wrong for ever.
 - A light can be a projector's: `frame_w` and `frame_h` (the tangents of its half-angles across and up) make its beam a rectangle with edges softened over `frame_soft`, in place of the round cone - on what it lands on and in the air alike. A picture thrown on a screen (a feed portal with `untone` = 0, lit only by the beam) is then edge to edge, with nothing spilled past it, and whatever stands in the beam shadows the picture.
 - Lit air in a small view is gathered in finer cells: about a hundred and twenty across, down to four pixels (a view drawn at a few hundred pixels showed a beam as a row of blocks). A large view's cells are as they were.
 - Plants grown with `grow` can have real leaves: `leaves=3` puts blades on stalks at every tip (pointed, folded along the midrib, drooping, `leafwidth` how broad), `leaves=4` tufts of needles; the `trees` library's broadleaves and pines use them.
