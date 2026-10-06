@@ -246,7 +246,7 @@ church | cathedral | temple | mosque | palace | castle | street seed=3 | courtya
 ```
 
 A style is a library that says the same words its own way (listed at the
-top of `src/domains/ModelerArch.cpp`): `wall opening window doorway door band
+top of `src/domains/modeler/ModelerArch.cpp`): `wall opening window doorway door band
 pier base cornice roof column tower` outside, `ceiling wainscot icornice
 ipier` inside, and its proportions as variables (`<style>_ww`, `_wh`,
 `_sill`, `_roof`, `_floor`, `_head` - its arches: `round`, `pointed` or

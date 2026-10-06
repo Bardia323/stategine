@@ -46,7 +46,8 @@ endif()
 # includes its header.
 file(GLOB _sg_sources CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/algebra/*.cpp
-     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/modeler/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/physics/*.cpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial/*.cpp)
 add_library(stategine STATIC ${_sg_sources})
 add_library(stategine::stategine ALIAS stategine)
@@ -56,7 +57,7 @@ target_compile_features(stategine PUBLIC cxx_std_17)
 # the recipe, and this - the code that turns a recipe into a mesh.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineDigest.cmake)
 file(GLOB _sg_modeler_code CONFIGURE_DEPENDS
-     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Modeler*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Modeler*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/modeler/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/modeler/*.hpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Shapes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Modeler.hpp
      ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Shapes.hpp ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/spatial/*.hpp
      ${CMAKE_CURRENT_SOURCE_DIR}/src/spatial/*.cpp)

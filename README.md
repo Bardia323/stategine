@@ -516,6 +516,43 @@ Open and close with `engine.open_embed(name)` / `close_embed(name)`, or fire
 `embed.open` / `embed.close` with a `name`. A focused portal receives the
 engine's events; portals nest.
 
+## Models and architecture
+
+A thing's shape is a recipe kept as text, one operation a line, and its mesh
+is a function of the recipe alone (`sg::Modeler`, `sg/domains/Modeler.hpp`;
+the language is [modeler.md](docs/modeler.md)). Shapes, cuts, sweeps, lofts,
+lathes and imported `.obj` files (with their pictures) are combined, arrayed
+and named as macros; a union keeps its exact faces, and only what a cut
+touches is meshed from a field.
+
+Architecture is written in the same language, from the rules buildings are
+made by, not from facades. Each library is a set of words a recipe takes in
+with `use <name>`:
+
+| `use` | what it carries |
+| --- | --- |
+| `mould` | mouldings struck with compasses and swept: ovolo, cyma, cornices with dentils and modillions, balustrades, rustication, keystones, finials |
+| `orders` | the five orders by Vignola's modules: columns with entasis, flutes and capitals, entablatures, pediments, porticos, arcades, colonnades |
+| `pointed` | two-centred arches by their centre ratio, Tudor and ogee arches, rib vaults whose crowns meet, tracery, buttresses, flyers, pinnacles, roses |
+| `girih` | Islamic star patterns, star-and-cross, strapwork, muqarnas, horseshoe and multifoil arches, domes, iwans, screens |
+| `structure` | how a building stands: footings, walls, voussoir arches, barrel and groin vaults, domes on pendentives, trusses, stairs; and the frame building - grid, floors, core, curtain wall, storefronts, balconies |
+| `city` | skyscrapers, blocks, houses, rowhouses, warehouses, shops, and lots, blocks and districts laid out by zone and seed |
+| `param` | a style as a point in continuous axes (ornament, mass, verticality, pitch, glazing, tracery, dome, pattern, order...); presets mix (`let pa gothic`, `let pb islamic`, `let pt 0.4`) and any axis is set after |
+| `arch` | whole buildings and their styles: `building`, `interior`, `tower`, `cathedral`, `mosque`, `palace`, `castle`; facades ask for their openings, so a room behind can open its wall there |
+
+```
+use pointed
+pointed.vault 8 8 12          # a quadripartite rib vault, 8 m square, crown at 12 m
+use city
+city.district 3 3 zone=0 seed=7
+```
+
+`detail` sets how fine ornament is everywhere (0.5 for a palace's budget);
+`default name value` gives a parameter a value unless it was said. Draw what
+a recipe makes with `sgmodel <recipe> -s 1000` (four views, its faces and
+open edges); `sgmodel --obj` exports it. The implementation is in
+`src/domains/modeler/`.
+
 ## Rendering
 
 Domain states never know about pixels, and renderers never know about a game:
@@ -846,7 +883,8 @@ include/sg/
   algebra/   the laws compiled: Operator, Program, Backend (CPU), Compile
   gpu/       the algebra's batches on a GPU: AlgebraBackend.hpp (src/gpu: CUDA, ROCm, Vulkan, Metal)
   domains/   state vocabulary: Spatial, Atlas, Console, Surface, Look, Camera,
-    Light, Shapes (uses core)
+    Light, Shapes, Modeler (uses core; the modeller and its libraries are
+    implemented in src/domains/modeler/)
   spatial/   pure geometry: Math.hpp, Geometry.hpp, Index.hpp (no state ownership)
   physics/   solvers a state can step in its arrows, plain data in and out:
     Rigid.hpp (sg::rigid: bodies that fall, stack, tip, roll, sleep, are held)
