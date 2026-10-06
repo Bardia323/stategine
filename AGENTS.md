@@ -359,6 +359,18 @@ a native `sgc`; Wasm networking keeps the double-precision CPU reference.
 Run the portable Wasm suite and real browser/native integration tests as well
 as native laws and renderer tests. See [browser.md](docs/browser.md).
 
+## Joining two projects
+
+Bringing one stategine project into another (a game into a sandbox, two
+games together) is bringing its states into the host's one graph and
+declaring where they meet - never a bridge between graphs. Before doing it,
+read [docs/joining-projects.md](docs/joining-projects.md): one graph, one
+namespace (check names first), globals that only the host sets
+(`Modeler::set_files`, `Texture::set_reader`, `cache::set_folder`), the
+join held to the overlap law (portals by their middle, one eye height),
+what the guest's loop did and the host's loop must now do, presence, and
+the host's checks.
+
 ## Adding a state, a room, an interface - checklist
 
 1. Register `stategine_module(<name> USES ...)` and `stategine_check_modules()`

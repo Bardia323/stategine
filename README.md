@@ -555,6 +555,10 @@ open edges); `sgmodel --obj` exports it. The implementation is in
 
 ## Land
 
+Two projects built on the engine are joined by bringing one's states into
+the other's graph - see [joining-projects.md](docs/joining-projects.md)
+before doing it.
+
 A land is made from a recipe too ([terrain.md](docs/terrain.md),
 `sg/domains/Terrain.hpp`): any size at any fineness, noise, hills, ridges,
 terraces, rain's erosion; roads graded along curves, paths, rivers cut
