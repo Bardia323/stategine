@@ -25,4 +25,34 @@ const char* lib_brutalist();
 const char* lib_artdeco();
 // And what fills a building: a church's furnishings (`use church`).
 const char* lib_church();
+// What buildings are really made of, each a library of composable
+// constructions (docs/modeler.md, "Architecture"):
+//   mould      running mouldings as swept profiles (cyma, ovolo, cavetto,
+//              torus, scotia), cornices built of them, dentils, modillions,
+//              balusters, panels, rustication, quoins, consoles, urns
+//   orders     the five classical orders by Vignola's modules: column, base,
+//              capital, entablature, pedestal, pediment, portico, aedicule
+//   pointed    pointed-arch geometry by compass: two-centred arches of any
+//              centre (equilateral, lancet, drop), four-centred, ogee; rib
+//              vaults whose ribs meet at one crown; tracery, pinnacles,
+//              buttresses, flyers, roses
+//   girih      islamic geometry: star polygons, star-and-cross tilings,
+//              rosettes, muqarnas, horseshoe and multifoil arches, domes on
+//              drums, screens, iwans
+//   structure  what holds up: footings, battered walls, piers, voussoir
+//              arches, barrel, groin and rib vaults, domes, pendentives,
+//              trusses, stairs (straight, dog-leg, spiral)
+//   param      a style that is a point in a continuous space (arch, ornament,
+//              mass, vertical, pitch, rustic, glazing, tracery, dome,
+//              pattern, order), the known styles its presets, any two mixed
+const char* lib_mould();
+const char* lib_orders();
+const char* lib_pointed();
+const char* lib_girih();
+const char* lib_structure();
+const char* lib_param();
+//   city       the modern city from the frame building's rules: skyscrapers,
+//              blocks, houses, terraces, sheds, shops; lots, blocks, streets
+//              and districts of them
+const char* lib_city();
 }  // namespace sg::sculpt

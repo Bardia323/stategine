@@ -7,6 +7,8 @@ namespace sg::sculpt {
 
 const char* lib_romanesque() {
     return R"LIB(
+use structure
+use orders
 let romanesque_ww 0.3
 let romanesque_wh 0.5
 let romanesque_sill 0.3
@@ -18,27 +20,38 @@ end
 define romanesque.opening w=1 h=2 d=2
   arch $w $h $d
 end
-define romanesque.window w=1 h=2   # a deep splay, a roll moulding round the head
-  group
-    arch $w+0.36 $h+0.18 0.14 at=0,-0.04,0.07 mat=stone
-    sub arch $w+0.04 $h+0.02 0.6
-  end
+define romanesque.window w=1 h=2   # a round-headed light: a roll moulding round the head on nook shafts, a splayed sill, the glass deep in the wall
+  order.archband $w/2+0.02 0.16 0.14 at=0,$h-$w/2-0.02,0.07 mat=stone
+  cyl 0.07 $h-$w/2 at=-$w/2-0.09,0,0.07 sides=10 mat=stone
+  cyl 0.07 $h-$w/2 at=$w/2+0.09,0,0.07 sides=10 mat=stone
+  extrude $w+0.4 0,0 0.16,0 0,0.1 at=0,-0.1,0 rot=0,-90,0 mat=stone
   arch $w*0.9 $h*0.95 0.03 at=0,0,-0.4 mat=glass
+  box 0.05 $h*0.9 0.05 at=0,0,-0.4 mat=stone
 end
 define romanesque.doorway w=1.8 h=3 d=2
   arch $w $h $d
 end
-define romanesque.door w=1.8 h=3 t=0.9   # stepped orders of round arches, and the leaves
+define romanesque.door w=1.8 h=3 t=0.9   # stepped orders of round arches on shafts with cushion capitals, a tympanum over the lintel, the leaves with their ironwork
   for i 3
-    group
-      arch $w+0.34+$i*0.34 $h+0.17+$i*0.17 0.18 at=0,0,0.09+(2-$i)*0.14 mat=stone
-      sub arch $w+$i*0.34 $h+$i*0.17 1.2
-    end
+    let r ($w+$i*0.34)/2
+    order.archband $r 0.17 0.18 at=0,$h+$i*0.17-$r,(2-$i)*0.14 mat=stone
+    box 0.17 $h+$i*0.17-$r 0.18 at=-$r-0.085,0,(2-$i)*0.14+0.09 mat=stone
+    box 0.17 $h+$i*0.17-$r 0.18 at=$r+0.085,0,(2-$i)*0.14+0.09 mat=stone
+    cyl 0.07 $h+$i*0.17-$r-0.2 at=-$r-0.17,0,(2-$i)*0.14+0.18 sides=10 mat=stone
+    cyl 0.07 $h+$i*0.17-$r-0.2 at=$r+0.17,0,(2-$i)*0.14+0.18 sides=10 mat=stone
+    box 0.18 0.2 0.18 at=-$r-0.17,$h+$i*0.17-$r-0.2,(2-$i)*0.14+0.18 mat=stone
+    box 0.18 0.2 0.18 at=$r+0.17,$h+$i*0.17-$r-0.2,(2-$i)*0.14+0.18 mat=stone
   end
+  box $w+0.1 0.2 0.12 at=0,$h*0.72,-0.06 mat=stone
   arch $w $h 0.1 at=0,0,-$t*0.5 mat=wood
+  for i 2
+    box $w*0.4 0.05 0.03 at=-$w*0.25,$h*0.2+$i*$h*0.3,-$t*0.5+0.06 mat=metal
+    box $w*0.4 0.05 0.03 at=$w*0.25,$h*0.2+$i*$h*0.3,-$t*0.5+0.06 mat=metal
+  end
 end
-define romanesque.band len=10
-  box $len+0.1 0.12 0.1 at=0,-0.06,0.05 mat=stone
+define romanesque.band len=10   # a string course of a roll under a fillet
+  mould.torus $len+0.1 0.12 at=0,-0.16,0 mat=stone
+  mould.fillet $len+0.1 0.05 0.08 at=0,-0.05,0 mat=stone
 end
 define romanesque.pier h=7   # a pilaster strip
   box 0.55 $h 0.14 at=0,0,0.07 mat=stone
@@ -46,14 +59,12 @@ end
 define romanesque.base len=10 h=0.6
   box $len+0.2 $h 0.16 at=0,0,0.08 mat=stone
 end
-define romanesque.cornice len=10   # a blind arcade of little arches, and the eaves course
+define romanesque.cornice len=10   # a corbel table: little arches between corbels under the eaves course
   let n max(2,floor($len/0.7))
   let s $len/$n
-  group
-    box $len 0.55 0.12 at=0,-0.55,0.06 mat=stone
-    sub array n=$n step=$s,0,0 at=-$len/2+$s/2,-0.62,0
-      arch $s*0.7 0.5 0.3
-    end
+  array n=$n step=$s,0,0 at=-$len/2+$s/2,-0.6,0
+    order.archband $s*0.3 0.1 0.14 at=0,0.1,0.07 mat=stone
+    extrude 0.16 0,0 0.16,0.12 0.16,0.3 0,0.3 at=-$s/2,0,0 rot=0,-90,0 mat=stone
   end
   box $len+0.4 0.18 0.34 at=0,0,0.12 mat=stone
 end
@@ -103,29 +114,16 @@ end
 define romanesque.icornice len=10
   box $len 0.2 0.16 at=0,-0.2,0.08 mat=stone
 end
-define romanesque.ceiling w=10 d=14 h=5   # a round barrel vault along the longer side, transverse arches across it
-  let a min($w,$d)/2
+define romanesque.ceiling w=10 d=14 h=5   # a round barrel vault along the longer side on transverse arches, all exact: the half rings of round arches
+  let a min($w,$d)
   let l max($w,$d)
-  let n max(2,round($l/($a*1.4)))
+  let n max(2,round($l/($a*0.7)))
   group rot=0,if($d>=$w,0,90),0
-    group
-      cyl $a+0.45 $l rot=90,0,0 centre=1 mat=stone
-      sub cyl $a $l+1 rot=90,0,0 centre=1
-      sub box $a*3 $a+1 $l+2 at=0,-$a-1,0
-    end
-    # the end walls closed up into the vault
-    mirror z
-      group
-        cyl $a+0.1 0.3 rot=90,0,0 centre=1 at=0,0,$l/2+0.15 mat=stone
-        sub box $a*3 $a+1 1 at=0,-$a-1,$l/2+0.15
-      end
-    end
+    structure.barrel $a $l+0.3 $a/2 0.4 mat=stone
+    pointed.band $a+0.2 $a/2+0.1 0 0.3 0.3 at=0,0,-$l/2-0.15 mat=stone
+    pointed.band $a+0.2 $a/2+0.1 0 0.3 0.3 at=0,0,$l/2+0.15 mat=stone
     for i $n+1
-      group
-        cyl $a 0.5 rot=90,0,0 centre=1 at=0,0,-$l/2+$l/$n*$i mat=stone
-        sub cyl $a-0.35 1 rot=90,0,0 centre=1 at=0,0,-$l/2+$l/$n*$i
-        sub box $a*3 $a+1 2 at=0,-$a-1,-$l/2+$l/$n*$i
-      end
+      pointed.band $a-0.6 $a/2-0.3 0 0.35 0.5 at=0,0,-$l/2+$l/$n*$i mat=stone
     end
   end
 end

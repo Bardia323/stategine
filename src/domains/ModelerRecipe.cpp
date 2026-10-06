@@ -113,6 +113,13 @@ private:
             if (name == "sin") return std::sin(x * r);
             if (name == "cos") return std::cos(x * r);
             if (name == "tan") return std::tan(x * r);
+            // The inverses, in degrees too: where a compass construction
+            // asks what angle a point is at (a rib's springing, a rake).
+            if (name == "asin") return std::asin(std::max(-1.0, std::min(1.0, x))) / r;
+            if (name == "acos") return std::acos(std::max(-1.0, std::min(1.0, x))) / r;
+            if (name == "atan") return std::atan(x) / r;
+            if (name == "atan2") return std::atan2(x, y) / r;
+            if (name == "hypot") return std::hypot(x, y);
             if (name == "sqrt") return std::sqrt(std::max(0.0, x));
             if (name == "abs") return std::abs(x);
             if (name == "floor") return std::floor(x + 1e-9);
@@ -827,11 +834,16 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
         if (head == "end") {
             if (st_.size() > floor) close();
             else err("`end` with nothing to end");
-        } else if (head == "let") {
+        } else if (head == "let" || head == "default") {
+            // let: a variable, here. default: the same unless it is already
+            // said anywhere above - a library's starting point, which a
+            // program sets before `use`.
             if (a.pos.size() < 2) {
-                err("let name value");
+                err(head + " name value");
                 continue;
             }
+            std::string had;
+            if (head == "default" && lookup(a.pos[0], had)) continue;
             double d;
             st_.back().vars[a.pos[0]] = number(a.pos[1], d) ? fmt(d) : a.pos[1];
         } else if (head == "set") {

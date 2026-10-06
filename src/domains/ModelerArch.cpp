@@ -31,6 +31,8 @@ namespace sg::sculpt {
 
 const char* lib_arch() {
     return R"LIB(
+use mould
+use pointed
 define facade style=classical w=12 floors=2 fh=3.6 bays=5 t=0.5 door=1 base=0.6 dw=0 dh=0   # a wall of bays and floors: windows, a door (door=2: standing open; dw, dh its size, 0: the bay says), piers, courses, a crown
   let bw $w/$bays
   let ww $bw*$${style}_ww
@@ -55,8 +57,12 @@ define facade style=classical w=12 floors=2 fh=3.6 bays=5 t=0.5 door=1 base=0.6 
       let x -$w/2+$bw*($b+0.5)
       if $door*($f==0)*($b==$mid)
         $style.door $dw $dh $t at=$x,$base,0
+        opening $dw $dh head=$${style}_head walk=1 at=$x,$base,0
       else
         $style.window $ww $wh at=$x,$base+$f*$fh+$sill,0
+        # and the window asked of whatever wall is behind this one: a room
+        # inside opens its wall there, so the two walls agree
+        opening $ww $wh head=$${style}_head recess=$t*0.4 at=$x,$base+$f*$fh+$sill,0
       end
     end
     if $f>0
@@ -201,6 +207,119 @@ define interior style=classical w=10 d=14 h=6 bays=4 sbays=0 walls=1 door=1 aisl
       $style.column $h*0.8 min($w,$d)*0.025 at=-$w/4,0,-$d/2+$d/$sb*($i+1)
       $style.column $h*0.8 min($w,$d)*0.025 at=$w/4,0,-$d/2+$d/$sb*($i+1)
     end
+  end
+end
+define inwindow style=classical w=1 h=2 recess=0.2 t=0.5   # a window as it is seen from inside a room whose wall is someone else's: the glass in the opening's own shape, set `recess` back from the wall's face at z = 0 (the room side is +z), a lining round the reveal, a sill board
+  $style.opening $w*0.99 $h*0.99 0.03 at=0,0.005,-$recess mat=glass
+  box 0.05 $h 0.05 at=0,0,-$recess mat=wood
+  box $w 0.05 0.05 at=0,$h*0.55,-$recess mat=wood
+  box $w+0.16 0.06 $recess+0.12 at=0,-0.06,-$recess/2+0.06 mat=wood
+  box 0.06 $h $recess at=-$w/2-0.03,0,-$recess/2 mat=plaster
+  box 0.06 $h $recess at=$w/2+0.03,0,-$recess/2 mat=plaster
+end
+define cathedral style=gothic len=40 w=12 h=16 aisle=5 ah=8 transept=1 towers=2 base=0.6 door=1 core=1 dw=0 dh=0   # a cathedral: the nave high between lower aisles, flying buttresses over the aisle roofs to the nave's clerestory, a transept across it, a rose over the door between two towers, an apse
+  let th $h
+  building style=$style w=$w d=$len floors=1 fh=$h bays=3 sbays=max(3,floor($len/4.5)) base=$base door=$door core=$core dw=$dw dh=$dh
+  wing style=$style w=$aisle d=$len-4 floors=1 fh=$ah bays=max(3,floor(($len-4)/4.5)) base=$base at=$w/2+$aisle/2,0,-2 rot=90
+  wing style=$style w=$aisle d=$len-4 floors=1 fh=$ah bays=max(3,floor(($len-4)/4.5)) base=$base at=-$w/2-$aisle/2,0,-2 rot=-90
+  let nb max(3,floor($len/4.5))
+  for i $nb+1
+    let z $len/2-2-($len-4)/$nb*$i
+    if ($z<$len/2-3)*($z>-$len/2+3)
+      pointed.flyer $aisle*0.9 $base+$h*0.95 0.3 0.45 at=$w/2+0.2,0,$z rot=0,0,0 mat=stone
+      pointed.flyer $aisle*0.9 $base+$h*0.95 0.3 0.45 at=-$w/2-0.2,0,$z rot=0,180,0 mat=stone
+      pointed.pinnacle 0.6 $ah*0.3 at=$w/2+$aisle*0.95,$base+$ah+$aisle*0.22,$z mat=stone
+      pointed.pinnacle 0.6 $ah*0.3 at=-$w/2-$aisle*0.95,$base+$ah+$aisle*0.22,$z mat=stone
+    end
+  end
+  if $transept
+    wing style=$style w=$w*2.6 d=$w*0.9 floors=1 fh=$h bays=max(3,floor($w*2.6/4.5)) base=$base at=0,0,-$len*0.2
+  end
+  if $towers>=1
+    tower style=$style r=$w*0.22 h=$h*2.2 at=-$w/2-$aisle*0.5,0,$len/2-$w*0.22
+  end
+  if $towers>=2
+    tower style=$style r=$w*0.22 h=$h*2.2 at=$w/2+$aisle*0.5,0,$len/2-$w*0.22
+  end
+  pointed.rose $w*0.28 12 0.2 at=0,$base+$h*0.72,$len/2+0.1 mat=stone
+  group
+    cyl $w*0.42 $h*0.85 at=0,0,-$len/2 sides=10 mat=stone
+    sub box $w $h*2 $w at=0,-1,-$len/2+$w/2
+  end
+  cone $w*0.48 $h*0.4 sides=10 at=0,$h*0.85,-$len/2 mat=slate
+end
+define mosque style=islamic w=20 d=20 h=8 minarets=2 court=1 base=0.4 door=1 core=1 dw=0 dh=0   # a mosque: the prayer hall under its dome (the style's roof), an iwan at its door, minarets at its front corners, and a courtyard before it ringed by an arcade of pointed arches
+  building style=$style w=$w d=$d floors=1 fh=$h bays=5 sbays=5 base=$base door=$door core=$core dw=$dw dh=$dh
+  if $minarets>=1
+    tower style=$style r=2.4 h=$h*3.6 at=-$w/2-2.2,0,$d/2-2
+  end
+  if $minarets>=2
+    tower style=$style r=2.4 h=$h*3.6 at=$w/2+2.2,0,$d/2-2
+  end
+  if $court
+    let cw $w
+    let cd $w*0.8
+    let bay 3.2
+    let n max(3,round($cw/$bay))
+    let m max(2,round($cd/$bay))
+    box $cw+2 0.3 $cd+2 at=0,0,$d/2+$cd/2+1 mat=stone
+    for side 2
+      let sx if($side==0,-1,1)*($cw/2+0.6)
+      for j $m
+        let z $d/2+1+$cd/$m*($j+0.5)
+        box 0.5 $h*0.45 0.5 at=$sx,0.3,$z-$cd/$m/2 mat=plaster
+        pointed.band $cd/$m-0.5 $h*0.45 0.2 0.25 0.5 at=$sx,0.3,$z rot=0,90,0 mat=plaster
+      end
+      box 0.5 $h*0.45 0.5 at=$sx,0.3,$d/2+1+$cd mat=plaster
+      box 0.6 $h*0.08 $cd+0.6 at=$sx,0.3+$h*0.45,$d/2+1+$cd/2 mat=plaster
+    end
+    for i $n
+      let x -$cw/2+$cw/$n*($i+0.5)
+      box 0.5 $h*0.45 0.5 at=$x-$cw/$n/2,0.3,$d/2+1+$cd mat=plaster
+      pointed.band $cw/$n-0.5 $h*0.45 0.2 0.25 0.5 at=$x,0.3,$d/2+1+$cd mat=plaster
+    end
+    box $cw+1.2 $h*0.08 0.6 at=0,0.3+$h*0.45,$d/2+1+$cd mat=plaster
+    lathe 0,0 1.6,0 1.6,0.3 0.3,0.4 0.3,0.9 1.2,1.0 1.2,1.15 0,1.15 at=0,0.3,$d/2+1+$cd/2 sides=16 mat=stone
+  end
+end
+define palace style=classical w=40 d=14 floors=3 fh=4.2 bays=11 wings=1 base=1.2 door=1 core=1 dw=0 dh=0   # a palace: a corps de logis with a pavilion at either end standing a storey higher under its own roof, wings coming forward to +z round a cour d'honneur (if asked), a terrace with a balustrade and a flight of steps before the door
+  let pw $w*0.22
+  building style=$style w=$w d=$d floors=$floors fh=$fh bays=$bays base=$base door=$door core=$core dw=$dw dh=$dh
+  wing style=$style w=$pw d=$d+2 floors=$floors+1 fh=$fh bays=max(2,floor($pw/3)) base=$base at=-$w/2+$pw/2-0.5,0,0
+  wing style=$style w=$pw d=$d+2 floors=$floors+1 fh=$fh bays=max(2,floor($pw/3)) base=$base at=$w/2-$pw/2+0.5,0,0
+  if $wings
+    let wl $d*1.6
+    wing style=$style w=$wl d=$d*0.7 floors=$floors-1 fh=$fh bays=max(3,floor($wl/3.5)) base=$base at=-$w/2+$d*0.35,0,$d/2+$wl/2 rot=90
+    wing style=$style w=$wl d=$d*0.7 floors=$floors-1 fh=$fh bays=max(3,floor($wl/3.5)) base=$base at=$w/2-$d*0.35,0,$d/2+$wl/2 rot=-90
+  end
+  box $w-$pw*2 $base 6 at=0,0,$d/2+3 mat=stone
+  mould.balustrade $w-$pw*2 1.0 at=0,$base,$d/2+6 mat=stone
+  mould.balustrade 6 1.0 at=-$w/2+$pw,$base,$d/2+3 rot=0,90,0 mat=stone
+  mould.balustrade 6 1.0 at=$w/2-$pw,$base,$d/2+3 rot=0,-90,0 mat=stone
+  let n ceil($base/0.16)
+  for i $n
+    box 6+$i*0.7 $base/$n 0.4+$i*0.35 at=0,$base-$base/$n*($i+1),$d/2+6+$i*0.35*0.5+0.2 mat=stone
+  end
+end
+define castle style=romanesque w=40 d=30 h=8 t=1.6 keep=1 base=0   # a castle: curtain walls with their wall-walk and battlements round a ward, round towers at the corners, a gatehouse in the front wall, and a keep in the ward - a building of the style under battlements
+  wall $w $h $t at=0,0,$d/2
+  sub arch 3.2 4.5 $t*3 at=0,0,$d/2
+  wall $w $h $t at=0,0,-$d/2
+  wall $d $h $t at=-$w/2,0,0 rot=90
+  wall $d $h $t at=$w/2,0,0 rot=90
+  radial n=4
+    cyl 3 $h*1.4 at=$w/2,0,$d/2 mat=stone
+    cyl 3.3 0.3 at=$w/2,$h*1.4-0.3,$d/2 mat=stone
+    merlons n=14 r=3.3 w=0.6 h=0.8 d=0.4 at=$w/2,$h*1.4,$d/2 mat=stone
+    cone 3.6 3.5 at=$w/2,$h*1.4+0.8,$d/2 sides=16 mat=slate
+  end
+  gatehouse 8 $h*1.3 $t*3 gw=3.2 gh=4.5 at=0,0,$d/2
+  if $keep
+    building style=$style w=$w*0.35 d=$d*0.35 floors=3 fh=$h*0.45 bays=4 sbays=3 door=1 base=0.8 at=0,0,-$d*0.15
+    battlement len=$w*0.35+0.6 t=0.4 h=0.9 w=0.6 gap=0.42 at=0,0.8+3*$h*0.45,-$d*0.15+$d*0.175+0.1 mat=stone
+    battlement len=$w*0.35+0.6 t=0.4 h=0.9 w=0.6 gap=0.42 at=0,0.8+3*$h*0.45,-$d*0.15-$d*0.175-0.1 mat=stone
+    battlement len=$d*0.35+0.6 t=0.4 h=0.9 w=0.6 gap=0.42 at=$w*0.175+0.1,0.8+3*$h*0.45,-$d*0.15 rot=90 mat=stone
+    battlement len=$d*0.35+0.6 t=0.4 h=0.9 w=0.6 gap=0.42 at=-$w*0.175-0.1,0.8+3*$h*0.45,-$d*0.15 rot=90 mat=stone
   end
 end
 define colonnade style=classical len=12 n=6 h=5 r=0.35   # columns in a row along x, and what they carry

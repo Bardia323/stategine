@@ -7,6 +7,7 @@ namespace sg::sculpt {
 
 const char* lib_gothic() {
     return R"LIB(
+use pointed
 let gothic_ww 0.5
 let gothic_wh 0.66
 let gothic_sill 0.16
@@ -22,48 +23,45 @@ end
 define gothic.opening w=1 h=2.5 d=2
   gothic.arch $w $h $d
 end
-define gothic.window w=1 h=2.5   # a hood mould, a mullion, and a foiled light in the head
-  group
-    gothic.arch $w+0.3 $h+0.18 0.12 at=0,-0.06,0.06 mat=stone
-    sub gothic.arch $w $h 0.6
-  end
-  box $w+0.36 0.1 0.24 at=0,-0.1,0.1 mat=stone
-  box 0.08 $h-$w*0.95 0.12 at=0,0,-0.15 mat=stone
-  torus $w*0.19 0.035 at=0,$h-$w*0.62,-0.15 rot=90,0,0 mat=stone
-  gothic.arch $w*0.98 $h*0.98 0.03 at=0,0,-0.22 mat=glass
+define gothic.window w=1 h=2.5   # bar tracery under an equilateral head: as many lights as the width takes, a foiled roundel over them, a hood mould with its stops, a weathered sill
+  pointed.window $w $h 0.5 max(1,round($w/0.9)) 0.14 mat=stone
 end
 define gothic.doorway w=1.8 h=3.2 d=2
   gothic.arch $w $h $d
 end
-define gothic.door w=1.8 h=3.2 t=0.6   # receding orders of arches round it, and the leaves
+define gothic.door w=1.8 h=3.2 t=0.6   # receding orders of pointed archivolts, each on a shaft, a crocketed gable over the outermost, and the leaves with their strap hinges
   for i 3
-    group
-      gothic.arch $w+0.3+$i*0.3 $h+0.2+$i*0.22 0.16 at=0,0,0.08+(2-$i)*0.12 mat=stone
-      sub gothic.arch $w+$i*0.3 $h+$i*0.22 1.2
-    end
+    pointed.band $w+$i*0.3 $h+$i*0.22 0.5 0.3 0.16 at=0,0,(2-$i)*0.12 mat=stone
+    cyl 0.07 $h-($w+$i*0.3)*0.866 at=-$w/2-$i*0.15-0.08,0,(2-$i)*0.12+0.08 sides=10 mat=stone
+    cyl 0.07 $h-($w+$i*0.3)*0.866 at=$w/2+$i*0.15+0.08,0,(2-$i)*0.12+0.08 sides=10 mat=stone
   end
-  gothic.arch $w $h 0.1 at=0,0,-$t*0.55 mat=wood
+  extrude 0.14 -$w/2-0.75,$h+0.5 $w/2+0.75,$h+0.5 0,$h+0.5+($w+0.9)*0.6 at=0,0,0.33 mat=stone
+  for i 3
+    pointed.crocket 0.14 at=-$w*0.3+$i*$w*0.3,$h+0.55+($w+0.9)*0.6*(1-abs($i-1)*0.5)-0.1,0.4 mat=stone
+  end
+  mould.finial 0.4 0.08 at=0,$h+0.5+($w+0.9)*0.6,0.33 mat=stone
+  pointed.arch $w $h 0.5 0.1 at=0,0,-$t*0.55 mat=wood
+  for i 3
+    box $w*0.42 0.05 0.03 at=-$w*0.26,$h*0.2+$i*$h*0.25,-$t*0.55+0.06 mat=metal
+    box $w*0.42 0.05 0.03 at=$w*0.26,$h*0.2+$i*$h*0.25,-$t*0.55+0.06 mat=metal
+  end
 end
-define gothic.band len=10
-  box $len+0.1 0.14 0.12 at=0,-0.07,0.06 mat=stone
+define gothic.band len=10   # a string course, weathered on top: a fillet and a chamfer
+  extrude $len+0.1 0,0 0.14,0 0.14,0.06 0,0.16 at=0,-0.16,0 rot=0,-90,0 mat=stone
 end
-define gothic.pier h=7   # a buttress in two stages, weathered, with a pinnacle
-  box 0.55 $h*0.62 0.9 at=0,0,0.45 mat=stone
-  extrude 0.55 0,0 0.9,0 0,0.5 at=0,$h*0.62,0 rot=0,-90,0 mat=stone
-  box 0.45 $h*0.3 0.55 at=0,$h*0.62,0.28 mat=stone
-  box 0.3 0.6 0.3 at=0,$h*0.92,0.28 mat=stone
-  cone 0.24 1.1 sides=4 rot=0,45,0 at=0,$h*0.92+0.6,0.28 mat=stone
+define gothic.pier h=7   # a buttress in two weathered stages under a crocketed pinnacle
+  pointed.buttress $h 0.55 0.9 2 mat=stone
 end
-define gothic.base len=10 h=0.6
+define gothic.base len=10 h=0.6   # a plinth with a weathered top
   box $len+0.24 $h 0.14 at=0,0,0.07 mat=stone
   extrude $len+0.24 0,0 0.14,0 0,0.14 at=0,$h,0 rot=0,90,0 mat=stone
 end
-define gothic.cornice len=10   # a corbel table and a crenellated parapet
+define gothic.cornice len=10   # a corbel table carrying a string, and a crenellated parapet
   let n floor($len/0.6)
   array n=$n step=0.6,0,0 at=-($n-1)*0.3,-0.3,0.12
-    box 0.18 0.3 0.24 mat=stone
+    extrude 0.18 0,0 0.24,0.2 0.24,0.3 0,0.3 at=0,0,0 rot=0,-90,0 mat=stone
   end
-  box $len+0.4 0.16 0.34 at=0,0,0.1 mat=stone
+  gothic.band $len+0.4 at=0,0.16,0.12
   battlement len=$len+0.4 t=0.3 h=0.9 w=0.6 gap=0.42 at=0,0.16,0.12 mat=stone
 end
 define gothic.roof w=12 d=9 h=6   # steep, of slate, its ridge along the longer side, its gables walls of stone with a cross
@@ -89,11 +87,13 @@ define gothic.column h=6 r=0.4   # a clustered pier: four shafts round a core, a
   end
   cyl $r*1.25 $h*0.05 at=0,$h*0.92,0
 end
-define gothic.tower r=2.5 h=24   # a square tower, buttressed at its corners, belfry lights, a spire
+define gothic.tower r=2.5 h=24   # a square tower, buttressed at its corners under pinnacles, belfry lights of two lights each, a spire
   box $r*2 $h*0.55 $r*2 mat=stone
   radial n=4
     box 0.7 $h*0.5 0.7 at=$r,0,$r mat=stone
-    cone 0.3 1.6 sides=4 rot=0,45,0 at=$r,$h*0.55,$r mat=stone
+    pointed.pinnacle 0.6 $h*0.1 at=$r,$h*0.55,$r mat=stone
+    pointed.window $r*0.6 $h*0.12 0.5 2 at=0,$h*0.4,$r mat=stone
+    gothic.band $r*1.6 at=0,$h*0.3,$r
   end
   sub radial n=4
     gothic.arch $r*0.6 $h*0.12 $r*3 at=0,$h*0.4,0
@@ -103,14 +103,15 @@ define gothic.tower r=2.5 h=24   # a square tower, buttressed at its corners, be
   cone $r*1.15 $h*0.45 sides=8 rot=0,22.5,0 at=0,$h*0.55,0 mat=slate
 end
 let gothic_floor stone
-define gothic.wainscot len=10   # a blind arcade low along the wall
+define gothic.wainscot len=10   # a blind arcade low along the wall: pointed arches in relief on shafts with a string over them
   let n max(2,floor($len/1.2))
-  array n=$n step=$len/$n,0,0 at=-$len/2+$len/$n/2,0,0.05
-    group
-      gothic.arch $len/$n*0.9 1.7 0.1 mat=stone
-      sub gothic.arch $len/$n*0.7 1.5 1
-    end
+  array n=$n step=$len/$n,0,0 at=-$len/2+$len/$n/2,0,0
+    pointed.band $len/$n*0.7 1.6 0.5 0.1 0.08 at=0,0.2,0 mat=stone
+    cyl 0.05 1.6-$len/$n*0.7*0.866 at=-$len/$n*0.35-0.05,0.2,0.05 sides=8 mat=stone
+    cyl 0.05 1.6-$len/$n*0.7*0.866 at=$len/$n*0.35+0.05,0.2,0.05 sides=8 mat=stone
   end
+  mould.fillet $len 0.2 0.1 at=0,0,0 mat=stone
+  gothic.band $len at=0,2.0,0
 end
 define gothic.ipier h=6   # a shaft running up to the springing of the vault
   cyl 0.14 $h at=0,0,0.14 mat=stone
@@ -124,21 +125,15 @@ define gothic.archband w=4 h=4 t=0.4 d=1   # the band between a pointed arch and
   let R $w+$t
   extrude $d -$w/2-$t,0 -$w/2,0 -$w/2,$s $w/2-$w*cos(10),$s+$w*sin(10) $w/2-$w*cos(20),$s+$w*sin(20) $w/2-$w*cos(30),$s+$w*sin(30) $w/2-$w*cos(40),$s+$w*sin(40) $w/2-$w*cos(50),$s+$w*sin(50) 0,$s+$w*0.866 -$w/2+$w*cos(50),$s+$w*sin(50) -$w/2+$w*cos(40),$s+$w*sin(40) -$w/2+$w*cos(30),$s+$w*sin(30) -$w/2+$w*cos(20),$s+$w*sin(20) -$w/2+$w*cos(10),$s+$w*sin(10) $w/2,$s $w/2,0 $w/2+$t,0 $w/2+$t,$s -$w/2+$R*cos(10),$s+$R*sin(10) -$w/2+$R*cos(20),$s+$R*sin(20) -$w/2+$R*cos(30),$s+$R*sin(30) -$w/2+$R*cos(40),$s+$R*sin(40) -$w/2+$R*cos(50),$s+$R*sin(50) 0,$s+sqrt($R*$R-$w*$w/4) $w/2-$R*cos(50),$s+$R*sin(50) $w/2-$R*cos(40),$s+$R*sin(40) $w/2-$R*cos(30),$s+$R*sin(30) $w/2-$R*cos(20),$s+$R*sin(20) $w/2-$R*cos(10),$s+$R*sin(10) -$w/2-$t,$s
 end
-define gothic.ceiling w=10 d=14 h=6   # a pointed vault along the longer side: its shell, a rib across it at every bay, the ridge rib, a moulding where it springs - all exact
+define gothic.ceiling w=10 d=14 h=6   # quadripartite rib vaults down the longer side, a bay about as long as the room is wide: round diagonal ribs, transverse and wall ribs struck to meet them at one crown, a boss at every crossing; the web their groins; a string where they spring
   let a min($w,$d)
   let l max($w,$d)
-  let n max(2,round($l/($a*0.6)))
+  let n max(1,round($l/($a*0.85)))
+  let hc hypot($a,$l/$n)/2
   group rot=0,if($d>=$w,0,90),0
-    gothic.archband $a $a*0.866 0.4 $l mat=stone
-    # the end walls closed up into the vault
-    gothic.arch $a+0.2 $a*0.866+0.1 0.3 at=0,0,-$l/2-0.15 mat=stone
-    gothic.arch $a+0.2 $a*0.866+0.1 0.3 at=0,0,$l/2+0.15 mat=stone
-    for i $n+1
-      gothic.archband $a-0.5 ($a-0.5)*0.866 0.25 0.3 at=0,0,-$l/2+$l/$n*$i mat=stone
-    end
-    box 0.24 0.18 $l at=0,$a*0.866-0.16,0 mat=stone
+    pointed.vaults $a $l $hc $n res=max(0.1,$a/45) rib=clamp($a*0.022,0.1,0.2) mat=stone
     mirror x
-      box 0.3 0.22 $l at=$a/2-0.15,0,0 mat=stone
+      gothic.band $l at=$a/2,0.1,0 rot=0,-90,0
     end
   end
 end

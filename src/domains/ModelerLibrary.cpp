@@ -108,7 +108,12 @@ Shelf& shelf() {
 const std::pair<const char*, const char* (*)()> kBuiltIn[] = {
     {"arch", lib_arch},         {"classical", lib_classical},   {"gothic", lib_gothic},     {"modern", lib_modern},
     {"romanesque", lib_romanesque}, {"islamic", lib_islamic}, {"japanese", lib_japanese}, {"brutalist", lib_brutalist},
-    {"artdeco", lib_artdeco},   {"church", lib_church}};
+    {"artdeco", lib_artdeco},   {"church", lib_church},
+    // The constructions a building is really made of, each tradition's own
+    // geometry: mouldings, the orders, pointed-arch geometry, girih and
+    // muqarnas, structure - and the style that is a point in their space.
+    {"mould", lib_mould},       {"orders", lib_orders},         {"pointed", lib_pointed},   {"girih", lib_girih},
+    {"structure", lib_structure}, {"param", lib_param},   {"city", lib_city}};
 }  // namespace
 
 bool library_named(const std::string& name, std::string& text) {

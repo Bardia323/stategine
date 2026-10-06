@@ -311,6 +311,77 @@ int main() {
         check(sculpt::build("use tiny\ntiny.wall 2 2 2\n").triangles == 12, "a program adds a library of its own (define_library)");
     }
     {
+        // The constructions a building is made of, each tradition's own
+        // geometry, and what the geometry says: a two-centred arch's crown is
+        // at the height asked and its springers at the span; the vault's ribs
+        // meet at one crown; an order's column is as tall as asked and as
+        // wide as its module; the styles are rebuilt on them without a fault;
+        // the parametric style is a point, and any two mixed are a building.
+        const auto faultless = [](const Model& m) {
+            std::istringstream in(m.errors);
+            for (std::string l; std::getline(in, l);)
+                if (l.find("coarser") == std::string::npos) return false;
+            return true;
+        };
+        const Model lancet = sculpt::build("use pointed\npointed.arch 2 4 0.75 1\n"), equi = sculpt::build("use pointed\npointed.arch 2 3 0.5 1\n"),
+                    round = sculpt::build("use pointed\npointed.arch 2 3 0 1\n");
+        check(lancet.errors.empty() && std::abs(lancet.size().y - 4) < 1e-6 && std::abs(lancet.size().x - 2) < 1e-6 && std::abs(equi.size().y - 3) < 1e-6 &&
+                  std::abs(round.size().y - 3) < 1e-6,
+              "a two-centred arch of any centre: span w, crown at h (" + lancet.errors + ")");
+        // The equilateral arch's rise is w * sqrt(3)/2: its springing is where the compass says.
+        // (At x = 0.5 the right arc, struck from (-1, s) with radius 2, is at s + 2 sin(acos(0.75)) = s + 1.32.)
+        check(inside(equi, 0.95, 3 - 2 * 0.866 - 0.1, 0) && inside(equi, 0.5, 2.4, 0) && !inside(equi, 0.5, 2.95, 0),
+              "the equilateral arch springs w*0.866 below its crown, and curves in above its springing as the compass says");
+        const Model tudor = sculpt::build("use pointed\npointed.tudor 2 1.6 1\n"), ogee = sculpt::build("use pointed\npointed.ogee 2 3.2 1\n");
+        check(tudor.errors.empty() && ogee.errors.empty() && std::abs(tudor.size().y - 1.6) < 1e-6 && std::abs(ogee.size().y - 3.2) < 1e-6 && tudor.size().x < 2.001,
+              "a Tudor and an ogee arch, struck by compass, crown where asked");
+        const Model vault = sculpt::build("use pointed\npointed.vault 6 7 8 res=0.3\n");
+        check(vault.errors.empty() && vault.size().y > 8.0 && vault.size().y < 8.9 && std::abs(vault.size().x - 6 - 0.5) < 0.3 && std::abs(vault.size().z - 7 - 0.5) < 0.3,
+              "a rib vault over its bay: its ribs and web rise to the crown asked and no higher " + vault.errors);
+        const Model col = sculpt::build("use orders\norder.column corinthian 5\n"), dor = sculpt::build("use orders\norder.column doric 4 fluted=1\n");
+        check(col.errors.empty() && std::abs(col.size().y - 5) < 0.02 && std::abs(dor.size().y - 4) < 0.02 && dor.size().x > 2 * 4 / 16.0 * 1.1,
+              "an order's column is as tall as asked, its module the height over the order's number");
+        for (const char* r : {"use mould\nmould.cornice 6 1 0.9 modillions=1\nmould.balustrade 4 1\nmould.rustication 6 1.2 0.1 0.4\nmould.panel 1 1.5\nmould.console\n",
+                              "use orders\norder.portico ionic 12 20 6 6\norder.aedicule corinthian 1.2 2.2 seg=1 at=0,0,20\norder.arcade doric 12 6 4 at=0,0,30\n",
+                              "use pointed\npointed.window 2 5 0.5 2\npointed.pinnacle\npointed.buttress\npointed.flyer\npointed.rose\npointed.gable\n",
+                              "use girih\ngirih.starcross 4 3\ngirih.rosette\ngirih.strap\ngirih.muqarnas\ngirih.horseshoe\ngirih.multifoil 2 3 7\ngirih.dome 3\ngirih.iwan\ngirih.screen\n",
+                              "use structure\nstructure.voussoirs\nstructure.barrel\nstructure.groin 4 4 4 res=0.3\nstructure.dome 2 0.2 0.6\nstructure.pdome\nstructure.pendentives 4 2 0.3 0.3\n"
+                              "structure.truss\nstructure.roofframe\nstructure.dogleg\nstructure.spiral\nstructure.curtain\nstructure.ribbon\nstructure.punched 12 3 3.2 4 door=1\n"
+                              "structure.storefront\nstructure.balcony\nstructure.penthouse\nstructure.portal\nstructure.sawtooth\nstructure.dock\nstructure.core\n",
+                              "use city\nskyscraper 24 24 20 setbacks=1 spire=1\nblock 30 20 5 at=60,0,0\nhouse at=100,0,0\nrowhouse at=130,0,0\nwarehouse at=180,0,0\nshop at=230,0,0\n",
+                              "use city\ncity.block 60 40 1 3\n", "let detail 0.4\nuse arch\nuse gothic\ncathedral len=24 w=9 h=10\n", "use arch\nuse islamic\nmosque\n",
+                              "let detail 0.4\nuse arch\nuse classical\npalace w=24 d=10 floors=2 bays=7\n",
+                              "use arch\nuse romanesque\ncastle\n"}) {
+            const Model m = sculpt::build(r);
+            check(faultless(m) && m.triangles > 500, std::string("every word of the libraries says something, without a fault: ") + m.errors + r);
+        }
+        const Model dist = sculpt::build("use city\ncity.district 2 2 bw=50 bd=40\n");
+        check(faultless(dist) && dist.size().x > 100 && dist.triangles > 20000, "a district: blocks and streets, buildings by zone and seed");
+        // `default` is a `let` unless the name is already set: how a library takes a setting given before `use`.
+        const Model dflt = sculpt::build("let k 3\ndefault k 5\ndefault j 2\nbox $k $j 1\n");
+        check(dflt.errors.empty() && std::abs(dflt.size().x - 3) < 1e-6 && std::abs(dflt.size().y - 2) < 1e-6, "default sets a variable only where none is set");
+        check(std::abs(sculpt::build("box atan2(1,1) 1 1\n").size().x - 45) < 1e-6 && std::abs(sculpt::build("box hypot(3,4) 1 1\n").size().x - 5) < 1e-6,
+              "the expressions know atan2 (in degrees) and hypot");
+        // `detail` makes less of the ornament, never nothing.
+        const Model fine = sculpt::build("use mould\nmould.balustrade 8 1\n"), coarse = sculpt::build("let detail 0.3\nuse mould\nmould.balustrade 8 1\n");
+        check(coarse.triangles < fine.triangles / 2 && coarse.triangles > 100, "detail 0.3 makes a balustrade of a fraction of the faces");
+        // The parametric style: every known style is a point in it, and two mixed are still a building.
+        for (const std::string& pa : {"classical", "gothic", "romanesque", "islamic", "byzantine", "baroque", "modern", "japanese", "artdeco", "brutalist"}) {
+            const Model b = sculpt::build("let pa " + pa + "\nuse arch\nuse param\nbuilding style=param w=10 d=8 floors=2 bays=4\ntower style=param at=-10,0,0\n");
+            check(faultless(b) && b.triangles > 2000 && b.size().y > 8, "param at " + pa + ": a building and a tower " + b.errors);
+        }
+        const Model mix = sculpt::build("let pa gothic\nlet pb islamic\nlet pt 0.5\nuse arch\nuse param\nlet param_dome 1\nbuilding style=param w=10 d=8 floors=2 bays=4\n"
+                                        "interior style=param w=8 d=10 h=5 at=30,0,0\n");
+        const Model twist = sculpt::build("use arch\nuse param\nlet param_twist 60\nlet param_taper 0.4\ntower style=param r=3 h=20\n");
+        check(faultless(mix) && mix.triangles > 2000 && faultless(twist) && twist.size().y > 14 && twist.size().x < 9 && twist.size().x > 6,
+              "half way from gothic to islamic with a dome, and a tower twisted and tapered: built, not drawn " + mix.errors + twist.errors);
+        // A facade asks for its windows: a room behind it can open its walls where they are.
+        const Model fac = sculpt::build("use arch\nuse classical\nbuilding style=classical w=12 d=9 floors=2 bays=5 sbays=4\n");
+        std::size_t windows = 0, doors = 0;
+        for (const auto& q : fac.openings) (q.walk ? doors : windows) += 1;
+        check(doors == 1 && windows == 2 * (5 + 5 + 4 + 4) - 1, "a building asks for an opening at every window of every facade, and one at its door (" + std::to_string(windows) + ")");
+    }
+    {
         // A cut meshes only where it cuts: a quatrefoil through a wall, fine,
         // and the rest of the wall the eight corners it began as.
         const std::string foil = "box 4 3 0.3 res=0.02\nsub group\n  cyl 0.25 1 at=0.2,1.5,0 rot=90,0,0 centre=1\n  cyl 0.25 1 at=-0.2,1.5,0 rot=90,0,0 centre=1\n"
