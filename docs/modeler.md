@@ -257,8 +257,10 @@ pruned (its leaves kept at the cut), runs of steps within `merge` degrees made
 one span, and fewer faces go round thinner wood (`sides` round the trunk).
 Each branch is a tube tapering node to node, untwisted, its end a point;
 every tip carries leaves - clumps (`leaves=1`, `leaf` their size, `detail`
-how round, `leafy` how many), crossed cards (`leaves=2`) or none
-(`leaves=0`). `jitter` degrees of wander at every turn and step; a pull
+how round, `leafy` how many), crossed cards (`leaves=2`), leaves (`leaves=3`:
+blades on stalks, folded along the midrib and drooping, `leafwidth` their
+breadth as a share of their length, `leafy` to a tip, spread round it),
+tufts of needles (`leaves=4`) or none (`leaves=0`). `jitter` degrees of wander at every turn and step; a pull
 `bend` towards `toward=x,y,z` (down for a droop, up for the light);
 `height` scales it to stand that high; `seed` which of its kind. Its wood is
 `mat=` (bark), its leaves `leafmat=` (leaf). The same recipe and seed grow the

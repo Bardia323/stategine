@@ -548,6 +548,7 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         gr.sides = int(opt_num(a, "sides", gr.sides));
         gr.leaf = opt_num(a, "leaf", gr.leaf);
         gr.leaves = int(opt_num(a, "leaves", gr.leaves));
+        gr.leaf_width = opt_num(a, "leafwidth", gr.leaf_width);
         gr.leaf_detail = int(opt_num(a, "detail", gr.leaf_detail));
         gr.leafy = int(opt_num(a, "leafy", gr.leafy));
         gr.min = opt_num(a, "min", gr.min);

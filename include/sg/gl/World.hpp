@@ -883,7 +883,7 @@ private:
         uint32_t spin = 0;
     };
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
-    static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way
+    static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way (fewer in a small view: 120 cells across)
     static constexpr int kAirSlices = 64;   // slices out from the eye, each sampled once at a point jittered within it
     static constexpr std::size_t kAirs = 6;  // views' airs kept at once
     std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;

@@ -201,7 +201,8 @@ struct Growth {
     uint64_t seed = 1;
     int sides = 7;                    // faces round the trunk; fewer round thinner wood
     double leaf = 0.35;               // a clump's radius, or a card's half width
-    int leaves = 1;                   // 0 none, 1 clumps, 2 crossed cards
+    int leaves = 1;                   // 0 none, 1 clumps, 2 crossed cards, 3 leaves (blades on stalks), 4 tufts of needles
+    double leaf_width = 0.32;         // a blade's width, as a share of its length
     int leaf_detail = 1;              // how round a clump is (0: eight faces)
     int leafy = 1;                    // clumps at a tip
     double min = 0.004;               // wood thinner than this is pruned

@@ -54,6 +54,12 @@ struct DrawLight {
         // (its scene pass's `scatter`): the light's `scatter`, 1 unless it
         // says - a lamp that glows in the air more, or less, than it lights.
         float scatter = 1.0f;
+        // A projector's beam: not a round cone but a rectangle, `frame_w` by
+        // `frame_h` the tangents of its half-angles across and up (0: round,
+        // as `inner` and `outer` say), its edges softened over `frame_soft`
+        // of the way in - what it throws a picture, edge to edge, and nothing
+        // past it, in the air as on what it lands on.
+        float frame_w = 0.0f, frame_h = 0.0f, frame_soft = 0.08f;
         // Light from beyond a doorway comes in only through its opening: the
         // opening's middle, which way across it is, and half its width and
         // height. Such a light casts no shadow of its own.

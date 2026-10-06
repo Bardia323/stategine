@@ -118,6 +118,55 @@ void clump(Geom& g, V3 c, double r, Dice& dice, int mat, int detail) {
     for (std::size_t i = 0; i < f.size(); i += 3) tri(g, first + f[i], first + f[i + 1], first + f[i + 2], mat);
 }
 
+// A leaf: a blade on a short stalk, pointed, widest a third of the way up,
+// folded a little along its midrib and curling down at its tip - six faces a
+// side, seen from both. `out` is the way it grows, `len` how long.
+void blade(Geom& g, V3 base, V3 out, double length, double width, Dice& dice, int mat) {
+    const V3 f = unit(out);
+    // Its face turned about its own length at random, never edge-on to the sky.
+    V3 side = unit(cross(f, V3{0, 1, 0}));
+    if (len(side) < 0.5) side = perpendicular(f);
+    side = unit(turn(side, f, dice.spread(35)));
+    const V3 up = unit(cross(side, f));
+    const double w = width * length * (0.85 + 0.3 * dice.next()), fold = w * 0.35, droop = length * 0.18;
+    const V3 stalk = base + f * (length * 0.12);
+    const auto at = [&](double t, double s) {
+        // Along it t (0 at the stalk, 1 the tip), across it s (-1..1).
+        return stalk + f * (length * 0.88 * t) + side * (w * s) + up * (fold * (1 - std::fabs(s)) - droop * t * t);
+    };
+    const int b = int(g.p.size());
+    g.p.push_back(base);                    // 0 the stalk's foot
+    g.p.push_back(at(0.0, 0.0));            // 1 the blade's foot
+    g.p.push_back(at(0.33, -1.0));          // 2 widest, one side
+    g.p.push_back(at(0.33, 1.0));           // 3 widest, the other
+    g.p.push_back(at(0.45, 0.0));           // 4 the midrib
+    g.p.push_back(at(0.75, -0.55));         // 5
+    g.p.push_back(at(0.75, 0.55));          // 6
+    g.p.push_back(at(1.0, 0.0));            // 7 the tip
+    const int tris[] = {1, 2, 4, 1, 4, 3, 2, 5, 4, 4, 6, 3, 4, 5, 7, 4, 7, 6};
+    for (int k = 0; k < 18; k += 3) {
+        tri(g, b + tris[k], b + tris[k + 1], b + tris[k + 2], mat);
+        tri(g, b + tris[k], b + tris[k + 2], b + tris[k + 1], mat);
+    }
+    // The stalk: a sliver.
+    const int s0 = int(g.p.size());
+    g.p.push_back(base + side * (w * 0.06));
+    tri(g, b, s0, b + 1, mat), tri(g, b, b + 1, s0, mat);
+}
+
+void tuft(Geom& g, V3 base, V3 along, double length, int n, Dice& dice, int mat) {
+    const V3 a = unit(along);
+    const V3 p0 = perpendicular(a);
+    for (int k = 0; k < n; ++k) {
+        const V3 out = unit(turn(turn(a, p0, 30 + dice.spread(20)), a, 360.0 * k / n + dice.spread(15)));
+        const V3 side = unit(cross(out, a)) * (length * 0.035);
+        const V3 tip = base + out * (length * (0.8 + 0.4 * dice.next()));
+        const int b = int(g.p.size());
+        g.p.push_back(base - side), g.p.push_back(base + side), g.p.push_back(tip);
+        tri(g, b, b + 1, b + 2, mat), tri(g, b, b + 2, b + 1, mat);
+    }
+}
+
 // Two crossed cards of leaves, each seen from both sides.
 void cards(Geom& g, V3 c, V3 along, double r, Dice& dice, int mat) {
     const V3 a = unit(along);
@@ -408,7 +457,16 @@ Geom grow(const Growth& gr, int wood, int leafmat, std::string& errors) {
             for (int c = 0; c < std::max(1, gr.leafy); ++c) {
                 const V3 at = n.p + V3{dice.spread(leaf), dice.spread(leaf * 0.6), dice.spread(leaf)} * (c == 0 ? 0.0 : 0.8);
                 if (gr.leaves == 2) cards(g, at, along, leaf * (0.8 + 0.4 * dice.next()), dice, leafmat);
-                else clump(g, at, leaf * (0.8 + 0.4 * dice.next()), dice, leafmat, gr.leaf_detail);
+                else if (gr.leaves == 3) {
+                    // Leaves: each on its stalk, spread round the tip and
+                    // out from it, the first along the twig.
+                    const V3 out = c == 0 ? along
+                                          : unit(turn(turn(along, perpendicular(along), 35 + dice.spread(30)), along, 360.0 * c / gr.leafy + dice.spread(25)));
+                    blade(g, n.p, out, leaf * (0.75 + 0.5 * dice.next()), gr.leaf_width, dice, leafmat);
+                } else if (gr.leaves == 4) {
+                    tuft(g, n.p - along * (leaf * 0.35 * c), along, leaf, 11, dice, leafmat);
+                } else
+                    clump(g, at, leaf * (0.8 + 0.4 * dice.next()), dice, leafmat, gr.leaf_detail);
             }
         }
     return g;

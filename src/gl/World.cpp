@@ -1466,6 +1466,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
             p.set(light_uniform(i, 13), l.open);
             p.set(light_uniform(i, 14), l.scatter);
+            p.set(light_uniform(i, 15), l.frame_w, l.frame_h, l.frame_soft, l.frame_w > 0.0f && l.frame_h > 0.0f ? 1.0f : 0.0f);
         }
         p.set("uShadowMaps", 1);
     };
@@ -1489,8 +1490,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             reach = std::min(reach, std::ceil(static_cast<float>(1.1 * std::sqrt(w * w + d * d + h * h))));
         }
         a.far = std::clamp(static_cast<float>(setting(first, passes::scene, "scatter.far", reach)), 4.0f, std::max(zfar, 4.0f));
-        const int gx = std::max(1, (static_cast<int>(vp_w_) + kAirTile - 1) / kAirTile);
-        const int gy = std::max(1, (static_cast<int>(vp_h_) + kAirTile - 1) / kAirTile);
+        // A cell is kAirTile pixels of a large view; a small one (a world drawn
+        // at a few hundred pixels, as a game of its day would) keeps about a
+        // hundred and twenty cells across, so a beam of light in its air is
+        // a beam and not a row of blocks.
+        const int tile = std::clamp(static_cast<int>(vp_w_) / 120, 4, kAirTile);
+        const int gx = std::max(1, (static_cast<int>(vp_w_) + tile - 1) / tile);
+        const int gy = std::max(1, (static_cast<int>(vp_h_) + tile - 1) / tile);
         const float ahead = static_cast<float>(setting(first, passes::scene, "scatter.ahead", 0.5));
         const float density = static_cast<float>(setting(first, passes::scene, "uFogDensity", 0.0));
         const float start = static_cast<float>(setting(first, passes::scene, "uFogStart", 0.0));
@@ -1502,7 +1508,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         for (float f : view_proj.m) of = mix_bits(of, f);
         for (const Light& l : lights)
             for (float f : {l.pos.x, l.pos.y, l.pos.z, l.dir.x, l.dir.y, l.dir.z, l.color.x, l.color.y, l.color.z, l.power, l.inner, l.outer,
-                            l.falloff, l.scatter, l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w, l.gate_h, l.open,
+                            l.falloff, l.scatter, l.frame_w, l.frame_h, l.frame_soft, l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w, l.gate_h, l.open,
                             l.sun ? 1.0f : 0.0f, l.indirect ? 1.0f : 0.0f, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f})
                 of = mix_bits(of, f);
         for (std::size_t i = 0; i < layers; ++i) {
@@ -3405,10 +3411,10 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
         static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear", "uLightOpen", "uLightScatter"};
-        std::array<std::array<std::string, 15>, kMaxLights> n;
+                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame"};
+        std::array<std::array<std::string, 16>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 15; ++f)
+            for (int f = 0; f < 16; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;

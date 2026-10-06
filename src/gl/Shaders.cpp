@@ -56,6 +56,7 @@ uniform vec4  uLightGate[MAX_LIGHTS];
 uniform vec4  uLightGateAxis[MAX_LIGHTS];
 uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
 uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
+uniform vec4  uLightFrame[MAX_LIGHTS];    // a projector's: the tangents of its half-angles across and up, how soft its edge; 1 if framed
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 // The first `uShadowCount` lights each have a depth map, a layer each of one
@@ -106,9 +107,24 @@ float light_reach(int i, vec3 p, out vec3 l) {
     vec3 toLight = uLightPos[i] - p;
     float dist = length(toLight);
     l = toLight / max(dist, 1e-4);
-    // Spot cone, smooth at the rim.
-    float theta = dot(-l, normalize(uLightDir[i]));
-    float cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
+    float cone;
+    if (uLightFrame[i].w > 0.5) {
+        // A projector's: a rectangle (across level, up the rest), its edges
+        // soft over a little of the way in.
+        vec3 f = normalize(uLightDir[i]);
+        vec3 r = abs(f.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : normalize(cross(f, vec3(0.0, 1.0, 0.0)));
+        vec3 u = cross(r, f), v = p - uLightPos[i];
+        float z = dot(v, f);
+        if (z <= 1e-4) return 0.0;
+        vec2 q = abs(vec2(dot(v, r), dot(v, u)) / z) / max(uLightFrame[i].xy, vec2(1e-4));
+        float s = uLightFrame[i].z;
+        cone = (1.0 - smoothstep(1.0 - s, 1.0, q.x)) * (1.0 - smoothstep(1.0 - s, 1.0, q.y));
+        cone = sqrt(cone);  // (squared below, as a round cone's rim is)
+    } else {
+        // Spot cone, smooth at the rim.
+        float theta = dot(-l, normalize(uLightDir[i]));
+        cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
+    }
     if (cone <= 0.0) return 0.0;
     // Softly, or as real light does: the inverse square, kept finite at the
     // lamp itself.
