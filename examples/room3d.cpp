@@ -233,7 +233,6 @@ int main(int argc, char** argv) {
 
     // --- the hall ----------------------------------------------------------------
     auto& hall = graph.add<sg::Spatial3D>("hall");
-    hall.set_integrating(false);
     hall.params().set("room_w", kHallW).set("room_d", kHallD).set("room_h", kHallH);
 
     for (const char* id : {"n_a", "n_b", "n_top", "e_a", "e_b", "e_top", "s_a", "s_b", "s_top",
@@ -277,7 +276,6 @@ int main(int argc, char** argv) {
 
     // --- the annex ----------------------------------------------------------------
     auto& annex = graph.add<sg::Spatial3D>("annex");
-    annex.set_integrating(false);
     annex.params().set("room_w", kAnnexW).set("room_d", kAnnexD).set("room_h", kAnnexH);
     annex.params().set("floor_r", 0.22).set("floor_g", 0.28).set("floor_b", 0.32);
     annex.params().set("wall_r", 0.26).set("wall_g", 0.36).set("wall_b", 0.42);

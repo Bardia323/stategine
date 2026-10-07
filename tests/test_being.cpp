@@ -20,7 +20,6 @@ static void check(bool ok, const std::string& what) {
 }
 
 namespace {
-double dist(const sg::Vec3d& a, const sg::Vec3d& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
 
 sg::Being& person(sg::StateGraph& g, const char* id, double scale = 1.0) {
     auto& b = g.add<sg::Being>(sg::Key{id}, scale);
@@ -75,13 +74,13 @@ int main() {
         // A hand reaching for a point: inverse kinematics, and the arm goes there.
         const sg::Vec3d aim{0.35, 1.45, -0.32};
         e.fire(sg::Event{ann.reach_event(), sg::Params{}.set("goal", std::string("hand_r")).set(sg::keys::x, aim.x).set(sg::keys::y, aim.y).set(sg::keys::z, aim.z)});
-        const double before = dist(ann.pose_of("hand_r").position, aim);
+        const double before = sg::distance(ann.pose_of("hand_r").position, aim);
         for (int i = 0; i < 120; ++i) e.tick(1.0 / 60);
-        const double after = dist(ann.pose_of("hand_r").position, aim);
+        const double after = sg::distance(ann.pose_of("hand_r").position, aim);
         check(before > 0.3 && after < 0.03, "reaching: the right hand goes to the point (" + std::to_string(before) + " m off, then " + std::to_string(after) + ")");
         e.fire(sg::Event{ann.release_event(), sg::Params{}.set("goal", std::string("hand_r"))});
         for (int i = 0; i < 90; ++i) e.tick(1.0 / 60);
-        check(dist(ann.pose_of("hand_r").position, aim) > 0.2, "let go, it falls back to what it was doing");
+        check(sg::distance(ann.pose_of("hand_r").position, aim) > 0.2, "let go, it falls back to what it was doing");
 
         // A joint held where it is told: the head turned, and back when freed.
         e.fire(sg::Event{ann.turn_event(), sg::Params{}.set("joint", std::string("head")).set("yaw", 50.0)});
@@ -281,7 +280,7 @@ int main() {
         std::string why;
         const bool ok = a.import_gltf("plain.gltf", "", &why) && b.import_gltf("held.gltf", "", &why);
         check(ok, "a skeleton held by what is no joint is read " + why);
-        check(dist(a.pose_of("tip").position, b.pose_of("tip").position) < 1e-6 && std::fabs(b.pose_of("tip").position.y - 1.0) < 1e-6,
+        check(sg::distance(a.pose_of("tip").position, b.pose_of("tip").position) < 1e-6 && std::fabs(b.pose_of("tip").position.y - 1.0) < 1e-6,
               "it stands as the plain one does: upright, at its size in metres (the tip " + std::to_string(b.pose_of("tip").position.y) + " m up)");
         const auto rest_a = a.skinned("skin"), rest_b = b.skinned("skin");
         double most = 0;

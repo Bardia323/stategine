@@ -19,9 +19,6 @@ using sg::Key;
 using sg::Vec3d;
 constexpr double kPi = 3.141592653589793;
 
-double dot(const Vec3d& a, const Vec3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-double len(const Vec3d& a) { return std::sqrt(dot(a, a)); }
-
 sg::field::Solver solved(const sg::State& s) {
     sg::field::Solver f;
     f.rebuild(sg::fields_of(s));
@@ -99,9 +96,9 @@ int main() {
         // A quarter of the way round, at 4 m/s.
         steps(s, f, w, {1.0, 0, 0, 0, 4.0}, (kPi * 0.5 * R) / 4.0, t);
         const Vec3d up = sg::up_of(w), eye = sg::position_of(w);
-        check(w.params.num("grounded") == 1.0 && std::fabs(len(eye) - (R + 1.65 - 0.3 + 0.3)) < 0.1,
+        check(w.params.num("grounded") == 1.0 && std::fabs(sg::length(eye) - (R + 1.65 - 0.3 + 0.3)) < 0.1,
               "walking on a planet: always its height above the ground");
-        check(dot(up, Vec3d{eye.x / len(eye), eye.y / len(eye), eye.z / len(eye)}) > 0.999,
+        check(dot(up, Vec3d{eye.x / sg::length(eye), eye.y / sg::length(eye), eye.z / sg::length(eye)}) > 0.999,
               "with the planet's centre always straight down");
         check(eye.x > R * 0.9 && std::fabs(eye.y) < R * 0.3, "a quarter of the way round, on its side, it walks on");
     }

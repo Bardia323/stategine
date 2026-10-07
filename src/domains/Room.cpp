@@ -362,8 +362,6 @@ Params Room::overlap(Key boundary) const {
 
 Room::Room(Key id, double w, double d, double h, const std::string& shape, int sides, const std::string& names)
     : Spatial3D(id) {
-    // Its architecture stands; what moves in it is moved by what moves it.
-    set_integrating(false);
     params().set("room_w", w).set("room_d", d).set("room_h", h);
     params().set("shape", plan::known_shape(shape) ? shape : std::string("rect")).set("sides", static_cast<double>(sides));
     params().set("names", names);

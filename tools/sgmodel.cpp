@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
     }
     sg::sculpt::Files files;
     files.read = [from](const std::string& path, std::string& text) {
-        for (const fs::path p : {fs::path(path), from / path})
+        for (const fs::path& p : {fs::path(path), from / path})
             if (fs::exists(p)) return text = slurp(p), true;
         return false;
     };

@@ -3,7 +3,6 @@
 namespace sg {
 
 Surface2D::Surface2D(Key id, int cols, int rows, int cell_px) : Spatial2D(id, cols, rows), cell_(cell_px) {
-    set_integrating(false);  // an interface is edited, not simulated
     pixels_.assign(static_cast<std::size_t>(px_w()) * static_cast<std::size_t>(px_h()) * 4,
                    0);
 }

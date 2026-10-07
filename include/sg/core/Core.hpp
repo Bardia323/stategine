@@ -529,6 +529,20 @@ struct Vec3d {
 inline Vec3d operator+(const Vec3d& a, const Vec3d& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline Vec3d operator-(const Vec3d& a, const Vec3d& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
 inline Vec3d operator*(const Vec3d& a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+inline double dot(const Vec3d& a, const Vec3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline Vec3d cross(const Vec3d& a, const Vec3d& b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+inline double length(const Vec3d& a) { return std::sqrt(dot(a, a)); }
+// The same way, a metre long; what has no length has no way, and is taken as up.
+Vec3d unit(const Vec3d& a);
+
+// How far `v` has gone from `a` to `b`, eased at both ends: 0 before `a`, 1
+// past `b` - the one easing every world, picture and sky shares.
+double smoothstep(double a, double b, double v);
+
+// A number stirred: every bit of it moves every bit of what comes out, the
+// same on every machine (Wellons' lowbias32) - what a world's lie of the
+// land, a picture's grain and a hand's waver are drawn from, by their seed.
+constexpr uint32_t hash32(uint32_t x) { return x ^= x >> 16, x *= 0x7feb352dU, x ^= x >> 15, x *= 0x846ca68bU, x ^ (x >> 16); }
 
 // --- one rotation, one heading ----------------------------------------------
 // Every sign error this engine has shipped came from writing a rotation out by

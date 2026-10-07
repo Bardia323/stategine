@@ -20,7 +20,6 @@ static void check(bool ok, const std::string& what) {
 }
 
 namespace {
-double dist(const sg::Vec3d& a, const sg::Vec3d& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); }
 
 struct Scene {
     sg::StateGraph g;
@@ -101,7 +100,7 @@ int main() {
         w.start();
         const sg::Vec3d hand0 = w.hand(), foot0 = w.ann->pose_of("foot_l").position;
         w.run(1.0);
-        check(!w.awake() && dist(w.hand(), hand0) < 1e-6, "left alone it sleeps, and the being stands as it means to");
+        check(!w.awake() && sg::distance(w.hand(), hand0) < 1e-6, "left alone it sleeps, and the being stands as it means to");
 
         // Hit across the forearm: thrown, the shoulder giving with it.
         const sg::Vec3d chest0 = w.ann->pose_of("chest").position;
@@ -112,9 +111,9 @@ int main() {
             most = std::max(most, w.hand().z - hand0.z);
         }
         check(w.awake() && most > 0.12, "hit, the arm is thrown (the hand " + std::to_string(most) + " m out)");
-        check(dist(w.ann->pose_of("foot_l").position, foot0) < 0.03, "and the legs, with weight of their own, hold her up");
+        check(sg::distance(w.ann->pose_of("foot_l").position, foot0) < 0.03, "and the legs, with weight of their own, hold her up");
         w.run(4.0);
-        check(dist(w.hand(), hand0) < 0.05, "its muscles bring it back where it means to be (" + std::to_string(dist(w.hand(), hand0)) + " m off)");
+        check(sg::distance(w.hand(), hand0) < 0.05, "its muscles bring it back where it means to be (" + std::to_string(sg::distance(w.hand(), hand0)) + " m off)");
         check(!w.awake(), "and, settled, it sleeps again");
         (void)chest0;
     }
@@ -128,7 +127,7 @@ int main() {
         const sg::Vec3d to{hand0.x + 0.35, hand0.y + 0.25, hand0.z + 0.2};
         w.tell(w.rag->grab_event(), sg::Params{}.set("bone", std::string("hand_l")).set(sg::keys::x, to.x).set(sg::keys::y, to.y).set(sg::keys::z, to.z).set("force", 150.0));
         w.run(1.5);
-        const double drawn = dist(w.hand(), hand0), leaned = dist(w.ann->pose_of("neck").position, chest0);
+        const double drawn = sg::distance(w.hand(), hand0), leaned = sg::distance(w.ann->pose_of("neck").position, chest0);
         check(drawn > 0.15, "pulled, the hand goes with the hand that holds it (" + std::to_string(drawn) + " m)");
         check(leaned > 0.003, "and the pull goes on into the body (the neck " + std::to_string(leaned) + " m over)");
         w.tell(w.rag->let_go_event(), sg::Params{});
@@ -144,7 +143,7 @@ int main() {
         }
         check(past > 0.005, "let go, it swings on past where it means to be (" + std::to_string(past) + " m)");
         w.run(6.0);
-        check(dist(w.hand(), hand0) < 0.05 && !w.awake(), "and settles back, and sleeps");
+        check(sg::distance(w.hand(), hand0) < 0.05 && !w.awake(), "and settles back, and sleeps");
     }
     {
         // What a body took from what it touched: a block dropped on the
@@ -196,7 +195,7 @@ int main() {
         const sg::Vec3d hand0 = w.hand();
         w.rag->element(sg::Key{"forearm_l"}).params.set("kz", 6.0).set("knock_n", 1.0);
         w.run(0.25);
-        const double moved = dist(w.hand(), hand0);
+        const double moved = sg::distance(w.hand(), hand0);
         check(w.awake() && moved > 0.02, "knocked, it wakes and the arm goes (" + std::to_string(moved) + " m)");
         check(w.rag->element(sg::Key{"forearm_l"}).params.num("knock_seen") == 1.0, "and the knock is taken once");
     }
@@ -236,11 +235,11 @@ int main() {
         double most = 0;
         for (int i = 0; i < 30; ++i) {
             w.run(1.0 / 60);
-            most = std::max(most, dist(w.ann->pose_of("foot_r").position, foot0));
+            most = std::max(most, sg::distance(w.ann->pose_of("foot_r").position, foot0));
         }
         check(most > 0.08, "kicked, the leg swings (the foot " + std::to_string(most) + " m out)");
         w.run(4.0);
-        check(dist(w.ann->pose_of("foot_r").position, foot0) < 0.03 && !w.awake(), "and comes back under her, and she settles");
+        check(sg::distance(w.ann->pose_of("foot_r").position, foot0) < 0.03 && !w.awake(), "and comes back under her, and she settles");
     }
     {
         // Taken hold of by the head and pulled: the head has a body to hold.
@@ -288,10 +287,10 @@ int main() {
         double most = 0;
         for (int i = 0; i < 30; ++i) {
             e.tick(1.0 / 60);
-            most = std::max(most, dist(b.pose_of("finger2_2").position, tip0));
+            most = std::max(most, sg::distance(b.pose_of("finger2_2").position, tip0));
         }
         for (int i = 0; i < 360; ++i) e.tick(1.0 / 60);
-        check(most > 0.05 && dist(b.pose_of("finger2_2").position, tip0) < 0.05, "the fingers go with the hand thrown, and come back with it");
+        check(most > 0.05 && sg::distance(b.pose_of("finger2_2").position, tip0) < 0.05, "the fingers go with the hand thrown, and come back with it");
     }
     {
         // Balance. Nudged at the chest: the hips sway over the feet and come
@@ -324,11 +323,11 @@ int main() {
             const auto& self = w.rag->element(sg::Ragdoll::self_id());
             steps = std::max(steps, self.params.num("steps"));
             fell = std::max(fell, self.params.num("fallen"));
-            out = std::max(out, std::max(dist(w.ann->pose_of("foot_l").position, foot0), dist(w.ann->pose_of("foot_r").position, foot1)));
+            out = std::max(out, std::max(sg::distance(w.ann->pose_of("foot_l").position, foot0), sg::distance(w.ann->pose_of("foot_r").position, foot1)));
         }
         check(steps >= 1 && out > 0.1 && fell == 0, "shoved, she steps to catch herself (" + std::to_string(int(steps)) + " steps, a foot " + std::to_string(out) + " m out) and does not fall");
         w.run(8.0);
-        const double back = std::max(dist(w.ann->pose_of("foot_l").position, foot0), dist(w.ann->pose_of("foot_r").position, foot1));
+        const double back = std::max(sg::distance(w.ann->pose_of("foot_l").position, foot0), sg::distance(w.ann->pose_of("foot_r").position, foot1));
         check(back < 0.05 && !w.awake(), "then her feet step home, and she settles where she stood (" + std::to_string(back) + " m off)");
     }
     {

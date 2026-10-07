@@ -1,5 +1,7 @@
 #include "sg/core/Core.hpp"
 
+#include <algorithm>
+
 auto std::hash<sg::Key>::operator()(const sg::Key& k) const noexcept -> std::size_t {
     return std::hash<const void*>{}(k.handle());
 }
@@ -97,6 +99,16 @@ bool same_number(Key k, double a, double b, double tolerance) {
         if (d < -turn * 0.5) d += turn;
     }
     return std::fabs(d) < tolerance;
+}
+
+Vec3d unit(const Vec3d& a) {
+    const double l = length(a);
+    return l > 1e-12 ? Vec3d{a.x / l, a.y / l, a.z / l} : Vec3d{0, 1, 0};
+}
+
+double smoothstep(double a, double b, double v) {
+    const double t = std::clamp((v - a) / (b - a), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
 }
 
 Vec3d rotate_xz(const Vec3d& v, double yaw) {

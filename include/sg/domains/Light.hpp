@@ -48,10 +48,6 @@ struct Daylight {
     double elevation = 0; // the sun's height, radians
 };
 
-namespace detail {
-double smoothstep(double a, double b, double v);
-}  // namespace detail
-
 // The sky at `hour` (0 to 24): the sun climbs from the east (+x), is high at
 // noon and sets in the west, its light going gold and then red on the way
 // down; then twilight, and a night with a moon and stars. `ground` is the

@@ -37,6 +37,8 @@ int main() {
         world.mesh(id, i % 32, 0, i / 32).params.set(sg::keys::vx, 1.0);
     }
     graph.set_initial("world");
+    auto& clock = graph.add<sg::Temporal>("clock");
+    sg::drive(graph, clock, world.id(), world.step_event());
 
     std::printf("elements: %d, morphisms: %zu\n\n", kBodies, world.morphisms().size());
 

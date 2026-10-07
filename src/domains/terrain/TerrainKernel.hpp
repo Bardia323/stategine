@@ -13,9 +13,6 @@ namespace sg::terrain::kernel {
 
 constexpr double kPi = 3.14159265358979323846;
 
-inline Vec3d cross(const Vec3d& a, const Vec3d& b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
-inline double dot(const Vec3d& a, const Vec3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-
 // A seeded stream of numbers in [0, 1).
 struct Dice {
     uint64_t s;
@@ -34,7 +31,6 @@ struct Octaves {
 };
 double fbm(double x, double z, const Octaves& o);  // about 0..1
 
-double smoothstep(double a, double b, double x);
 // How far x is within [lo, hi], softened `soft` either side: 1 inside, 0 well out.
 double within(double x, double lo, double hi, double soft);
 

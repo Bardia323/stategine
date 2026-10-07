@@ -193,9 +193,16 @@ public:
         std::size_t morphisms = 0;
         uint64_t structure = 0;
         uint64_t removals = 0;
+        // The arrows themselves, when the snapshot is a start (start()).
+        std::shared_ptr<const std::deque<Morphism>> arrows;
     };
 
     Snapshot snapshot() const;
+    // A start to come back to (StateGraph::keep_default): the snapshot and its
+    // arrows. A trial only ever adds arrows, so how many there were is enough
+    // to undo it; a run may take some away and add others, and only the
+    // arrows kept bring the state back to what it was.
+    Snapshot start() const;
 
     // Restores in place wherever it can: callers hold `Element&` across frames,
     // and checking a law must not leave those pointing at freed memory. Only

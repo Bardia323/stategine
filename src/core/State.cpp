@@ -130,15 +130,30 @@ Morphism State::composite(Key name, const Morphism& f, const Morphism& g, Key tr
 }
 
 auto State::snapshot() const -> Snapshot {
-    return Snapshot{elements_, params_, bus_.queued(), said_out_, morphisms_.size(), structure_, removals_};
+    return Snapshot{elements_, params_, bus_.queued(), said_out_, morphisms_.size(), structure_, removals_, nullptr};
+}
+
+auto State::start() const -> Snapshot {
+    Snapshot s = snapshot();
+    s.arrows = std::make_shared<const std::deque<Morphism>>(morphisms_);
+    return s;
 }
 
 void State::restore(Snapshot s) {
     bool in_place = s.elements.size() <= elements_.size();
     for (std::size_t i = 0; in_place && i < s.elements.size(); ++i)
         in_place = elements_[i].id == s.elements[i].id;
+    // The arrows a start kept are still the first ones, only more added
+    // since (as a trial adds them): those are taken off the end. Otherwise
+    // the kept ones are put back whole.
+    bool arrows_kept = !s.arrows || morphisms_.size() >= s.arrows->size();
+    for (std::size_t i = 0; arrows_kept && s.arrows && i < s.arrows->size(); ++i) {
+        const Morphism &now = morphisms_[i], &was = (*s.arrows)[i];
+        arrows_kept = now.name == was.name && now.from == was.from && now.to == was.to && now.trigger == was.trigger &&
+                      now.native == was.native;
+    }
     const bool same_structure =
-        in_place && removals_ == s.removals && morphisms_.size() >= s.morphisms;
+        in_place && removals_ == s.removals && morphisms_.size() >= s.morphisms && arrows_kept;
     if (in_place) {
         for (std::size_t i = 0; i < s.elements.size(); ++i)
             elements_[i] = std::move(s.elements[i]);
@@ -154,7 +169,10 @@ void State::restore(Snapshot s) {
     params_ = std::move(s.params);
     bus_.requeue(std::move(s.queue));
     said_out_ = std::move(s.said);
-    if (morphisms_.size() > s.morphisms) {
+    if (!arrows_kept) {
+        morphisms_ = *s.arrows;
+        index_arrows();
+    } else if (morphisms_.size() > s.morphisms) {
         morphisms_.erase(morphisms_.begin() + static_cast<std::ptrdiff_t>(s.morphisms),
                          morphisms_.end());
         index_arrows();

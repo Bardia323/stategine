@@ -169,11 +169,6 @@ const Morphism& SpatialState::add_integrator(Key id) {
     return affine(Key{"move." + id.str()}, id, step_event_, std::move(a));
 }
 
-void SpatialState::on_update(const Tick& t) {
-    if (!integrate_) return;
-    emit(Event{step_event_, Params{}.set(keys::dt, t.dt)});
-}
-
 Spatial2D::Spatial2D(Key id, int cols, int rows) : SpatialState(id, 2) {
     params().set(keys::w, static_cast<int64_t>(cols));
     params().set(keys::h, static_cast<int64_t>(rows));
@@ -583,19 +578,18 @@ bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
     const Vec3d face = level ? heading(at.yaw) : facing(at);  // the way it faces
     const Vec3d side = level ? across(at.yaw) : across_of(at);  // along the opening
     const Vec3d up = level ? Vec3d{0.0, 1.0, 0.0} : up_of(at);
-    const auto dot3 = [](const Vec3d& a, const Vec3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
     const Vec3d f{from.x - p.x, level ? 0.0 : from.y - p.y, from.z - p.z}, g{to.x - p.x, level ? 0.0 : to.y - p.y, to.z - p.z};
-    const double d0 = dot3(f, face), d1 = dot3(g, face);
+    const double d0 = dot(f, face), d1 = dot(g, face);
     if (!(d0 > 0.0 && d1 <= 0.0)) return false;  // only front to back
     const double span = d0 - d1;
     const double t = span > 1e-9 ? d0 / span : 0.0;
     const Vec3d hit{f.x + (g.x - f.x) * t, f.y + (g.y - f.y) * t, f.z + (g.z - f.z) * t};
     const double half_w = portal.params.num(keys::w, 2.0) * 0.5;
-    if (std::fabs(dot3(hit, side)) > half_w) return false;
+    if (std::fabs(dot(hit, side)) > half_w) return false;
     const double half_h = portal.params.num(keys::h, 2.0) * 0.5;
     // Upright, a walker's eye is above the opening's middle: up to its head.
     if (level) return std::fabs(to.y - p.y) <= half_h + 0.9;
-    return std::fabs(dot3(hit, up)) <= half_h;
+    return std::fabs(dot(hit, up)) <= half_h;
 }
 
 }  // namespace sg

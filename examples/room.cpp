@@ -27,7 +27,6 @@ double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? h
 int main() {
     sg::StateGraph graph;
     auto& room = graph.add<sg::Spatial3D>("room");
-    room.set_integrating(false);
 
     const std::vector<sg::Key> boxes{"box_a", "box_b", "box_c", "box_d"};
     const double start[4][2] = {{2, 1}, {9, 2}, {4, 7}, {10, 8}};
@@ -39,7 +38,6 @@ int main() {
     room.portal("wall_map", {0, 2, 0}, 3.0, 2.0, 0.0).params.set(sg::keys::glyph, std::string("M"));
 
     auto& map = graph.add<sg::Spatial2D>("wallmap", kCols, kRows);
-    map.set_integrating(false);
     for (std::size_t i = 0; i < boxes.size(); ++i)
         map.sprite(sg::Key{boxes[i].str() + "_tok"}, 0, 0,
                    static_cast<char>('a' + static_cast<int>(i)));

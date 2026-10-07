@@ -65,12 +65,11 @@ void to_euler(const Q& q, double& yaw, double& pitch, double& roll) {
 }
 // The smallest turn taking direction `a` to direction `b`.
 Q between(Vec3d a, Vec3d b) {
-    const auto len = [](const Vec3d& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
-    const double la = len(a), lb = len(b);
+    const double la = length(a), lb = length(b);
     if (la < 1e-9 || lb < 1e-9) return {};
     a = a * (1 / la), b = b * (1 / lb);
-    const double c = a.x * b.x + a.y * b.y + a.z * b.z;
-    const Vec3d k{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+    const double c = dot(a, b);
+    const Vec3d k = cross(a, b);
     if (c < -0.99999) return axis_angle(std::fabs(a.x) < 0.9 ? Vec3d{0, -a.z, a.y} : Vec3d{-a.y, a.x, 0}, 3.14159265358979323846);
     return norm({1 + c, k.x, k.y, k.z});
 }

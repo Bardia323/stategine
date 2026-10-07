@@ -20,12 +20,12 @@ using namespace sg::rope;
 double stretch(const Rope& r) {
     double worst = 0;
     for (int i = 0; i < r.links(); ++i)
-        worst = std::max(worst, std::fabs(length_of(r.p[static_cast<std::size_t>(i + 1)] - r.p[static_cast<std::size_t>(i)]) - r.link()) / r.link());
+        worst = std::max(worst, std::fabs(sg::length(r.p[static_cast<std::size_t>(i + 1)] - r.p[static_cast<std::size_t>(i)]) - r.link()) / r.link());
     return worst;
 }
 double fastest(const Rope& r, double dt) {
     double v = 0;
-    for (std::size_t i = 0; i < r.p.size(); ++i) v = std::max(v, length_of(r.p[i] - r.o[i]) / dt);
+    for (std::size_t i = 0; i < r.p.size(); ++i) v = std::max(v, sg::length(r.p[i] - r.o[i]) / dt);
     return v;
 }
 }  // namespace

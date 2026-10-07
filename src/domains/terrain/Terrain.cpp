@@ -99,11 +99,6 @@ double fbm(double x, double z, const Octaves& o) {
     return sum / total;
 }
 
-double smoothstep(double a, double b, double x) {
-    const double t = std::clamp((x - a) / (b - a), 0.0, 1.0);
-    return t * t * (3 - 2 * t);
-}
-
 double within(double x, double lo, double hi, double soft) {
     if (soft <= 0) return x >= lo && x <= hi ? 1.0 : 0.0;
     return smoothstep(lo - soft, lo, x) * (1 - smoothstep(hi, hi + soft, x));

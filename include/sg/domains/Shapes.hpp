@@ -38,8 +38,6 @@ struct P2 {
 
 namespace detail {
 void corner(std::vector<float>& out, const Vec3d& p, const Vec3d& n, double u, double v);
-inline Vec3d cross3(const Vec3d& a, const Vec3d& b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
-Vec3d unit(const Vec3d& a);
 // A face of its own, flat: its normal from its corners (counter-clockwise
 // seen from outside).
 void tri(std::vector<float>& out, const Vec3d& a, const Vec3d& b, const Vec3d& c);

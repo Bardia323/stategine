@@ -440,11 +440,11 @@ void StateGraph::rollback(const Checkpoint& c) {
 
 void StateGraph::keep_defaults() {
     for (const auto& kv : states_)
-        if (!defaults_.count(kv.first)) defaults_.emplace(kv.first, kv.second->snapshot());
+        if (!defaults_.count(kv.first)) defaults_.emplace(kv.first, kv.second->start());
 }
 
 void StateGraph::keep_default(Key id) {
-    if (State* s = find(id)) defaults_[id] = s->snapshot();
+    if (State* s = find(id)) defaults_[id] = s->start();
 }
 
 bool StateGraph::restore_default(Key id, bool guests, std::set<Key>& done) {

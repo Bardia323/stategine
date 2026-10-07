@@ -252,6 +252,7 @@ void active_world() {
         auto& world = graph.add<sg::Spatial3D>("world");
         for (long i = 0; i < n; ++i)
             world.mesh(name("m", i), double(i % 1000), 0, double(i / 1000)).params.set(sg::keys::vx, 1.0);
+        sg::drive(graph, graph.add<sg::Temporal>("clock"), world.id(), world.step_event());
         sg::Engine engine(graph);
         engine.start();
         engine.run_fixed(kDt, 2);
@@ -278,17 +279,16 @@ struct PortalWorld {
 
 // host "host": N fixtures b<i> and a portal; guest "guest": N tokens t<i>.
 // in  (host -> guest): x -> x, z -> y     out (guest -> host): x -> x, y -> z
-// A quiet host does not integrate: nothing in the world is stamped in a frame
-// but what the bench edits. (A host that does emits its step event with a
-// fresh `dt` argument every frame, and that is a stamp too.)
+// A quiet host is not driven: nothing in the world is stamped in a frame but
+// what the bench edits. (A driven host hears its step with a fresh `dt`
+// argument every frame, and that is a stamp too.)
 std::unique_ptr<PortalWorld> portal_world(long n, sg::EmbedSync sync, sg::Propagation how,
                                           bool quiet_host = false) {
     auto w = std::make_unique<PortalWorld>();
     sg::StateGraph& g = *w->graph;
     auto& host = g.add<sg::Spatial3D>("host");
-    host.set_integrating(!quiet_host);
-    auto& guest = g.add<sg::Spatial2D>("guest", 64, 64);
-    guest.set_integrating(false);  // edited, not simulated
+    if (!quiet_host) sg::drive(g, g.add<sg::Temporal>("clock"), host.id(), host.step_event());
+    auto& guest = g.add<sg::Spatial2D>("guest", 64, 64);  // edited, not simulated
     host.portal("panel", {0, 2, 0}, 2, 2);
     std::vector<std::pair<sg::Key, sg::Key>> objects;
     objects.reserve(static_cast<std::size_t>(n));
@@ -408,7 +408,6 @@ std::unique_ptr<ManyWorld> many_world(long k, sg::Propagation how) {
         const std::string gi = "g" + std::to_string(i);
         host.portal(sg::Key{"p" + gi}, {double(i), 2, 0}, 1, 1);
         auto& guest = g.add<sg::Spatial2D>(sg::Key{gi}, 8, 8);
-        guest.set_integrating(false);
         sg::Functor& out = g.add_functor(sg::Key{"out" + gi}, sg::Key{gi}, "host");
         w->guests.emplace_back();
         for (int j = 0; j < 4; ++j) {

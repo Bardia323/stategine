@@ -164,9 +164,14 @@ void test_integration() {
     sg::Engine e(g);
     e.start();
     e.run_fixed(0.5, 4);
-    check(near(s.element("p").params.num(sg::keys::x), 4.0), "the integrator morphism ran");
+    check(near(s.element("p").params.num(sg::keys::x), 0.0), "a world nobody drives stands still");
 
-    s.set_integrating(false);
+    auto& clock = g.add<sg::Temporal>("clock");
+    const sg::Key drive = sg::drive(g, clock, s.id(), s.step_event()).name;
+    e.run_fixed(0.5, 4);
+    check(near(s.element("p").params.num(sg::keys::x), 4.0), "driven, the integrator morphism ran");
+
+    g.drop_drive(drive);
     e.run_fixed(0.5, 4);
     check(near(s.element("p").params.num(sg::keys::x), 4.0), "integration can be switched off");
 }
@@ -1412,6 +1417,21 @@ void test_the_graph_is_watched() {
     check(d.restore_default(sg::Key{"s"}) && s.element(sg::Key{"crate"}).params.num(sg::keys::x) == 1.0 &&
               !s.find(sg::Key{"extra"}) && !s.params().has(sg::Key{"mood"}),
           "restored, a state is exactly as it started");
+    // Its arrows too: one taken away with what it stood on, and another
+    // added since, as many as there were - the start brings back the one,
+    // and not the other.
+    sg::StateGraph k;
+    auto& t = k.add<sg::State>("t");
+    const auto nothing = [](sg::State&, sg::Element&, sg::Element*, const sg::Event&) {};
+    t.add_element("stand1", "stand");
+    t.loop("summon.stand1", "stand1", "summon", nothing);
+    k.keep_defaults();
+    t.remove_with_arrows(sg::Key{"stand1"});
+    t.add_element("stand2", "stand");
+    t.loop("summon.stand2", "stand2", "summon", nothing);
+    check(k.restore_default(sg::Key{"t"}) && t.morphism(sg::Key{"summon.stand1"}) && !t.morphism(sg::Key{"summon.stand2"}) &&
+              t.find(sg::Key{"stand1"}) && !t.find(sg::Key{"stand2"}) && t.validate().empty(),
+          "restored, its arrows are the ones it started with, not as many");
 }
 
 // A state that gives an account of its doorway the other side does not agree

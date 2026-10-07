@@ -111,9 +111,9 @@ public:
     Path() = default;
     explicit Path(Key state, Key element = Key{}) : state_(state), element_(element) {}
 
-    Path& arrow(Key name) { return push(Step{Step::Kind::Arrow, name, nullptr, nullptr}); }
+    Path& arrow(Key name) { return push(Step{Step::Kind::Arrow, name, nullptr, nullptr, std::nullopt, Key{}}); }
     Path& arrow(Morphism m);
-    Path& functor(Key name) { return push(Step{Step::Kind::Functor, name, nullptr, nullptr}); }
+    Path& functor(Key name) { return push(Step{Step::Kind::Functor, name, nullptr, nullptr, std::nullopt, Key{}}); }
     Path& functor(Functor f);
     Path& transition(Key name);
     // An arrow run with arguments of its own, and an event fired at the state.

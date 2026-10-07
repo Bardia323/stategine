@@ -15,7 +15,7 @@ auto Rope::laid(const Vec3d& a, const Vec3d& b, double length, int links, const 
         Vec3d prev = a;
         for (int k = 1; k <= 200; ++k) {
             const Vec3d q = curve(bow, k / 200.0);
-            l += length_of(q - prev), prev = q;
+            l += sg::length(q - prev), prev = q;
         }
         return l;
     };
@@ -25,7 +25,7 @@ auto Rope::laid(const Vec3d& a, const Vec3d& b, double length, int links, const 
     std::vector<Vec3d> fine{a};
     for (int k = 1; k <= 400; ++k) {
         fine.push_back(curve(lo, k / 400.0));
-        along.push_back(along.back() + length_of(fine.back() - fine[fine.size() - 2]));
+        along.push_back(along.back() + sg::length(fine.back() - fine[fine.size() - 2]));
     }
     std::size_t at = 0;
     for (int i = 0; i <= links; ++i) {
@@ -45,7 +45,7 @@ auto Rope::laid(const Vec3d& a, const Vec3d& b, double length, int links, const 
 
 Vec3d Rope::within(const Vec3d& fixed, const Vec3d& t, double length, double share) {
     const Vec3d d = t - fixed;
-    const double far = length_of(d), most = length * share;
+    const double far = sg::length(d), most = length * share;
     return far > most ? fixed + d * (most / far) : t;
 }
 
@@ -74,7 +74,7 @@ double Rope::step(double dt, const Vec3d& a0, const Vec3d& a, const Vec3d& b0, c
     if (n < 1 || dt <= 0) return 0.0;
     const double lk = link();
     const std::vector<Vec3d> start = p;
-    const double lead = std::max(length_of(b - b0), length_of(a - a0));
+    const double lead = std::max(sg::length(b - b0), sg::length(a - a0));
     const int subs = std::clamp(static_cast<int>(std::ceil(lead / (lk * 0.75))), 1, std::max(1, s.max_substeps));
     std::vector<Vec3d> v(p.size()), was;
     for (int sub = 1; sub <= subs; ++sub) {
@@ -84,7 +84,7 @@ double Rope::step(double dt, const Vec3d& a0, const Vec3d& a, const Vec3d& b0, c
         for (int i = 1; i < n; ++i) {
             const std::size_t k = static_cast<std::size_t>(i);
             Vec3d w = (v[k] * (1.0 - s.inner) + (v[k - 1] + v[k] * 2.0 + v[k + 1]) * (0.25 * s.inner)) * keep;
-            const double speed = length_of(w), most = s.fastest * h;
+            const double speed = sg::length(w), most = s.fastest * h;
             if (speed > most) w = w * (most / speed);
             o[k] = p[k];
             p[k] = p[k] + w + Vec3d{0, -s.gravity * h * h, 0};
@@ -106,7 +106,7 @@ double Rope::step(double dt, const Vec3d& a0, const Vec3d& a, const Vec3d& b0, c
                     const Vec3d& end = e ? p.back() : p.front();
                     const double most = (e ? n - i : i) * lk;
                     const Vec3d d = q - end;
-                    const double far = length_of(d);
+                    const double far = sg::length(d);
                     if (far > most) q = end + d * (most / far);
                 }
             }
@@ -115,7 +115,7 @@ double Rope::step(double dt, const Vec3d& a0, const Vec3d& a, const Vec3d& b0, c
                 Vec3d& u = p[static_cast<std::size_t>(i)];
                 Vec3d& w = p[static_cast<std::size_t>(i + 1)];
                 const Vec3d d = w - u;
-                const double l = length_of(d);
+                const double l = sg::length(d);
                 if (l < 1e-9) continue;
                 const Vec3d fix = d * ((l - lk) / l);
                 const bool fu = i == 0, fw = i + 1 == n;
@@ -137,7 +137,7 @@ double Rope::step(double dt, const Vec3d& a0, const Vec3d& a, const Vec3d& b0, c
         }
     }
     double moved = 0;
-    for (std::size_t i = 0; i < p.size(); ++i) moved = std::max(moved, length_of(p[i] - start[i]));
+    for (std::size_t i = 0; i < p.size(); ++i) moved = std::max(moved, sg::length(p[i] - start[i]));
     return moved;
 }
 

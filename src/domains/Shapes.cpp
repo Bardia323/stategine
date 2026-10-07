@@ -7,13 +7,8 @@ void corner(std::vector<float>& out, const Vec3d& p, const Vec3d& n, double u, d
                            static_cast<float>(n.y), static_cast<float>(n.z), static_cast<float>(u), static_cast<float>(v)});
 }
 
-Vec3d unit(const Vec3d& a) {
-    const double l = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
-    return l > 1e-12 ? Vec3d{a.x / l, a.y / l, a.z / l} : Vec3d{0, 1, 0};
-}
-
 void tri(std::vector<float>& out, const Vec3d& a, const Vec3d& b, const Vec3d& c) {
-    const Vec3d n = unit(cross3(b - a, c - a));
+    const Vec3d n = unit(cross(b - a, c - a));
     corner(out, a, n, 0, 0);
     corner(out, b, n, 1, 0);
     corner(out, c, n, 1, 1);
@@ -139,7 +134,7 @@ std::vector<float> lathe(const std::vector<P2>& profile, int sides) {
     };
     // A face, unless it has come to nothing (where the radius is 0).
     const auto face = [&](const Vec3d& a, const Vec3d& b, const Vec3d& c) {
-        const Vec3d n = cross3(b - a, c - a);
+        const Vec3d n = cross(b - a, c - a);
         if (n.x * n.x + n.y * n.y + n.z * n.z > 1e-20) tri(out, a, b, c);
     };
     for (std::size_t i = 0; i + 1 < profile.size(); ++i)
@@ -196,7 +191,7 @@ std::vector<float> lathe_smooth(const std::vector<P2>& profile, int sides, doubl
             const double u0 = double(k) / sides, u1 = double(k + 1) / sides, v0 = double(i) / (n - 1), v1 = double(i + 1) / (n - 1);
             const auto face = [&](const Vec3d& p, const Vec3d& np, double up, double vp, const Vec3d& q, const Vec3d& nq, double uq, double vq,
                                   const Vec3d& r, const Vec3d& nr, double ur, double vr) {
-                const Vec3d f = cross3(q - p, r - p);
+                const Vec3d f = cross(q - p, r - p);
                 if (f.x * f.x + f.y * f.y + f.z * f.z <= 1e-20) return;
                 corner(out, p, np, up, vp), corner(out, q, nq, uq, vq), corner(out, r, nr, ur, vr);
             };
@@ -263,7 +258,7 @@ std::vector<float> fit(std::vector<float> v, Vec3d& size, const Vec3d& within_lo
         v[i + 2] = static_cast<float>((v[i + 2] - (lo[2] + hi[2]) * 0.5) / s[2]);
         // Stretched by s again, a normal n comes out as s n; what is wanted
         // is n / s: so it is kept as n / s^2.
-        const Vec3d n = detail::unit({v[i + 3] / (s[0] * s[0]), v[i + 4] / (s[1] * s[1]), v[i + 5] / (s[2] * s[2])});
+        const Vec3d n = unit({v[i + 3] / (s[0] * s[0]), v[i + 4] / (s[1] * s[1]), v[i + 5] / (s[2] * s[2])});
         v[i + 3] = static_cast<float>(n.x), v[i + 4] = static_cast<float>(n.y), v[i + 5] = static_cast<float>(n.z);
     }
     return v;

@@ -6,27 +6,15 @@ Rgb mix(const Rgb& a, const Rgb& b, double t) {
     return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t};
 }
 
-}  // namespace sg
-
-namespace sg::detail {
-
-double smoothstep(double a, double b, double v) {
-    const double t = std::clamp((v - a) / (b - a), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
-}
-
-}  // namespace sg::detail
-
-namespace sg {
 
 Daylight daylight(double hour, const Rgb& ground) {
     constexpr double pi = 3.14159265358979323846;
     const double h = std::fmod(std::fmod(hour, 24.0) + 24.0, 24.0);
     const double e = std::sin((h - 6.0) / 24.0 * 2.0 * pi) * 1.05;  // the sun's height, radians
     const double az = (h - 6.0) / 12.0 * pi;                         // east at dawn, west at dusk
-    const double day = detail::smoothstep(-0.10, 0.30, e);
+    const double day = smoothstep(-0.10, 0.30, e);
     const double gold = std::exp(-std::pow((e - 0.04) / 0.13, 2.0));
-    const double night = 1.0 - detail::smoothstep(-0.30, -0.03, e);
+    const double night = 1.0 - smoothstep(-0.30, -0.03, e);
     Daylight s;
     s.elevation = e;
     s.top = mix({0.003, 0.005, 0.018}, {0.16, 0.34, 0.70}, day);
@@ -40,12 +28,12 @@ Daylight daylight(double hour, const Rgb& ground) {
     s.exposure = 1.45 - 0.5 * day;
     s.stars = night;
     s.day = day;
-    const double sun_strength = 0.085 * detail::smoothstep(-0.03, 0.12, e);
-    const double moon_strength = 0.035 * detail::smoothstep(-0.02, 0.15, -e);
+    const double sun_strength = 0.085 * smoothstep(-0.03, 0.12, e);
+    const double moon_strength = 0.035 * smoothstep(-0.02, 0.15, -e);
     const double ce = std::cos(e);
     if (sun_strength >= moon_strength) {
         s.sun = {ce * std::cos(az), std::sin(e), ce * std::sin(az)};
-        s.light = mix({1.0, 0.48, 0.2}, {1.0, 0.93, 0.82}, detail::smoothstep(0.02, 0.45, e));
+        s.light = mix({1.0, 0.48, 0.2}, {1.0, 0.93, 0.82}, smoothstep(0.02, 0.45, e));
         s.intensity = sun_strength;
     } else {
         // The moon rides opposite the sun, dimmer and blue.

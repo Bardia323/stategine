@@ -26,6 +26,10 @@ public:
     Key kind() const override { return dims_ == 3 ? Key{"space3d"} : Key{"space2d"}; }
 
     int dims() const { return dims_; }
+    // What its bodies move on: time reaches it as it reaches any state,
+    // through a drive (sg::drive(graph, clock, id, step_event())), which
+    // hands the integrators their `dt`. A world nobody drives stands still,
+    // and costs nothing - an interface edited, a room's architecture.
     Key step_event() const { return step_event_; }
     static Key camera_id() { return Key{"camera"}; }
 
@@ -33,18 +37,12 @@ public:
     // and every functor in the engine already understands.
     Element& body(Key id, Vec3d pos, Key kind = Key{}, char glyph = '*');
 
-    // Endomorphism on one body: velocity integrates into position. Registered
-    // per element so the arrow really is an arrow of this category, visible in
-    // the DOT output and checkable by validate().
+    // Endomorphism on one body: velocity integrates into position, on the
+    // step event. Registered per element so the arrow really is an arrow of
+    // this category, visible in the DOT output and checkable by validate().
     // Declared (sg/core/Declared.hpp): x <- x + vx dt, and so on - so the
     // laws can check it without running it (sg/algebra).
     const Morphism& add_integrator(Key id);
-
-    void on_update(const Tick& t) override;
-
-    // Off for states that are edited rather than simulated (a map, a menu).
-    void set_integrating(bool on) { integrate_ = on; }
-    bool integrating() const { return integrate_; }
 
     Element& camera() { return element(camera_id()); }
     const Element& camera() const { return element(camera_id()); }
@@ -63,7 +61,6 @@ protected:
 private:
     int dims_;
     Key step_event_;
-    bool integrate_ = true;
 };
 
 // --- the two everyday shapes -------------------------------------------------

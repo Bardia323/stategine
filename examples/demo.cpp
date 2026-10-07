@@ -68,10 +68,16 @@ int main() {
         .on_event(deep.step_event(), flat.step_event());
     graph.compose_functors("roundtrip", {"lift", "flatten"});
 
+    // --- time ---------------------------------------------------------------------
+    // The player walks on: each world's bodies move on its own line of one
+    // clock, while it is the world played.
+    auto& clock = graph.add<sg::Temporal>("clock");
+    sg::drive(graph, clock, flat.id(), flat.step_event());
+    sg::drive(graph, clock, deep.id(), deep.step_event());
+
     // --- an interface nested in the 3D world ----------------------------------
     // A top-down map on a table: (x, z) of the world become (x, y) on the map.
     auto& maproom = graph.add<sg::Spatial2D>("maproom", 30, 10);
-    maproom.set_integrating(false);
     maproom.sprite("player_token", 5, 0, '@');
     maproom.sprite("rock_token", 20, 3, 'o');
 
