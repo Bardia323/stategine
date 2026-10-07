@@ -38,6 +38,10 @@
 //
 //   blocks, to `end`:  group [name]   array n=N step=dx,dy,dz [turn=deg]
 //     radial n=N [axis=y] [arc=360]   mirror x|y|z
+//     moves name turn|slide lo hi [axis=x|y|z] [follow=k]: what is in it
+//     (or `track lo hi x,y,z x,y,z ... [span=] [from=]`: riding a track)
+//     moves - a leaf on its hinge, a drawer on its runners - and rides on
+//     any `moves` round it (Model::joints, Part::joint)
 //     A block takes the same options and prefix words as a shape.
 //   copy <name>               a named group, again
 //   let name value            set res=.. sides=.. crease=.. mat=..
@@ -88,6 +92,30 @@ struct Part {
     // a file path beside it - for whoever shows the model to read and give
     // to a thing (`skin` = the picture, `uv` = 1). Empty: none.
     std::string texture;
+    // The joint its faces move with (`moves`), by name; empty: they stand still.
+    std::string joint;
+};
+
+// How a part of a model moves (`moves`): a door's leaf on its hinges, a
+// drawer on its runners, a fold of a folding door on the one before it. A
+// turn about an axis through a point, or a slide along it - in the model's
+// own frame, as it was made (a value of 0 is the model as made).
+struct Joint {
+    std::string name;
+    bool slide = false;     // a turn about the axis (degrees, right-handed) or a slide along it (metres)
+    Vec3d at;               // a point on the axis
+    Vec3d axis{0, 1, 0};    // its way, of length one
+    double lo = 0, hi = 0;  // how far it goes either way
+    int parent = -1;        // the joint it rides on (the `moves` round it), or none
+    double follow = 0;      // not 0: no value of its own - its parent's (or `with`'s), times this
+    int with = -1;          // the joint it goes with (`with=<name>`), not riding on it: a garage door's panels
+    double step = 0;        // > 0: pushed on this far each time, round and round (`step=`: a revolving door's quarter)
+    // A track (`moves name track`): the part rides it by two points, `span`
+    // apart along it, the first `from` along it as made; a value is how far
+    // further along both have gone, the part turned about `axis` as the
+    // track bends (a garage door's panel, a shutter's slat).
+    std::vector<Vec3d> path;
+    double from = 0, span = 0;
 };
 
 // A hole a recipe asks of the walls it stands among (`opening`): no faces of
@@ -109,6 +137,7 @@ struct Model {
     std::string errors;           // what the recipe got wrong, a line each
     std::vector<std::string> imports;
     std::vector<Opening> openings;
+    std::vector<Joint> joints;
 
     std::vector<float> all() const;
     Vec3d size() const { return hi - lo; }
@@ -122,6 +151,23 @@ struct Model {
 // radians about up: a model stands where its recipe says, not where its box
 // happens to be.
 Vec3d stand(const Model& m, const Vec3d& origin, double yaw);
+
+// Each joint's move at these values (as `pose` takes them), with the moves of
+// those it rides on: a point of a part moving with joint i goes to
+// r p + t (r a 3x3, row by row) - for whoever moves the parts as things of
+// its own rather than as faces.
+struct Moved {
+    double r[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    Vec3d t;
+};
+std::vector<Moved> moves_of(const Model& m, const std::vector<std::pair<std::string, double>>& values);
+// The model with its joints at these values (by name; a joint not named is
+// as made, a value is held to its lo..hi): every part moved as its joint and
+// those it rides on say. Joints coupled by `follow` go with their parents.
+Model pose(const Model& m, const std::vector<std::pair<std::string, double>>& values);
+// The same, every joint free to move at `open` of the way from lo to hi
+// (0 shut, 1 all the way): how a door, a drawer, a cabinet looks opened.
+Model opened(const Model& m, double open);
 
 // The mesh of a recipe: a function of the text, the options and the files it
 // imports.

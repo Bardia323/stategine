@@ -181,7 +181,56 @@ array n=N step=dx,dy,dz [turn=deg]
 radial n=N [axis=y] [arc=360]
 mirror x|y|z            the block and its reflection
 for i N                 the block N times, $i = 0..N-1
+moves name turn|slide lo hi [axis=x|y|z|-x|-y|-z] [follow=k]   what moves (below)
 ```
+
+### What moves: `moves`
+
+```
+box 1.2 2.2 0.1                                  # a frame
+moves leaf turn 0 90 axis=-y at=-0.45,0,0.05     # a leaf on its hinges, a quarter turn out to +z
+  box 0.9 2 0.04 at=0.45,0,-0.02
+end
+moves drawer slide 0 0.4 axis=z at=2,0.7,0       # a drawer running out on its runners
+  box 0.5 0.2 0.5
+end
+```
+
+A `moves` block is placed as a `group` is, and what is in it moves: turning
+about its axis through the block's origin (degrees, right-handed about the
+way the axis points; `y` unless said) or sliding along it (metres; `x`
+unless said), between `lo` and `hi` - 0 is as made. The model says so: its
+`joints` (`sculpt::Joint`: where the axis is and which way, in the recipe's
+own frame, how far it goes, and what it rides on), and each `Part` the joint
+its faces move with (`Part::joint`), so whoever shows it moves each part as
+the joint says. A `moves` inside another rides on it - the second fold of a
+folding door is hung on the first - and with `follow=k` has no value of its
+own: it turns `k` times as far as the one it rides on (a bifold's second leaf
+turns back twice as far as its first). A joint goes where its block is put,
+and a mirror turns it the other way round. Two joints of one name are an
+error.
+
+```
+moves panel1 track 0 2.1 0,0,0 0,1.7,0 0,2.1,0.4 0,2.1,3 span=0.5 from=0   # a panel up a track and round its bend
+  box 2.4 0.5 0.04
+end
+moves panel2 track 0 2.1 0,0,0 0,1.7,0 0,2.1,0.4 0,2.1,3 span=0.5 from=0.5 with=panel1
+  box 2.4 0.5 0.04 at=0,0.5,0
+end
+```
+
+`track lo hi` and the track's points (x,y,z, in the block's frame): the
+part rides it by two points `span` apart, the first `from` along it as
+made; its value is how much further along both are, and it turns about
+the axis (x unless said) as the track bends. `with=<name>`: the joint goes
+with another (its value, times `follow`) without riding on it - a
+garage door's panels, each on the track for itself. `step=d`: each push
+turns it on `d`, round and round (a revolving door's quarter).
+
+`sculpt::pose(model, {{name, value}})` is the model with its parts moved;
+`sculpt::opened(model, f)` every joint `f` of its way open. `sculpt::moves_of`
+is each joint's move, for a world that moves the parts as things of its own. `sgmodel --open
+0.5` draws it half open.
 
 ### Macros and settings
 
@@ -194,6 +243,12 @@ tower 2 9 at=5,0,5              # by position, or tower h=6 roof=2
 let n floor($len/0.6)
 set res=0.05 sides=32 crease=35 mat=stone
 ```
+
+A word said to a macro that it does not name (and that does not place it:
+`at scale mat res sides crease centre round chamfer faces`) is a variable in
+it, as `let` - for whatever it calls. Variables are found by looking out
+through the macros calling, so a macro's parameter whose default is `$word`
+takes `word` from whoever called it: `door.hotel lmat=oak` reaches the leaves.
 
 The library (`sculpt::recipes()`): `column merlons battlement wall tower
 turret arch window gatehouse stairs roof pyramid pine rock`; the
@@ -455,3 +510,76 @@ comparisons (`$a<2`), `rand(a, b, ...)` (the same number for the same
 arguments), `if(c, a, b)`, `mix`, `clamp`, `mod`, a variable naming a macro
 (`$style.window`) or another variable (`$${style}_ww`).
 `sgmodel recipe --eye x,y,z,yaw,pitch,fov` looks from inside.
+
+## Doors
+
+`use doors` (`ModelerDoors.cpp`): what closes an opening and moves to open
+it - doors, and the drawers and cabinets made of the same leaves. A door is
+not a kind of thing but a few choices, made in any combination; a kind of
+door is a set of them:
+
+```
+use doors
+door 0.9 2.1 0.2 body=flush vw=0.15 vh=0.75 handle=pull back=plate kick=0.9    # choices said on one door
+door.hotel at=3,0,0 name=room12                    # a kind of door: its choices
+door.persian fmat=marble at=6,0,0 name=gate        # and any of them said again
+let fill glass                                     # a choice for every door after it
+cabinet.kitchen at=0,0,4 name=k1
+```
+
+| choice | words | |
+| --- | --- | --- |
+| what it closes | `w h t` | the leaves' opening w by h (to an arch's spring, a transom's foot) in a wall t deep |
+| surround | `surround` = casing metal stone tile timber post none; `fmat band sill step` | a timber lining and architraves; pressed steel; dressed stone with a keystone; a portal of tile; posts and beams; gate posts |
+| head | `head` = square round segment pointed lancet persian tudor horseshoe; `fan` = glass lattice panel star tile none; `transom sidelight` | an arch struck by the `pointed` and `girih` libraries' compasses, filled over the leaves by a fanlight or a tympanum; a transom light over a square head; fixed lights either side |
+| leaves | `body` = frame flush boards pickets glass ribbed round; `lt lmat gmat` | stiles and rails round cells; a slab; boards ledged and braced; pickets; frameless glass; pressed steel; a vault's round slab |
+| a frame's cells | `cols rows fill upper split stile rail brail bar toprow botrow gx gy` | each cell filled: panel (raised and fielded) flat solid glass mirror mesh lattice (kumiko, `gx` by `gy`) shoji paper louvre star diamond boards none; the rows from `split` up with `upper`; the top and bottom rows weighted |
+| a vision panel | `vw vh vx vy` | glazed through a flush leaf |
+| how they move | `op` = hinge pivot slide bypass fold revolve flap tilt roll sectional; `leaves ratio hand swing range both dutch piv mount halves foot lh open name` | below |
+| hardware | `handle back handle2 hw hx hy hl hdir hboth hinge kick peep letter closer knock studs` | grips: lever knob pull bar plate panic ring recess hikite button cup card latch same none; hinges: butt strap pivot concealed none; knockers 1 a ring, 2 the Persian pair - the heavy kubeh on one leaf, the slender halgheh on the other, each with its own sound |
+
+How they move, each leaf a `moves` block named `<name>.1`, `<name>.2` ...:
+
+- `hinge` - one leaf, or a pair (`leaves=2`; `ratio` the first's share: a
+  leaf and a half), on hinges at the jambs, turning out to +z up to `range`
+  degrees; `both=1` either way (a saloon's, a kitchen's); `dutch` cuts each
+  leaf across at that height and hangs the halves apart.
+- `pivot` - about a pin `piv` in from the edge, either way.
+- `slide` - `mount` 0 in the wall's plane (into a pocket), 1 hung from a
+  track on the face (a barn door), 2 before the frame under a header (an
+  automatic door, a lift's); one leaf, or a pair parting.
+- `bypass` - leaves on alternate tracks passing each other (a closet,
+  shoji, fusuma, a patio door).
+- `fold` - leaves hinged edge to edge, folding to the jamb (`halves=2`: to
+  both), each on the one before (`follow`): a bifold, an accordion.
+- `revolve` - wings in a drum. `flap` - a fall front (`hand=1`), a lift-up
+  (`hand=-1`). `tilt` - up and over. `roll`, `sectional` - a shutter, a
+  garage's panels, each riding a track (`moves ... track`), all together.
+
+Everything stands on y = 0, the opening centred on x = 0, the wall's middle
+at z = 0; the leaves open to +z, hung at -x (`hand=-1`: at +x; `swing=-1`: to
+-z). The -z face is the outside: the knocker, the letter plate, the studs,
+the strap hinges, and the `back` handle. The door asks its wall for its
+opening (`opening`, `walk=1`; `hole=0` not). `wall=<width> [wallh=]` stands it in a piece of
+wall of its own (`pmat`), which stops where its surround begins and is cut
+only round its arch, at 2 cm.
+
+`drawer w h d` is a front (a leaf of the same choices) and its box, running
+out to +z on its runners. `cabinet w h d` is a carcase on a plinth under a
+worktop, in `bays`: in each `drawers` drawers over (`dfirst=0`: under) one or
+two doors (`cop` - hinge, bypass, flap) round `shelves`; with no doors the
+drawers fill it, deepening downward by `grad`. Its fronts are 19 mm,
+concealed-hinged, with bar handles unless said; its joints `<name>.<bay>.<n>`
+(doors) and `<name>.<bay>.d<n>` (drawers).
+
+The doors of the world: `door.panel` (six panels), `shaker`, `victorian`,
+`georgian`, `french`, `cottage`, `stable`, `barn`, `pocket`, `hotel`,
+`hospital`, `exit`, `office`, `glass`, `automatic`, `revolving`, `lift`,
+`bifold`, `accordion`, `closet`, `patio`, `saloon`, `screen`, `shoji`,
+`fusuma`, `chinese`, `persian`, `moorish`, `gothic`, `romanesque`, `tudor`,
+`gate`, `vault`, `garage`, `roller`, `upandover`. Its cabinets:
+`cabinet.kitchen`, `.wall`, `.display`, `.larder`, `.medicine`, `.flap`,
+`chest`, `nightstand`, `sideboard`, `apothecary`, `filing`, `wardrobe`,
+`wardrobe.sliding`, `bureau`, `tansu`, `locker`. A new kind is a new line of
+choices; a new construction a new `door.body.`, `door.fill.`, `door.grip.`,
+`door.op.` or `door.frame.` word, and every kind can use it.

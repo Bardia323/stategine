@@ -43,6 +43,7 @@ constexpr GLenum GL_DEPTH_TEST = 0x0B71;
 constexpr GLenum GL_BLEND = 0x0BE2;
 constexpr GLenum GL_SRC_ALPHA = 0x0302;
 constexpr GLenum GL_ONE = 1;
+constexpr GLenum GL_ZERO = 0;
 constexpr GLenum GL_ONE_MINUS_SRC_ALPHA = 0x0303;
 constexpr GLenum GL_CLIP_DISTANCE0 = 0x3000;
 constexpr GLenum GL_CONSTANT_ALPHA = 0x8003;
@@ -109,6 +110,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, DepthRange, (double, double))                                                     \
     X(void, BlendFunc, (GLenum, GLenum))                                                      \
     X(void, BlendColor, (GLfloat, GLfloat, GLfloat, GLfloat))                                 \
+    X(void, BlendFuncSeparate, (GLenum, GLenum, GLenum, GLenum))                              \
     X(void, CullFace, (GLenum))                                                               \
     X(void, FrontFace, (GLenum))                                                              \
     X(void, PolygonOffset, (GLfloat, GLfloat))                                                \

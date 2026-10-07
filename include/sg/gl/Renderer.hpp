@@ -97,8 +97,9 @@ public:
 
     // Drawn `instances` times in one call, each as `buffer` says: per
     // instance kInstanceFloats floats - a model matrix (column by column, at
-    // attributes 3-6) and two vec4s of material (7, 8).
-    static constexpr int kInstanceFloats = 24;
+    // attributes 3-6), two vec4s of material (7, 8) and one whose x is its
+    // depth layer (9).
+    static constexpr int kInstanceFloats = 28;
     void draw_instanced(GLuint buffer, GLsizei instances) const;
 
     bool valid() const { return vao_ != 0; }

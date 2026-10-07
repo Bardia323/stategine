@@ -1691,6 +1691,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         return n;
     };
     std::vector<const Element*> sprites;
+    // Glass (`glass`, how clear): drawn after everything else of its room,
+    // furthest first, over what is behind it.
+    std::vector<const Element*> glass;
 
     lap(1, part_at);
     scene_ = nullptr;
@@ -1750,6 +1753,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 draw_terrain(room, e);
             } else if (e.kind == kinds::mesh) {
                 if (is_sprite(e)) sprites.push_back(&e);
+                else if (e.params.num(Key{"glass"}, 0.0) > 0.0) glass.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
@@ -1798,6 +1802,22 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (batch_frames_) flush_batches(*scene_, true);
         batch_frames_ = false;
+        if (!glass.empty()) {
+            const Vec3d eye{cam.eye.x, cam.eye.y, cam.eye.z};
+            const auto far = [&](const Element* e) { return distance(world_position(room, *e), eye); };
+            std::sort(glass.begin(), glass.end(), [&](const Element* a, const Element* b) { return far(a) > far(b); });
+            gl::glEnable(gl::GL_BLEND);
+            gl::glBlendFuncSeparate(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA, gl::GL_ZERO, gl::GL_ONE);
+            gl::glDepthMask(0);
+            for (const Element* e : glass) {
+                scene_->set("uGlass", static_cast<float>(std::clamp(e->params.num(Key{"glass"}, 0.0), 0.0, 1.0)));
+                draw_crate(room, *e);
+            }
+            scene_->set("uGlass", 0.0f);
+            gl::glDepthMask(1);
+            gl::glDisable(gl::GL_BLEND);
+            glass.clear();
+        }
         lap(5, part_at);
     }
     for (int i = 0; i < kMaxBounds; ++i)
@@ -2270,6 +2290,7 @@ void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
                               static_cast<float>(e.params.num(Key{"emissive"}, 0.0)), 0.0f,
                               static_cast<float>(e.params.num(Key{"mirror"}, 0.0))};
         std::copy(mat, mat + 8, p.record.begin() + 16);
+        p.record[24] = static_cast<float>(e.params.num(Key{"depth_layer"}, 0.0)), p.record[25] = p.record[26] = p.record[27] = 0.0f;
         p.recorded = true;
     }
     b.data.insert(b.data.end(), p.record.begin(), p.record.end());
@@ -2284,7 +2305,7 @@ auto GLWorldView::batch_for(const gl::Mesh& mesh, BoundSurface* skin) -> Batch& 
 void GLWorldView::batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::Vec3& albedo, float roughness, float surface, float emissive, float highlight, float mirror) {
     Batch& b = batch_for(mesh);
     b.data.insert(b.data.end(), local.m, local.m + 16);
-    b.data.insert(b.data.end(), {albedo.x, albedo.y, albedo.z, roughness, surface, emissive, highlight, mirror});
+    b.data.insert(b.data.end(), {albedo.x, albedo.y, albedo.z, roughness, surface, emissive, highlight, mirror, 0.0f, 0.0f, 0.0f, 0.0f});
 }
 
 void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
@@ -2473,6 +2494,12 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         scene_->set("uStraddle", 1.0f);
         if (guest_pass_) hung.clips = clip_count_, scene_->set("uClipCount", 0);
     }
+    // Its depth layer, for this draw alone.
+    struct Layer {
+        const gl::Program* p;
+        ~Layer() { p->set("uDepthLayer", 0.0f); }
+    } layer{scene_};
+    scene_->set("uDepthLayer", static_cast<float>(e.params.num(Key{"depth_layer"}, 0.0)));
     set_model(box_matrix(st, e));
     scene_->set("uAlbedo", color_of(e, {0.8f, 0.5f, 0.25f}));
     scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.6)));

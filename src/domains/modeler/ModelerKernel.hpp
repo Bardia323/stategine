@@ -250,9 +250,20 @@ struct Hole {
     bool walk = false;
     double recess = 0;
 };
+// A joint of a solid (`moves`): where its axis is and which way, as vectors,
+// so whatever moves the solid moves the axis with it.
+struct Hinge {
+    std::string name, parent, with;
+    bool slide = false;
+    V3 at, axis{0, 1, 0};
+    double lo = 0, hi = 0, follow = 0;
+    std::vector<V3> path;  // a track, ridden by two points `span` apart, the first `from` along it
+    double from = 0, span = 0, step = 0;
+};
 struct Solid {
     std::vector<Piece> pieces;
     std::vector<Hole> holes;
+    std::vector<Hinge> joints;
     bool empty() const { return pieces.empty(); }
 };
 enum class Mode { Add, Sub, And, Blend, Carve };

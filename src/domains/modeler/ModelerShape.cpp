@@ -604,6 +604,20 @@ Solid moved(const Solid& s, const Mat& m) {
         h.across = apply(m, h.across) - o, h.up = apply(m, h.up) - o, h.facing = apply(m, h.facing) - o;
         r.holes.push_back(std::move(h));
     }
+    // A turn's axis goes with the solid, and a mirror turns it the other way
+    // round (what turns right-handed in a mirror turns left-handed).
+    const bool flips = det(m) < 0;
+    for (Hinge j : s.joints) {
+        j.at = apply(m, j.at);
+        const V3 ax = apply(m, j.axis) - o;
+        if (j.slide) j.lo *= len(ax), j.hi *= len(ax);
+        j.axis = unit(ax) * (flips && !j.slide ? -1.0 : 1.0);
+        for (V3& p : j.path) p = apply(m, p);
+        const double scale = std::cbrt(std::abs(det(m)));
+        j.from *= scale, j.span *= scale;
+        if (!j.path.empty()) j.lo *= scale, j.hi *= scale;
+        r.joints.push_back(std::move(j));
+    }
     return r;
 }
 
@@ -611,6 +625,7 @@ Solid unite(const Solid& a, const Solid& b) {
     Solid r = a;
     r.pieces.insert(r.pieces.end(), b.pieces.begin(), b.pieces.end());
     r.holes.insert(r.holes.end(), b.holes.begin(), b.holes.end());
+    r.joints.insert(r.joints.end(), b.joints.begin(), b.joints.end());
     return r;
 }
 
@@ -631,6 +646,7 @@ void join(Solid& into, const Solid& s, Mode mode, double k, const Mesher& mm) {
             const SdfP cutter = field_of(cut);
             Solid rest;
             rest.holes = into.holes;
+            rest.joints = into.joints;
             std::vector<const Piece*> fields;
             for (const Piece& p : into.pieces) {
                 if (!p.bb.overlaps(cb, kk)) {
@@ -671,6 +687,7 @@ void join(Solid& into, const Solid& s, Mode mode, double k, const Mesher& mm) {
     std::vector<const Piece*> over;
     Solid rest;
     rest.holes = into.holes;
+    rest.joints = into.joints;
     for (const Piece& p : into.pieces) {
         if (mode == Mode::And ? p.bb.overlaps(cb, 0) : p.bb.overlaps(cb, k)) over.push_back(&p);
         else if (mode != Mode::And) rest.pieces.push_back(p);
@@ -723,6 +740,7 @@ void join(Solid& into, const Solid& s, Mode mode, double k, const Mesher& mm) {
         into.pieces.push_back(std::move(m));
         into = unite(into, bother);
         into.holes.insert(into.holes.end(), s.holes.begin(), s.holes.end());
+        into.joints.insert(into.joints.end(), s.joints.begin(), s.joints.end());
         return;
     }
     Piece m = merged(over, sdf_and(field_of(over), cutter));

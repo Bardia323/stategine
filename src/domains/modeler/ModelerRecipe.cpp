@@ -190,7 +190,7 @@ struct Args {
 };
 
 const std::set<std::string>& openers() {
-    static const std::set<std::string> s{"define", "for", "group", "array", "radial", "mirror", "if"};
+    static const std::set<std::string> s{"define", "for", "group", "array", "radial", "mirror", "if", "moves"};
     return s;
 }
 const std::set<std::string>& shapes_known() {
@@ -211,7 +211,7 @@ struct Macro {
 };
 
 struct Frame {
-    enum Kind { Root, Group, Array, Radial, Mirror, Macro } kind = Root;
+    enum Kind { Root, Group, Array, Radial, Mirror, Macro, Moves } kind = Root;
     Solid acc;
     Mode mode = Mode::Add;
     double k = 0;
@@ -219,6 +219,7 @@ struct Frame {
     std::map<std::string, std::string> vars;
     Defaults def;
     std::string name;
+    Hinge joint;  // a `moves` block's joint, its axis in the block's own frame
 };
 
 struct Made {
@@ -256,7 +257,16 @@ private:
     int line_ = 0, depth_ = 0;
 
     void err(const std::string& m) { errors += "line " + std::to_string(line_) + ": " + m + "\n"; }
-    int mat_id(const std::string& n) {
+    // A material is kept apart for each joint its faces move with: inside a
+    // `moves` block, `wood` is `wood@<joint>` (a part of its own, Part::joint).
+    std::string moving() const {
+        for (auto f = st_.rbegin(); f != st_.rend(); ++f)
+            if (f->kind == Frame::Moves) return f->joint.name;
+        return {};
+    }
+    int mat_id(const std::string& bare) {
+        const std::string j = moving();
+        const std::string n = j.empty() ? bare : bare + "@" + j;
         if (n.empty()) return 0;
         for (std::size_t i = 0; i < mats_.size(); ++i)
             if (mats_[i] == n) return int(i);
@@ -656,6 +666,7 @@ Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, d
     Solid out;
     out.pieces.push_back(std::move(p));
     out.holes = s.holes;
+    out.joints = s.joints;
     return out;
 }
 
@@ -697,6 +708,7 @@ void Interp::open(const std::string& head, Args& a, Mode mode, double k) {
 Solid Interp::finish(Frame& f) {
     Solid s = std::move(f.acc);
     const Args& a = f.args;
+    if (f.kind == Frame::Moves) s.joints.push_back(f.joint);
     if (f.kind == Frame::Array) {
         const int n = std::max(1, int(opt_num(a, "n", 2)));
         V3 step;
@@ -749,6 +761,15 @@ void Interp::call(const std::string& name, Args& a, Mode mode, double k) {
     if (auto it = a.opt.find("mat"); it != a.opt.end()) f.def.mat = mat_id(it->second);
     if (auto it = a.opt.find("res"); it != a.opt.end()) f.def.res = num(it->second, 0);
     st_.push_back(std::move(f));
+    // A word said that the macro does not name (and that does not place it)
+    // is a variable in it, as `let` - for whatever it calls: a door's
+    // choices reach its leaves so, said on the door or on a kind of door.
+    static const std::set<std::string> placing{"at", "scale", "mat", "res", "sides", "crease", "centre", "round", "chamfer", "faces"};
+    for (const auto& [key, v] : a.opt) {
+        if (placing.count(key) || std::any_of(mac.params.begin(), mac.params.end(), [&](const auto& p) { return p.first == key; })) continue;
+        double d;
+        st_.back().vars[key] = number(v, d) ? fmt(d) : v;
+    }
     for (std::size_t i = 0; i < mac.params.size(); ++i) {
         const auto& [pn, pd] = mac.params[i];
         std::string v;
@@ -915,6 +936,48 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
                 while (st_.size() > fl) close();
             }
             close();
+        } else if (head == "moves") {
+            // moves name turn|slide lo hi [axis=x|y|z|-x|-y|-z] [follow=k]:
+            // what is in the block moves - turning about the axis through its
+            // origin (degrees, right-handed) or sliding along it (metres) -
+            // and rides on any `moves` round it. Its faces are parts of their own.
+            const std::string kind = a.pos.size() > 1 ? a.pos[1] : "";
+            if (a.pos.empty() || (kind != "turn" && kind != "slide" && kind != "track"))
+                err("moves name turn|slide|track lo hi [x,y,z ...] [axis=x|y|z] [follow=k] [span=d] [from=s]");
+            Hinge j;
+            j.name = a.pos.empty() ? "joint" : a.pos[0];
+            j.slide = kind == "slide";
+            j.parent = moving();
+            j.lo = a.pos.size() > 2 ? num(a.pos[2], 0) : 0;
+            j.hi = a.pos.size() > 3 ? num(a.pos[3], 0) : 0;
+            if (j.lo > j.hi) std::swap(j.lo, j.hi);
+            j.follow = opt_num(a, "follow", 0);
+            j.step = opt_num(a, "step", 0);
+            if (a.opt.count("with")) j.with = a.opt.at("with"), j.follow = j.follow != 0 ? j.follow : 1.0;
+            // A track: its points after lo and hi, ridden by two points span apart.
+            if (kind == "track") {
+                for (std::size_t q = 4; q < a.pos.size(); ++q) {
+                    const auto v = nums(a.pos[q]);
+                    if (v.size() == 3) j.path.push_back({v[0], v[1], v[2]});
+                    else err("a track's points are x,y,z - not " + a.pos[q]);
+                }
+                if (j.path.size() < 2) err("moves " + j.name + ": a track needs two points or more");
+                j.span = opt_num(a, "span", 0), j.from = opt_num(a, "from", 0);
+            }
+            std::string axis = a.opt.count("axis") ? a.opt.at("axis") : j.slide || kind == "track" ? "x" : "y";
+            const double sense = axis.size() == 2 && axis[0] == '-' ? -1 : 1;
+            if (sense < 0) axis.erase(0, 1);
+            j.axis = (axis == "x" ? V3{1, 0, 0} : axis == "z" ? V3{0, 0, 1} : V3{0, 1, 0}) * sense;
+            if (axis != "x" && axis != "y" && axis != "z") err("a joint's axis is x, y or z (or -x, -y, -z) - not " + axis);
+            if (j.follow != 0 && j.parent.empty() && j.with.empty()) err("moves " + j.name + ": follow= needs a `moves` round it to follow");
+            // Its faces keep their material, moving with it (`wood` is `wood@<name>`).
+            const std::string& was = mats_[std::size_t(st_.back().def.mat)];
+            const std::string mat = a.opt.count("mat") ? a.opt.at("mat") : was.substr(0, was.find('@'));
+            a.opt.erase("mat");
+            open("group", a, mode, k);
+            st_.back().kind = Frame::Moves;
+            st_.back().joint = std::move(j);
+            st_.back().def.mat = mat_id(mat);
         } else if (head == "group" || head == "array" || head == "radial" || head == "mirror") {
             open(head, a, mode, k);
             if (head == "group" && !a.pos.empty()) st_.back().name = a.pos[0];
@@ -1006,6 +1069,8 @@ Model build(const std::string& recipe, const Options& options, const Files* file
         if (by[m].empty()) continue;
         Part part;
         part.material = m < in.mats_.size() ? in.mats_[m] : "";
+        if (const std::size_t at = part.material.find('@'); at != std::string::npos)
+            part.joint = part.material.substr(at + 1), part.material.resize(at);
         if (auto it = in.textures_.find(int(m)); it != in.textures_.end()) part.texture = it->second;
         part.corners = std::move(by[m]);
         for (std::size_t i = 0; i + 7 < part.corners.size(); i += 8) bb.grow(V3{part.corners[i], part.corners[i + 1], part.corners[i + 2]});
@@ -1024,6 +1089,24 @@ Model build(const std::string& recipe, const Options& options, const Files* file
         o.head = h.head, o.walk = h.walk, o.recess = h.recess;
         out.openings.push_back(o);
     }
+    for (const Hinge& h : s.joints) {
+        Joint j;
+        j.name = h.name, j.slide = h.slide;
+        j.at = {h.at.x, h.at.y, h.at.z}, j.axis = {h.axis.x, h.axis.y, h.axis.z};
+        j.lo = h.lo, j.hi = h.hi, j.follow = h.follow;
+        for (const V3& p : h.path) j.path.push_back({p.x, p.y, p.z});
+        j.from = h.from, j.span = h.span, j.step = h.step;
+        for (const Joint& o : out.joints)
+            if (o.name == j.name) out.errors += "a joint named " + j.name + " twice: each `moves` needs a name of its own\n";
+        out.joints.push_back(j);
+    }
+    // Parents by place: an inner block closes before the one round it.
+    for (std::size_t i = 0; i < s.joints.size(); ++i)
+        for (std::size_t p = 0; p < out.joints.size(); ++p)
+            if (!s.joints[i].parent.empty() && out.joints[p].name == s.joints[i].parent) out.joints[i].parent = int(p);
+    for (std::size_t i = 0; i < s.joints.size(); ++i)
+        for (std::size_t p = 0; p < out.joints.size(); ++p)
+            if (!s.joints[i].with.empty() && out.joints[p].name == s.joints[i].with) out.joints[i].with = int(p);
     return out;
 }
 
@@ -1046,7 +1129,7 @@ std::string to_obj(const Model& m, const std::string& name) {
     std::string out = "# " + name + "\n";
     std::size_t base = 1;
     for (const Part& p : m.parts) {
-        out += "o " + name + (p.material.empty() ? "" : "." + p.material) + "\n";
+        out += "o " + name + (p.material.empty() ? "" : "." + p.material) + (p.joint.empty() ? "" : "@" + p.joint) + "\n";
         if (!p.material.empty()) out += "usemtl " + p.material + "\n";
         std::unordered_map<std::string, std::size_t> seen;
         std::string v, f;

@@ -115,7 +115,9 @@ const std::pair<const char*, const char* (*)()> kBuiltIn[] = {
     {"mould", lib_mould},       {"orders", lib_orders},         {"pointed", lib_pointed},   {"girih", lib_girih},
     {"structure", lib_structure}, {"param", lib_param},   {"city", lib_city},
     // What grows: trees and plants from their L-systems.
-    {"trees", lib_trees}};
+    {"trees", lib_trees},
+    // What closes an opening: doors, drawers, cabinets - and how each moves.
+    {"doors", lib_doors}};
 }  // namespace
 
 bool library_named(const std::string& name, std::string& text) {

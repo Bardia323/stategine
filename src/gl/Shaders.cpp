@@ -322,6 +322,7 @@ uniform float uSkinRelief;    // > 0: the skin's alpha is how high its paint sta
 uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
 uniform float uCutout;        // 1: clear pixels are not drawn (a sprite)
 uniform float uGlow;          // extra emission for an active interface
+uniform float uGlass;         // > 0: glass, this clear - what is behind it seen through it, more of it reflected at a glance (Fresnel)
 )" + lights_glsl() + R"(
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
@@ -1189,6 +1190,15 @@ void main() {
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
+    // Glass: as much of it drawn over what is behind as it is not clear,
+    // and more where it is seen edge on (Schlick's Fresnel) - its alpha, as
+    // the glass pass blends it (the alpha behind it kept).
+    if (uGlass > 0.0) {
+        float facing = abs(dot(n, normalize(-to_frag)));
+        float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+        FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), clamp(mix(1.0 - uGlass, 1.0, fresnel), 0.0, 1.0));
+        return;
+    }
     FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - fog));
 })";
     return source.c_str();

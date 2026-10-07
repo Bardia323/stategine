@@ -149,13 +149,13 @@ void Mesh::draw_instanced(GLuint buffer, GLsizei instances) const {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
     const GLsizei stride = kInstanceFloats * sizeof(float);
-    for (GLuint i = 0; i < 6; ++i) {
+    for (GLuint i = 0; i < 7; ++i) {
         glVertexAttribPointer(3 + i, 4, GL_FLOAT, 0, stride, reinterpret_cast<void*>(i * 4 * sizeof(float)));
         glEnableVertexAttribArray(3 + i);
         glVertexAttribDivisor(3 + i, 1);
     }
     glDrawArraysInstanced(GL_TRIANGLES, 0, count_, instances);
-    for (GLuint i = 0; i < 6; ++i) glDisableVertexAttribArray(3 + i);
+    for (GLuint i = 0; i < 7; ++i) glDisableVertexAttribArray(3 + i);
 }
 
 void RenderTarget::mipmap() {

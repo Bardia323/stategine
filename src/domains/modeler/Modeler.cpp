@@ -45,7 +45,7 @@ using Read = std::vector<std::pair<std::string, Digest>>;
 
 std::string to_bytes(const sculpt::Model& m, const Read& read) {
     std::string s;
-    put<uint32_t>(s, 3);
+    put<uint32_t>(s, 7);
     put_text(s, m.errors);
     for (double v : {m.lo.x, m.lo.y, m.lo.z, m.hi.x, m.hi.y, m.hi.z}) put(s, v);
     put<uint64_t>(s, m.triangles);
@@ -53,6 +53,7 @@ std::string to_bytes(const sculpt::Model& m, const Read& read) {
     for (const sculpt::Part& p : m.parts) {
         put_text(s, p.material);
         put_text(s, p.texture);
+        put_text(s, p.joint);
         put<uint64_t>(s, p.corners.size());
         put_bytes(s, p.corners.data(), p.corners.size() * sizeof(float));
     }
@@ -61,6 +62,18 @@ std::string to_bytes(const sculpt::Model& m, const Read& read) {
         for (double v : {o.at.x, o.at.y, o.at.z, o.facing.x, o.facing.y, o.facing.z, o.w, o.h, o.recess}) put(s, v);
         put_text(s, o.head);
         put<uint32_t>(s, o.walk ? 1 : 0);
+    }
+    put<uint64_t>(s, m.joints.size());
+    for (const sculpt::Joint& j : m.joints) {
+        put_text(s, j.name);
+        for (double v : {j.at.x, j.at.y, j.at.z, j.axis.x, j.axis.y, j.axis.z, j.lo, j.hi, j.follow}) put(s, v);
+        put<int32_t>(s, j.parent);
+        put<uint32_t>(s, j.slide ? 1 : 0);
+        put(s, j.from), put(s, j.span);
+        put<int32_t>(s, j.with);
+        put(s, j.step);
+        put<uint64_t>(s, j.path.size());
+        for (const Vec3d& p : j.path) put(s, p.x), put(s, p.y), put(s, p.z);
     }
     put<uint64_t>(s, read.size());
     for (const auto& [path, d] : read) {
@@ -95,7 +108,7 @@ struct Reader {
 };
 bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     Reader r{s};
-    if (r.get<uint32_t>() != 3) return false;
+    if (r.get<uint32_t>() != 7) return false;
     m.errors = r.text();
     double v[6];
     for (double& d : v) d = r.get<double>();
@@ -107,6 +120,7 @@ bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     for (sculpt::Part& p : m.parts) {
         p.material = r.text();
         p.texture = r.text();
+        p.joint = r.text();
         const uint64_t n = r.get<uint64_t>();
         if (!r.ok || n > (s.size() - r.at) / sizeof(float)) return false;
         p.corners.resize(n);
@@ -121,6 +135,24 @@ bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
         o.at = {q[0], q[1], q[2]}, o.facing = {q[3], q[4], q[5]}, o.w = q[6], o.h = q[7], o.recess = q[8];
         o.head = r.text();
         o.walk = r.get<uint32_t>() != 0;
+    }
+    const uint64_t joints = r.get<uint64_t>();
+    if (!r.ok || joints > s.size()) return false;
+    m.joints.resize(joints);
+    for (sculpt::Joint& j : m.joints) {
+        j.name = r.text();
+        double q[9];
+        for (double& d : q) d = r.get<double>();
+        j.at = {q[0], q[1], q[2]}, j.axis = {q[3], q[4], q[5]}, j.lo = q[6], j.hi = q[7], j.follow = q[8];
+        j.parent = r.get<int32_t>();
+        j.slide = r.get<uint32_t>() != 0;
+        j.from = r.get<double>(), j.span = r.get<double>();
+        j.with = r.get<int32_t>();
+        j.step = r.get<double>();
+        const uint64_t points = r.get<uint64_t>();
+        if (!r.ok || points > s.size()) return false;
+        j.path.resize(points);
+        for (Vec3d& p : j.path) p.x = r.get<double>(), p.y = r.get<double>(), p.z = r.get<double>();
     }
     const uint64_t files = r.get<uint64_t>();
     if (!r.ok || files > s.size()) return false;

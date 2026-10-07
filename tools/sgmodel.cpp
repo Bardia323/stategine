@@ -7,6 +7,7 @@
 //   sgmodel castle.recipe -o out.png -s 1200 --obj out.obj --cell 0.05
 //   sgmodel -e "box 1 1 1 / sub sphere 0.6" -o box.png   (' / ' between lines)
 //   sgmodel hall.recipe --eye 0,1.6,5,0,10,90     one view from inside: x,y,z,yaw,pitch,fov
+//   sgmodel door.recipe --open 0.5                 its joints (`moves`) half way open
 //
 // `import` reads files beside the recipe.
 #include <chrono>
@@ -62,6 +63,7 @@ int main(int argc, char** argv) {
     bool eye_set = false;
     sg::Vec3d eye;
     double eye_yaw = 0, eye_pitch = 0, eye_fov = 90;
+    double open = -1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -69,6 +71,7 @@ int main(int argc, char** argv) {
         else if (a == "-s") size = std::max(64, std::atoi(next().c_str()));
         else if (a == "--obj") obj = next();
         else if (a == "--cell") o.cell = std::atof(next().c_str());
+        else if (a == "--open") open = std::atof(next().c_str());
         else if (a == "--eye") {
             // x,y,z[,yaw[,pitch[,fov]]]: one view, in perspective, from there
             const std::string e = next();
@@ -98,13 +101,20 @@ int main(int argc, char** argv) {
     };
     files.stamp = [](const std::string&) { return 0LL; };
     const auto t0 = std::chrono::steady_clock::now();
-    const sg::sculpt::Model m = sg::sculpt::build(recipe, o, &files);
+    const sg::sculpt::Model made = sg::sculpt::build(recipe, o, &files);
+    const sg::sculpt::Model m = open >= 0 ? sg::sculpt::opened(made, open) : made;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("%zu faces in %zu parts, %.3f x %.3f x %.3f m, built in %.0f ms; %zu open edges\n", m.triangles, m.parts.size(), m.size().x, m.size().y,
                 m.size().z, ms, open_edges(m));
     std::printf("  from %.3f,%.3f,%.3f to %.3f,%.3f,%.3f; its foot (where a thing drawn from it stands) at %.3f,%.3f,%.3f\n", m.lo.x, m.lo.y, m.lo.z, m.hi.x,
                 m.hi.y, m.hi.z, m.foot().x, m.foot().y, m.foot().z);
-    for (const auto& p : m.parts) std::printf("  %s: %zu faces\n", p.material.empty() ? "(no material)" : p.material.c_str(), p.corners.size() / 24);
+    for (const auto& p : m.parts)
+        std::printf("  %s%s%s: %zu faces\n", p.material.empty() ? "(no material)" : p.material.c_str(), p.joint.empty() ? "" : " moving with ", p.joint.c_str(),
+                    p.corners.size() / 24);
+    for (const auto& j : m.joints)
+        std::printf("  joint %s: %s %.3g..%.3g %s, axis %.2f,%.2f,%.2f through %.3f,%.3f,%.3f%s%s\n", j.name.c_str(), j.slide ? "slides" : "turns", j.lo, j.hi,
+                    j.slide ? "m" : "deg", j.axis.x, j.axis.y, j.axis.z, j.at.x, j.at.y, j.at.z, j.parent >= 0 ? ", on " : "",
+                    j.parent >= 0 ? m.joints[std::size_t(j.parent)].name.c_str() : "");
     if (!m.openings.empty()) std::printf("  %zu openings asked of the walls round it\n", m.openings.size());
     if (!m.errors.empty()) std::printf("%s", m.errors.c_str());
     std::ofstream(out, std::ios::binary) << sg::sculpt::png(eye_set ? sg::sculpt::picture_from(m, eye, eye_yaw, eye_pitch, eye_fov, size) : sg::sculpt::picture(m, size, size), size, size);

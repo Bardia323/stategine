@@ -59,4 +59,10 @@ const char* lib_city();
 //              swamp, palm, bush, grass, reeds - each by height and seed,
 //              and its low-poly self (ModelerTrees.cpp)
 const char* lib_trees();
+//   doors      what closes an opening, and moves to open it: one door of
+//              choices (surround, head, leaves of any construction, how they
+//              move, hardware), drawers and cabinets of the same leaves, and
+//              the doors and cabinets of the world as sets of those choices
+//              (ModelerDoors.cpp)
+const char* lib_doors();
 }  // namespace sg::sculpt

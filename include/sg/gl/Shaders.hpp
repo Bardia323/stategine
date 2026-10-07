@@ -25,6 +25,9 @@ layout(location=2) in vec2 aUV;
 layout(location=3) in mat4 iLocal;
 layout(location=7) in vec4 iMat0;
 layout(location=8) in vec4 iMat1;
+// Its depth layer (x): steps nearer the eye it is drawn, past its size's (`depth_layer`).
+layout(location=9) in vec4 iMat2;
+uniform float uDepthLayer;
 uniform int uInstanced;
 uniform mat4 uFrame;
 flat out vec4 vMat0;
@@ -81,6 +84,21 @@ void main() {
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
+    // No two surfaces fight. Where two coincide (a lining in a wall's face,
+    // a plate on a floor) their depths differ only by rounding, a step or
+    // two of the depth buffer, whatever the distance - so each thing is drawn
+    // a few of its steps nearer the eye the smaller it is (three steps for
+    // each halving of its size from 16 m down; a hair more for where it stands, to part
+    // two of one size). The smaller - the detail laid on the larger - is the
+    // one seen, the same every frame. A step is 2^-24 of the depth range: a
+    // nudge of a fraction of a millimetre at arm's length, a centimetre or
+    // two thirty metres off.
+    float size = max(pow(max(scale.x * scale.y * scale.z, 1e-12), 1.0 / 3.0), 1e-4);
+    float rank = clamp(3.0 * (4.0 - log2(size)), 0.0, 60.0) + fract(sin(dot(model[3].xyz, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    // A thing may say more (`depth_layer`): the parts of one model, made to
+    // fit together, each a layer of its own, so none ties with another.
+    rank += uInstanced == 1 ? iMat2.x : uDepthLayer;
+    gl_Position.z -= rank * (2.0 / 16777216.0) * gl_Position.w;
 })";
 }
 

@@ -477,6 +477,102 @@ int main() {
         check(std::abs(at.x - 13) < 1e-9 && std::abs(at.y + 1) < 1e-9, "a model stands where its recipe says: its box's foot carried from the origin");
     }
     {
+        // What moves in a model (`moves`): its faces a part of their own, its
+        // joint where its block put it - riding on the one round it, turned
+        // the other way in a mirror - and the model posed by them.
+        const Model door = sculpt::build(
+            "box 1.2 2.2 0.1 mat=wood\nmoves leaf turn 0 90 axis=-y at=-0.45,0,0.05\n  box 0.9 2 0.04 at=0.45,0,-0.02 mat=oak\n"
+            "  moves fold turn 0 0 follow=-2 axis=-y at=0.9,0,0\n    box 0.3 0.3 0.3 at=0.15,1,0\n  end\nend\n");
+        bool tagged = door.joints.size() == 2 && door.errors.empty();
+        for (const auto& p : door.parts) tagged = tagged && (p.material == "wood") == p.joint.empty();
+        check(tagged, "a moving block's faces are parts of their own, each saying its joint " + door.errors);
+        if (tagged) {
+            const sculpt::Joint& fold = door.joints[0];
+            const sculpt::Joint& leaf = door.joints[1];  // (the inner block closes first)
+            check(fold.name == "fold" && fold.parent == 1 && fold.follow == -2 && leaf.name == "leaf" && leaf.parent == -1 && std::abs(leaf.axis.y + 1) < 1e-9 &&
+                      std::abs(leaf.at.x + 0.45) < 1e-9 && std::abs(leaf.at.z - 0.05) < 1e-9 && std::abs(fold.at.x - 0.45) < 1e-9,
+                  "each joint where its block put it, the inner riding on the outer");
+        }
+        // A quarter turn about -y swings the leaf's far edge from x = 0.45 out to z = 0.05 + 0.9;
+        // the fold, following at -2, turns back on it and lies along the leaf.
+        const Model swung = sculpt::pose(door, {{"leaf", 90}});
+        double flo = 1e9, fhi = -1e9;
+        for (const auto& p : swung.parts)
+            for (std::size_t c = 0; p.joint == "fold" && c + 7 < p.corners.size(); c += 8)
+                flo = std::min(flo, double(p.corners[c + 2])), fhi = std::max(fhi, double(p.corners[c + 2]));
+        check(std::abs(swung.hi.z - 0.95) < 1e-4 && fhi < 0.951 && flo > 0.649 && sculpt::pose(door, {}).all() == door.all(),
+              "posed: the leaf swung out a quarter turn, the fold turned back on it - and unposed, as made");
+        check(std::abs(sculpt::pose(door, {{"leaf", 500}}).hi.z - 0.95) < 1e-4, "a joint goes no further than its way");
+        const Model mirrored = sculpt::build("group scale=-1,1,1\n  moves m turn 0 90 at=0.5,0,0\n    box 1 1 0.1 at=0.5,0,0\n  end\nend\n");
+        check(mirrored.joints.size() == 1 && std::abs(mirrored.joints[0].axis.y + 1) < 1e-9 && std::abs(mirrored.joints[0].at.x + 0.5) < 1e-9,
+              "in a mirror a joint turns the other way round");
+        const Model drawer = sculpt::build("moves d slide 0 0.4 axis=z\n  box 0.5 0.2 0.5\nend\n");
+        check(std::abs(sculpt::opened(drawer, 1).hi.z - 0.65) < 1e-6 && std::abs(sculpt::opened(drawer, 0.5).hi.z - 0.45) < 1e-6,
+              "a slide runs along its axis, opened as far as asked");
+        check(sculpt::build("moves a turn 0 1\n  box 1 1 1\nend\nmoves a turn 0 1\n  box 1 1 1 at=3,0,0\nend\n").errors.find("twice") != std::string::npos,
+              "two joints of one name are an error");
+        check(std::abs(sculpt::build("define w2\n  box $q 1 1\nend\nw2 q=3\n").size().x - 3) < 1e-9,
+              "a word said to a macro that it does not name is a variable in it");
+    }
+    {
+        // Doors, drawers and cabinets (`use doors`): every word of the
+        // library made without a fault, every kind of door a set of choices
+        // whose leaves say how they move.
+        const auto faultless = [](const Model& m) {
+            std::istringstream in(m.errors);
+            for (std::string l; std::getline(in, l);)
+                if (l.find("coarser") == std::string::npos) return false;
+            return true;
+        };
+        const std::string parts[] = {"door.fill.", "door.grip.", "door.hinge.", "door.body.", "door.op.", "door.frame.", "door.arch.", "door.ring.", "door.tymp."};
+        const std::string inner[] = {"door.leaf", "door.handle", "door.light", "door.studs", "door.hung", "door.hang", "door.glide", "door.fold",
+                                     "door.knocker", "door.hammer", "door.chime", "door.garage", "door.roller", "door.wall", "door.rollers"};
+        std::istringstream words(sculpt::recipes("doors"));
+        int kinds = 0;
+        for (std::string l; std::getline(words, l);) {
+            const std::string word = l.substr(0, l.find(' '));
+            if (word.empty()) continue;
+            const Model m = sculpt::build("use doors\n" + word + "\n");
+            check(faultless(m), "a word of the doors, made without a fault: " + word + " " + m.errors);
+            bool kind = word.rfind("door.", 0) == 0;
+            for (const std::string& p : parts) kind = kind && word.rfind(p, 0) != 0;
+            for (const std::string& p : inner) kind = kind && word != p;
+            if (kind) {
+                ++kinds;
+                check(!m.joints.empty() && m.triangles > 50, "a kind of door moves: " + word);
+            }
+        }
+        check(kinds >= 30, "thirty kinds of door and more (" + std::to_string(kinds) + ")");
+        const Model hotel = sculpt::build("use doors\ndoor.hotel\n");
+        const Model open = sculpt::opened(hotel, 1);
+        check(hotel.openings.size() == 1 && hotel.openings[0].walk && std::abs(hotel.openings[0].w - 0.915) < 1e-6 && open.hi.z > hotel.hi.z + 0.8,
+              "a hotel's door asks its wall for its opening, and its leaf swings a quarter turn out");
+        const Model persian = sculpt::build("use doors\ndoor.persian name=gate\n");
+        check(persian.joints.size() == 2 && persian.joints[0].name == "gate.1" && persian.joints[0].axis.y * persian.joints[1].axis.y < 0,
+              "a pair: two leaves, hung at either jamb, named as asked");
+        const Model kitchen = sculpt::build("use doors\ncabinet.kitchen name=k\n");
+        int slides = 0, turns = 0;
+        for (const auto& j : kitchen.joints) (j.slide ? slides : turns) += 1;
+        check(faultless(kitchen) && slides == 1 && turns == 2, "a kitchen's unit: a drawer that runs out, two doors that turn " + kitchen.errors);
+        check(sculpt::build("use doors\ncabinet.kitchen fill=glass\n").parts.size() > kitchen.parts.size(),
+              "a choice said to a kind of cabinet reaches its fronts (glass doors)");
+        // A sectional door's panels (its leaves' material) run up the jambs and back under the ceiling.
+        const auto reach = [](const Model& m) {
+            double z = -1e9;
+            for (const auto& p : m.parts)
+                for (std::size_t c = 0; p.material == "paintedmetal" && c + 7 < p.corners.size(); c += 8) z = std::max(z, double(p.corners[c + 2]));
+            return z;
+        };
+        const Model garage = sculpt::build("use doors\ndoor.garage\n");
+        check(reach(sculpt::opened(garage, 1)) > reach(garage) + 1.5 && garage.joints.size() >= 4 && !garage.joints[0].path.empty(),
+              "a sectional door's panels ride their tracks up and back under the ceiling, all together");
+        // A track: a part riding it by two points, turned as it bends.
+        const Model rider = sculpt::build("moves p track 0 3 0,0,0 0,1,0 0,1,2 span=0.5\n  box 1 0.5 0.05\nend\n");
+        const Model up = sculpt::pose(rider, {{"p", 2.0}});
+        check(rider.errors.empty() && std::abs(up.lo.y - 1.0) < 0.03 && up.hi.y < 1.03 && up.hi.z > 1.4,
+              "on a track, a part goes up it and round its corner, lying along it after");
+    }
+    {
         // A model that imports is kept on disk too, and read back only while
         // what it imports says the same.
         const std::string dir = "modeler_cache_test";
