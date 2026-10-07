@@ -338,6 +338,9 @@ if(SG_BUILD_TESTS)
   add_executable(sg_being tests/test_being.cpp)
   target_link_libraries(sg_being PRIVATE stategine_dev)
   add_test(NAME sg_being COMMAND sg_being)
+  add_executable(sg_ragdoll tests/test_ragdoll.cpp)
+  target_link_libraries(sg_ragdoll PRIVATE stategine_dev)
+  add_test(NAME sg_ragdoll COMMAND sg_ragdoll)
   add_executable(sg_spatial tests/test_spatial.cpp)
   target_link_libraries(sg_spatial PRIVATE stategine_dev)
   add_test(NAME sg_spatial COMMAND sg_spatial)
@@ -577,7 +580,7 @@ endif()
 
 # Native programs stay at the build root; archives and checks have their folders.
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
-  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_terrain sg_being sg_spatial sg_fields
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
       sg_instancing_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl

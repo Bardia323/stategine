@@ -146,6 +146,7 @@ struct Body {
     bool grabbed = false;
     double radius = -1;       // how far any of it is from its frame; worked out when first asked
     bool sensor = false;      // nothing bumps into it: what is inside it is only noted
+    int group = 0;            // bodies of one group (not 0) pass through each other: the limbs of one body
     bool driven = false;      // this step, moved to `drive_x`, `drive_r` by the game
     V3 drive_x;
     M3 drive_r;
@@ -253,6 +254,19 @@ struct Joint {
     bool spring = false;
     double target = 0, hertz = 2, damping = 1;
     double rest = 0;    // a Spring joint's length (hertz and damping as above)
+    // A ball's muscle: `b` turned toward `aim` on `a` (b's turn = a's turn *
+    // aim), as stiff as `aim_hertz`, damped by `aim_damping`, with at most
+    // `aim_torque` - a soft spring, solved with the rest, so stable however
+    // stiff. And how far it may bend: a ball whose `b` is turned from
+    // `rest_turn` on `a` by more than `cone` (radians) is stopped there.
+    bool muscle = false;
+    M3 aim;
+    double aim_hertz = 2, aim_damping = 0.9, aim_torque = 200;
+    bool limit_cone = false;
+    M3 rest_turn;
+    double cone = 1.8;
+    V3 turn;            // the muscle's last impulse
+    double bent = 0;    // the cone's
     // What it pushed with last substep, to start the next from (per substep).
     V3 point;
     double tilt1 = 0, tilt2 = 0, drive = 0, pull = 0, low = 0, high = 0;

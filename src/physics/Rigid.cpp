@@ -434,6 +434,7 @@ void World::sweep_fast() {
 void World::pair(std::size_t ia, std::size_t ib, double reach) {
     Body& a = bodies[ia];
     Body& b = bodies[ib];
+    if (a.group != 0 && a.group == b.group) return;  // one body's limbs
     if (a.sensor || b.sensor) {
         // Inside it, if no axis parts them at all; nothing is pushed.
         if (a.sensor && b.sensor) return;

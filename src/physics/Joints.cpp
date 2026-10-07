@@ -46,7 +46,7 @@ bool World::held(std::size_t k, Held& h) {
     const int moving_now = (ma ? 1 : 0) | (mb ? 2 : 0);
     if (j.moving != moving_now) {
         // Found against something that could not move then: not handed on.
-        j.point = {}, j.tilt1 = j.tilt2 = j.drive = j.pull = j.low = j.high = 0;
+        j.point = {}, j.turn = {}, j.tilt1 = j.tilt2 = j.drive = j.pull = j.low = j.high = j.bent = 0;
         j.moving = moving_now;
     }
     return true;
@@ -80,6 +80,8 @@ void World::warm_joints() {
         Held h;
         if (!held(k, h)) continue;
         push(h, j.point);
+        if (j.kind == Joint::Ball && j.muscle && h.B) twist(h, j.turn);
+        j.bent = 0;  // (its direction moves with the bend: not handed on)
         if (j.kind == Joint::Hinge) {
             const V3 axis = h.A->r * j.axis_a;
             V3 p1, p2;
@@ -173,6 +175,39 @@ void World::solve_joints(double hstep, bool springs) {
                     const double total = std::max(acc + lambda, 0.0);
                     twist(h, ax * (s * (total - acc)));
                     acc = total;
+                }
+            }
+        }
+        if (j.kind == Joint::Ball && h.B) {
+            const M3 rel = transpose(h.A->r) * h.B->r;
+            // The muscle: the spin between them drawn toward the turn that
+            // takes b where it is aimed, softly, within its torque.
+            if (j.muscle && springs) {
+                double mms = 1, mis = 0;
+                const double rate = soft(j.aim_hertz, j.aim_damping, hstep, mms, mis);
+                const V3 err = log_map(h.A->r * j.aim * transpose(h.B->r));  // the turn still to go, in the room
+                const M3 k = inverse(h.ia + h.ib);
+                V3 imp = k * (spin_between(h) - err * rate) * -mms - j.turn * mis;
+                V3 total = j.turn + imp;
+                const double most = j.aim_torque * hstep, l = length(total);
+                if (l > most && l > 1e-12) total = total * (most / l);
+                twist(h, total - j.turn);
+                j.turn = total;
+            }
+            // The cone: bent from rest no further than it goes.
+            if (j.limit_cone) {
+                const V3 dev = log_map(transpose(j.rest_turn) * rel);
+                const double theta = length(dev);
+                if (theta > j.cone * 0.9 && theta > 1e-9) {
+                    const V3 n = h.B->r * (dev * (1.0 / theta));  // which way it bends, in the room
+                    const double m = turning(n), gap = j.cone - theta;
+                    double bias = 0, lms = 1, lis = 0;
+                    if (gap > 0) bias = gap / hstep;
+                    else if (springs) bias = std::max(bias_rate * gap, -4.0), lms = ms, lis = is;
+                    const double lambda = -m * lms * (-dot(spin_between(h), n) + bias) - lis * j.bent;
+                    const double total = std::max(j.bent + lambda, 0.0);
+                    twist(h, n * -(total - j.bent));
+                    j.bent = total;
                 }
             }
         }

@@ -551,6 +551,10 @@ void Being::resolve() {
         to_euler(mine.r, y, p, r);
         e.params.set("px", mine.p.x).set("py", mine.p.y).set("pz", mine.p.z).set("pyaw", y).set("ppitch", p).set("proll", r);
         set_q(e, norm(mine.r), "pq");
+        if (!e.params.has(Key{"aqw"})) {  // (before it has lived, it means what it is)
+            set_q(e, norm(mine.r), "aq");
+            e.params.set("ax", mine.p.x).set("ay", mine.p.y).set("az", mine.p.z);
+        }
     }
     for (Element& e : elements()) {
         if (e.kind != kPart) continue;
