@@ -3,6 +3,7 @@
 // each joint at its own stiffness, on its own clock.
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 
 #include "sg/core/Engine.hpp"
@@ -214,6 +215,145 @@ int main() {
         for (int i = 0; i < 60; ++i) e2.tick(1.0 / 60);
         const double half = b2.pose_of("tip").pitch;
         check(half > 0.5 && half < 1.1, "and played at half speed, a second in it is half bent (" + std::to_string(half * 180 / 3.14159265) + " degrees)");
+    }
+    {
+        // The same strip, held by what is no joint (an `Armature` turned a
+        // quarter about x and scaled to centimetres, as a Mixamo export is):
+        // read in, it stands, bends and is skinned exactly as the plain one.
+        const auto strip = [](bool held) {
+            std::string bin;
+            const auto f32 = [&](float v) { bin.append(reinterpret_cast<const char*>(&v), 4); };
+            const auto u16 = [&](uint16_t v) { bin.append(reinterpret_cast<const char*>(&v), 2); };
+            for (float v : {-0.1f, 0.f, 0.f, 0.1f, 0.f, 0.f, -0.1f, 2.f, 0.f, 0.1f, 2.f, 0.f}) f32(v);
+            for (int i = 0; i < 4; ++i) bin += char(i < 2 ? 0 : 1), bin += char(0), bin += char(0), bin += char(0);
+            for (int i = 0; i < 4; ++i) f32(1.f), f32(0.f), f32(0.f), f32(0.f);
+            for (uint16_t v : {0, 1, 2, 1, 3, 2}) u16(v);
+            if (held) {
+                // Inverse binds: the holder undone (scaled up, turned back), then the joint.
+                for (float v : {100.f, 0.f, 0.f, 0.f, 0.f, 0.f, -100.f, 0.f, 0.f, 100.f, 0.f, 0.f, 0.f, 0.f, 0.f, 1.f}) f32(v);
+                for (float v : {100.f, 0.f, 0.f, 0.f, 0.f, 0.f, -100.f, 0.f, 0.f, 100.f, 0.f, 0.f, 0.f, 0.f, 100.f, 1.f}) f32(v);
+            } else {
+                for (float v : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}) f32(v);
+                for (float v : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 1.f}) f32(v);
+            }
+            f32(0.f), f32(1.f);
+            const float h = std::sqrt(0.5f);
+            // The bend: about the room's z - in the held tip's own frame, its y.
+            if (held) for (float v : {0.f, 0.f, 0.f, 1.f, 0.f, h, 0.f, h}) f32(v);
+            else for (float v : {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, h, h}) f32(v);
+            static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string enc;
+            for (std::size_t i = 0; i < bin.size(); i += 3) {
+                const uint32_t n = (uint32_t(uint8_t(bin[i])) << 16) | (i + 1 < bin.size() ? uint32_t(uint8_t(bin[i + 1])) << 8 : 0) |
+                                   (i + 2 < bin.size() ? uint32_t(uint8_t(bin[i + 2])) : 0);
+                enc += b64[(n >> 18) & 63], enc += b64[(n >> 12) & 63];
+                enc += i + 1 < bin.size() ? b64[(n >> 6) & 63] : '=';
+                enc += i + 2 < bin.size() ? b64[n & 63] : '=';
+            }
+            const std::string nodes = held ? R"([{"name":"Armature","rotation":[0.70710678,0,0,0.70710678],"scale":[0.01,0.01,0.01],"children":[1]},
+                {"name":"root","children":[2]},{"name":"tip","translation":[0,0,-100]},{"name":"strip","mesh":0,"skin":0}])"
+                                           : R"([{"name":"root","children":[1]},{"name":"tip","translation":[0,1,0]},{"name":"strip","mesh":0,"skin":0}])";
+            const std::string joints = held ? "[1,2]" : "[0,1]", tip = held ? "2" : "1";
+            return std::string(R"({"asset":{"version":"2.0"},"nodes":)") + nodes + R"(,
+  "skins":[{"joints":)" + joints + R"(,"inverseBindMatrices":6}],
+  "meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2},"indices":3}]}],
+  "animations":[{"name":"bend","channels":[{"sampler":0,"target":{"node":)" + tip + R"(,"path":"rotation"}}],"samplers":[{"input":4,"output":5}]}],
+  "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},{"bufferView":1,"componentType":5121,"count":4,"type":"VEC4"},
+    {"bufferView":2,"componentType":5126,"count":4,"type":"VEC4"},{"bufferView":3,"componentType":5123,"count":6,"type":"SCALAR"},
+    {"bufferView":5,"componentType":5126,"count":2,"type":"SCALAR"},{"bufferView":6,"componentType":5126,"count":2,"type":"VEC4"},
+    {"bufferView":4,"componentType":5126,"count":2,"type":"MAT4"}],
+  "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":16},{"buffer":0,"byteOffset":64,"byteLength":64},
+    {"buffer":0,"byteOffset":128,"byteLength":12},{"buffer":0,"byteOffset":140,"byteLength":128},{"buffer":0,"byteOffset":268,"byteLength":8},
+    {"buffer":0,"byteOffset":276,"byteLength":32}],
+  "buffers":[{"byteLength":308,"uri":"data:application/octet-stream;base64,)" + enc + R"("}]})";
+        };
+        const std::string plain = strip(false), held = strip(true);
+        sg::Being::files().read = [&](const std::string& path, std::string& bytes) {
+            if (path == "plain.gltf") return bytes = plain, true;
+            if (path == "held.gltf") return bytes = held, true;
+            return false;
+        };
+        sg::Being::files().stamp = [](const std::string&) { return 1LL; };
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& a = g.add<sg::Being>(sg::Key{"plain"});
+        auto& b = g.add<sg::Being>(sg::Key{"held"});
+        std::string why;
+        const bool ok = a.import_gltf("plain.gltf", "", &why) && b.import_gltf("held.gltf", "", &why);
+        check(ok, "a skeleton held by what is no joint is read " + why);
+        check(dist(a.pose_of("tip").position, b.pose_of("tip").position) < 1e-6 && std::fabs(b.pose_of("tip").position.y - 1.0) < 1e-6,
+              "it stands as the plain one does: upright, at its size in metres (the tip " + std::to_string(b.pose_of("tip").position.y) + " m up)");
+        const auto rest_a = a.skinned("skin"), rest_b = b.skinned("skin");
+        double most = 0;
+        for (std::size_t i = 0; i < rest_a.size() && i < rest_b.size(); ++i) most = std::max(most, double(std::fabs(rest_a[i] - rest_b[i])));
+        check(!rest_b.empty() && most < 1e-4, "and its skin is where the plain one's is (" + std::to_string(most) + " apart)");
+        sg::drive(g, clock, "plain", a.live_event(), false, sg::Keeps::Always);
+        sg::drive(g, clock, "held", b.live_event(), false, sg::Keeps::Always);
+        g.set_initial("plain");
+        g.connect("plain", sg::Key{"plain.go"}, "held");
+        sg::Engine e(g);
+        e.start();
+        for (sg::Being* x : {&a, &b}) {
+            x->hear(sg::Event{x->play_event(), sg::Params{}.set("clip", std::string("bend")).set("fade", 0.0).set("loop", 0.0)});
+            x->dispatch_pending();
+        }
+        for (int i = 0; i < 90; ++i) e.tick(1.0 / 60);
+        const auto bent_a = a.skinned("skin"), bent_b = b.skinned("skin");
+        most = 0;
+        for (std::size_t i = 0; i < bent_a.size() && i < bent_b.size(); ++i) most = std::max(most, double(std::fabs(bent_a[i] - bent_b[i])));
+        check(most < 1e-3, "and it bends as the plain one bends (" + std::to_string(most) + " apart)");
+    }
+    {
+        // Fitted to a reference: a body made in centimetres, facing +z and
+        // standing half a metre up, put where the engine's humanoid stands -
+        // as tall, facing the same way, on the same floor - walking as before.
+        auto ref = std::make_unique<sg::Being>(sg::Key{"ref"});
+        sg::humanoid(*ref, 1.7);
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& b = g.add<sg::Being>(sg::Key{"giant"});
+        sg::humanoid(b, 175.0);
+        b.face(3.14159265358979 / 2);
+        b.lift(50.0);
+        const sg::Vec3d f0 = b.facing();
+        check(std::fabs(f0.z - 1.0) < 1e-3 && std::fabs(b.height() - ref->height() * 175.0 / 1.7) < 1.0,
+              "made otherwise: " + std::to_string(b.height()) + " tall, facing (" + std::to_string(f0.x) + ", " + std::to_string(f0.z) + ")");
+        sg::fit(b, *ref);
+        const sg::Vec3d f = b.facing();
+        check(std::fabs(b.height() - ref->height()) < 1e-3 && std::fabs(f.x - 1.0) < 1e-3 && std::fabs(b.extent_low() - ref->extent_low()) < 1e-3,
+              "fitted to the reference: as tall (" + std::to_string(b.height()) + " m), facing x, on its floor (" + std::to_string(b.extent_low()) + ")");
+        sg::drive(g, clock, "giant", b.live_event());
+        g.set_initial("giant");
+        sg::Engine e(g);
+        e.start();
+        e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("walk")).set("fade", 0.0)});
+        double most = 0;
+        for (int i = 0; i < 60; ++i) {
+            e.tick(1.0 / 60);
+            const auto l = b.pose_of("foot_l").position, r = b.pose_of("foot_r").position;
+            most = std::max(most, std::fabs(l.x - r.x));
+        }
+        check(most > 0.2 && most < 1.0, "and it walks as the reference would, its feet passing along x (" + std::to_string(most) + " m apart at most)");
+    }
+    {
+        // A clip that carries the root (as Mixamo's hips are carried): the
+        // floor is found where the clip stands it, not where it was bound.
+        auto ref = std::make_unique<sg::Being>(sg::Key{"ref"});
+        sg::humanoid(*ref, 1.7);
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& b = g.add<sg::Being>(sg::Key{"lifted"});
+        sg::humanoid(b, 1.7);
+        const double hips = b.element("hips").params.num(sg::keys::y);
+        b.clip("stand", "0 hips p 0 " + std::to_string(hips + 0.3) + " 0\n1 hips p 0 " + std::to_string(hips + 0.3) + " 0\n");
+        sg::fit(b, *ref);
+        sg::drive(g, clock, "lifted", b.live_event());
+        g.set_initial("lifted");
+        sg::Engine e(g);
+        e.start();
+        e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("stand")).set("fade", 0.0)});
+        for (int i = 0; i < 30; ++i) e.tick(1.0 / 60);
+        check(std::fabs(b.extent_low() - ref->extent_low()) < 0.01, "a clip that carries its root: fitted, it stands on the floor as the clip stands it (" + std::to_string(b.extent_low()) + ")");
     }
     {
         // One dance, two bodies: a functor carries each joint's turn away

@@ -6,14 +6,19 @@
 // as it is bound - as big as the parts the being shows on it, if it shows
 // any; else a bone to its child is a rounded rod, a bone with several
 // children a block round them, a foot a block along the ground, a head a
-// ball, and any other end a short rod on from its parent - held to its parent at a ball that bends no further than a cone,
+// ball, and any other end a short rod on from its parent; a bone too small
+// to matter (a finger's joints, a toe's or a crown's end) has none, and rides
+// its parent as the being moves it (`rides`) - so any skeleton, of any
+// number of limbs and fingers, is a ragdoll - held to its parent at a ball that bends no further than a cone,
 // and turned there by a muscle toward the turn the being means (a soft
 // spring, `kp = I w^2`, `kd = 2 z I w` for the inertia it moves). The
 // limbs of one body pass through each other; the room's solids stop them.
 //
 // What is done to it moves it: a hit (`<id>.hit`, an impulse on a bone)
-// throws the limb, and what hangs from it and what it hangs from give, each
-// as heavy as it is; the bone and its neighbours are weakened a moment and
+// moves the whole body by what it carries and kicks the limb hit, and what
+// hangs from it and what it hangs from give, each as heavy as it is; its feet
+// brace against a push up to what they hold (`hold`, newtons), so leaning on
+// it or pulling at it does not drag it; the bone and its neighbours are weakened a moment and
 // come back. A hand may hold a bone and pull (`<id>.grab`, `<id>.let_go`):
 // the arm is drawn out against its muscles and, let go, swings on past where
 // it was meant to be and settles back. A hit hard enough (`fall_at`) takes
@@ -38,8 +43,8 @@
 // gives the being back to itself.
 //
 // Time comes from its drive (`<id>.step`, {dt}), stepped at 120 Hz. Its
-// solver (sg::rigid) is a cache, made from its params each step, started
-// again from the same contacts when the laws try a step twice.
+// solver (sg::rigid) is made from its params each step and kept nowhere: a
+// step is a function of them alone.
 #pragma once
 
 #include <cstdint>
@@ -91,11 +96,6 @@ private:
     // stepped to catch it or home, its legs aimed there; falling, and getting
     // up again.
     void balance(double dt);
-    // What the solver's contacts were after the last step, and what this
-    // step started from (by everything it started from): the same step tried
-    // twice starts from the same contacts.
-    rigid::World::Contacts last_, memo_;
-    uint64_t memo_in_ = 0;
 };
 
 // A ragdoll for `body` (`<body>.rag`), on `clock`: the being's meaning

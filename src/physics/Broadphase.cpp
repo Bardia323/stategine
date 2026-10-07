@@ -1,4 +1,6 @@
 #include "sg/physics/Rigid.hpp"
+
+#include <algorithm>
 namespace sg::rigid {
 void World::indexed_pairs() {
     std::vector<spatial::Index::Entry> entries;
@@ -8,7 +10,11 @@ void World::indexed_pairs() {
     for(std::size_t i=0;i<bodies.size();++i) {
         if(!moving(bodies[i])) continue;
         const auto& b=bodies[i];
-        for(auto j:broadphase_.query(spatial::Aabb{b.lo,b.hi}.expanded(looked_for(b)))) {
+        // (In the order of the bodies, not of the tree: the tree is refitted
+        // from step to step, and what it has been must not change a step.)
+        auto near=broadphase_.query(spatial::Aabb{b.lo,b.hi}.expanded(looked_for(b)));
+        std::sort(near.begin(),near.end());
+        for(auto j:near) {
             if(j==i || (moving(bodies[j]) && j<i)) continue;
             consider(i,j);
         }

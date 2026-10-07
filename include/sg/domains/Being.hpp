@@ -106,12 +106,18 @@ public:
     struct Files {
         std::function<bool(const std::string& path, std::string& bytes)> read;
         std::function<long long(const std::string& path)> stamp;
+        // A picture's bytes (PNG, JPEG ...) as pixels, RGBA, rows top first -
+        // for a skin's own picture; none set, skins are worn plain.
+        std::function<bool(const std::string& bytes, int& w, int& h, std::vector<unsigned char>& rgba)> decode;
     };
     static Files& files();  // the program's (as Texture's reader)
     bool import_gltf(const std::string& path, const std::string& prefix = {}, std::string* why = nullptr);
     // A skin posed as the skeleton is now (linear blend skinning), in the
     // being's frame: triangles, 8 floats a corner. Its bind pose's bounds, if asked.
     std::vector<float> skinned(Key skin, Vec3d* bind_lo = nullptr, Vec3d* bind_hi = nullptr) const;
+    // The picture a skin wears by its uvs (its material's base colour), as
+    // read with it; null if it wears none.
+    const std::vector<unsigned char>* skin_picture(Key skin, int& w, int& h) const;
 
     // --- read ---------------------------------------------------------------------
     // A joint's or part's pose in the being's own frame, as last resolved.
@@ -119,6 +125,21 @@ public:
     double tempo() const;
     std::vector<Key> parts() const;
     std::vector<Key> joints() const;
+
+    // --- its size, its facing, its floor (BeingFit.cpp) --------------------------------
+    // How far it reaches up and down as it is posed now - its skins, else its
+    // parts, else its joints - and how tall that is.
+    void extent(double& low, double& high) const;
+    double extent_low() const;
+    double height() const;
+    // Which way it faces across the floor: from its ankles to its toes.
+    Vec3d facing() const;
+    // Made `k` times its size (every bone, part, travel and skin); turned
+    // `yaw` about the up (its roots, and every key that moves them); raised
+    // `dy` (its roots). Before it starts: they change what it is made of.
+    void resize(double k);
+    void face(double yaw);
+    void lift(double dy);
 
     // The spirit's step: `dt` of the line's time, at the being's tempo.
     void live(double dt);
@@ -152,6 +173,13 @@ Key show(StateGraph& g, const Being& being, Key host, Key anchor);
 // on an element riding `anchor`. A skin is a mesh made again as the being
 // moves, so whoever shows it calls this when it has.
 void show_skins(Spatial3D& host, const Being& being, Key anchor);
+
+// `model` fitted to `reference`: as tall, facing the same way, standing on
+// the same floor (as its first clip that carries its root stands it, if one
+// does) - a model made anywhere (in centimetres, Z up, facing +z) put where
+// the reference body would be. The engine's humanoid is a reference
+// any game can make; so is any being it already has.
+void fit(Being& model, const Being& reference);
 
 // The joints of `from` that `to` has too: by name, or by name without a
 // rig's namespace (`mixamorig:Hips` is `Hips`).

@@ -229,6 +229,18 @@ M4 trs(const Vec3d& t, double qw, double qx, double qy, double qz) {
     r.m[12] = t.x, r.m[13] = t.y, r.m[14] = t.z;
     return r;
 }
+M4 scaled(M4 a, double k) {
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) a.m[c * 4 + r] *= k;
+    return a;
+}
+// a * b, as quaternions (w, x, y, z).
+void qmul(const double a[4], const double b[4], double out[4]) {
+    out[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
+    out[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
+    out[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
+    out[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
+}
 Vec3d apply(const M4& a, const Vec3d& p, double w) {
     return {a.m[0] * p.x + a.m[4] * p.y + a.m[8] * p.z + a.m[12] * w, a.m[1] * p.x + a.m[5] * p.y + a.m[9] * p.z + a.m[13] * w,
             a.m[2] * p.x + a.m[6] * p.y + a.m[10] * p.z + a.m[14] * w};
@@ -250,6 +262,9 @@ struct SkinData {
     std::vector<uint32_t> index;
     std::vector<std::string> names;  // the skin's joints, in its order
     std::vector<M4> inverse_bind;
+    // Its picture: the base colour its material wears, by its uvs (none: 0 x 0).
+    int image_w = 0, image_h = 0;
+    std::vector<unsigned char> image;
 };
 std::map<std::string, std::shared_ptr<SkinData>>& skins() {
     static std::map<std::string, std::shared_ptr<SkinData>> s;
@@ -294,24 +309,55 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         order.push_back(n);
     };
     for (int n : joint_nodes) visit(n);
+    // What is no joint but holds the skeleton (an `Armature` turned a quarter
+    // and scaled to metres, as a Mixamo export is) moves, turns and sizes it
+    // all: the root stands where it puts it, turned as it turns it; every
+    // bone's length, and every travel, is as long as it makes it. Uniform
+    // scale, as glTF's skins are.
+    struct Above {
+        M4 m;
+        double q[4] = {1, 0, 0, 0};
+        double scale = 1;
+    };
+    const auto above_of = [&](int n) {
+        Above a;
+        int p = parent[std::size_t(n)];
+        while (p >= 0 && !is_joint(p)) {
+            const J& pn = nodes[std::size_t(p)];
+            const double k = pn.has("scale") ? pn["scale"][0].num(1) : 1.0;
+            const double pq[4] = {pn["rotation"][3].num(1), pn["rotation"][0].num(), pn["rotation"][1].num(), pn["rotation"][2].num()};
+            a.m = mul(scaled(trs({pn["translation"][0].num(), pn["translation"][1].num(), pn["translation"][2].num()}, pq[0], pq[1], pq[2], pq[3]), k), a.m);
+            double q[4];
+            qmul(pq, a.q, q);
+            for (int i = 0; i < 4; ++i) a.q[i] = q[i];
+            a.scale *= k;
+            p = parent[std::size_t(p)];
+        }
+        return a;
+    };
+    std::map<int, Above> roots;  // each root joint's holder
+    double rig = 1;              // how much the holder sizes the skeleton
     for (int n : order) {
         const J& nd = nodes[std::size_t(n)];
         int p = parent[std::size_t(n)];
-        // An ancestor that is no joint still moves the root: folded into its offset.
-        M4 above;
-        while (p >= 0 && !is_joint(p)) {
-            const J& pn = nodes[std::size_t(p)];
-            above = mul(trs({pn["translation"][0].num(), pn["translation"][1].num(), pn["translation"][2].num()}, pn["rotation"][3].num(1),
-                            pn["rotation"][0].num(), pn["rotation"][1].num(), pn["rotation"][2].num()),
-                        above);
-            p = parent[std::size_t(p)];
-        }
+        while (p >= 0 && !is_joint(p)) p = parent[std::size_t(p)];
         const Vec3d t{nd["translation"][0].num(), nd["translation"][1].num(), nd["translation"][2].num()};
+        double q[4] = {nd["rotation"][3].num(1), nd["rotation"][0].num(), nd["rotation"][1].num(), nd["rotation"][2].num()};
+        Vec3d at = t * rig;
+        if (p < 0) {
+            const Above a = above_of(n);
+            roots[n] = a;
+            rig = a.scale;
+            at = apply(a.m, t, 1.0);
+            double r[4];
+            qmul(a.q, q, r);
+            for (int i = 0; i < 4; ++i) q[i] = r[i];
+        }
         const std::string name = prefix + node_name(d.j, n);
         if (find(Key{name})) continue;
-        Element& j = joint(name, p >= 0 ? prefix + node_name(d.j, p) : std::string{}, apply(above, t, 1.0));
-        j.params.set("rest_qw", nd["rotation"][3].num(1)).set("rest_qx", nd["rotation"][0].num()).set("rest_qy", nd["rotation"][1].num()).set("rest_qz", nd["rotation"][2].num());
-        j.params.set("qw", nd["rotation"][3].num(1)).set("qx", nd["rotation"][0].num()).set("qy", nd["rotation"][1].num()).set("qz", nd["rotation"][2].num());
+        Element& j = joint(name, p >= 0 ? prefix + node_name(d.j, p) : std::string{}, at);
+        j.params.set("rest_qw", q[0]).set("rest_qx", q[1]).set("rest_qy", q[2]).set("rest_qz", q[3]);
+        j.params.set("qw", q[0]).set("qx", q[1]).set("qy", q[2]).set("qz", q[3]);
     }
     // The body: the first mesh this skin deforms.
     int mesh_node = -1;
@@ -319,7 +365,7 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         if (nodes[i].has("mesh") && nodes[i].has("skin")) mesh_node = int(i);
     if (mesh_node >= 0) {
         Element& s = add_element(Key{prefix + "skin"}, Key{"skin"});
-        s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix);
+        s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix).set("rig", rig);
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
     }
     // Its motions: each animation a clip, its channels the joints' rotations
@@ -336,12 +382,24 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
             const std::vector<float> in = d.floats(sm["input"].i(), ci), out = d.floats(sm["output"].i(), co);
             const bool cubic = sm["interpolation"].s == "CUBICSPLINE";
             const std::size_t stride = std::size_t(co) * (cubic ? 3 : 1), off = cubic ? std::size_t(co) : 0;
+            const auto root = roots.find(node);
             for (std::size_t k = 0; k < in.size() && (k * stride + off + std::size_t(co)) <= out.size(); ++k) {
                 const float* v = out.data() + k * stride + off;
-                keys_text += n6(in[k]) + " " + prefix + node_name(d.j, node) +
-                             (what == "rotation" ? " q " + n6(v[3]) + " " + n6(v[0]) + " " + n6(v[1]) + " " + n6(v[2])
-                                                 : " p " + n6(v[0]) + " " + n6(v[1]) + " " + n6(v[2])) +
-                             "\n";
+                // (As the joints were made: a root's keys through what holds
+                // it, every travel as long as the holder makes it.)
+                if (what == "rotation") {
+                    double q[4] = {v[3], v[0], v[1], v[2]};
+                    if (root != roots.end()) {
+                        double r[4];
+                        qmul(root->second.q, q, r);
+                        for (int i = 0; i < 4; ++i) q[i] = r[i];
+                    }
+                    keys_text += n6(in[k]) + " " + prefix + node_name(d.j, node) + " q " + n6(q[0]) + " " + n6(q[1]) + " " + n6(q[2]) + " " + n6(q[3]) + "\n";
+                } else {
+                    const Vec3d t{v[0], v[1], v[2]};
+                    const Vec3d at = root != roots.end() ? apply(root->second.m, t, 1.0) : t * rig;
+                    keys_text += n6(in[k]) + " " + prefix + node_name(d.j, node) + " p " + n6(at.x) + " " + n6(at.y) + " " + n6(at.z) + "\n";
+                }
             }
         }
         const std::string clip_name = an["name"].s.empty() ? "anim" + std::to_string(a) : an["name"].s;
@@ -378,6 +436,29 @@ std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) c
                         slot->inverse_bind.push_back(m);
                     }
                 }
+                // The picture its first primitive's material wears, if any:
+                // embedded (a buffer view) or beside it (a file), decoded by
+                // the program (files().decode).
+                {
+                    const J& prim0 = d.j["meshes"][std::size_t(node["mesh"].i(0))]["primitives"][0];
+                    const J& mat = d.j["materials"][std::size_t(prim0["material"].i(-1) < 0 ? 0 : prim0["material"].i(0))];
+                    const int tex = prim0.has("material") ? mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].i(-1) : -1;
+                    const int img = tex >= 0 ? d.j["textures"][std::size_t(tex)]["source"].i(-1) : -1;
+                    if (img >= 0 && files().decode) {
+                        const J& im = d.j["images"][std::size_t(img)];
+                        std::string data;
+                        if (im.has("bufferView")) {
+                            const J& bv = d.j["bufferViews"][std::size_t(im["bufferView"].i(0))];
+                            const std::string& buf = d.buffers[std::size_t(bv["buffer"].i(0))];
+                            const std::size_t at = std::size_t(bv["byteOffset"].i(0)), n = std::size_t(bv["byteLength"].i(0));
+                            if (at + n <= buf.size()) data = buf.substr(at, n);
+                        } else if (!im["uri"].s.empty() && im["uri"].s.rfind("data:", 0) != 0) {
+                            const std::string dir = path.find_last_of("/\\") == std::string::npos ? "" : path.substr(0, path.find_last_of("/\\") + 1);
+                            files().read(dir + im["uri"].s, data);
+                        }
+                        if (!data.empty() && !files().decode(data, slot->image_w, slot->image_h, slot->image)) slot->image_w = slot->image_h = 0;
+                    }
+                }
                 for (const J& prim : d.j["meshes"][std::size_t(node["mesh"].i(0))]["primitives"].a) {
                     const J& at = prim["attributes"];
                     if (!at.has("POSITION") || !at.has("JOINTS_0") || !at.has("WEIGHTS_0")) continue;
@@ -409,7 +490,10 @@ std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) c
         if (!j) continue;
         const M4 now = trs({j->params.num("px"), j->params.num("py"), j->params.num("pz")}, j->params.num("pqw", 1), j->params.num("pqx"),
                            j->params.num("pqy"), j->params.num("pqz"));
-        m[i] = i < sd.inverse_bind.size() ? mul(now, sd.inverse_bind[i]) : now;
+        // (The joint as glTF has it is sized by what holds the skeleton; ours
+        // is not - its lengths already are - so the size goes back between.)
+        const M4 sized = scaled(now, s->params.num("rig", 1.0));
+        m[i] = i < sd.inverse_bind.size() ? mul(sized, sd.inverse_bind[i]) : sized;
     }
     Vec3d lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
     std::vector<Vec3d> P(sd.pos.size()), N(sd.pos.size());
@@ -444,6 +528,16 @@ std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) c
     return out;
 }
 
+const std::vector<unsigned char>* Being::skin_picture(Key skin_id, int& w, int& h) const {
+    // (Read with the skin, and kept with it: skinned() makes sure it is read.)
+    const Element* s = find(skin_id);
+    if (!s) return nullptr;
+    auto it = skins().find(s->params.get_or<std::string>("file", "") + "#" + std::to_string(int(s->params.num("node"))));
+    if (it == skins().end() || !it->second || it->second->image_w <= 0) return nullptr;
+    w = it->second->image_w, h = it->second->image_h;
+    return &it->second->image;
+}
+
 void show_skins(Spatial3D& host, const Being& b, Key anchor) {
     for (const Element& s : b.elements()) {
         if (s.kind != Key{"skin"}) continue;
@@ -463,6 +557,14 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
         e->params.set(keys::sx, size.x).set(keys::sy, size.y).set(keys::sz, size.z);
         e->params.set(keys::x, mid.x).set(keys::y, mid.y - half.y).set(keys::z, mid.z);
         for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, s.params.num(k, 0.7));
+        // Its picture, worn by its own uvs (given to the host once).
+        int w = 0, h = 0;
+        if (const std::vector<unsigned char>* rgba = b.skin_picture(s.id, w, h)) {
+            const Key pic{model.str() + ".picture"};
+            if (!host.picture(pic)) host.picture(pic, w, h, *rgba);
+            e->params.set("skin", pic.str()).set("uv", 1.0);
+            for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, 1.0);
+        }
     }
 }
 
