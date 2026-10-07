@@ -56,32 +56,12 @@ Q axis_angle(Vec3d axis, double a) {
 // The engine's one turn (yaw, then pitch, then roll - spatial::from_euler, so
 // there is one convention, not two), and back.
 Q from_euler(double yaw, double pitch, double roll) {
-    const spatial::M3 m = spatial::from_euler(yaw, pitch, roll);
     Q q;
-    const double t = m(0, 0) + m(1, 1) + m(2, 2);
-    if (t > 0) {
-        const double s = std::sqrt(t + 1.0) * 2;
-        q = {0.25 * s, (m(2, 1) - m(1, 2)) / s, (m(0, 2) - m(2, 0)) / s, (m(1, 0) - m(0, 1)) / s};
-    } else if (m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2)) {
-        const double s = std::sqrt(1.0 + m(0, 0) - m(1, 1) - m(2, 2)) * 2;
-        q = {(m(2, 1) - m(1, 2)) / s, 0.25 * s, (m(0, 1) + m(1, 0)) / s, (m(0, 2) + m(2, 0)) / s};
-    } else if (m(1, 1) > m(2, 2)) {
-        const double s = std::sqrt(1.0 + m(1, 1) - m(0, 0) - m(2, 2)) * 2;
-        q = {(m(0, 2) - m(2, 0)) / s, (m(0, 1) + m(1, 0)) / s, 0.25 * s, (m(1, 2) + m(2, 1)) / s};
-    } else {
-        const double s = std::sqrt(1.0 + m(2, 2) - m(0, 0) - m(1, 1)) * 2;
-        q = {(m(1, 0) - m(0, 1)) / s, (m(0, 2) + m(2, 0)) / s, (m(1, 2) + m(2, 1)) / s, 0.25 * s};
-    }
-    return norm(q);
+    spatial::to_quat(spatial::from_euler(yaw, pitch, roll), q.w, q.x, q.y, q.z);
+    return q;
 }
 void to_euler(const Q& q, double& yaw, double& pitch, double& roll) {
-    const Q n = norm(q);
-    const double w = n.w, x = n.x, y = n.y, z = n.z;
-    spatial::M3 m;
-    m.a = {1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y),
-           2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
-           2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)};
-    spatial::to_euler(m, yaw, pitch, roll);
+    spatial::to_euler(spatial::from_quat(q.w, q.x, q.y, q.z), yaw, pitch, roll);
 }
 // The smallest turn taking direction `a` to direction `b`.
 Q between(Vec3d a, Vec3d b) {
@@ -115,7 +95,7 @@ Vec3d offset_of(const Element& e) {
 }
 double ease(double dt, double rate) { return rate <= 0 ? 1.0 : 1.0 - std::exp(-dt * rate); }
 
-const Key kJoint{"joint"}, kPart{"part"}, kClip{"clip"}, kLayer{"layer"}, kGoal{"goal"};
+const Key kJoint{"joint"}, kPart{"part"}, kClip{"clip"}, kLayer{"layer"}, kGoal{"goal"}, kBlend{"blend"};
 
 // Every joint in order, parents first, and where each is in the being's frame
 // for a set of local turns.
@@ -123,10 +103,55 @@ struct Frame {
     Vec3d p;
     Q r;
 };
+
+// A blend's clips, each at its point (`clip x [y]` a line), and how much of
+// each is played at (x, y): gradient bands - each clip's weight the least,
+// over every other, of how far the point has still to go from it towards
+// that other (Johansen's cartesian bands). Along a line it is linear between
+// the two neighbours; on a plane it is smooth, and the clip on the point is
+// all there is.
+std::vector<std::pair<std::string, double>> blend_weights(const std::string& text, double x, double y) {
+    struct P {
+        std::string clip;
+        double x, y;
+    };
+    std::vector<P> ps;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        std::istringstream ls(line.substr(0, line.find('#')));
+        P p{{}, 0, 0};
+        if (ls >> p.clip >> p.x) {
+            ls >> p.y;
+            ps.push_back(p);
+        }
+    }
+    std::vector<std::pair<std::string, double>> out;
+    double total = 0;
+    for (std::size_t i = 0; i < ps.size(); ++i) {
+        double w = 1;
+        for (std::size_t j = 0; j < ps.size(); ++j) {
+            if (j == i) continue;
+            const double ax = ps[j].x - ps[i].x, ay = ps[j].y - ps[i].y, l2 = ax * ax + ay * ay;
+            if (l2 < 1e-12) continue;
+            w = std::min(w, 1.0 - ((x - ps[i].x) * ax + (y - ps[i].y) * ay) / l2);
+        }
+        w = std::max(0.0, w);
+        out.emplace_back(ps[i].clip, w);
+        total += w;
+    }
+    for (auto& [c, w] : out) w = total > 1e-12 ? w / total : 1.0 / double(out.size());
+    return out;
+}
 }  // namespace
 
 Being::Being(Key id, double scale) : State(std::move(id)) {
-    add_element(self_id(), Key{"being"}).params.set("scale", scale).set("tempo_exp", 1.0).set("age", 0.0);
+    add_element(self_id(), Key{"being"})
+        .params.set("scale", scale)
+        .set("tempo_exp", 1.0)
+        .set("age", 0.0)
+        .set("lead", 0.0)
+        .set("lead_to", 0.0)
+        .set("lead_fade", 0.3);
     for (int i = 0; i < kLayers; ++i)
         add_element(Key{"layer" + std::to_string(i)}, kLayer)
             .params.set("clip", std::string{})
@@ -141,7 +166,7 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     //   self --play--> self: a clip, faded in (and the others out, unless not alone).
     loop(Key{"play"}, self_id(), play_event(), [](State& s, Element&, Element*, const Event& ev) {
         const std::string clip = ev.args.get_or<std::string>("clip", "");
-        if (!s.find(Key{"clip." + clip})) return;
+        if (!s.find(Key{"clip." + clip}) && !s.find(Key{"blend." + clip})) return;
         const double fade = ev.args.num("fade", 0.3), weight = ev.args.num("weight", 1.0);
         Element* slot = nullptr;
         for (int i = 0; i < kLayers; ++i) {
@@ -191,6 +216,17 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         for (Element& e : s.elements())
             if (e.kind == kJoint && (name.empty() || e.id.str() == name)) e.params.set("hold_to", 0.0);
     });
+    //   self --steer--> self: where in a blend it is to be (eased there).
+    loop(Key{"steer"}, self_id(), steer_event(), [](State& s, Element&, Element*, const Event& ev) {
+        Element* b = s.find(Key{"blend." + ev.args.get_or<std::string>("blend", "")});
+        if (!b) return;
+        if (ev.args.has(keys::x)) b->params.set("to_x", ev.args.num(keys::x));
+        if (ev.args.has(keys::y)) b->params.set("to_y", ev.args.num(keys::y));
+    });
+    //   self --lead--> self: how much it gives itself to what leads it.
+    loop(Key{"lead"}, self_id(), lead_event(), [](State&, Element& self, Element*, const Event& ev) {
+        self.params.set("lead_to", std::clamp(ev.args.num("weight", 1.0), 0.0, 1.0)).set("lead_fade", ev.args.num("fade", 0.3));
+    });
     loop(Key{"scale"}, self_id(), scale_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("scale", std::max(1e-3, ev.args.num("scale", 1.0)));
     });
@@ -200,7 +236,7 @@ Element& Being::joint(const std::string& name, const std::string& parent, const 
     Element& j = add_element(Key{name}, kJoint);
     j.params.set("parent_joint", parent).set(keys::x, offset.x).set(keys::y, offset.y).set(keys::z, offset.z);
     j.params.set("rest_yaw", rest_deg.x * kDeg).set("rest_pitch", rest_deg.y * kDeg).set("rest_roll", rest_deg.z * kDeg);
-    j.params.set("stiffness", stiffness).set("hold", 0.0).set("hold_to", 0.0);
+    j.params.set("stiffness", stiffness).set("hold", 0.0).set("hold_to", 0.0).set("lead_at", 0.0).set("lead_moves", 0.0);
     set_q(j, rest_of(j));
     set_q(j, Q{}, "h");
     resolve();
@@ -221,6 +257,13 @@ Element& Being::clip(const std::string& name, const std::string& keys_text, bool
     if (!c) c = &add_element(Key{"clip." + name}, kClip);
     c->params.set("keys", keys_text).set("loop", loop_it ? 1.0 : 0.0);
     return *c;
+}
+
+Element& Being::blend(const std::string& name, const std::string& points, double x, double y, double rate) {
+    Element* b = find(Key{"blend." + name});
+    if (!b) b = &add_element(Key{"blend." + name}, kBlend);
+    b->params.set("clips", points).set(keys::x, x).set(keys::y, y).set("to_x", x).set("to_y", y).set("rate", rate);
+    return *b;
 }
 
 Element& Being::goal(const std::string& name, const std::string& tip, int links) {
@@ -281,7 +324,16 @@ void Being::live(double dt) {
     self.params.set("age", self.params.num("age") + t);
 
     // What it intends, clip by clip: each layer fades toward its weight, and
-    // plays on.
+    // plays on. A layer that plays a blend plays its clips together, each by
+    // its weight at the blend's point, in step: one phase (0..1) for them
+    // all, gone round in the time their lengths, so weighted, take - a walk
+    // and a run blended put their feet down together.
+    struct Sample {
+        const Parsed* clip;
+        double phase, weight;
+        bool loop;
+    };
+    std::vector<Sample> samples;
     for (int i = 0; i < kLayers; ++i) {
         Element& l = element(Key{"layer" + std::to_string(i)});
         const std::string c = l.params.get_or<std::string>("clip", "");
@@ -289,12 +341,32 @@ void Being::live(double dt) {
         const double w = l.params.num("weight"), to = l.params.num("to");
         const double nw = w + (to - w) * ease(t, 1.0 / std::max(1e-3, l.params.num("fade", 0.3)));
         l.params.set("weight", nw);
-        const Element* ce = find(Key{"clip." + c});
-        if (!ce) continue;
-        const double len = parsed(*ce).length;
-        double ph = l.params.num("phase") + t * l.params.num("speed", 1.0);
-        if (len > 0) ph = l.params.num("loop", 1.0) > 0.5 ? std::fmod(ph, len) : std::min(ph, len);
-        l.params.set("phase", ph);
+        const bool loops = l.params.num("loop", 1.0) > 0.5;
+        if (const Element* ce = find(Key{"clip." + c})) {
+            const double len = parsed(*ce).length;
+            double ph = l.params.num("phase") + t * l.params.num("speed", 1.0);
+            if (len > 0) ph = loops ? std::fmod(ph, len) : std::min(ph, len);
+            l.params.set("phase", ph);
+            samples.push_back({&parsed(*ce), ph, nw, loops});
+        } else if (Element* be = find(Key{"blend." + c})) {
+            // Where in it: eased toward where it was steered, at its rate.
+            const double k = ease(t, be->params.num("rate", 6.0));
+            const double bx = be->params.num(keys::x) + (be->params.num("to_x") - be->params.num(keys::x)) * k;
+            const double by = be->params.num(keys::y) + (be->params.num("to_y") - be->params.num(keys::y)) * k;
+            be->params.set(keys::x, bx).set(keys::y, by);
+            std::vector<std::pair<const Parsed*, double>> parts;
+            double length = 0;
+            for (const auto& [name, bw] : blend_weights(be->params.get_or<std::string>("clips", ""), bx, by)) {
+                const Element* ce = find(Key{"clip." + name});
+                if (!ce || bw <= 1e-6) continue;
+                parts.emplace_back(&parsed(*ce), bw);
+                length += bw * parts.back().first->length;
+            }
+            double ph = l.params.num("phase") + (length > 1e-6 ? t * l.params.num("speed", 1.0) / length : 0.0);
+            ph = loops ? ph - std::floor(ph) : std::min(ph, 1.0);
+            l.params.set("phase", ph);
+            for (const auto& [p, bw] : parts) samples.push_back({p, ph * p->length, nw * bw, true});
+        }
         if (to <= 0 && nw < 1e-3) l.params.set("clip", std::string{}).set("weight", 0.0);
     }
 
@@ -321,17 +393,13 @@ void Being::live(double dt) {
         const Vec3d made{j.params.num(keys::x), j.params.num(keys::y), j.params.num(keys::z)};
         Vec3d moved{};
         double moved_w = 0;
-        for (int li = 0; li < kLayers; ++li) {
-            const Element& l = element(Key{"layer" + std::to_string(li)});
-            const std::string c = l.params.get_or<std::string>("clip", "");
-            const double w = l.params.num("weight");
-            const Element* ce = c.empty() ? nullptr : find(Key{"clip." + c});
-            if (!ce || w <= 1e-6) continue;
-            const Parsed& p = parsed(*ce);
+        for (const Sample& sm : samples) {
+            if (sm.weight <= 1e-6) continue;
+            const Parsed& p = *sm.clip;
             auto tr = p.tracks.find(j.id);
             if (tr == p.tracks.end()) continue;
+            const double ph = sm.phase, w = sm.weight;
             if (const auto& ms = tr->second.moves; !ms.empty()) {
-                const double ph = l.params.num("phase");
                 std::size_t k = 0;
                 while (k + 1 < ms.size() && ms[k + 1].t <= ph) ++k;
                 Vec3d v{ms[k].q[0], ms[k].q[1], ms[k].q[2]};
@@ -343,7 +411,6 @@ void Being::live(double dt) {
             }
             if (tr->second.keys.empty()) continue;
             const auto& ks = tr->second.keys;
-            const double ph = l.params.num("phase");
             std::size_t k = 0;
             while (k + 1 < ks.size() && ks[k + 1].t <= ph) ++k;
             Q a{ks[k].q[0], ks[k].q[1], ks[k].q[2], ks[k].q[3]}, q = a;
@@ -351,7 +418,7 @@ void Being::live(double dt) {
                 const Q b{ks[k + 1].q[0], ks[k + 1].q[1], ks[k + 1].q[2], ks[k + 1].q[3]};
                 const double span = ks[k + 1].t - ks[k].t;
                 q = slerp(a, b, span > 0 ? (ph - ks[k].t) / span : 0.0);
-            } else if (l.params.num("loop", 1.0) > 0.5 && ks.size() > 1 && p.length > ks[k].t) {
+            } else if (sm.loop && ks.size() > 1 && p.length > ks[k].t) {
                 // Round the loop, back to its first key.
                 const Q b{ks[0].q[0], ks[0].q[1], ks[0].q[2], ks[0].q[3]};
                 q = slerp(a, b, (ph - ks[k].t) / (p.length - ks[k].t + ks[0].t + 1e-9));
@@ -385,6 +452,50 @@ void Being::live(double dt) {
         }
     };
 
+    // What it means to do, in its own frame - each joint's turn and place as
+    // its clips and holds say, before anything leads it: what whoever moves
+    // it from outside (a ragdoll's muscles) aims for.
+    {
+        std::vector<Frame> meant;
+        fk(target, meant);
+        for (std::size_t i = 0; i < js.size(); ++i) {
+            set_q(*js[i], meant[i].r, "aq");
+            js[i]->params.set("ax", meant[i].p.x).set("ay", meant[i].p.y).set("az", meant[i].p.z);
+        }
+    }
+
+    // Led: each joint that something leads (`lead_q`, a turn in its own frame,
+    // and for one that travels `lead_t`, a place) is turned that way in the
+    // being's frame by how much it gives itself (`lead`), the turn on its
+    // parent found from its parent's as led - so a led arm on an unled body
+    // still points where it is led. What leads it is another being's motion
+    // carried across (`retarget`), or a ragdoll's bones.
+    const double lead = self.params.num("lead") +
+                        (self.params.num("lead_to") - self.params.num("lead")) * ease(t, 1.0 / std::max(1e-3, self.params.num("lead_fade", 0.3)));
+    self.params.set("lead", lead);
+    std::vector<double> led(js.size(), 0.0);
+    if (lead > 1e-4) {
+        std::vector<Q> world(js.size());
+        for (std::size_t i = 0; i < js.size(); ++i) {
+            Element& j = *js[i];
+            const Q pw = parent[i] >= 0 ? world[std::size_t(parent[i])] : Q{};
+            Q w = mul(pw, target[i]);
+            if (j.params.num("lead_at") > 0.5) {
+                Q l = norm(q_of(j, "lead_q"));
+                if (dot(l, w) < 0) l = scaled(l, -1);
+                w = slerp(w, l, lead);
+                target[i] = norm(mul(conj(pw), w));
+                led[i] = lead;
+            }
+            world[i] = w;
+            if (j.params.num("lead_moves") > 0.5) {
+                const Vec3d from = offset_of(j), to{j.params.num("lead_tx"), j.params.num("lead_ty"), j.params.num("lead_tz")};
+                const Vec3d p = from + (to - from) * lead;
+                j.params.set("tx", p.x).set("ty", p.y).set("tz", p.z);
+            }
+        }
+    }
+
     // Reaching: each goal's chain turned, joint by joint from the tip up, to
     // bring the tip to the point (cyclic coordinate descent), and the target
     // turned that far toward it by the goal's weight.
@@ -412,20 +523,30 @@ void Being::live(double dt) {
         for (std::size_t c : chain) target[c] = slerp(target[c], work[c], w);
     }
 
-    // The body goes where it is meant to, each joint at its own stiffness.
-    for (std::size_t i = 0; i < js.size(); ++i) set_q(*js[i], norm(slerp(q_of(*js[i]), target[i], ease(t, js[i]->params.num("stiffness", 24.0)))));
+    // The body goes where it is meant to, each joint at its own stiffness -
+    // and wholly as far as it is led: what leads it has dynamics of its own.
+    for (std::size_t i = 0; i < js.size(); ++i)
+        set_q(*js[i], norm(slerp(q_of(*js[i]), target[i], std::max(led[i], ease(t, js[i]->params.num("stiffness", 24.0))))));
     resolve();
 }
 
 void Being::resolve() {
-    // Every joint and part posed in the being's frame from the joints' turns.
+    // Every joint and part posed in the being's frame from the joints' turns;
+    // and each joint as it is bound, at rest (`bq`): the frame a motion is
+    // carried in from one body to another.
     std::unordered_map<Key, Frame> f;
+    std::unordered_map<Key, Q> bind;
     for (Element& e : elements()) {
         if (e.kind != kJoint) continue;
         const Vec3d off = offset_of(e);
-        auto pit = f.find(Key{e.params.get_or<std::string>("parent_joint", "")});
+        const Key up{e.params.get_or<std::string>("parent_joint", "")};
+        auto pit = f.find(up);
         Frame mine = pit == f.end() ? Frame{off, q_of(e)} : Frame{pit->second.p + rotate(pit->second.r, off), mul(pit->second.r, q_of(e))};
         f[e.id] = mine;
+        auto bit = bind.find(up);
+        const Q b = norm(bit == bind.end() ? rest_of(e) : mul(bit->second, rest_of(e)));
+        bind[e.id] = b;
+        set_q(e, b, "bq");
         double y, p, r;
         to_euler(mine.r, y, p, r);
         e.params.set("px", mine.p.x).set("py", mine.p.y).set("pz", mine.p.z).set("pyaw", y).set("ppitch", p).set("proll", r);
@@ -485,6 +606,56 @@ Key show(StateGraph& g, const Being& b, Key host, Key anchor) {
     }
     g.set_functor(std::move(f));
     g.functor(name)->apply(b, h);
+    return name;
+}
+
+namespace {
+// A joint's name without the namespace a rig gave it (`mixamorig:Hips`,
+// `mixamorig1:Hips`, `Armature|Hips` are all `Hips`).
+std::string bare(const std::string& n) {
+    const std::size_t k = n.find_last_of(":|");
+    return k == std::string::npos ? n : n.substr(k + 1);
+}
+}  // namespace
+
+std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to) {
+    std::unordered_map<std::string, Key> theirs, by_bare;
+    for (Key j : to.joints()) theirs.emplace(j.str(), j), by_bare.emplace(bare(j.str()), j);
+    std::vector<std::pair<Key, Key>> out;
+    for (Key j : from.joints()) {
+        if (auto it = theirs.find(j.str()); it != theirs.end()) out.emplace_back(j, it->second);
+        else if (auto bt = by_bare.find(bare(j.str())); bt != by_bare.end()) out.emplace_back(j, bt->second);
+    }
+    return out;
+}
+
+Key retarget(StateGraph& g, const Being& from, const Being& to, Key name) {
+    if (name.empty()) name = Key{from.id().str() + ".to." + to.id().str()};
+    Functor f(name, from.id(), to.id());
+    for (const auto& [a, b] : same_joints(from, to))
+        f.on_object(a, b, [](const Element& src, Element& dst) {
+            // The source's turn away from its own bind, put on the target's
+            // bind: lead = pq_src * bq_src^-1 * bq_dst. Each body keeps its
+            // own bones' axes; only the motion crosses.
+            const Q w = mul(mul(q_of(src, "pq"), conj(q_of(src, "bq"))), q_of(dst, "bq"));
+            set_q(dst, norm(w), "lead_q");
+            dst.params.set("lead_at", 1.0);
+            // A joint that travels (the hips) travels as far for its size:
+            // by how far each stands from its parent as made.
+            if (src.params.has(Key{"tx"})) {
+                const auto len = [](const Element& e) {
+                    const double x = e.params.num(keys::x), y = e.params.num(keys::y), z = e.params.num(keys::z);
+                    return std::sqrt(x * x + y * y + z * z);
+                };
+                const double ls = len(src), k = ls > 1e-6 ? len(dst) / ls : 1.0;
+                dst.params.set("lead_tx", src.params.num("tx") * k).set("lead_ty", src.params.num("ty") * k).set("lead_tz", src.params.num("tz") * k);
+                dst.params.set("lead_moves", 1.0);
+            } else {
+                dst.params.set("lead_moves", 0.0);
+            }
+        });
+    g.set_functor(std::move(f));
+    g.keep(name);
     return name;
 }
 

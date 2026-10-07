@@ -10,6 +10,7 @@
 #include "sg/core/Temporal.hpp"
 #include "sg/core/Text.hpp"
 #include "sg/domains/Being.hpp"
+#include "sg/spatial/Math.hpp"
 
 static int failures = 0;
 static void check(bool ok, const std::string& what) {
@@ -213,6 +214,95 @@ int main() {
         for (int i = 0; i < 60; ++i) e2.tick(1.0 / 60);
         const double half = b2.pose_of("tip").pitch;
         check(half > 0.5 && half < 1.1, "and played at half speed, a second in it is half bent (" + std::to_string(half * 180 / 3.14159265) + " degrees)");
+    }
+    {
+        // One dance, two bodies: a functor carries each joint's turn away
+        // from its bind pose onto the same joint of another - smaller, and
+        // with its arm's bone axes turned another way, so a turn copied as
+        // it is would point its hand elsewhere.
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& a = g.add<sg::Being>(sg::Key{"dancer"});
+        a.joint("hips", "", {0, 1.0, 0});
+        a.joint("mixamorig:Arm", "hips", {0, 0.5, 0});
+        a.joint("mixamorig:Hand", "mixamorig:Arm", {0, -0.5, 0});
+        a.clip("reach", "0 mixamorig:Arm 30 80 0\n1 mixamorig:Arm 30 80 0\n0 hips p 0.2 0.9 0\n1 hips p 0.2 0.9 0");
+        auto& b = g.add<sg::Being>(sg::Key{"kid"});
+        b.joint("hips", "", {0, 0.6, 0});
+        // Its arm at rest turned a quarter about x, its hand's offset turned
+        // back so the hand hangs where the dancer's does, at its size.
+        const sg::spatial::M3 roll = sg::spatial::from_euler(0, 0, 3.14159265358979 / 2);
+        const sg::spatial::V3 hand = sg::spatial::transpose(roll) * sg::spatial::V3{0, -0.3, 0};
+        b.joint("Arm", "hips", {0, 0.3, 0}, {0, 0, 90});
+        b.joint("Hand", "Arm", {hand.x, hand.y, hand.z});
+        const auto pairs = sg::same_joints(a, b);
+        check(pairs.size() == 3, "the same skeleton found under another rig's names (" + std::to_string(pairs.size()) + " joints)");
+        const sg::Key f = sg::retarget(g, a, b);
+        sg::drive(g, clock, "dancer", a.live_event());
+        sg::drive(g, clock, "kid", b.live_event(), false, sg::Keeps::Always);
+        g.set_initial("dancer");
+        a.hear(sg::Event{a.play_event(), sg::Params{}.set("clip", std::string("reach")).set("fade", 0.0)});
+        a.dispatch_pending();
+        b.hear(sg::Event{b.lead_event(), sg::Params{}.set("weight", 1.0).set("fade", 0.0)});
+        b.dispatch_pending();
+        const sg::LawReport r = sg::verify(g);
+        for (const auto& v : r.violations) std::printf("     %s: %s\n", v.where.c_str(), v.detail.c_str());
+        check(r.structure.empty() && r.ok() && g.functor(f), "retargeted: two beings and the functor between them keep the laws");
+        sg::Engine e(g);
+        e.set_strict(true);
+        e.start();
+        for (int i = 0; i < 60; ++i) e.tick(1.0 / 60);
+        const auto dir = [](const sg::Being& s, const char* arm, const char* hd) {
+            const sg::Vec3d d = s.pose_of(sg::Key{hd}).position - s.pose_of(sg::Key{arm}).position;
+            const double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            return d * (1.0 / l);
+        };
+        const sg::Vec3d da = dir(a, "mixamorig:Arm", "mixamorig:Hand"), db = dir(b, "Arm", "Hand");
+        const double off = std::acos(std::min(1.0, da.x * db.x + da.y * db.y + da.z * db.z)) * 180 / 3.14159265;
+        check(da.y > -0.5 && off < 1.0, "the kid's hand points where the dancer's does, though its arm's axes are turned (" + std::to_string(off) + " degrees off)");
+        const double ha = a.pose_of("hips").position.y, hb = b.pose_of("hips").position.y;
+        check(std::fabs(hb / ha - 0.6) < 0.01 && std::fabs(b.pose_of("hips").position.x - 0.12) < 0.01,
+              "and its hips travel as far for its size (" + std::to_string(hb) + " m against " + std::to_string(ha) + ")");
+        // Let go: it gives itself back to its own clips (none: its rest).
+        b.hear(sg::Event{b.lead_event(), sg::Params{}.set("weight", 0.0).set("fade", 0.1)});
+        b.dispatch_pending();
+        for (int i = 0; i < 90; ++i) e.tick(1.0 / 60);
+        const sg::Vec3d rest = dir(b, "Arm", "Hand");
+        check(rest.y < -0.99 && std::fabs(b.pose_of("hips").position.y - 0.6) < 1e-3, "let go, it stands as it was made again");
+    }
+    {
+        // A blend: two clips played together by how near a point is to each,
+        // in step, steered and eased there.
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& b = g.add<sg::Being>(sg::Key{"mover"});
+        b.joint("hips", "", {0, 1.0, 0});
+        b.joint("arm", "hips", {0, 0.5, 0}, {}, 200);
+        b.clip("slow", "0 arm 0 20 0\n1 arm 0 20 0");
+        b.clip("fast", "0 arm 0 80 0\n0.5 arm 0 80 0");
+        b.blend("go", "slow 0\nfast 1");
+        sg::drive(g, clock, "mover", b.live_event());
+        g.set_initial("mover");
+        const sg::LawReport r = sg::verify(g);
+        for (const auto& v : r.violations) std::printf("     %s: %s\n", v.where.c_str(), v.detail.c_str());
+        check(r.structure.empty() && r.ok(), "a being with a blend keeps the laws");
+        sg::Engine e(g);
+        e.set_strict(true);
+        e.start();
+        e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("go")).set("fade", 0.0)});
+        for (int i = 0; i < 30; ++i) e.tick(1.0 / 60);
+        const double at0 = b.pose_of("arm").pitch * 180 / 3.14159265;
+        e.fire(sg::Event{b.steer_event(), sg::Params{}.set("blend", std::string("go")).set(sg::keys::x, 0.5)});
+        for (int i = 0; i < 120; ++i) e.tick(1.0 / 60);
+        const double half = b.pose_of("arm").pitch * 180 / 3.14159265;
+        e.fire(sg::Event{b.steer_event(), sg::Params{}.set("blend", std::string("go")).set(sg::keys::x, 1.0)});
+        for (int i = 0; i < 120; ++i) e.tick(1.0 / 60);
+        const double all = b.pose_of("arm").pitch * 180 / 3.14159265;
+        check(std::fabs(at0 - 20) < 1 && std::fabs(half - 50) < 2 && std::fabs(all - 80) < 1,
+              "steered along it, the pose goes from one clip through the mean to the other (" + std::to_string(at0) + ", " + std::to_string(half) + ", " +
+                  std::to_string(all) + " degrees)");
+        const double ph = b.element("layer0").params.num("phase");
+        check(ph >= 0 && ph < 1, "its clips go round together, on one phase (" + std::to_string(ph) + ")");
     }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;

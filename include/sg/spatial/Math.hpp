@@ -67,5 +67,10 @@ V3 log_map(const M3& r);
 // The renderer's turn: R = Ry(-yaw) Rz(pitch) Rx(roll), as a mesh is turned.
 M3 from_euler(double yaw, double pitch, double roll);
 void to_euler(const M3& m, double& yaw, double& pitch, double& roll);
+// A turn as a unit quaternion (w, x, y, z), and back: one convention for
+// whoever keeps turns as quaternions (a being's joints) and meets one kept
+// as a matrix (a rigid body).
+M3 from_quat(double w, double x, double y, double z);
+void to_quat(const M3& m, double& w, double& x, double& y, double& z);
 
 } // namespace sg::spatial

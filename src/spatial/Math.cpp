@@ -95,6 +95,36 @@ M3 from_euler(double yaw, double pitch, double roll) {
     return ry * (rz * rx);
 }
 
+M3 from_quat(double w, double x, double y, double z) {
+    const double n = std::sqrt(w * w + x * x + y * y + z * z);
+    if (n < 1e-12) return M3{};
+    w /= n, x /= n, y /= n, z /= n;
+    M3 m;
+    m.a = {1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y),
+           2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+           2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)};
+    return m;
+}
+
+void to_quat(const M3& m, double& w, double& x, double& y, double& z) {
+    const double t = m(0, 0) + m(1, 1) + m(2, 2);
+    if (t > 0) {
+        const double s = std::sqrt(t + 1.0) * 2;
+        w = 0.25 * s, x = (m(2, 1) - m(1, 2)) / s, y = (m(0, 2) - m(2, 0)) / s, z = (m(1, 0) - m(0, 1)) / s;
+    } else if (m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(0, 0) - m(1, 1) - m(2, 2)) * 2;
+        w = (m(2, 1) - m(1, 2)) / s, x = 0.25 * s, y = (m(0, 1) + m(1, 0)) / s, z = (m(0, 2) + m(2, 0)) / s;
+    } else if (m(1, 1) > m(2, 2)) {
+        const double s = std::sqrt(1.0 + m(1, 1) - m(0, 0) - m(2, 2)) * 2;
+        w = (m(0, 2) - m(2, 0)) / s, x = (m(0, 1) + m(1, 0)) / s, y = 0.25 * s, z = (m(1, 2) + m(2, 1)) / s;
+    } else {
+        const double s = std::sqrt(1.0 + m(2, 2) - m(0, 0) - m(1, 1)) * 2;
+        w = (m(1, 0) - m(0, 1)) / s, x = (m(0, 2) + m(2, 0)) / s, y = (m(1, 2) + m(2, 1)) / s, z = 0.25 * s;
+    }
+    const double n = std::sqrt(w * w + x * x + y * y + z * z);
+    w /= n, x /= n, y /= n, z /= n;
+}
+
 void to_euler(const M3& m, double& yaw, double& pitch, double& roll) {
     pitch = std::asin(std::clamp(m(1, 0), -1.0, 1.0));
     if (std::fabs(std::cos(pitch)) > 1e-5) {  // (nearer upright than that, how a turn splits between yaw and roll is only noise)

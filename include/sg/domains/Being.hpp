@@ -17,6 +17,13 @@
 //              point (`goal`, by inverse kinematics) - and its joints *go*
 //              there, each at its own `stiffness`: the intention says what
 //              must hold, the body's own dynamics, in time, get there.
+//   led        its joints given over, by how much it gives itself (`lead`), to
+//              a pose something else holds out to it in its own frame
+//              (`lead_q` on a joint, `lead_t` where one travels): another
+//              being's motion carried across (`retarget`), or a ragdoll's
+//              bones (Ragdoll.hpp). Under it the being still means what it
+//              means (`aq`, `ax ay az`: its pose as its clips and holds say),
+//              for whatever leads it to aim at.
 //   (soul)     what wants - talk, choice - is another state, sending this one
 //              intentions (`play`, `reach`, `turn`) by the graph.
 //
@@ -60,6 +67,8 @@ public:
     Key turn_event() const { return Key{id().str() + ".turn"}; }    // {joint, yaw, pitch, roll (degrees), weight=1}: held so
     Key free_event() const { return Key{id().str() + ".free"}; }    // {joint (empty: all)}: let go
     Key scale_event() const { return Key{id().str() + ".scale"}; }  // {scale}
+    Key steer_event() const { return Key{id().str() + ".steer"}; }  // {blend, x, y}: where in a blend, eased there
+    Key lead_event() const { return Key{id().str() + ".lead"}; }    // {weight=1, fade=0.3}: how far it follows what leads it
 
     // --- what it is made of (before it starts) ------------------------------------
     // A joint riding `parent` (empty: the root) at `offset`, at rest turned by
@@ -73,6 +82,12 @@ public:
     // its own time, degrees), or `t joint q w x y z` (the turn itself) -
     // looping or not.
     Element& clip(const std::string& name, const std::string& keys, bool loop = true);
+    // A blend: clips played together, each by how near a point (`x`, `y`)
+    // is to its own - `points` a line a clip, `clip x [y]` - gone round in
+    // step (one phase for all). Played by its name like a clip (`play`),
+    // steered by `steer`, and eased there at `rate`: idle 0 / walk 1.4 /
+    // run 3.5 on speed, or walks forward, back and aside on a plane.
+    Element& blend(const std::string& name, const std::string& points, double x = 0, double y = 0, double rate = 6.0);
     // A goal: the end of a chain of `links` joints ending at `tip`, reached
     // for by inverse kinematics when asked (`reach`).
     Element& goal(const std::string& name, const std::string& tip, int links = 2);
@@ -137,6 +152,18 @@ Key show(StateGraph& g, const Being& being, Key host, Key anchor);
 // on an element riding `anchor`. A skin is a mesh made again as the being
 // moves, so whoever shows it calls this when it has.
 void show_skins(Spatial3D& host, const Being& being, Key anchor);
+
+// The joints of `from` that `to` has too: by name, or by name without a
+// rig's namespace (`mixamorig:Hips` is `Hips`).
+std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to);
+// `from`'s motion carried onto `to`: a functor (`<from>.to.<to>`, kept - the
+// engine carries it whenever `from` moves) taking each joint of `from` to
+// the same joint of `to` as what leads it - the turn away from `from`'s
+// bind pose put on `to`'s, and a travelling joint's travel scaled by its
+// size. Two bodies of one skeleton but other sizes, bone axes or rest poses
+// dance one dance. `to` follows as far as it gives itself (`lead`); one
+// source may lead many. Returns the functor's name.
+Key retarget(StateGraph& g, const Being& from, const Being& to, Key name = {});
 
 // A person, roughly: hips, spine, chest, neck, head; shoulders, arms,
 // forearms, hands; thighs, shins, feet - parts of a mannequin on them; goals
