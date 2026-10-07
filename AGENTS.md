@@ -5,6 +5,20 @@ because the idea is: **everything is a state, states are independent, and
 they meet only through interfaces the graph declares and the laws check.**
 Every rule below follows from that.
 
+## The basic rules
+
+1. **Anything that is a state is separate**, and encapsulated: what it is,
+   it holds; what it does, its own arrows do.
+2. **States are linked only through arrows** - and the interfaces the graph
+   declares from them (below).
+3. **Time is a state of its own; so is physics.** Neither is part of any
+   other state, and neither owns one.
+4. **Each state is driven by an internal clock of its own**: a line of its
+   own on the `Temporal`, moved only as that state steps, and any clock it
+   keeps of its own steps. No state's time is another's.
+5. **There is no authority state** - not time, and not the state graph,
+   whose only job is to link the states.
+
 ## The cornerstone
 
 A state is a small category - elements are its objects, events on them its
@@ -18,7 +32,7 @@ none of the others. States are connected **only** by the graph:
 | Functor / lens | `add_functor`, `add_lens` | object/arrow/data transport; `sg::kan::left` / `right` can derive an ordinary functor, not a new kind of thing | copying params in a game loop or another state's arrow |
 | Embedding | `graph.embed` | guest in a host portal, with `in`/`out`, subject, sync and focus | holding a guest pointer as the interface |
 | Seam | `add_seam`, `glue_doorway` | bidirectional boundary identification, including a doorway and its door | hand-placed global room coordinates |
-| Drive | `graph.drive` / `sg::drive` | a `Temporal` timeline fires arrows with `{dt, time, frame}`; additive drives omit `frame` | private timers, ticks or accumulated `dt` |
+| Drive | `graph.drive` / `sg::drive` | a line of the state's own on a `Temporal` fires its arrows with `{dt, time, frame}`; additive drives omit `frame` | one clock other states must follow; a state reading another state's time; wall-clock time from outside any state |
 | Adjunction | `Adjunction` | paired functors with checked unit and counit | treating a lossy adjunction as an isomorphism |
 | Port | `graph.port(state, event)` | external program/device input through `engine.send`, next frame | threads/callbacks writing into a state |
 | Edit | `graph.edit(state, event, fn)` | a state's request rewrites the graph next frame and receives a reply | in-world graph rewrites from the game loop |
@@ -69,9 +83,11 @@ from what it says, and the laws can check it without running it
 (`sg::algebra`, `LawOptions::accelerate`). Never write a description beside a
 handler that does something else: what is said is what runs.
 
-Time comes from the `Temporal` drive in the table below. Behaviour, shader
-animation (`own_time`) and sound use the same timeline; presentation keeps no
-second clock. Choose `Keeps` explicitly: `WhileActive` includes open active
+Each state's time is its own: its line on the `Temporal` (the table below),
+moved only as it steps, and any clock it keeps of its own steps. Its
+behaviour, its shader animation (`own_time`) and its sound follow that same
+time of its own, so they never drift apart; no state's time is another's,
+and none is the authority. Choose `Keeps` explicitly: `WhileActive` includes open active
 guests; `WhileShown` runs wherever shown; `WhileFocused` requires input;
 `WhileEntered` requires the current state; `Always` runs elsewhere.
 
@@ -163,7 +179,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 
 | State or machinery (header) | It is | Use it instead of |
 | --- | --- | --- |
-| `Temporal` (`core/Temporal.hpp`) | time: a timeline per element, `time` and `frame` as params, one arrow that advances by `dt` | a `dt` argument used as a clock, a tick or frame counter, a timer param, `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its line on the clock |
+| `Temporal` (`core/Temporal.hpp`) | time, a state of its own: a line for each state it drives, `time` and `frame` as params, one arrow that advances a line by `dt` - no line governs another | one clock every state must follow, a state reading another's time, `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its own line |
 | `Spatial2D` / `Spatial3D` (`domains/Spatial.hpp`) | things with a pose that integrate; a 3D room, its `fixture`s and `mesh`es, `model`s | your own position / velocity / integrator |
 | `walk`, `fields_of`, `ray` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops | a walker, gravity or collision of your own; y-up assumptions |
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
