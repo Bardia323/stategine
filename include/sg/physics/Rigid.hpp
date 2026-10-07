@@ -461,6 +461,14 @@ public:
     Contacts contacts() const { return manifolds_; }
     // The pairs of hulls touching now, by their keys, in order.
     std::vector<uint64_t> touching() const;
+    // What body `i` took from each thing touching it over the last step: the
+    // impulse its contacts pushed it with (the last substep's, for the
+    // step), by whom. What a struck thing says it was struck with.
+    struct Took {
+        std::size_t from;
+        V3 impulse;
+    };
+    std::vector<Took> took(std::size_t i) const;
     void set_contacts(Contacts c) { manifolds_ = std::move(c); }
 
 private:

@@ -94,7 +94,8 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         .set("ox", 0.0).set("oy", 0.0).set("oz", 0.0).set("oyaw", 0.0)
         .set("grab", std::string{})
         .set("grab_x", 0.0).set("grab_y", 0.0).set("grab_z", 0.0)
-        .set("grab_force", 500.0);
+        .set("grab_force", 500.0)
+        .set("grab_at", 0.0).set("grab_lx", 0.0).set("grab_ly", 0.0).set("grab_lz", 0.0);
 
     // The skeleton as it is bound: each joint's place and turn.
     const std::vector<Key> js = body.joints();
@@ -130,6 +131,30 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
 
     // Each bone: a rod to its child, a block round its children, or a short
     // rod on from its parent; weighed by its size, the whole as heavy as said.
+    // What the being shows on each joint, if it shows parts: a bone is as big
+    // as they are.
+    std::unordered_map<Key, std::pair<V3, V3>> shown;
+    for (Key part : body.parts()) {
+        const Element& e = body.element(part);
+        const Key on{e.params.get_or<std::string>("joint", "")};
+        const V3 mid{e.params.num("ox"), e.params.num("oy"), e.params.num("oz")};
+        const V3 half{e.params.num(keys::sx) * 0.5, e.params.num(keys::sy) * 0.5, e.params.num(keys::sz) * 0.5};
+        auto [it, fresh] = shown.try_emplace(on, mid - half, mid + half);
+        if (!fresh)
+            it->second = {{std::min(it->second.first.x, mid.x - half.x), std::min(it->second.first.y, mid.y - half.y), std::min(it->second.first.z, mid.z - half.z)},
+                          {std::max(it->second.second.x, mid.x + half.x), std::max(it->second.second.y, mid.y + half.y), std::max(it->second.second.z, mid.z + half.z)}};
+    }
+    // A box given in the being's frame about joint i, as a block in the
+    // bone's own frame (its corners turned in, boxed again).
+    const auto block_from = [&](std::size_t i, V3 lo, V3 hi, V3& out_lo, V3& out_hi) {
+        out_lo = {1e9, 1e9, 1e9}, out_hi = {-1e9, -1e9, -1e9};
+        for (int c = 0; c < 8; ++c) {
+            const V3 w{c & 1 ? hi.x : lo.x, c & 2 ? hi.y : lo.y, c & 4 ? hi.z : lo.z};
+            const V3 l = spatial::transpose(bind[i]) * w;
+            out_lo = {std::min(out_lo.x, l.x), std::min(out_lo.y, l.y), std::min(out_lo.z, l.z)};
+            out_hi = {std::max(out_hi.x, l.x), std::max(out_hi.y, l.y), std::max(out_hi.z, l.z)};
+        }
+    };
     std::vector<double> raw(js.size());
     double total = 0;
     for (std::size_t i = 0; i < js.size(); ++i) {
@@ -139,7 +164,42 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         b.params.set("leg", leg[i] ? 1.0 : 0.0).set("omega", leg[i] ? 22.0 : 14.0).set("cone", 1.9).set("weak", 1.0).set("weak_rate", 1.25);
         set_vec(b, made[i], "jx", "jy", "jz");
         double vol;
-        if (kids[i].size() >= 2) {
+        const V3 from = parent[i] < 0 ? V3{0, 1, 0} : spatial::normalize(p[i] - p[std::size_t(parent[i])]);
+        V3 lo, hi;
+        bool block = true;
+        if (auto it = shown.find(js[i]); it != shown.end()) {
+            lo = it->second.first, hi = it->second.second;  // (already in the joint's frame)
+            if (kids[i].empty() && leg[i]) {
+                // A foot shown a little into the floor stands on it: its
+                // solid stops there.
+                V3 wlo{1e9, 1e9, 1e9}, whi{-1e9, -1e9, -1e9};
+                for (int c = 0; c < 8; ++c) {
+                    const V3 w = bind[i] * V3{c & 1 ? hi.x : lo.x, c & 2 ? hi.y : lo.y, c & 4 ? hi.z : lo.z};
+                    wlo = {std::min(wlo.x, w.x), std::min(wlo.y, w.y), std::min(wlo.z, w.z)};
+                    whi = {std::max(whi.x, w.x), std::max(whi.y, w.y), std::max(whi.z, w.z)};
+                }
+                wlo.y = std::max(wlo.y, 0.003 - p[i].y);
+                block_from(i, wlo, whi, lo, hi);
+            }
+        } else if (kids[i].empty() && leg[i] && from.y < -0.5) {
+            // A foot: on along the ground (the way a pose faces, x), down to
+            // the floor from the ankle.
+            const double l = std::clamp(0.6 * spatial::length(made[i]), 0.12, 0.26), h = std::max(0.03, p[i].y - 0.005);
+            block_from(i, {-0.25 * l, -h, -0.045}, {l, 0.03, 0.045}, lo, hi);
+        } else if (kids[i].empty() && from.y > 0.5) {
+            // A head: round, on top of where it is borne.
+            const double r = std::clamp(0.9 * spatial::length(made[i]), 0.08, 0.12);
+            block_from(i, {-r, 0.0, -r}, {r, 2 * r, r}, lo, hi);
+        } else {
+            block = false;
+        }
+        if (block) {
+            b.params.set("block", 1.0);
+            set_vec(b, lo, "lox", "loy", "loz");
+            set_vec(b, hi, "hix", "hiy", "hiz");
+            const V3 d = hi - lo;
+            vol = d.x * d.y * d.z;
+        } else if (kids[i].size() >= 2) {
             V3 lo{}, hi{};
             for (std::size_t k : kids[i])
                 lo = {std::min(lo.x, made[k].x), std::min(lo.y, made[k].y), std::min(lo.z, made[k].z)},
@@ -159,7 +219,9 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
                 const double l = std::clamp(0.5 * spatial::length(made[i]), 0.06, 0.2);
                 end = spatial::transpose(bind[i]) * spatial::normalize(from) * l;
             }
-            const double l = spatial::length(end), r = std::clamp(0.2 * l, 0.025, 0.09);
+            // (A neck bearing a head: the head's own bone is round.)
+            const bool crown = kids[i].size() == 1 && kids[kids[i][0]].empty() && spatial::normalize(p[kids[i][0]] - p[i]).y > 0.5 && !leg[i];
+            const double l = spatial::length(end), r = crown ? std::clamp(0.45 * l, 0.03, 0.11) : std::clamp(0.2 * l, 0.025, 0.09);
             b.params.set("block", 0.0).set("radius", r);
             set_vec(b, end, "ex", "ey", "ez");
             vol = 3.14159265 * r * r * std::max(l, 2 * r);
@@ -246,12 +308,52 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         const Element* b = s.find(Key{bone});
         if (!b || b->kind != kBone) return;
         self.params.set("grab", bone).set("grab_x", ev.args.num(keys::x)).set("grab_y", ev.args.num(keys::y)).set("grab_z", ev.args.num(keys::z));
+        // Where on it (the being's frame), if said: kept in the bone's own
+        // frame, so it is held there however it turns. Else by its middle.
+        if (ev.args.has(Key{"ax"})) {
+            const V3 at{ev.args.num("ax"), ev.args.num("ay"), ev.args.num("az")};
+            set_vec(self, spatial::transpose(turn_of(*b, "q")) * (at - vec(*b, "x", "y", "z")), "grab_lx", "grab_ly", "grab_lz");
+            self.params.set("grab_at", 1.0);
+        } else if (self.params.get_or<std::string>("grab", "") != bone || ev.args.num("fresh") > 0.5) {
+            self.params.set("grab_at", 0.0);
+        }
         self.params.set("grab_force", ev.args.num("force", 500.0)).set("awake", 1.0).set("still", 0.0);
     });
-    loop(Key{"let_go"}, self_id(), let_go_event(), [](State&, Element& self, Element*, const Event&) { self.params.set("grab", std::string{}); });
+    loop(Key{"let_go"}, self_id(), let_go_event(), [](State&, Element& self, Element*, const Event&) { self.params.set("grab", std::string{}).set("grab_at", 0.0); });
 }
 
 rigid::Hull Ragdoll::hull(const Element& bone) { return shape_of(bone); }
+
+rigid::Body Ragdoll::body(const Element& bone, const std::string& id, int group) {
+    rigid::Body b;
+    b.id = id;
+    b.hulls.push_back(shape_of(bone));
+    b.friction = 0.6, b.restitution = 0.1;
+    b.group = group;
+    b.set_mass(std::max(0.5, bone.params.num("mass", 1.0)));
+    return b;
+}
+
+void Ragdoll::pose_in(const Element& bone, const V3& origin, double yaw, V3& x, M3& r) {
+    const M3 o = spatial::from_euler(yaw, 0, 0);
+    x = origin + o * vec(bone, "x", "y", "z");
+    r = o * turn_of(bone, "q");
+}
+
+Key Ragdoll::nearest(const V3& p) const {
+    // (By the middle of its solid as it is turned now, not its joint: a hand
+    // on the shin is on the shin, not the knee.)
+    Key best;
+    double least = 1e18;
+    for (const Element& b : elements()) {
+        if (b.kind != kBone) continue;
+        const rigid::Hull h = shape_of(b);
+        const V3 mid = vec(b, "x", "y", "z") + turn_of(b, "q") * h.centre;
+        const double d = spatial::length(mid - p);
+        if (d < least) least = d, best = b.id;
+    }
+    return best;
+}
 
 std::vector<Key> Ragdoll::bones() const {
     std::vector<Key> out;
@@ -270,14 +372,14 @@ bool Ragdoll::disturbed() const {
         if (c.kind == kCollider && c.alive) solids.push_back(box_in(c, self));
     const double floor = self.params.num("floor");
     for (const Element& b : elements()) {
-        if (b.kind != kBone || (!full && b.params.num("leg") > 0.5)) continue;
+        if (b.kind != kBone || (!full && b.params.get_or<std::string>("parent", "").empty())) continue;
         const V3 at = vec(b, "tx", "ty", "tz");
         const M3 t = turn_of(b, "aim");
         const bool block = b.params.num("block") > 0.5;
         const double r = block ? 0.5 * spatial::length(vec(b, "hix", "hiy", "hiz") - vec(b, "lox", "loy", "loz")) : b.params.num("radius");
         const V3 end = at + t * (block ? (vec(b, "hix", "hiy", "hiz") + vec(b, "lox", "loy", "loz")) * 0.5 : vec(b, "ex", "ey", "ez"));
         for (V3 q : {at, end}) {
-            if (q.y - r < floor - 1e-3 && !block) return true;
+            if (q.y - r < floor - 0.02 && !block) return true;
             for (const Box& s : solids)
                 if (inside(s, q, r)) return true;
         }
@@ -405,7 +507,7 @@ void Ragdoll::step(double dt) {
         // its weight; strong, they carry it (gravity met where it falls).
         const double s = strong * b.params.num("weak", 1.0);
         body->receives = {{"gravity", field::Response::Acceleration, 1.0 - s * 0.95}};
-        if (!full && b.params.num("leg") > 0.5) driven.push_back({body, body->x, vec(b, "tx", "ty", "tz"), body->r, turn_of(b, "aim")});
+        if (!full && b.params.get_or<std::string>("parent", "").empty()) driven.push_back({body, body->x, vec(b, "tx", "ty", "tz"), body->r, turn_of(b, "aim")});
     }
     for (rigid::Joint& j : w.joints) {
         const Element& a = element(Key{j.a});
@@ -431,7 +533,9 @@ void Ragdoll::step(double dt) {
         }
         if (!held.empty())
             if (rigid::Body* g = w.find(held))
-                w.grab(held, g->com_local, vec(self, "grab_x", "grab_y", "grab_z"), self.params.num("grab_force", 500.0)).turns = false;
+                w.grab(held, self.params.num("grab_at") > 0.5 ? vec(self, "grab_lx", "grab_ly", "grab_lz") : g->com_local, vec(self, "grab_x", "grab_y", "grab_z"),
+                       self.params.num("grab_force", 500.0))
+                    .turns = false;
         w.step(h);
         if (!held.empty()) w.release(held);
     }

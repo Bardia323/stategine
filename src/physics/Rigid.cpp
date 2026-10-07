@@ -320,6 +320,22 @@ void World::step(double dt, double time) {
     sleep(dt);
 }
 
+std::vector<World::Took> World::took(std::size_t i) const {
+    std::vector<Took> out;
+    for (const auto& [key, m] : manifolds_) {
+        if (!m.live || (m.a != i && m.b != i)) continue;
+        double pn = 0;
+        for (const Point& p : m.pts) pn += p.pn;
+        // (Pushed along n onto b, and as much back onto a.)
+        const V3 j = m.n * (pn * substeps) * (m.b == i ? 1.0 : -1.0);
+        const std::size_t from = m.b == i ? m.a : m.b;
+        auto it = std::find_if(out.begin(), out.end(), [&](const Took& t) { return t.from == from; });
+        if (it == out.end()) out.push_back({from, j});
+        else it->impulse = it->impulse + j;
+    }
+    return out;
+}
+
 std::vector<uint64_t> World::touching() const {
     std::vector<uint64_t> out;
     for (const auto& [k, m] : manifolds_) out.push_back(k);

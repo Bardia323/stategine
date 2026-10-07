@@ -3,9 +3,10 @@
 // A being (Being.hpp) means a pose - its clips, holds and reaches say where
 // every joint is to be (`aq`, `ax ay az`). Its ragdoll is that body made
 // physical: a rigid body for each bone, sized and weighed from the skeleton
-// as it is bound (a bone to its child is a rounded rod, a bone with several
-// children a block round them, a bone with none a short rod on from its
-// parent), held to its parent at a ball that bends no further than a cone,
+// as it is bound - as big as the parts the being shows on it, if it shows
+// any; else a bone to its child is a rounded rod, a bone with several
+// children a block round them, a foot a block along the ground, a head a
+// ball, and any other end a short rod on from its parent - held to its parent at a ball that bends no further than a cone,
 // and turned there by a muscle toward the turn the being means (a soft
 // spring, `kp = I w^2`, `kd = 2 z I w` for the inertia it moves). The
 // limbs of one body pass through each other; the room's solids stop them.
@@ -18,8 +19,9 @@
 // it was meant to be and settles back. A hit hard enough (`fall_at`) takes
 // all its strength, which comes back as it recovers (`recover`).
 //
-// Its legs and hips go on as the being means them (they keep it standing;
-// `full` = 1 gives them weight too, and it falls). While nothing disturbs it
+// Its root (the hips) goes on as the being means it, so it stands; all the
+// rest has weight, legs too - kicked, a leg swings and comes back. `full` = 1
+// gives the root weight as well, and it falls. While nothing disturbs it
 // it sleeps - its bones simply where the being means them, costing nothing -
 // and wakes when it is hit, held, knocked, or meets a solid. A knock is
 // whatever another world - the room's loose things, someone walking into it -
@@ -55,13 +57,24 @@ public:
     static Key self_id() { return Key{"self"}; }
     Key step_event() const { return Key{id().str() + ".step"}; }      // driven: {dt}
     Key hit_event() const { return Key{id().str() + ".hit"}; }        // {bone, x, y, z (N s, the being's frame), weaken=0.25, for=0.8}
-    Key grab_event() const { return Key{id().str() + ".grab"}; }      // {bone, x, y, z (where to, the being's frame), force=500}
+    Key grab_event() const { return Key{id().str() + ".grab"}; }      // {bone, x, y, z (where to, the being's frame), [ax ay az: where on it], force=500}
     Key let_go_event() const { return Key{id().str() + ".let_go"}; }  // {}
 
     std::vector<Key> bones() const;
     // A bone's solid, in its own frame (its joint at the origin), as its
     // params say: for whatever else gives the bone a body (another world's).
     static rigid::Hull hull(const Element& bone);
+    // A bone as a solid of another rigid world - the room's, where loose
+    // things and walkers meet the body - from an element that carries the
+    // bone's params (the bone, or a copy of it): its hull and weight, of
+    // `group` (one body's bones pass through each other).
+    static rigid::Body body(const Element& bone, const std::string& id, int group);
+    // Where such a bone is in a world in which the being stands at `origin`,
+    // turned `yaw`: its joint, and its turn.
+    static void pose_in(const Element& bone, const rigid::V3& origin, double yaw, rigid::V3& x, rigid::M3& r);
+    // The bone nearest a point of the being's frame: what a hand that touches
+    // the body there touches.
+    Key nearest(const rigid::V3& p) const;
     // One step of `dt` seconds.
     void step(double dt);
 

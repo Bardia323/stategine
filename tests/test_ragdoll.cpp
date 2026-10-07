@@ -112,7 +112,7 @@ int main() {
             most = std::max(most, w.hand().z - hand0.z);
         }
         check(w.awake() && most > 0.12, "hit, the arm is thrown (the hand " + std::to_string(most) + " m out)");
-        check(dist(w.ann->pose_of("foot_l").position, foot0) < 1e-3, "and the legs stand as they were");
+        check(dist(w.ann->pose_of("foot_l").position, foot0) < 0.03, "and the legs, with weight of their own, hold her up");
         w.run(4.0);
         check(dist(w.hand(), hand0) < 0.05, "its muscles bring it back where it means to be (" + std::to_string(dist(w.hand(), hand0)) + " m off)");
         check(!w.awake(), "and, settled, it sleeps again");
@@ -143,6 +143,47 @@ int main() {
         check(past > 0.005, "let go, it swings on past where it means to be (" + std::to_string(past) + " m)");
         w.run(4.0);
         check(dist(w.hand(), hand0) < 0.05 && !w.awake(), "and settles back, and sleeps");
+    }
+    {
+        // What a body took from what it touched: a block dropped on the
+        // floor was pushed up by it, about as hard as its weight over the step.
+        using namespace sg::rigid;
+        World w;
+        Body floor;
+        floor.id = "floor";
+        floor.hulls.push_back(Hull::box({0, -0.5, 0}, {5, 0.5, 5}));
+        floor.set_mass(0);
+        w.add(floor);
+        Body b;
+        b.id = "b", b.x = {0, 0.1, 0};
+        b.hulls.push_back(Hull::box({}, {0.1, 0.1, 0.1}));
+        b.set_mass(2);
+        w.add(b);
+        for (int i = 0; i < 60; ++i) w.step(1.0 / 60);
+        const auto took = w.took(1);
+        const double up = took.empty() ? 0 : took[0].impulse.y;
+        check(took.size() == 1 && took[0].from == 0 && std::fabs(up - 2 * 9.81 / 60) < 0.1, "a block at rest on the floor took its weight from it, a step at a time (" + std::to_string(up) + " N s)");
+    }
+    {
+        // Her bones as solids of another world (a room she stands in, turned
+        // a quarter): the head is a body as big as her skull, where her head is.
+        Scene w;
+        const sg::Element& head = w.rag->element(sg::Key{"head"});
+        const sg::rigid::Body b = sg::Ragdoll::body(head, "ann.head", 7);
+        sg::rigid::V3 x;
+        sg::rigid::M3 r;
+        sg::Ragdoll::pose_in(head, {10, 0, 0}, 1.5707963, x, r);
+        const sg::Vec3d at = w.ann->pose_of("head").position;
+        double lo = 1e9, hi = -1e9;
+        for (const auto& v : b.hulls[0].v) lo = std::min(lo, v.y), hi = std::max(hi, v.y);
+        check(b.group == 7 && b.mass > 1.0 && hi - lo > 0.18, "a head is a solid as big as the skull (" + std::to_string(hi - lo) + " m tall, " + std::to_string(b.mass) + " kg)");
+        check(std::fabs(x.y - at.y) < 1e-9 && std::fabs(x.x - 10 - at.z) < 1e-6 && std::fabs(x.z + at.x) < 1e-6, "and stands where her head is, in the room she is turned in");
+    }
+    {
+        // The bone a hand on the body touches: the one whose solid is nearest.
+        Scene w;
+        const sg::Vec3d shin = w.ann->pose_of("shin_l").position, foot = w.ann->pose_of("foot_l").position;
+        check(w.rag->nearest({shin.x, (shin.y + foot.y) * 0.5, shin.z}) == sg::Key{"shin_l"}, "a hand halfway down the shin is on the shin");
     }
     {
         // A knock from another world (what the room's loose things or a
@@ -181,6 +222,35 @@ int main() {
         w.run(2.0);
         const double hips = w.ann->pose_of("hips").position.y;
         check(hips < 0.6, "hit hard and let fall, it goes down (hips " + std::to_string(hips) + " m up)");
+    }
+    {
+        // Kicked: the lower body has weight too - the shin swings, and the
+        // leg comes back under her.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d foot0 = w.ann->pose_of("foot_r").position;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("shin_r")).set(sg::keys::x, 20.0));
+        double most = 0;
+        for (int i = 0; i < 30; ++i) {
+            w.run(1.0 / 60);
+            most = std::max(most, dist(w.ann->pose_of("foot_r").position, foot0));
+        }
+        check(most > 0.08, "kicked, the leg swings (the foot " + std::to_string(most) + " m out)");
+        w.run(4.0);
+        check(dist(w.ann->pose_of("foot_r").position, foot0) < 0.03 && !w.awake(), "and comes back under her, and she settles");
+    }
+    {
+        // Taken hold of by the head and pulled: the head has a body to hold.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d head0 = w.ann->pose_of("head").position;
+        const sg::Vec3d top{head0.x, head0.y + 0.15, head0.z};
+        w.tell(w.rag->grab_event(), sg::Params{}.set("bone", std::string("head")).set("ax", top.x).set("ay", top.y).set("az", top.z)
+                                        .set(sg::keys::x, top.x + 0.4).set(sg::keys::y, top.y).set(sg::keys::z, top.z));
+        w.run(1.0);
+        check(w.ann->pose_of("head").position.x > head0.x + 0.05, "held by the crown and pulled, the head goes with the hand");
     }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;
