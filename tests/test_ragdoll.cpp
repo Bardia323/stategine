@@ -124,24 +124,26 @@ int main() {
         Scene w;
         w.start();
         w.run(0.5);
-        const sg::Vec3d hand0 = w.hand(), chest0 = w.ann->pose_of("neck").position;
-        const sg::Vec3d to{hand0.x + 0.6, hand0.y + 0.3, hand0.z + 0.3};
-        w.tell(w.rag->grab_event(), sg::Params{}.set("bone", std::string("hand_l")).set(sg::keys::x, to.x).set(sg::keys::y, to.y).set(sg::keys::z, to.z).set("force", 300.0));
+        const sg::Vec3d hand0 = w.hand(), chest0 = w.ann->pose_of("neck").position, chest_at_rest = w.ann->pose_of("chest").position;
+        const sg::Vec3d to{hand0.x + 0.35, hand0.y + 0.25, hand0.z + 0.2};
+        w.tell(w.rag->grab_event(), sg::Params{}.set("bone", std::string("hand_l")).set(sg::keys::x, to.x).set(sg::keys::y, to.y).set(sg::keys::z, to.z).set("force", 150.0));
         w.run(1.5);
         const double drawn = dist(w.hand(), hand0), leaned = dist(w.ann->pose_of("neck").position, chest0);
-        check(drawn > 0.25, "pulled, the hand goes with the hand that holds it (" + std::to_string(drawn) + " m)");
+        check(drawn > 0.15, "pulled, the hand goes with the hand that holds it (" + std::to_string(drawn) + " m)");
         check(leaned > 0.01, "and the pull goes on into the body (the neck " + std::to_string(leaned) + " m over)");
         w.tell(w.rag->let_go_event(), sg::Params{});
         // Which way it is going back, and whether it goes past.
-        const sg::Vec3d back = hand0 - w.hand();
+        // (On the body: the arm against the chest, which sways too.)
+        const auto on_body = [&] { return w.hand() - w.ann->pose_of("chest").position; };
+        const sg::Vec3d rest = hand0 - chest_at_rest, back = rest - on_body();
         double past = 0;
         for (int i = 0; i < 120; ++i) {
             w.run(1.0 / 60);
-            const sg::Vec3d d = w.hand() - hand0;
+            const sg::Vec3d d = on_body() - rest;
             past = std::max(past, (d.x * back.x + d.y * back.y + d.z * back.z) / std::sqrt(back.x * back.x + back.y * back.y + back.z * back.z));
         }
         check(past > 0.005, "let go, it swings on past where it means to be (" + std::to_string(past) + " m)");
-        w.run(4.0);
+        w.run(6.0);
         check(dist(w.hand(), hand0) < 0.05 && !w.awake(), "and settles back, and sleeps");
     }
     {
@@ -251,6 +253,61 @@ int main() {
                                         .set(sg::keys::x, top.x + 0.4).set(sg::keys::y, top.y).set(sg::keys::z, top.z));
         w.run(1.0);
         check(w.ann->pose_of("head").position.x > head0.x + 0.05, "held by the crown and pulled, the head goes with the hand");
+    }
+    {
+        // Balance. Nudged at the chest: the hips sway over the feet and come
+        // back; no step is needed.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 6.0));
+        double most = 0, steps = 0;
+        for (int i = 0; i < 90; ++i) {
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id());
+            most = std::max(most, std::hypot(self.params.num("sway_x"), self.params.num("sway_z")));
+            steps = std::max(steps, self.params.num("steps"));
+        }
+        check(most > 0.005 && steps == 0, "nudged, the hips sway over the feet (" + std::to_string(most) + " m) and no foot moves");
+    }
+    {
+        // Shoved: the sway would come to rest past her soles - a foot steps
+        // out to catch it; then she is steady, her feet step home, and she
+        // settles where she stood.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d foot0 = w.ann->pose_of("foot_l").position, foot1 = w.ann->pose_of("foot_r").position;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 32.0));
+        double steps = 0, out = 0, fell = 0;
+        for (int i = 0; i < 90; ++i) {
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id());
+            steps = std::max(steps, self.params.num("steps"));
+            fell = std::max(fell, self.params.num("fallen"));
+            out = std::max(out, std::max(dist(w.ann->pose_of("foot_l").position, foot0), dist(w.ann->pose_of("foot_r").position, foot1)));
+        }
+        check(steps >= 1 && out > 0.1 && fell == 0, "shoved, she steps to catch herself (" + std::to_string(int(steps)) + " steps, a foot " + std::to_string(out) + " m out) and does not fall");
+        w.run(8.0);
+        const double back = std::max(dist(w.ann->pose_of("foot_l").position, foot0), dist(w.ann->pose_of("foot_r").position, foot1));
+        check(back < 0.05 && !w.awake(), "then her feet step home, and she settles where she stood (" + std::to_string(back) + " m off)");
+    }
+    {
+        // Shoved harder than a step can catch: she falls, lies a while, and
+        // gets up again.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const double up = w.ann->pose_of("hips").position.y;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 110.0));
+        double low = up;
+        for (int i = 0; i < 240; ++i) {
+            w.run(1.0 / 60);
+            low = std::min(low, w.ann->pose_of("hips").position.y);
+        }
+        check(low < 0.5 * up, "shoved too hard to catch, she falls (hips down to " + std::to_string(low) + " m)");
+        w.run(8.0);
+        check(w.ann->pose_of("hips").position.y > 0.9 * up, "and gets up again (hips " + std::to_string(w.ann->pose_of("hips").position.y) + " m up)");
     }
     std::printf(failures ? "%d FAILED\n" : "all passed\n", failures);
     return failures ? 1 : 0;

@@ -19,9 +19,15 @@
 // it was meant to be and settles back. A hit hard enough (`fall_at`) takes
 // all its strength, which comes back as it recovers (`recover`).
 //
-// Its root (the hips) goes on as the being means it, so it stands; all the
-// rest has weight, legs too - kicked, a leg swings and comes back. `full` = 1
-// gives the root weight as well, and it falls. While nothing disturbs it
+// Its root (the hips) goes on as the being means it, swayed by its balance;
+// all the rest has weight, legs too - kicked, a leg swings and comes back.
+// Standing on two feet it balances: its hips sway over them as an inverted
+// pendulum does, pushed by what moves above them and held by the soles as
+// far as they reach; when where it would come to rest (the capture point)
+// is off its soles, a foot steps there (the leg bent to it), as many times
+// as it takes; steady, its feet step home. Too many steps, too long
+// stumbling or too far leaning and it gives up: it falls, its strength
+// ebbing; lain still a while, it gets up. `full` = 1 lets it fall at once. While nothing disturbs it
 // it sleeps - its bones simply where the being means them, costing nothing -
 // and wakes when it is hit, held, knocked, or meets a solid. A knock is
 // whatever another world - the room's loose things, someone walking into it -
@@ -81,6 +87,10 @@ public:
 private:
     void build(rigid::World& w) const;
     bool disturbed() const;
+    // Its balance, a step of `dt`: the hips' sway over the feet, a foot
+    // stepped to catch it or home, its legs aimed there; falling, and getting
+    // up again.
+    void balance(double dt);
     // What the solver's contacts were after the last step, and what this
     // step started from (by everything it started from): the same step tried
     // twice starts from the same contacts.

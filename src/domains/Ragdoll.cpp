@@ -71,6 +71,84 @@ bool inside(const Box& b, V3 p, double r) {
     return spatial::length(q - c) < r;
 }
 
+// The smallest turn taking direction a to direction b.
+M3 turn_between(V3 a, V3 b) {
+    a = spatial::normalize(a), b = spatial::normalize(b);
+    const V3 k = spatial::cross(a, b);
+    const double s = spatial::length(k), c = spatial::dot(a, b);
+    if (s < 1e-9) {
+        if (c > 0) return M3{};
+        const V3 o = std::fabs(a.x) < 0.9 ? V3{1, 0, 0} : V3{0, 0, 1};
+        return spatial::axis_angle(spatial::normalize(spatial::cross(a, o)), 3.14159265358979);
+    }
+    return spatial::axis_angle(k * (1.0 / s), std::atan2(s, c));
+}
+
+// --- the ground plan: points across the floor (x, z) --------------------------------
+struct P2 {
+    double x, z;
+};
+P2 operator-(P2 a, P2 b) { return {a.x - b.x, a.z - b.z}; }
+P2 operator+(P2 a, P2 b) { return {a.x + b.x, a.z + b.z}; }
+P2 operator*(P2 a, double k) { return {a.x * k, a.z * k}; }
+double len(P2 a) { return std::sqrt(a.x * a.x + a.z * a.z); }
+double cross2(P2 o, P2 a, P2 b) { return (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x); }
+// What the feet stand on: the outline round their soles.
+std::vector<P2> hull2(std::vector<P2> pts) {
+    std::sort(pts.begin(), pts.end(), [](P2 a, P2 b) { return a.x < b.x || (a.x == b.x && a.z < b.z); });
+    if (pts.size() < 3) return pts;
+    std::vector<P2> h(pts.size() * 2);
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        while (k >= 2 && cross2(h[k - 2], h[k - 1], pts[i]) <= 0) --k;
+        h[k++] = pts[i];
+    }
+    for (std::size_t i = pts.size() - 1, t = k + 1; i > 0; --i) {
+        while (k >= t && cross2(h[k - 2], h[k - 1], pts[i - 1]) <= 0) --k;
+        h[k++] = pts[i - 1];
+    }
+    h.resize(k - 1);
+    return h;
+}
+// The point of the outline (or within it) nearest p, and how far outside p is.
+P2 within(const std::vector<P2>& h, P2 p, double* outside = nullptr) {
+    if (outside) *outside = 0;
+    if (h.empty()) return p;
+    bool in = h.size() >= 3;
+    for (std::size_t i = 0; i < h.size() && in; ++i)
+        if (cross2(h[i], h[(i + 1) % h.size()], p) < 0) in = false;
+    if (in) return p;
+    P2 best = h[0];
+    double least = 1e18;
+    for (std::size_t i = 0; i < h.size(); ++i) {
+        const P2 a = h[i], b = h[(i + 1) % h.size()], ab = b - a;
+        const double l2 = ab.x * ab.x + ab.z * ab.z;
+        const double t = l2 > 1e-12 ? std::clamp(((p.x - a.x) * ab.x + (p.z - a.z) * ab.z) / l2, 0.0, 1.0) : 0.0;
+        const P2 q = a + ab * t;
+        if (len(p - q) < least) least = len(p - q), best = q;
+    }
+    if (outside) *outside = least;
+    return best;
+}
+
+// A leg bent to put its ankle at `to`: its hip at `hip`, its knee and ankle
+// at rest at `knee0`, `ankle0` (the knee bends the way it does at rest), its
+// thigh and shin turned `T0`, `S0` at rest. Its thigh's and shin's turns.
+void two_bone(V3 hip, V3 knee0, V3 ankle0, V3 to, const M3& T0, const M3& S0, M3& T, M3& S) {
+    const double l1 = spatial::length(knee0 - hip), l2 = spatial::length(ankle0 - knee0);
+    V3 d = to - hip;
+    const double dl = std::clamp(spatial::length(d), std::fabs(l1 - l2) + 1e-4, l1 + l2 - 1e-4);
+    const V3 dh = spatial::normalize(d);
+    V3 pole = (knee0 - hip) - dh * spatial::dot(knee0 - hip, dh);
+    if (spatial::length(pole) < 1e-6) pole = spatial::cross(dh, std::fabs(dh.y) < 0.9 ? V3{0, 1, 0} : V3{1, 0, 0});
+    const double a = (l1 * l1 - l2 * l2 + dl * dl) / (2 * dl), hh = std::sqrt(std::max(0.0, l1 * l1 - a * a));
+    const V3 knee = hip + dh * a + spatial::normalize(pole) * hh;
+    const M3 rt = turn_between(knee0 - hip, knee - hip);
+    T = rt * T0;
+    const V3 ankle_now = knee + rt * (ankle0 - knee0);
+    S = turn_between(ankle_now - knee, (hip + dh * dl) - knee) * rt * S0;
+}
+
 uint64_t mix(uint64_t h, double v) {
     uint64_t b;
     static_assert(sizeof b == sizeof v);
@@ -89,7 +167,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         .set("fall_at", 150.0)
         .set("full", 0.0)
         .set("floor", 0.0)
-        .set("damping", 0.7)
+        .set("damping", 0.55)
         .set("lead", 0.0)
         .set("ox", 0.0).set("oy", 0.0).set("oz", 0.0).set("oyaw", 0.0)
         .set("grab", std::string{})
@@ -131,6 +209,20 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
 
     // Each bone: a rod to its child, a block round its children, or a short
     // rod on from its parent; weighed by its size, the whole as heavy as said.
+    // The spine: up from the root, bone by bone, as far as it goes up (the
+    // neck and head at its top); everything else not a leg is an arm.
+    std::vector<bool> spine(js.size(), false), neck(js.size(), false);
+    for (std::size_t i = 0; i < js.size(); ++i) {
+        if (parent[i] < 0 || leg[i]) continue;
+        const std::size_t up = std::size_t(parent[i]);
+        if ((parent[up] < 0 || spine[up]) && spatial::normalize(p[i] - p[up]).y > 0.5) spine[i] = true;
+    }
+    for (std::size_t i = 0; i < js.size(); ++i)
+        if (spine[i] && parent[i] >= 0 && spine[std::size_t(parent[i])] && kids[i].size() <= 1) neck[i] = true;
+    // Two legs: a thigh from the root, its shin, its foot - what it balances on.
+    std::vector<std::size_t> thighs;
+    for (std::size_t i = 0; i < js.size(); ++i)
+        if (parent[i] >= 0 && parent[std::size_t(parent[i])] < 0 && leg[i] && !kids[i].empty() && !kids[kids[i][0]].empty()) thighs.push_back(i);
     // What the being shows on each joint, if it shows parts: a bone is as big
     // as they are.
     std::unordered_map<Key, std::pair<V3, V3>> shown;
@@ -161,7 +253,10 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         Element& b = add_element(js[i], kBone);
         const Element& j = body.element(js[i]);
         b.params.set("parent", parent[i] < 0 ? std::string{} : js[std::size_t(parent[i])].str());
-        b.params.set("leg", leg[i] ? 1.0 : 0.0).set("omega", leg[i] ? 22.0 : 14.0).set("cone", 1.9).set("weak", 1.0).set("weak_rate", 1.25);
+        // How strong its muscles are (rad/s): the legs that carry it most,
+        // the spine less, the neck and head less, the arms least.
+        b.params.set("leg", leg[i] ? 1.0 : 0.0).set("omega", leg[i] ? 18.0 : spine[i] ? (kids[i].empty() || neck[i] ? 10.0 : 12.0) : 9.0);
+        b.params.set("cone", 1.9).set("weak", 1.0).set("weak_rate", 0.8);
         set_vec(b, made[i], "jx", "jy", "jz");
         double vol;
         const V3 from = parent[i] < 0 ? V3{0, 1, 0} : spatial::normalize(p[i] - p[std::size_t(parent[i])]);
@@ -284,6 +379,25 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         element(js[i]).params.set("armature", stiff[i] - own[i]).set("gain", std::sqrt(std::max(1.0, sub[i] / pair)));
     }
 
+    // Its balance: what it stands on (two feet), the sway of its hips over
+    // them and how fast, where each foot is planted, the step it is taking.
+    {
+        Element& self = element(self_id());
+        std::size_t root = 0;
+        while (root < js.size() && parent[root] >= 0) ++root;
+        self.params.set("root", root < js.size() ? js[root].str() : std::string{});
+        self.params.set("balance", thighs.size() == 2 ? 1.0 : 0.0);
+        for (std::size_t f = 0; f < thighs.size() && f < 2; ++f) {
+            const std::size_t t = thighs[f], sh = kids[t][0], ft = kids[sh][0];
+            const std::string n = std::to_string(f);
+            self.params.set("thigh" + n, js[t].str()).set("shin" + n, js[sh].str()).set("foot" + n, js[ft].str());
+            self.params.set("plant" + n + "x", p[ft].x).set("plant" + n + "z", p[ft].z);
+        }
+        self.params.set("sway_x", 0.0).set("sway_z", 0.0).set("sway_vx", 0.0).set("sway_vz", 0.0).set("push_x", 0.0).set("push_z", 0.0);
+        self.params.set("swing", -1.0).set("swing_t", 0.0).set("steps", 0.0).set("stumble", 0.0).set("fallen", 0.0).set("lie", 0.0).set("rising", 0.0);
+        self.params.set("from_x", 0.0).set("from_z", 0.0).set("to_x", 0.0).set("to_z", 0.0).set("catching", 0.0).set("going", -1.0);
+    }
+
     //   self --step--> self: the body moved for `dt` - asleep, where it is
     //   meant to be; awake, as it is pushed, pulled and moved by its muscles.
     loop(Key{"step"}, self_id(), step_event(), [](State& s, Element&, Element*, const Event& ev) { static_cast<Ragdoll&>(s).step(ev.args.num(keys::dt)); });
@@ -293,13 +407,18 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         if (!b || b->kind != kBone) return;
         const V3 j{ev.args.num(keys::x), ev.args.num(keys::y), ev.args.num(keys::z)};
         set_vec(*b, vec(*b, "vx", "vy", "vz") + j * (1.0 / b->params.num("mass", 1.0)), "vx", "vy", "vz");
-        const double weaken = std::clamp(ev.args.num("weaken", 0.25), 0.0, 1.0), rate = 1.0 / std::max(0.05, ev.args.num("for", 0.8));
+        const double weaken = std::clamp(ev.args.num("weaken", 0.2), 0.0, 1.0), rate = 1.0 / std::max(0.05, ev.args.num("for", 1.2));
         for (Element& n : s.elements()) {
             if (n.kind != kBone) continue;
             const bool near = &n == b || n.id.str() == b->params.get_or<std::string>("parent", "") || n.params.get_or<std::string>("parent", "") == b->id.str();
             if (near) n.params.set("weak", std::max(0.02, n.params.num("weak", 1.0) * weaken)).set("weak_rate", rate);
         }
-        if (spatial::length(j) >= self.params.num("fall_at", 150.0)) self.params.set("strength", 0.0);
+        // What it was hit with moves the whole of it: its sway takes it.
+        self.params.set("push_x", self.params.num("push_x") + j.x).set("push_z", self.params.num("push_z") + j.z);
+        // The whole body staggers as hard as it was hit; past `fall_at`, all
+        // its strength goes.
+        const double how = spatial::length(j) / std::max(1.0, self.params.num("fall_at", 150.0));
+        self.params.set("strength", how >= 1.0 ? 0.0 : self.params.num("strength", 1.0) * std::max(0.35, 1.0 - 1.5 * how));
         self.params.set("awake", 1.0).set("still", 0.0);
     });
     //   self --grab--> self: a hand holding a bone, pulling it toward a point.
@@ -439,7 +558,9 @@ void Ragdoll::step(double dt) {
     if (dt <= 0) return;
     Element& self = element(self_id());
     const double strength = self.params.num("strength", 1.0);
-    self.params.set("strength", strength + (1.0 - strength) * ease(dt, self.params.num("recover", 0.6)));
+    // Fallen, its strength ebbs (half a second); else it comes back.
+    if (self.params.num("fallen") > 0.5) self.params.set("strength", strength * std::exp(-0.69 * dt));
+    else self.params.set("strength", strength + (1.0 - strength) * ease(dt, self.params.num("recover", 0.6)));
     for (Element& b : elements())
         if (b.kind == kBone) b.params.set("weak", b.params.num("weak", 1.0) + (1.0 - b.params.num("weak", 1.0)) * ease(dt, b.params.num("weak_rate", 1.25)));
 
@@ -464,6 +585,7 @@ void Ragdoll::step(double dt) {
         const V3 k = vec(b, "kx", "ky", "kz");
         set_vec(b, vec(b, "vx", "vy", "vz") + k * (1.0 / b.params.num("mass", 1.0)), "vx", "vy", "vz");
         b.params.set("knock_seen", b.params.num("knock_n")).set("weak", b.params.num("weak", 1.0) * 0.6);
+        self.params.set("push_x", self.params.num("push_x") + k.x).set("push_z", self.params.num("push_z") + k.z);
         knocked = true;
     }
     if (self.params.num("awake") < 0.5) {
@@ -472,6 +594,13 @@ void Ragdoll::step(double dt) {
             return;
         }
         self.params.set("awake", 1.0).set("still", 0.0);
+        // Woken standing: its feet planted where the being has them, its
+        // hips over them.
+        for (int f = 0; f < 2 && self.params.num("balance") > 0.5; ++f) {
+            const Element& foot = element(Key{self.params.get_or<std::string>("foot" + std::to_string(f), "")});
+            self.params.set("plant" + std::to_string(f) + "x", foot.params.num("tx")).set("plant" + std::to_string(f) + "z", foot.params.num("tz"));
+        }
+        self.params.set("sway_x", 0.0).set("sway_z", 0.0).set("swing", -1.0).set("going", -1.0);
     }
     self.params.set("lead", 1.0);
 
@@ -487,6 +616,7 @@ void Ragdoll::step(double dt) {
     if (in != memo_in_) memo_ = last_, memo_in_ = in;
     w.set_contacts(memo_);
 
+    balance(dt);
     const bool full = self.params.num("full") > 0.5;
     const double strong = self.params.num("strength", 1.0), zeta = self.params.num("damping", 0.9);
     struct Driven {
@@ -507,13 +637,26 @@ void Ragdoll::step(double dt) {
         // its weight; strong, they carry it (gravity met where it falls).
         const double s = strong * b.params.num("weak", 1.0);
         body->receives = {{"gravity", field::Response::Acceleration, 1.0 - s * 0.95}};
-        if (!full && b.params.get_or<std::string>("parent", "").empty()) driven.push_back({body, body->x, vec(b, "tx", "ty", "tz"), body->r, turn_of(b, "aim")});
+        if (!full && b.params.get_or<std::string>("parent", "").empty()) {
+            // The hips: where the being means them, swayed by balance, and
+            // no faster than a body can move (getting up is not a jump).
+            V3 to = self.params.num("balance") > 0.5 ? vec(self, "hip_x", "hip_y", "hip_z") : vec(b, "tx", "ty", "tz");
+            const V3 go = to - body->x;
+            const double most = 1.6 * dt;
+            if (spatial::length(go) > most) to = body->x + go * (most / spatial::length(go));
+            M3 r = turn_of(b, "aim");
+            const V3 turn = spatial::log_map(r * spatial::transpose(body->r));
+            if (spatial::length(turn) > 3.0 * dt) r = spatial::axis_angle(turn * (1.0 / spatial::length(turn)), 3.0 * dt) * body->r;
+            driven.push_back({body, body->x, to, body->r, r});
+        }
     }
     for (rigid::Joint& j : w.joints) {
         const Element& a = element(Key{j.a});
         const Element& b = element(Key{j.b});
         const double s = strong * b.params.num("weak", 1.0);
-        j.aim = spatial::transpose(turn_of(a, "aim")) * turn_of(b, "aim");
+        // (Where balance has it put a foot, its leg is aimed there instead.)
+        const auto aimed = [&](const Element& e) { return e.params.num("planned") > 0.5 ? turn_of(e, "plan") : turn_of(e, "aim"); };
+        j.aim = spatial::transpose(aimed(a)) * aimed(b);
         j.rest_turn = turn_of(b, "r");
         j.cone = b.params.num("cone", 1.9);
         const double gain = b.params.num("gain", 1.0);
@@ -522,6 +665,8 @@ void Ragdoll::step(double dt) {
         j.aim_torque = 2.0 + 600.0 * s;  // what is left of a limp joint: its friction
     }
     const std::string held = self.params.get_or<std::string>("grab", "");
+    const std::string root_name = self.params.get_or<std::string>("root", "");
+    V3 push{};
     const int n = std::max(1, int(std::ceil(dt * 120.0 - 1e-9)));
     const double h = dt / n;
     for (int k = 1; k <= n; ++k) {
@@ -538,7 +683,14 @@ void Ragdoll::step(double dt) {
                     .turns = false;
         w.step(h);
         if (!held.empty()) w.release(held);
+        // What the body above the hips pushed them with (their joints to the
+        // body that is not legs), across the floor: what sways them.
+        for (const rigid::Joint& j : w.joints) {
+            if (j.a != root_name || element(Key{j.b}).params.num("leg") > 0.5) continue;
+            push = push - j.point * double(w.substeps);
+        }
     }
+    self.params.set("push_x", self.params.num("push_x") + push.x).set("push_z", self.params.num("push_z") + push.z);
     last_ = w.contacts();
 
     // Back into the params; and asleep again once it is where it is meant
@@ -555,9 +707,213 @@ void Ragdoll::step(double dt) {
             spatial::length(spatial::log_map(turn_of(b, "aim") * spatial::transpose(body->r))) > 0.06 || spatial::length(body->w) > 0.6)
             settled = false;
     }
+    if (self.params.num("fallen") > 0.5 || self.params.num("swing") >= 0 || std::hypot(self.params.num("sway_x"), self.params.num("sway_z")) > 0.02) settled = false;
+    for (Element& b : elements()) {
+        if (b.kind != kBone) continue;
+    }
     const double still = settled ? self.params.num("still") + dt : 0.0;
     self.params.set("still", still);
     if (still > 0.4 && !disturbed()) self.params.set("awake", 0.0).set("lead", 0.0);
+}
+
+void Ragdoll::balance(double dt) {
+    // Standing over two feet: the hips sway as a body on its feet does (an
+    // inverted pendulum, w0 = sqrt(g / h)), pushed by what moves above them;
+    // the feet push back no further than their soles reach - toward where the
+    // sway would stop (the capture point) and a little toward home. When
+    // that is off the soles, a foot steps to it. Steady again, the feet step
+    // home. Too many steps, too long stumbling or too far leaning, and it
+    // falls; lain still a while, it gets up.
+    Element& self = element(self_id());
+    if (self.params.num("balance") < 0.5) return;
+    const std::string root_name = self.params.get_or<std::string>("root", "");
+    const Element& root = element(Key{root_name});
+    const V3 home = vec(root, "tx", "ty", "tz");
+    const double floor = self.params.num("floor");
+    const auto set_hips = [&](V3 at) { set_vec(self, at, "hip_x", "hip_y", "hip_z"); };
+    const auto unplan = [&] {
+        for (Element& b : elements())
+            if (b.kind == kBone) b.params.set("planned", 0.0);
+    };
+
+    if (self.params.num("fallen") > 0.5) {
+        // Lying: once still a while, it gets up - its hips eased home.
+        const double speed = spatial::length(vec(root, "vx", "vy", "vz"));
+        const double lie = speed < 0.15 ? self.params.num("lie") + dt : 0.0;
+        self.params.set("lie", lie);
+        set_hips(home);
+        unplan();
+        if (lie > 2.0) {
+            // Up: its strength back, rising (no stepping, no giving up) until
+            // it stands.
+            self.params.set("fallen", 0.0).set("full", 0.0).set("lie", 0.0).set("steps", 0.0).set("stumble", 0.0).set("rising", 1.0);
+            self.params.set("strength", std::max(self.params.num("strength"), 0.8));
+            self.params.set("sway_x", 0.0).set("sway_z", 0.0).set("sway_vx", 0.0).set("sway_vz", 0.0).set("swing", -1.0);
+            for (int f = 0; f < 2; ++f) {
+                const Element& foot = element(Key{self.params.get_or<std::string>("foot" + std::to_string(f), "")});
+                self.params.set("plant" + std::to_string(f) + "x", foot.params.num("tx")).set("plant" + std::to_string(f) + "z", foot.params.num("tz"));
+            }
+        }
+        return;
+    }
+    if (self.params.num("full") > 0.5) return;  // let fall by whoever said so
+
+    if (self.params.num("rising") > 0.5) {
+        // Getting up: the hips eased home over the feet where they are meant
+        // to be; done once the hips are nearly there.
+        set_hips(home);
+        unplan();
+        self.params.set("push_x", 0.0).set("push_z", 0.0);
+        if (spatial::length(vec(root, "x", "y", "z") - home) < 0.05) self.params.set("rising", 0.0);
+        return;
+    }
+    double mass = 0;
+    for (const Element& b : elements())
+        if (b.kind == kBone) mass += b.params.num("mass", 1.0);
+    const double height = std::max(0.3, home.y - floor), w0 = std::sqrt(9.81 / height);
+    P2 sway{self.params.num("sway_x"), self.params.num("sway_z")}, v{self.params.num("sway_vx"), self.params.num("sway_vz")};
+    v = v + P2{self.params.num("push_x"), self.params.num("push_z")} * (1.0 / std::max(1.0, mass));
+    self.params.set("push_x", 0.0).set("push_z", 0.0);
+    const P2 rest{home.x, home.z}, com = rest + sway, capture = com + v * (1.0 / w0);
+
+    // The feet: planted, or the one swinging; and their soles, as planted.
+    int swing = int(self.params.num("swing", -1));
+    double t = self.params.num("swing_t");
+    const auto foot_of = [&](int f) -> const Element& { return element(Key{self.params.get_or<std::string>("foot" + std::to_string(f), "")}); };
+    const auto plant = [&](int f) { return P2{self.params.num("plant" + std::to_string(f) + "x"), self.params.num("plant" + std::to_string(f) + "z")}; };
+    const auto soles = [&](int f, std::vector<P2>& out) {
+        const Element& foot = foot_of(f);
+        const P2 at = plant(f);
+        const M3 r = turn_of(foot, "aim");
+        for (const V3& c : shape_of(foot).v) {
+            const V3 q = r * c;
+            out.push_back({at.x + q.x, at.z + q.z});
+        }
+    };
+    std::vector<P2> under;
+    for (int f = 0; f < 2; ++f)
+        if (f != swing) soles(f, under);
+    const std::vector<P2> support = hull2(under);
+
+    // Where the feet push the body from: the capture point, and a little
+    // toward the middle of the feet it stands on (not toward where it stood:
+    // its feet go home first, and the body follows them), kept to the soles.
+    double off = 0;
+    within(support, capture, &off);
+    // (Where the hips stand over these feet: where they stood, moved as far
+    // as the feet have moved.)
+    // (A foot waiting to go home: the hips move over the other first.)
+    const int going = int(self.params.num("going", -1));
+    P2 moved{0, 0};
+    int planted = 0;
+    for (int f = 0; f < 2; ++f)
+        if (f != swing && f != going) moved = moved + (plant(f) - P2{foot_of(f).params.num("tx"), foot_of(f).params.num("tz")}), ++planted;
+    const P2 centre = rest + moved * (1.0 / std::max(1, planted));
+    const P2 cop = within(support, capture + (com - centre) * 0.3);
+    const P2 a = (com - cop) * (w0 * w0);
+    v = v + a * dt;
+    sway = sway + v * dt;
+
+    // A step: to catch it, or, steady, home.
+    const P2 mid = (plant(0) + plant(1)) * 0.5;
+    const double reach = 0.6 * height;
+    if (swing < 0 && off > 0.03) {
+        int f = len(plant(0) - capture) > len(plant(1) - capture) ? 0 : 1;
+        P2 to = capture + (plant(f) - mid) + (capture - mid) * (0.05 / std::max(1e-6, len(capture - mid)));
+        if (len(to - com) > reach) to = com + (to - com) * (reach / len(to - com));
+        swing = f, t = 0;
+        self.params.set("from_x", plant(f).x).set("from_z", plant(f).z).set("to_x", to.x).set("to_z", to.z);
+        self.params.set("steps", self.params.num("steps") + 1).set("catching", 1.0).set("going", -1.0);
+    } else if (swing < 0 && off <= 0 && len(v) < 0.15) {
+        // Steady: the foot furthest from home goes home, if one is - once the
+        // body is over the other one (it moves there first).
+        int f = going;
+        if (f < 0) {
+            double most = 0.015;
+            for (int g = 0; g < 2; ++g) {
+                const Element& foot = foot_of(g);
+                const double d = len(plant(g) - P2{foot.params.num("tx"), foot.params.num("tz")});
+                if (d > most) most = d, f = g;
+            }
+            self.params.set("going", double(f));
+        }
+        if (f >= 0) {
+            std::vector<P2> stays;
+            soles(1 - f, stays);
+            double outside = 0;
+            within(hull2(stays), capture, &outside);
+            if (outside <= 0.0 && len(v) < 0.1) {
+                const Element& foot = foot_of(f);
+                swing = f, t = 0;
+                self.params.set("from_x", plant(f).x).set("from_z", plant(f).z).set("to_x", foot.params.num("tx")).set("to_z", foot.params.num("tz"));
+                self.params.set("catching", 0.0).set("going", -1.0);
+            }
+        }
+    }
+    if (swing >= 0 && self.params.num("catching") > 0.5) {
+        // Catching: the foot goes on toward where the sway would now come to
+        // rest, not where it would when the step began.
+        const P2 other = plant(1 - swing);
+        P2 to = capture + (capture - other) * (0.05 / std::max(1e-6, len(capture - other)));
+        if (len(to - com) > reach) to = com + (to - com) * (reach / len(to - com));
+        self.params.set("to_x", to.x).set("to_z", to.z);
+    }
+    if (swing >= 0) {
+        t += dt / 0.25;
+        if (t >= 1.0) {
+            self.params.set("plant" + std::to_string(swing) + "x", self.params.num("to_x")).set("plant" + std::to_string(swing) + "z", self.params.num("to_z"));
+            swing = -1, t = 0;
+        }
+    }
+    // Stumbling: while where it would come to rest is off its soles. Back
+    // over them, it has caught itself - whatever its feet do next is only
+    // going home.
+    double stumble = off > 0 ? self.params.num("stumble") + dt : self.params.num("stumble");
+    if (off <= 0 && swing < 0 && len(v) < 0.1) stumble = 0, self.params.set("steps", 0.0);
+    // Leaning: how far its chest is from upright.
+    double lean = 0;
+    for (const Element& b : elements())
+        if (b.kind == kBone && b.params.get_or<std::string>("parent", "") == root_name && b.params.num("leg") < 0.5)
+            lean = std::max(lean, std::acos(std::clamp((turn_of(b, "q") * spatial::transpose(turn_of(b, "aim")) * V3{0, 1, 0}).y, -1.0, 1.0)));
+    // (Going where no step could catch it - its sway would come to rest
+    // further than a stride beyond its feet - it falls at once.)
+    if (self.params.num("steps") > 4 || stumble > 2.0 || lean > 0.87 || off > reach) {
+        // It gives up: its legs and hips have weight now, and its strength goes.
+        self.params.set("fallen", 1.0).set("full", 1.0).set("lie", 0.0).set("swing", -1.0);
+        unplan();
+        return;
+    }
+    self.params.set("sway_x", sway.x).set("sway_z", sway.z).set("sway_vx", v.x).set("sway_vz", v.z);
+    self.params.set("swing", double(swing)).set("swing_t", t).set("stumble", stumble);
+
+    // The hips where the sway has them (a little lower while stepping), and
+    // each leg aimed to put its foot where it is planted or swinging to.
+    const V3 hips = home + V3{sway.x, swing >= 0 ? -0.02 : 0.0, sway.z};
+    set_hips(hips);
+    const bool home_again = std::hypot(sway.x, sway.z) < 0.005 && swing < 0;
+    const M3 rr = turn_of(root, "aim");
+    for (int f = 0; f < 2; ++f) {
+        Element& thigh = element(Key{self.params.get_or<std::string>("thigh" + std::to_string(f), "")});
+        Element& shin = element(Key{self.params.get_or<std::string>("shin" + std::to_string(f), "")});
+        Element& foot = element(Key{self.params.get_or<std::string>("foot" + std::to_string(f), "")});
+        P2 at = plant(f);
+        double lift = 0;
+        if (f == swing) {
+            at = P2{self.params.num("from_x"), self.params.num("from_z")} * (1 - t) + P2{self.params.num("to_x"), self.params.num("to_z")} * t;
+            lift = 0.07 * std::sin(3.14159265358979 * t);
+        }
+        const V3 shift{sway.x, hips.y - home.y, sway.z};
+        const V3 ankle_home = vec(foot, "tx", "ty", "tz");
+        if (home_again && len(at - P2{ankle_home.x, ankle_home.z}) < 0.01) {
+            thigh.params.set("planned", 0.0), shin.params.set("planned", 0.0), foot.params.set("planned", 0.0);
+            continue;
+        }
+        const V3 hip = hips + rr * vec(thigh, "jx", "jy", "jz");
+        M3 T, S;
+        two_bone(hip, vec(shin, "tx", "ty", "tz") + shift, ankle_home + shift, {at.x, ankle_home.y + lift, at.z}, turn_of(thigh, "aim"), turn_of(shin, "aim"), T, S);
+        set_turn(thigh, T, "plan"), set_turn(shin, S, "plan"), set_turn(foot, turn_of(foot, "aim"), "plan");
+        thigh.params.set("planned", 1.0), shin.params.set("planned", 1.0), foot.params.set("planned", 1.0);
+    }
 }
 
 Key ragdoll(StateGraph& g, Being& body, Temporal& clock, double mass) {
