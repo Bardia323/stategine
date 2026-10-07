@@ -55,8 +55,9 @@ world's parameters are; `int(5)` is an integer. `[a, b, c]` sets `key.x`, `key.y
 
 ## What it will not say
 
-There is no syntax for, and the compiler says why about, a private timer (a
-state has one time, its line on a `Temporal`), a write from one state into
+There is no syntax for, and the compiler says why about, a second clock (a
+state's time is its own line on a `Temporal`; a timer in its params would be
+another), a write from one state into
 another, a callback, `on_update`, `emit` as orchestration, a mode that
 duplicates focus, an input that writes a state, IO in a transport or an arrow.
 A `when` cannot carry a constant argument (a functor relabels an event and

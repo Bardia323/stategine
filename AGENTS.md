@@ -13,9 +13,11 @@ Every rule below follows from that.
    declares from them (below).
 3. **Time is a state of its own; so is physics.** Neither is part of any
    other state, and neither owns one.
-4. **Each state is driven by an internal clock of its own**: a line of its
-   own on the `Temporal`, moved only as that state steps, and any clock it
-   keeps of its own steps. No state's time is another's.
+4. **Each state is driven by a clock of its own**: its own line on the
+   `Temporal`, private to it, moved only as that state steps - its time is
+   the sum of its own steps. No state's time is another's, and no line
+   governs another. A copy of its time kept in its params would be a second
+   clock for the same state, free to disagree with the first.
 5. **There is no authority state** - not time, and not the state graph,
    whose only job is to link the states.
 
@@ -32,7 +34,7 @@ none of the others. States are connected **only** by the graph:
 | Functor / lens | `add_functor`, `add_lens` | object/arrow/data transport; `sg::kan::left` / `right` can derive an ordinary functor, not a new kind of thing | copying params in a game loop or another state's arrow |
 | Embedding | `graph.embed` | guest in a host portal, with `in`/`out`, subject, sync and focus | holding a guest pointer as the interface |
 | Seam | `add_seam`, `glue_doorway` | bidirectional boundary identification, including a doorway and its door | hand-placed global room coordinates |
-| Drive | `graph.drive` / `sg::drive` | a line of the state's own on a `Temporal` fires its arrows with `{dt, time, frame}`; additive drives omit `frame` | one clock other states must follow; a state reading another state's time; wall-clock time from outside any state |
+| Drive | `graph.drive` / `sg::drive` | a line of the state's own on a `Temporal` fires its arrows with `{dt, time, frame}`; additive drives omit `frame` | one clock other states must follow; a state reading another state's time; a second clock beside a state's own line (a sum of `dt` in its params); wall-clock time from outside any state |
 | Adjunction | `Adjunction` | paired functors with checked unit and counit | treating a lossy adjunction as an isomorphism |
 | Port | `graph.port(state, event)` | external program/device input through `engine.send`, next frame | threads/callbacks writing into a state |
 | Edit | `graph.edit(state, event, fn)` | a state's request rewrites the graph next frame and receives a reply | in-world graph rewrites from the game loop |
@@ -83,11 +85,10 @@ from what it says, and the laws can check it without running it
 (`sg::algebra`, `LawOptions::accelerate`). Never write a description beside a
 handler that does something else: what is said is what runs.
 
-Each state's time is its own: its line on the `Temporal` (the table below),
-moved only as it steps, and any clock it keeps of its own steps. Its
-behaviour, its shader animation (`own_time`) and its sound follow that same
-time of its own, so they never drift apart; no state's time is another's,
-and none is the authority. Choose `Keeps` explicitly: `WhileActive` includes open active
+A state's time is its line on the `Temporal` and nothing else (the table
+below): its own, private, moved only as it steps. Its behaviour, its shader
+animation (`own_time`) and its sound follow that one time of its own, so they
+never drift apart; no state's time is another's, and none is the authority. Choose `Keeps` explicitly: `WhileActive` includes open active
 guests; `WhileShown` runs wherever shown; `WhileFocused` requires input;
 `WhileEntered` requires the current state; `Always` runs elsewhere.
 
@@ -179,7 +180,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 
 | State or machinery (header) | It is | Use it instead of |
 | --- | --- | --- |
-| `Temporal` (`core/Temporal.hpp`) | time, a state of its own: a line for each state it drives, `time` and `frame` as params, one arrow that advances a line by `dt` - no line governs another | one clock every state must follow, a state reading another's time, `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its own line |
+| `Temporal` (`core/Temporal.hpp`) | time, a state of its own: a line for each state it drives, `time` and `frame` as params, one arrow that advances a line by `dt` - no line governs another | one clock every state must follow, a state reading another's time, a second clock beside its own line (a timer or a sum of `dt` in its params), `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its own line |
 | `Spatial2D` / `Spatial3D` (`domains/Spatial.hpp`) | things with a pose that integrate; a 3D room, its `fixture`s and `mesh`es, `model`s | your own position / velocity / integrator |
 | `walk`, `fields_of`, `ray` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops | a walker, gravity or collision of your own; y-up assumptions |
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
@@ -420,7 +421,7 @@ engine's own calls.
 - **Port before removing.** For every existing C++ declaration migrated into the DSL, first reproduce it in the DSL, verify equivalence and run the laws/tests, and only then remove the old declaration. Never delete first and reconstruct afterward. Equivalence is `sg::dsl::facts` (`sg/dsl/Facts.hpp`): everything the DSL declares is in the C++-built graph's facts (`missing(plan, graph)` is empty); then the C++ goes, and the graph's facts are as they were.
 - **Notation is not a state; its source document may be.** A terminal, file, sheet, book or editor can hold source as an ordinary state; its compiler is another state with native arrows. Compilation produces ordinary StateGraph structure. The compiler requests a `graph.edit`, applied next frame, rather than mutating from an arrow/callback (`sg/dsl/Compiler.hpp`, `src/dsl/compiler.sg`). Grammar, source state, compiler state and resulting graph remain distinct; there is no privileged meta-runtime.
 
-What the compiler refuses is the ontology, as errors with the reason: a private timer (use a Temporal drive), a direct write from one state into another (target an arrow through a declared interface), IO in a transport (external effects cross a declared device or port), a callback that changes another state, `on_update`, `emit` as orchestration, a mode duplicating focus, input that writes a state. There is no syntax for any of them, and none to make migrating them easier: a migration repairs them (a `camera.params().set("fov", ...)` becomes the arrow `lens -> lens : zoom(fov)` and a functor to it).
+What the compiler refuses is the ontology, as errors with the reason: a second clock (a state's time is its own line on a Temporal; a timer in its params would be another), a direct write from one state into another (target an arrow through a declared interface), IO in a transport (external effects cross a declared device or port), a callback that changes another state, `on_update`, `emit` as orchestration, a mode duplicating focus, input that writes a state. There is no syntax for any of them, and none to make migrating them easier: a migration repairs them (a `camera.params().set("fov", ...)` becomes the arrow `lens -> lens : zoom(fov)` and a functor to it).
 
 A native implements only the inside of a declared arrow, transport or edit
 (`sg/dsl/Natives.hpp`). Arrows receive their own state/elements; transports their

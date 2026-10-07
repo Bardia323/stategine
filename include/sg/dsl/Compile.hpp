@@ -7,7 +7,7 @@
 //                exists (in the program, in the kind's own class, or declared
 //                `extern` and built elsewhere), and its type is the type
 //                the place it is used wants
-//   ontology     the engine's rules, said once, as errors: no private timer,
+//   ontology     the engine's rules, said once, as errors: no second clock,
 //                no direct write into another state, no IO in a transport,
 //                nothing that could not be a declaration of the graph
 //   lowering     each declaration becomes the engine's own call (Plan.hpp);

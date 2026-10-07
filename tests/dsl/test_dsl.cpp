@@ -414,8 +414,8 @@ drive time -> world.step keeps always
 void ontology() {
     std::printf("-- what the ontology refuses\n");
     const std::string timer = refused("state vale { element world { elapsed = 0.0 } }");
-    check(has(timer, "state vale declares private timer elapsed") && has(timer, "use a Temporal drive"), "a private timer: " + timer);
-    check(has(refused("state vale { time = 0.0 }"), "private timer time"), "and `time`, which is a clock's");
+    check(has(timer, "state vale keeps a second clock elapsed") && has(timer, "use a Temporal drive"), "a second clock: " + timer);
+    check(has(refused("state vale { time = 0.0 }"), "second clock time"), "and `time`, which is a clock's");
     check(refused("state clock : temporal { time = 0.0 }").empty(), "a Temporal keeps time: it is what it is");
 
     const std::string direct = refused(std::string(kCamera) + "state room { element r\n camera.fov = 30.0 }\n");
@@ -805,7 +805,7 @@ transition desk -[go.lamp]-> lamp
     for (int i = 0; i < 4; ++i) e2.tick(0.1);
     const sg::State& c2 = g2.state("compiler");
     check(c2.params().get_or<std::string>("phase", "") == "error", "a source that breaks a rule: the compiler says error");
-    check(has(c2.element("report").params.get_or<std::string>("why", ""), "private timer elapsed"), "and why");
+    check(has(c2.element("report").params.get_or<std::string>("why", ""), "second clock elapsed"), "and why");
     check(g2.size() == states && !g2.contains(sg::Key{"vale"}), "and the graph is as it was");
 
     // Nothing compiled from inside can bring code in, or do IO.

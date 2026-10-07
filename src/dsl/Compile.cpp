@@ -76,7 +76,7 @@ bool is_filesystem_word(const std::string& w) {
 }
 
 // What a state would keep to tell the time itself. Time is a Temporal's.
-bool private_timer(const std::string& key) {
+bool second_clock(const std::string& key) {
     static const std::set<std::string> names = {"elapsed", "timer", "timers", "tick", "ticks", "countdown", "stopwatch", "dt", "delta_time", "time"};
     return names.count(key) != 0;
 }
@@ -259,8 +259,8 @@ private:
     // A key a state or an element may carry: not a clock of its own, and not a
     // write into another state written as if it were a parameter.
     bool key_ok(const StInfo& s, const std::string& state, const std::string& key, const Loc& at) {
-        if (s.kind != "temporal" && private_timer(key)) {
-            err(at, "state " + state + " declares private timer " + key, "use a Temporal drive: `drive <clock> -> " + state + " event <event>`");
+        if (s.kind != "temporal" && second_clock(key)) {
+            err(at, "state " + state + " keeps a second clock " + key + " (its time is its own line on a Temporal)", "use a Temporal drive: `drive <clock> -> " + state + " event <event>`");
             return false;
         }
         const std::size_t dot = key.find('.');
