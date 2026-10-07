@@ -43,8 +43,9 @@
 // gives the being back to itself.
 //
 // Time comes from its drive (`<id>.step`, {dt}), stepped at 120 Hz. Its
-// solver (sg::rigid) is made from its params each step and kept nowhere: a
-// step is a function of them alone.
+// solver (sg::rigid) is made from its params each step, begun from the
+// contacts its last step left - kept by what each step started from, so the
+// same start begins the same: a step is a function of its params.
 #pragma once
 
 #include <cstdint>
@@ -96,6 +97,11 @@ private:
     // stepped to catch it or home, its legs aimed there; falling, and getting
     // up again.
     void balance(double dt);
+    // The contacts the last step left, and what each recent step began
+    // from, by everything it started from: kept so that resting contact holds
+    // steady, and so that one start always begins the same.
+    rigid::World::Contacts last_;
+    std::vector<std::pair<uint64_t, rigid::World::Contacts>> starts_;
 };
 
 // A ragdoll for `body` (`<body>.rag`), on `clock`: the being's meaning

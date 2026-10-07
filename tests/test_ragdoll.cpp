@@ -293,6 +293,37 @@ int main() {
         check(most > 0.05 && sg::distance(b.pose_of("finger2_2").position, tip0) < 0.05, "the fingers go with the hand thrown, and come back with it");
     }
     {
+        // Made at a hundredth of its size and sized up before it lives (as a
+        // Mixamo export is fitted): what it means is what it was made, not
+        // what it was when its first joints were.
+        {
+            sg::Being b(sg::Key{"small"});
+            sg::humanoid(b, 0.0175);
+            b.resize(100.0);
+            const auto& h = b.element("hips").params;
+            check(std::fabs(h.num("ax") - h.num("px")) + std::fabs(h.num("ay") - h.num("py")) < 1e-9,
+                  "made small and sized up before living, it means the body it now is (hips meant " + std::to_string(h.num("ay")) + ", are " + std::to_string(h.num("py")) + ")");
+        }
+        // Made with its feet in the floor: its own pose, not a disturbance -
+        // its ragdoll sleeps.
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& b = g.add<sg::Being>(sg::Key{"ann"});
+        sg::humanoid(b, 1.75);
+        b.lift(-0.08);
+        sg::drive(g, clock, "ann", b.live_event(), false, sg::Keeps::Always);
+        auto* rag = dynamic_cast<sg::Ragdoll*>(g.find(sg::ragdoll(g, b, clock)));
+        g.set_initial("ann");
+        sg::Engine e(g);
+        e.start();
+        bool woke = false;
+        for (int i = 0; i < 60; ++i) {
+            e.tick(1.0 / 60);
+            woke = woke || rag->element(sg::Ragdoll::self_id()).params.num("awake") > 0.5;
+        }
+        check(!woke, "made with its feet in the floor, its ragdoll sleeps: that is its own pose, not a disturbance");
+    }
+    {
         // Balance. Nudged at the chest: the hips sway over the feet and come
         // back; no step is needed.
         Scene w;
@@ -337,13 +368,13 @@ int main() {
         w.start();
         w.run(0.3);
         const double up = w.ann->pose_of("hips").position.y;
-        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 110.0));
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 170.0));
         double low = up;
         for (int i = 0; i < 240; ++i) {
             w.run(1.0 / 60);
             low = std::min(low, w.ann->pose_of("hips").position.y);
         }
-        check(low < 0.5 * up, "shoved too hard to catch, she falls (hips down to " + std::to_string(low) + " m)");
+        check(low < 0.5 * up, "run into (170 N s), too hard to catch, she falls (hips down to " + std::to_string(low) + " m)");
         w.run(8.0);
         check(w.ann->pose_of("hips").position.y > 0.9 * up, "and gets up again (hips " + std::to_string(w.ann->pose_of("hips").position.y) + " m up)");
     }

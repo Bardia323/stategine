@@ -513,13 +513,15 @@ std::vector<Key> Ragdoll::bones() const {
 
 bool Ragdoll::disturbed() const {
     // Held, or a bone that has weight where it is meant to be meets a solid.
+    // (Not the floor: a bone the being means at or under the floor is its own
+    // pose - a foot planted, a bind pose before its clip - and waking cannot
+    // mend it.)
     const Element& self = element(self_id());
     if (!self.params.get_or<std::string>("grab", "").empty()) return true;
     const bool full = self.params.num("full") > 0.5;
     std::vector<Box> solids;
     for (const Element& c : elements())
         if (c.kind == kCollider && c.alive) solids.push_back(box_in(c, self));
-    const double floor = self.params.num("floor");
     for (const Element& b : elements()) {
         if (b.kind != kBone || b.params.num("rides") > 0.5 || (!full && b.params.get_or<std::string>("parent", "").empty())) continue;
         const V3 at = vec(b, "tx", "ty", "tz");
@@ -528,7 +530,6 @@ bool Ragdoll::disturbed() const {
         const double r = block ? 0.5 * spatial::length(vec(b, "hix", "hiy", "hiz") - vec(b, "lox", "loy", "loz")) : b.params.num("radius");
         const V3 end = at + t * (block ? (vec(b, "hix", "hiy", "hiz") + vec(b, "lox", "loy", "loz")) * 0.5 : vec(b, "ex", "ey", "ez"));
         for (V3 q : {at, end}) {
-            if (q.y - r < floor - 0.02 && !block) return true;
             for (const Box& s : solids)
                 if (inside(s, q, r)) return true;
         }
@@ -601,8 +602,12 @@ void Ragdoll::step(double dt) {
             if (b.kind != kBone) continue;
             const V3 x = vec(b, "x", "y", "z"), t = vec(b, "tx", "ty", "tz");
             const M3 q = turn_of(b, "q"), tq = turn_of(b, "aim");
-            set_vec(b, (t - x) * (1.0 / dt), "vx", "vy", "vz");
-            set_vec(b, spatial::log_map(tq * spatial::transpose(q)) * (1.0 / dt), "wx", "wy", "wz");
+            // (Faster than a body moves - a pose put, not moved into: a clip
+            // begun, a bind pose left - it was put there, and is still.)
+            const V3 v = (t - x) * (1.0 / dt), w = spatial::log_map(tq * spatial::transpose(q)) * (1.0 / dt);
+            const bool put = spatial::length(v) > 6.0 || spatial::length(w) > 20.0;
+            set_vec(b, put ? V3{} : v, "vx", "vy", "vz");
+            set_vec(b, put ? V3{} : w, "wx", "wy", "wz");
             set_vec(b, t, "x", "y", "z");
             set_turn(b, tq, "q");
         }
@@ -645,10 +650,31 @@ void Ragdoll::step(double dt) {
     }
     self.params.set("lead", 1.0);
 
-    // The world, as it is now - from its params alone, contacts and all, so
-    // a step is the same however often and after whatever it is tried.
+    // The world, as it is now; begun from the contacts the last step left
+    // (resting contacts hold steady, they do not buzz), remembered by
+    // everything this step starts from - the same start, tried again in any
+    // order, begins from the same contacts.
     rigid::World w;
     build(w);
+    uint64_t in = 1469598103934665603ull;
+    const auto mix = [&](double v) {
+        uint64_t q;
+        std::memcpy(&q, &v, sizeof q);
+        in = (in ^ q) * 1099511628211ull;
+    };
+    mix(dt);
+    for (const Element& e : elements())
+        for (const auto& [k, v] : e.params)
+            if (const double* d = std::get_if<double>(&v)) mix(*d);
+    {
+        auto it = std::find_if(starts_.begin(), starts_.end(), [&](const auto& m) { return m.first == in; });
+        if (it != starts_.end()) w.set_contacts(it->second);
+        else {
+            starts_.emplace_back(in, last_);
+            if (starts_.size() > 16) starts_.erase(starts_.begin());
+            w.set_contacts(last_);
+        }
+    }
 
     balance(dt);
     const bool full = self.params.num("full") > 0.5;
@@ -700,7 +726,6 @@ void Ragdoll::step(double dt) {
         j.aim_torque = 2.0 + 600.0 * s;  // what is left of a limp joint: its friction
     }
     const std::string held = self.params.get_or<std::string>("grab", "");
-    const std::string root_name = self.params.get_or<std::string>("root", "");
     V3 push{};
     const int n = std::max(1, int(std::ceil(dt * 120.0 - 1e-9)));
     const double h = dt / n;
@@ -712,20 +737,23 @@ void Ragdoll::step(double dt) {
             w.drive(*d.body, d.from + (d.to - d.from) * f, (a > 1e-12 ? spatial::axis_angle(turn * (1.0 / a), a * f) : M3{}) * d.from_r);
         }
         if (!held.empty())
-            if (rigid::Body* g = w.find(held))
-                w.grab(held, self.params.num("grab_at") > 0.5 ? vec(self, "grab_lx", "grab_ly", "grab_lz") : g->com_local, vec(self, "grab_x", "grab_y", "grab_z"),
-                       self.params.num("grab_force", 500.0))
-                    .turns = false;
+            if (rigid::Body* g = w.find(held)) {
+                const V3 at = self.params.num("grab_at") > 0.5 ? vec(self, "grab_lx", "grab_ly", "grab_lz") : g->com_local;
+                const V3 to = vec(self, "grab_x", "grab_y", "grab_z");
+                w.grab(held, at, to, self.params.num("grab_force", 500.0)).turns = false;
+                // What sways the body is what pulls it from outside, as hard
+                // as the hand pulls (its spring, no stronger than the hand):
+                // not the joints' own pushing as the limb is yanked.
+                const V3 pull = (to - (g->x + g->r * at)) * 600.0;
+                const double most = self.params.num("grab_force", 500.0);
+                push = push + (spatial::length(pull) > most ? pull * (most / spatial::length(pull)) : pull) * h;
+            }
         w.step(h);
         if (!held.empty()) w.release(held);
-        // What the body above the hips pushed them with (their joints to the
-        // body that is not legs), across the floor: what sways them.
-        for (const rigid::Joint& j : w.joints) {
-            if (j.a != root_name || element(Key{j.b}).params.num("leg") > 0.5) continue;
-            push = push - j.point * double(w.substeps);
-        }
     }
     self.params.set("push_x", self.params.num("push_x") + push.x).set("push_z", self.params.num("push_z") + push.z);
+
+    last_ = w.contacts();
 
     // Back into the params; and asleep again once it is where it is meant
     // to be, still, whole and let go a moment.
@@ -925,8 +953,8 @@ void Ragdoll::balance(double dt) {
         if (b.kind == kBone && b.params.get_or<std::string>("parent", "") == root_name && b.params.num("leg") < 0.5)
             lean = std::max(lean, std::acos(std::clamp((turn_of(b, "q") * spatial::transpose(turn_of(b, "aim")) * V3{0, 1, 0}).y, -1.0, 1.0)));
     // (Going where no step could catch it - its sway would come to rest
-    // further than a stride beyond its feet - it falls at once.)
-    if (self.params.num("steps") > 4 || stumble > 2.0 || lean > 0.87 || off > reach) {
+    // further than a stride and a half beyond its feet - it falls at once.)
+    if (self.params.num("steps") > 4 || stumble > 2.0 || lean > 0.87 || off > 1.5 * reach) {
         // It gives up: its legs and hips have weight now, and its strength goes.
         self.params.set("fallen", 1.0).set("full", 1.0).set("lie", 0.0).set("swing", -1.0);
         unplan();

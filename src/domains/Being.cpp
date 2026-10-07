@@ -150,7 +150,8 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         .set("age", 0.0)
         .set("lead", 0.0)
         .set("lead_to", 0.0)
-        .set("lead_fade", 0.3);
+        .set("lead_fade", 0.3)
+        .set("lived", 0.0);
     for (int i = 0; i < kLayers; ++i)
         add_element(Key{"layer" + std::to_string(i)}, kLayer)
             .params.set("clip", std::string{})
@@ -319,6 +320,7 @@ double Being::tempo() const {
 void Being::live(double dt) {
     if (dt <= 0) return;  // no time, no change
     Element& self = element(self_id());
+    self.params.set("lived", 1.0);
     const double t = dt * tempo();
     self.params.set("age", self.params.num("age") + t);
 
@@ -530,6 +532,7 @@ void Being::live(double dt) {
 }
 
 void Being::resolve() {
+    const bool lived = element(self_id()).params.num("lived") > 0.5;
     // Every joint and part posed in the being's frame from the joints' turns;
     // and each joint as it is bound, at rest (`bq`): the frame a motion is
     // carried in from one body to another.
@@ -550,7 +553,7 @@ void Being::resolve() {
         to_euler(mine.r, y, p, r);
         e.params.set("px", mine.p.x).set("py", mine.p.y).set("pz", mine.p.z).set("pyaw", y).set("ppitch", p).set("proll", r);
         set_q(e, norm(mine.r), "pq");
-        if (!e.params.has(Key{"aqw"})) {  // (before it has lived, it means what it is)
+        if (!lived) {  // (before it has lived, it means what it is - however it has been made since)
             set_q(e, norm(mine.r), "aq");
             e.params.set("ax", mine.p.x).set("ay", mine.p.y).set("az", mine.p.z);
         }
