@@ -324,6 +324,40 @@ int main() {
         check(!woke, "made with its feet in the floor, its ragdoll sleeps: that is its own pose, not a disturbance");
     }
     {
+        // A body whose meant pose is of a body it no longer is (made, then
+        // changed, with nothing to say so) says so itself: the graph's
+        // validation names it, so it is heard at start and refused by verify.
+        sg::StateGraph g;
+        auto& b = g.add<sg::Being>(sg::Key{"ann"});
+        sg::humanoid(b, 1.75);
+        g.set_initial("ann");
+        check(g.validate().empty(), "a body that means what it is has no fault");
+        b.element("chest").params.set("ay", 0.2);  // (a meant pose taken from another body)
+        bool named = false;
+        for (const auto& e : g.validate()) named = named || (e.find("state ann") != std::string::npos && e.find("chest") != std::string::npos);
+        check(named && !sg::verify(g).structure.empty(), "a body whose meant pose does not fit its own bones is named by the graph's validation, and verify refuses it");
+    }
+    {
+        // Anchored to its place, a few centimetres: shoved, it sways within
+        // them; run into, it does not step and does not fall.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        w.tell(w.rag->anchor_event(), sg::Params{}.set("reach", 0.04));
+        const sg::Vec3d hips0 = w.ann->pose_of("hips").position;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 170.0));
+        double most = 0, steps = 0, fell = 0;
+        for (int i = 0; i < 180; ++i) {
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id());
+            const sg::Vec3d h = w.ann->pose_of("hips").position;
+            most = std::max(most, std::hypot(h.x - hips0.x, h.z - hips0.z));
+            steps = std::max(steps, self.params.num("steps"));
+            fell = std::max(fell, self.params.num("fallen"));
+        }
+        check(most <= 0.045 && steps == 0 && fell == 0, "anchored, run into, it moves no further than its reach (" + std::to_string(most) + " m), never steps, never falls");
+    }
+    {
         // Balance. Nudged at the chest: the hips sway over the feet and come
         // back; no step is needed.
         Scene w;

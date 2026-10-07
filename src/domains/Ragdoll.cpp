@@ -168,6 +168,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         .set("grab", std::string{})
         .set("grab_x", 0.0).set("grab_y", 0.0).set("grab_z", 0.0)
         .set("grab_force", 500.0)
+        .set("anchor", -1.0)
         .set("grab_at", 0.0).set("grab_lx", 0.0).set("grab_ly", 0.0).set("grab_lz", 0.0);
 
     // The skeleton as it is bound: each joint's place and turn.
@@ -468,6 +469,10 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         }
         self.params.set("grab_force", ev.args.num("force", 500.0)).set("awake", 1.0).set("still", 0.0);
     });
+    //   self --anchor--> self: how far it may be moved from its place.
+    loop(Key{"anchor"}, self_id(), anchor_event(), [](State&, Element& self, Element*, const Event& ev) {
+        self.params.set("anchor", ev.args.num("reach", -1.0));
+    });
     loop(Key{"let_go"}, self_id(), let_go_event(), [](State&, Element& self, Element*, const Event&) { self.params.set("grab", std::string{}).set("grab_at", 0.0); });
 }
 
@@ -502,6 +507,25 @@ Key Ragdoll::nearest(const V3& p) const {
         if (d < least) least = d, best = b.id;
     }
     return best;
+}
+
+std::vector<std::string> Ragdoll::faults() const {
+    std::vector<std::string> out;
+    for (const Element& b : elements()) {
+        if (b.kind != kBone || b.params.num("rides") > 0.5) continue;
+        const Element* up = find(Key{b.params.get_or<std::string>("parent", "")});
+        if (!up) continue;
+        const V3 bone = vec(b, "jx", "jy", "jz");
+        const V3 want = vec(*up, "tx", "ty", "tz") + turn_of(*up, "aim") * bone;
+        const double off = spatial::length(vec(b, "tx", "ty", "tz") - want);
+        if (off > 0.02 + 0.1 * spatial::length(bone)) {
+            char t[200];
+            std::snprintf(t, sizeof t, "bone %s is meant %.3f m from where its own bone reaches - its targets are of a body it is not", b.id.str().c_str(), off);
+            out.push_back(t);
+            break;
+        }
+    }
+    return out;
 }
 
 std::vector<Key> Ragdoll::bones() const {
@@ -890,11 +914,22 @@ void Ragdoll::balance(double dt) {
     const P2 a = (com - cop) * (w0 * w0);
     v = v + a * dt;
     sway = sway + v * dt;
+    // Anchored: no further from its place than its reach; moving away, it
+    // is held there.
+    const double anchor = self.params.num("anchor", -1.0);
+    if (anchor >= 0 && len(sway) > anchor) {
+        const P2 out = sway * (1.0 / len(sway));
+        sway = out * anchor;
+        const double away = v.x * out.x + v.z * out.z;
+        if (away > 0) v = v - out * away;
+    }
 
     // A step: to catch it, or, steady, home.
     const P2 mid = (plant(0) + plant(1)) * 0.5;
     const double reach = 0.6 * height;
-    if (swing < 0 && off > 0.03) {
+    if (anchor >= 0) {
+        // (Anchored, it does not step: its feet stay where they are planted.)
+    } else if (swing < 0 && off > 0.03) {
         int f = len(plant(0) - capture) > len(plant(1) - capture) ? 0 : 1;
         P2 to = capture + (plant(f) - mid) + (capture - mid) * (0.05 / std::max(1e-6, len(capture - mid)));
         if (len(to - com) > reach) to = com + (to - com) * (reach / len(to - com));
@@ -954,7 +989,7 @@ void Ragdoll::balance(double dt) {
             lean = std::max(lean, std::acos(std::clamp((turn_of(b, "q") * spatial::transpose(turn_of(b, "aim")) * V3{0, 1, 0}).y, -1.0, 1.0)));
     // (Going where no step could catch it - its sway would come to rest
     // further than a stride and a half beyond its feet - it falls at once.)
-    if (self.params.num("steps") > 4 || stumble > 2.0 || lean > 0.87 || off > 1.5 * reach) {
+    if (anchor < 0 && (self.params.num("steps") > 4 || stumble > 2.0 || lean > 0.87 || off > 1.5 * reach)) {
         // It gives up: its legs and hips have weight now, and its strength goes.
         self.params.set("fallen", 1.0).set("full", 1.0).set("lie", 0.0).set("swing", -1.0);
         unplan();

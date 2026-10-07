@@ -32,7 +32,11 @@
 // is off its soles, a foot steps there (the leg bent to it), as many times
 // as it takes; steady, its feet step home. Too many steps, too long
 // stumbling or too far leaning and it gives up: it falls, its strength
-// ebbing; lain still a while, it gets up. `full` = 1 lets it fall at once. While nothing disturbs it
+// ebbing; lain still a while, it gets up. `full` = 1 lets it fall at once.
+// Anchored (`<id>.anchor`, `reach` metres), it may be moved no further than
+// that from its place: it sways within it, never steps, never falls - a
+// guard at a door, a clerk behind a desk - though a limb struck still gives
+// and comes back. While nothing disturbs it
 // it sleeps - its bones simply where the being means them, costing nothing -
 // and wakes when it is hit, held, knocked, or meets a solid. A knock is
 // whatever another world - the room's loose things, someone walking into it -
@@ -71,8 +75,12 @@ public:
     Key hit_event() const { return Key{id().str() + ".hit"}; }        // {bone, x, y, z (N s, the being's frame), weaken=0.25, for=0.8}
     Key grab_event() const { return Key{id().str() + ".grab"}; }      // {bone, x, y, z (where to, the being's frame), [ax ay az: where on it], force=500}
     Key let_go_event() const { return Key{id().str() + ".let_go"}; }  // {}
+    Key anchor_event() const { return Key{id().str() + ".anchor"}; }  // {reach (m; below 0: free)}: how far it may be moved from its place
 
     std::vector<Key> bones() const;
+    // Its own account: a bone meant to be where its own bone from its parent
+    // cannot reach - targets of a body it is not.
+    std::vector<std::string> faults() const override;
     // A bone's solid, in its own frame (its joint at the origin), as its
     // params say: for whatever else gives the bone a body (another world's).
     static rigid::Hull hull(const Element& bone);

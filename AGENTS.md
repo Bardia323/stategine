@@ -399,12 +399,15 @@ the host's checks.
    (`cmake/StategineModules.cmake`); follow the ownership/build rules above.
 2. Author the construction under *The DSL* below, applying rules 2-7 for
    behaviour, reachability, appearance, input, defaults and content.
-3. Test the graph **alone** with `sg::verify`, then test its interface in the
+3. If its data can disagree with itself (a body's pose and its bones, a
+   solver's targets and its parts), say so in `State::faults`: validation
+   then names it at start and `verify` refuses it, in every project.
+4. Test the graph **alone** with `sg::verify`, then test its interface in the
    assembled world. Use meaningful event args; inspect `unchecked` and `bounded`
    as well as counterexamples. `ok()` is no structure problem/counterexample;
    `holds()` also requires no unchecked equation; `complete()` excludes bounded
    search. Check covers, adjunctions and interface defects where declared.
-4. Write `CHANGELOG.md` in plain words, with **Breaking** for consumer changes.
+5. Write `CHANGELOG.md` in plain words, with **Breaking** for consumer changes.
 
 ## The DSL: the construction, written as notation
 

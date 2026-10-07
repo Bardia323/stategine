@@ -505,6 +505,10 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
         if (!c.valid || c.structure != st.structure()) c = StateCheck{true, st.structure(), st.validate(), false, {}};
         for (const auto& e : c.errors) errors.push_back(e);
     }
+    // Each state's own account of what is wrong with its data (asked each
+    // time: it follows its data, not its structure).
+    for (const auto& kv : states_)
+        for (const auto& f : kv.second->faults()) errors.push_back("state " + kv.first.str() + ": " + f);
 
     for (const auto& e : embeddings_) {
         const State* h = find(e.host);

@@ -219,6 +219,13 @@ public:
     // its data - a picture, a cache - made to follow it again.
     virtual void on_restored() {}
 
+    // What is wrong with it as it is now, by its own account: data that
+    // disagrees with itself (a body whose meant pose does not fit its own
+    // bones). Each state answers for itself; validate() only collects the
+    // answers, so the engine's watch says them at start and `verify` refuses
+    // them in a project's tests.
+    virtual std::vector<std::string> faults() const { return {}; }
+
     // --- versions -------------------------------------------------------------
     // What the state is made of - its elements and arrows, as a list - stamped
     // like content (see Stamps in Core.hpp): a new stamp whenever an element

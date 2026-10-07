@@ -573,6 +573,27 @@ void Being::resolve() {
     }
 }
 
+std::vector<std::string> Being::faults() const {
+    std::vector<std::string> out;
+    for (const Element& j : elements()) {
+        if (j.kind != kJoint) continue;
+        const Element* up = find(Key{j.params.get_or<std::string>("parent_joint", "")});
+        if (!up || up->kind != kJoint) continue;
+        const Vec3d bone = offset_of(j);
+        const Vec3d at{j.params.num("ax"), j.params.num("ay"), j.params.num("az")};
+        const Vec3d want = Vec3d{up->params.num("ax"), up->params.num("ay"), up->params.num("az")} + rotate(norm(q_of(*up, "aq")), bone);
+        const Vec3d d = at - want;
+        const double off = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), l = std::sqrt(bone.x * bone.x + bone.y * bone.y + bone.z * bone.z);
+        if (off > 0.005 + 0.05 * l) {
+            char b[200];
+            std::snprintf(b, sizeof b, "joint %s means to be %.3f m from where its own bone puts it - its meant pose is of a body it no longer is", j.id.str().c_str(), off);
+            out.push_back(b);
+            break;  // (one says it: the rest follow from it)
+        }
+    }
+    return out;
+}
+
 Pose Being::pose_of(Key id) const {
     const Element& e = element(id);
     return Pose{{e.params.num("px"), e.params.num("py"), e.params.num("pz")}, e.params.num("pyaw"), e.params.num("ppitch"), e.params.num("proll")};

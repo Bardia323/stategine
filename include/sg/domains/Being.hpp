@@ -144,6 +144,11 @@ public:
     // The spirit's step: `dt` of the line's time, at the being's tempo.
     void live(double dt);
 
+    // Its own account: a joint whose meant place (`ax`) is not where its
+    // parent's meant place and turn put it by its own bone - a meant pose
+    // taken from a body it no longer is.
+    std::vector<std::string> faults() const override;
+
 private:
     struct Key3 {
         double t;
