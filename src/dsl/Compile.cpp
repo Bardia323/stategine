@@ -332,7 +332,8 @@ private:
                 for (const ArrowAst& a : s.arrows) signatures_[s.name].push_back({a.trigger.empty() ? a.name : a.trigger, a.args});
                 if (k) {
                     // what the kind's own class makes: asked of a scratch instance
-                    const std::unique_ptr<State> scratch = k->make(Key{"scratch"});
+                    // of the same name (a kind may name its events by its id)
+                    const std::unique_ptr<State> scratch = k->make(Key{s.name});
                     for (const Element& e : scratch->elements()) info.elems[e.id.str()] = ElemInfo{e.kind.str(), true};
                     for (const Morphism& m : scratch->morphisms())
                         info.arrows[m.name.str()] = ArrowInfo{m.from.str(), m.to.str(), m.trigger.str(), {}, true};

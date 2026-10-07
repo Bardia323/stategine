@@ -1,0 +1,44 @@
+# A save game, in the notation: the base is kept; the game it was won from
+# is brought back from it, back along what the game wrote into it.
+
+initial base
+
+state base {
+    element games : flags { game_won = 0.0 }
+    element door : door
+    door -> door : reach on base.reach native checkpoint
+    say base.checkpoint
+}
+
+state game {
+    element run : run {
+        won = 0.0
+        level = 1.0
+    }
+}
+
+state progress : save {
+    element base : kept
+    say progress.at.base
+}
+
+functor won : game -> base {
+    object run -> games swizzle(game_won = won)
+}
+keep won
+
+# Reaching the door is a checkpoint, carried to the save.
+functor checkpoint : base -> progress {
+    event base.checkpoint -> progress.save
+}
+
+transition base -[play]-> game
+transition game -[home]-> base
+transition * -[progress.at.base]-> base
+
+port base.reach
+port progress.save
+port progress.load
+port progress.restore
+edit progress on progress.restrict native restrict.kept
+edit progress on progress.extend native extend.kept

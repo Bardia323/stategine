@@ -163,6 +163,20 @@ struct Result {
     std::vector<uint64_t> read;  // what it was worked out from (current)
 };
 
+// A functor's transport at one object, undone - where what it declares proves
+// it can be (see `data` above): a whole copy is undone by a whole copy (`whole`),
+// a pure renaming by the renaming turned round, which brings back only what it
+// carried (`carried`, by the source's names). An opaque transport, arithmetic, a
+// renaming that is not one to one: none, and why (`kind`, `why`). The extension
+// composes it with F; a save (sg::Save) carries a kept state's data back along
+// a link into the state it came from by it.
+struct Inverse {
+    transport::Declared back;
+    bool whole = true;
+    std::unordered_set<Key> carried;
+};
+std::optional<Inverse> inverse(const Functor& k, Key a, Hole::Kind* kind = nullptr, std::string* why = nullptr);
+
 namespace detail {
 Result compile(Side side, const StateGraph& g, Key k_name, Key f_name, Key name, const Options& o);
 }  // namespace detail

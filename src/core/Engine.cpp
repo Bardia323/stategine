@@ -634,7 +634,13 @@ void Engine::apply_edits() {
         if (!ed || !ed->apply) continue;  // dropped since it was asked
         const Key who = ed->state, reply = ed->reply;
         Params answer = ed->apply(graph_, a.event);  // may rewrite the graph, and `ed` with it
-        if (State* s = graph_.find(who)) s->hear(Event{reply, std::move(answer)});
+        // Heard as a port's event is: its arrows run on it now, and what it
+        // says goes on - whether or not it steps this frame.
+        if (State* s = graph_.find(who)) {
+            s->hear(Event{reply, std::move(answer)});
+            s->dispatch_pending();
+            heard_from(*s);
+        }
     }
 }
 

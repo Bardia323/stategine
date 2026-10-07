@@ -25,7 +25,7 @@ struct KindInfo {
 
 class Kinds {
 public:
-    // The engine's own: state, temporal, spatial2d, spatial3d, look, camera, console.
+    // The engine's own: state, temporal, spatial2d, spatial3d, look, camera, console, save.
     static const Kinds& standard();
 
     Kinds& add(KindInfo k);

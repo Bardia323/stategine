@@ -38,6 +38,42 @@ std::string Result::str() const {
     return s;
 }
 
+std::optional<Inverse> inverse(const Functor& k, Key a, Hole::Kind* kind, std::string* why) {
+    const auto refuse = [&](Hole::Kind kd, std::string w) -> std::optional<Inverse> {
+        if (kind) *kind = kd;
+        if (why) *why = std::move(w);
+        return std::nullopt;
+    };
+    Inverse out;
+    out.back = transport::copy_all;
+    if (k.is_identity()) return out;
+    const std::shared_ptr<const Stages> st = k.declared_of(a);
+    // Mapped with no transport, an object is carried whole (Functor::apply).
+    const Transport* t = k.transport_of(a);
+    if (!st && t && !*t) return out;
+    if (!st) return refuse(Hole::Kind::Unsupported, k.name().str() + "'s transport at " + a.str() +
+                                                        " is opaque: no declared stages to invert");
+    if (st->size() == 1 && (*st)[0].copy_all && (*st)[0].rows.empty()) return out;
+    if (st->size() != 1 || (*st)[0].copy_all || (*st)[0].rows.empty())
+        return refuse(Hole::Kind::Transport, k.name().str() + "'s transport at " + a.str() +
+                                                 " is not a whole copy or a pure renaming: not provably invertible");
+    std::unordered_set<Key> targets;
+    Affine inv;
+    for (const Affine::Row& r : (*st)[0].rows) {
+        if (!Affine::is_copy(r) || r.terms[0].of_target)
+            return refuse(Hole::Kind::Transport, k.name().str() + " sets " + r.param.str() + " of " + a.str() +
+                                                     " by arithmetic, not a copy: not provably invertible");
+        if (!out.carried.insert(r.terms[0].param).second || !targets.insert(r.param).second)
+            return refuse(Hole::Kind::Transport, k.name().str() + "'s renaming at " + a.str() +
+                                                     " is not one to one (" + r.terms[0].param.str() + " -> " +
+                                                     r.param.str() + " collides): no inverse");
+        inv.copy(r.terms[0].param, r.param);
+    }
+    out.whole = false;
+    out.back = transport::affine(std::move(inv));
+    return out;
+}
+
 namespace {
 
 // A loop that does nothing and is no composite: an identity, the empty word.
@@ -214,43 +250,10 @@ struct Carry {
 // renaming, a's other parameters are not there to be the identity of.
 bool derive(const Functor& K, const Functor& F, Key a, Carry& out, Hole::Kind& kind, std::string& why) {
     // K's inverse at a: none (whole), or a renaming turned round.
-    bool whole = K.is_identity();
-    std::optional<Affine> back;
-    std::unordered_set<Key> carried;
-    if (!whole) {
-        const std::shared_ptr<const Stages> k = K.declared_of(a);
-        if (!k) {
-            kind = Hole::Kind::Unsupported;
-            why = K.name().str() + "'s transport at " + a.str() + " is opaque: no declared stages to invert";
-            return false;
-        }
-        if (k->size() == 1 && (*k)[0].copy_all && (*k)[0].rows.empty()) {
-            whole = true;
-        } else {
-            kind = Hole::Kind::Transport;
-            if (k->size() != 1 || (*k)[0].copy_all || (*k)[0].rows.empty()) {
-                why = K.name().str() + "'s transport at " + a.str() + " is not a whole copy or a pure renaming: " +
-                      "not provably invertible";
-                return false;
-            }
-            std::unordered_set<Key> targets;
-            Affine inv;
-            for (const Affine::Row& r : (*k)[0].rows) {
-                if (!Affine::is_copy(r) || r.terms[0].of_target) {
-                    why = K.name().str() + " sets " + r.param.str() + " of " + a.str() +
-                          " by arithmetic, not a copy: not provably invertible";
-                    return false;
-                }
-                if (!carried.insert(r.terms[0].param).second || !targets.insert(r.param).second) {
-                    why = K.name().str() + "'s renaming at " + a.str() + " is not one to one (" +
-                          r.terms[0].param.str() + " -> " + r.param.str() + " collides): no inverse";
-                    return false;
-                }
-                inv.copy(r.terms[0].param, r.param);
-            }
-            back = std::move(inv);
-        }
-    }
+    const std::optional<Inverse> undo = inverse(K, a, &kind, &why);
+    if (!undo) return false;
+    const bool whole = undo->whole;
+    const std::unordered_set<Key>& carried = undo->carried;
     if (F.is_identity()) {
         if (whole) {  // b's data is a's, and F(a) is a: the same representation
             out = Carry{Transport(transport::copy_all), transport::copy_all.stages};
@@ -287,7 +290,7 @@ bool derive(const Functor& K, const Functor& F, Key a, Carry& out, Hole::Kind& k
                 return false;
             }
     auto stages = std::make_shared<Stages>();
-    stages->push_back(std::move(*back));
+    stages->push_back(undo->back.stages->front());
     stages->insert(stages->end(), f->begin(), f->end());
     std::shared_ptr<const Stages> both = std::move(stages);
     out = Carry{Transport(transport::Declared{both}), both};

@@ -313,6 +313,11 @@ if(SG_BUILD_TESTS)
   add_executable(sg_walk tests/test_walk.cpp)
   target_link_libraries(sg_walk PRIVATE stategine_dev)
   add_test(NAME sg_walk COMMAND sg_walk)
+  # A save game (sg/domains/Save.hpp): the kept states written and read back,
+  # and what follows from them brought back through the graph's links.
+  add_executable(sg_save tests/test_save.cpp)
+  target_link_libraries(sg_save PRIVATE stategine_dev)
+  add_test(NAME sg_save COMMAND sg_save)
   add_executable(sg_texture tests/test_texture.cpp)
   target_link_libraries(sg_texture PRIVATE stategine_dev)
   add_test(NAME sg_texture COMMAND sg_texture)
@@ -418,6 +423,10 @@ if(SG_BUILD_TESTS)
     target_link_libraries(sg_net_numerics PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)
     stategine_compile_dsl(sg_net_numerics NAME network_numerics SOURCES tests/dsl/network_numerics.sg)
     add_test(NAME sg_net_numerics COMMAND sg_net_numerics)
+    # The save game's test also builds its world from the notation.
+    target_link_libraries(sg_save PRIVATE stategine_dsl)
+    stategine_compile_dsl(sg_save NAME save SOURCES tests/dsl/save.sg)
+    target_compile_definitions(sg_save PRIVATE SG_SAVE_DSL=1)
 
     add_executable(sg_net_distributed tests/test_net_distributed.cpp examples/Distributed.cpp)
     target_link_libraries(sg_net_distributed PRIVATE stategine_net stategine_dsl stategine_warnings stategine_static_runtime)

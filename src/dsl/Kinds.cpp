@@ -3,6 +3,7 @@
 #include "sg/domains/Camera.hpp"
 #include "sg/domains/Console.hpp"
 #include "sg/domains/Look.hpp"
+#include "sg/domains/Save.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/core/Temporal.hpp"
 
@@ -27,6 +28,7 @@ const Kinds& Kinds::standard() {
         out.add(kind<LookState>("look", "sg::LookState"));
         out.add(kind<Camera>("camera", "sg::Camera"));
         out.add(kind<ConsoleState>("console", "sg::ConsoleState"));
+        out.add(kind<Save>("save", "sg::Save"));
         return out;
     }();
     return k;
