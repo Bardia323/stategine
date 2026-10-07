@@ -21,7 +21,11 @@
 // Its legs and hips go on as the being means them (they keep it standing;
 // `full` = 1 gives them weight too, and it falls). While nothing disturbs it
 // it sleeps - its bones simply where the being means them, costing nothing -
-// and wakes when it is hit, held, or meets a solid. Awake, it leads the being
+// and wakes when it is hit, held, knocked, or meets a solid. A knock is
+// whatever another world - the room's loose things, someone walking into it -
+// says struck a bone: an impulse in the being's frame (`kx ky kz`) and how
+// many there have been (`knock_n`), carried onto the bone by a functor; each
+// new one is taken once. Awake, it leads the being
 // (`lead`), so what is seen is the body as it really moves; settled, it
 // gives the being back to itself.
 //
@@ -55,6 +59,9 @@ public:
     Key let_go_event() const { return Key{id().str() + ".let_go"}; }  // {}
 
     std::vector<Key> bones() const;
+    // A bone's solid, in its own frame (its joint at the origin), as its
+    // params say: for whatever else gives the bone a body (another world's).
+    static rigid::Hull hull(const Element& bone);
     // One step of `dt` seconds.
     void step(double dt);
 

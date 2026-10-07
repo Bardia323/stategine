@@ -43,7 +43,7 @@ M3 up_to(V3 u) {
 
 // A bone's solid, in its own frame (its joint at the origin): a rod to its
 // end, or a block.
-rigid::Hull hull_of(const Element& b) {
+rigid::Hull shape_of(const Element& b) {
     if (b.params.num("block") > 0.5) {
         const V3 lo = vec(b, "lox", "loy", "loz"), hi = vec(b, "hix", "hiy", "hiz");
         return rigid::Hull::box((lo + hi) * 0.5, (hi - lo) * 0.5);
@@ -174,6 +174,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         set_turn(b, turn_of(j, "pq"), "aim");
         set_vec(b, {}, "vx", "vy", "vz");
         set_vec(b, {}, "wx", "wy", "wz");
+        b.params.set("knock_n", 0.0).set("knock_seen", 0.0);
     }
     // Neighbours no more than ten times each other: a light hand on a heavy
     // arm shakes.
@@ -190,7 +191,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
     std::vector<V3> com(js.size());
     for (std::size_t i = 0; i < js.size(); ++i) {
         rigid::Body b;
-        b.hulls.push_back(hull_of(element(js[i])));
+        b.hulls.push_back(shape_of(element(js[i])));
         b.set_mass(element(js[i]).params.num("mass"));
         const M3& inv = b.inv_inertia_local;
         own[i] = 3.0 / std::max(1e-9, inv(0, 0) + inv(1, 1) + inv(2, 2));
@@ -250,6 +251,8 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
     loop(Key{"let_go"}, self_id(), let_go_event(), [](State&, Element& self, Element*, const Event&) { self.params.set("grab", std::string{}); });
 }
 
+rigid::Hull Ragdoll::hull(const Element& bone) { return shape_of(bone); }
+
 std::vector<Key> Ragdoll::bones() const {
     std::vector<Key> out;
     for (const Element& e : elements())
@@ -307,7 +310,7 @@ void Ragdoll::build(rigid::World& w) const {
         if (b.kind != kBone) continue;
         rigid::Body body;
         body.id = b.id.str();
-        body.hulls.push_back(hull_of(b));
+        body.hulls.push_back(shape_of(b));
         body.group = 1;
         body.friction = 0.8, body.restitution = 0.05;
         body.set_mass(b.params.num("mass", 1.0));
@@ -350,7 +353,19 @@ void Ragdoll::step(double dt) {
             set_vec(b, t, "x", "y", "z");
             set_turn(b, tq, "q");
         }
-        if (!disturbed()) {
+    }
+    // Knocks not yet taken: each an impulse on its bone, which it weakens a
+    // little - and wakes it.
+    bool knocked = false;
+    for (Element& b : elements()) {
+        if (b.kind != kBone || b.params.num("knock_n") == b.params.num("knock_seen")) continue;
+        const V3 k = vec(b, "kx", "ky", "kz");
+        set_vec(b, vec(b, "vx", "vy", "vz") + k * (1.0 / b.params.num("mass", 1.0)), "vx", "vy", "vz");
+        b.params.set("knock_seen", b.params.num("knock_n")).set("weak", b.params.num("weak", 1.0) * 0.6);
+        knocked = true;
+    }
+    if (self.params.num("awake") < 0.5) {
+        if (!knocked && !disturbed()) {
             self.params.set("lead", 0.0);
             return;
         }

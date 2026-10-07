@@ -145,6 +145,19 @@ int main() {
         check(dist(w.hand(), hand0) < 0.05 && !w.awake(), "and settles back, and sleeps");
     }
     {
+        // A knock from another world (what the room's loose things or a
+        // walker did to a bone, carried onto it): taken once, and it moves her.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d hand0 = w.hand();
+        w.rag->element(sg::Key{"forearm_l"}).params.set("kz", 6.0).set("knock_n", 1.0);
+        w.run(0.25);
+        const double moved = dist(w.hand(), hand0);
+        check(w.awake() && moved > 0.05, "knocked, it wakes and the arm goes (" + std::to_string(moved) + " m)");
+        check(w.rag->element(sg::Key{"forearm_l"}).params.num("knock_seen") == 1.0, "and the knock is taken once");
+    }
+    {
         // A post beside her: a hit that would throw the arm through it is
         // stopped by it.
         Scene w(true);
