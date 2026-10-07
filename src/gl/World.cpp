@@ -1494,10 +1494,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // at a few hundred pixels, as a game of its day would) keeps about a
         // hundred and twenty cells across, so a beam of light in its air is
         // a beam and not a row of blocks.
-        const int tile = std::clamp(static_cast<int>(vp_w_) / 120, 4, kAirTile);
+        // A look may ask for finer cells, or coarser (`scatter.cell`, pixels).
+        const int fit = std::clamp(static_cast<int>(vp_w_) / 120, 4, kAirTile);
+        const int tile = std::clamp(static_cast<int>(setting(first, passes::scene, "scatter.cell", fit)), 2, 64);
         const int gx = std::max(1, (static_cast<int>(vp_w_) + tile - 1) / tile);
         const int gy = std::max(1, (static_cast<int>(vp_h_) + tile - 1) / tile);
         const float ahead = static_cast<float>(setting(first, passes::scene, "scatter.ahead", 0.5));
+        // How many points of each cell are lit, through its depth (`scatter.steps`).
+        const int steps = std::clamp(static_cast<int>(setting(first, passes::scene, "scatter.steps", 1.0)), 1, 16);
         const float density = static_cast<float>(setting(first, passes::scene, "uFogDensity", 0.0));
         const float start = static_cast<float>(setting(first, passes::scene, "uFogStart", 0.0));
         // Only the air beyond the doorway it is seen through is this view's:
@@ -1521,7 +1525,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         for (float f : {scatter, ahead, density, start, static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y),
                         static_cast<float>(clip.normal.z), static_cast<float>(clip.offset), a.near, a.far,
-                        static_cast<float>(gx), static_cast<float>(gy), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
+                        static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(steps), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
             of = mix_bits(of, f);
         // (Each slice's own light laid eight to a row, a pixel a cell.)
         constexpr int group = gl::LayerArray::kGroup;
@@ -1563,6 +1567,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             // from the eye, eight at a time, no pass waiting on another.
             p.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
             p.set("uAirSpin", static_cast<float>(a.spin++ % 4096u));
+            p.set("uAirSteps", steps);
             a.local.bind();
             if (a.gathered > 0) {
                 // Into the average: this gathering one part in as many as there are now.

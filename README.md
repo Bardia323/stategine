@@ -623,6 +623,25 @@ shows what it sees by naming that embedding (`shows`). Pointed at its own
 screen, it shows the room, the screen in it, and so on down: each frame's
 picture holds the frame before.
 
+### Shots: many pictures from one start
+
+A program that draws a world is slow to start and quick to draw. To look at a
+change from several places, start it once and give it a shot script
+(`sg::render::Shots`, `sg/gl/Shots.hpp`), one shot a line:
+
+```
+# '#' starts a comment
+far:  go lounge; look -26 -2 33 1.65 49
+crt:  look -95 -14 40.3 1.45 41.7      frames=90
+```
+
+Each shot's commands are the program's own - run through the `run` it gives,
+so they change the world by the program's own ways - and it is held `frames`
+frames (30 unless it says: fades, lit air and streaming settle), then its last
+frame is read back and written as `<name>.png`; after the last, `sheet.png`
+holds them all at half size. In the frame loop, `before(run)` before the tick
+and `after(w, h)` before the swap; `done()` ends the run.
+
 ### Looks
 
 How a room is shown is a state too. A `LookState` has one element per pass
@@ -679,6 +698,8 @@ the light throws its shadow through the glow.
 | `scatter` | how much of the light through it a metre of air scatters towards the eye | 0: none, and nothing is gathered |
 | `scatter.ahead` | how much of that goes on ahead rather than back, -1..1 | 0.5 |
 | `scatter.far` | how far out from the eye it is gathered, in metres | across a room with walls, its box's diagonal (a little more); else the state's `far`, up to 90 |
+| `scatter.cell` | pixels of the view to a cell, each way (2..64): finer air costs more | 16; fewer in a small view (about 120 cells across) |
+| `scatter.steps` | points of each cell lit, spread through its depth (1..16): a beam thinner than a slice is caught, not dotted | 1 |
 
 A light scatters its own `scatter` times the look's (1 unless it says): a
 lamp that glows in the air more, or less, than it lights. Light that stands

@@ -174,6 +174,7 @@ uniform float uScatter;         // how much of the light through it a metre of i
 uniform float uScatterAhead;    // how much of that goes on ahead (-1..1, 0 every way alike)
 uniform vec4  uAirClip;         // only the air on this plane's side is this view's (a doorway's far side)
 uniform float uAirSpin;         // which gathering this is: each samples its cells at other points
+uniform int   uAirSteps;        // points of each cell lit, spread through its depth (a thin beam is caught)
 
 float air_at(float i) { return uAir.x * pow(uAir.y / uAir.x, i / (uAir.z - 1.0)); }
 // Schlick's phase function: how much of light scattered goes off at an
@@ -198,11 +199,18 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 // some and missed by their neighbours, a fine grain, never caught or missed by
 // a whole slice at once (bands along the walls, at one distance from the eye).
 vec3 slice_light(vec3 dir, float k, float down) {
-    float a = max(k < 0.5 ? 0.0 : air_at(k - 1.0), uFogStart), b = air_at(k);
-    vec3 p = uViewPos + dir * mix(a, b, down);
-    if (b <= a || dot(uAirClip.xyz, p) + uAirClip.w < 0.0) return vec3(0.0);
+    // The air thins towards the eye, out to where the fog starts: clear close
+    // by, thickening smoothly - never a wall at that distance, where a lamp's
+    // glow would stop short round whoever is looking.
+    float a = k < 0.5 ? 0.0 : air_at(k - 1.0), b = air_at(k);
+    if (b <= a) return vec3(0.0);
     float ahead = clamp(uScatterAhead, -0.9, 0.9);
     vec3 lit = vec3(0.0);
+    int steps = max(uAirSteps, 1);
+    for (int j = 0; j < 16; ++j) {
+    if (j >= steps) break;
+    vec3 p = uViewPos + dir * mix(a, b, (float(j) + down) / float(steps));
+    if (dot(uAirClip.xyz, p) + uAirClip.w < 0.0) continue;
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
         // Light standing in for what bounces about lights no air of its own.
@@ -216,9 +224,13 @@ vec3 slice_light(vec3 dir, float k, float down) {
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
         lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
     }
+    }
+    lit /= float(steps);
     // (Pi: the lights carry it folded in, as the scene's diffuse does.)
-    float t = exp(-uFogDensity * max(0.5 * (a + b) - uFogStart, 0.0));
-    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t);
+    float m = 0.5 * (a + b);
+    float t = exp(-uFogDensity * max(m - uFogStart, 0.0));
+    float near = uFogStart > 0.0 ? smoothstep(0.0, uFogStart, m) : 1.0;
+    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t * near);
     return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
 }
 
@@ -964,8 +976,13 @@ void main() {
     }
     if (mSurface > 8.5 && mSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
-        // (The lamps' light in the air before it is: air_light.)
-        FragColor = vec4((sky(normalize(vWorld - uViewPos)) + air_light(1e9)) * (1.0 - uDim), 0.0);
+        // (The lamps' light in the air before it is: air_light.) But where
+        // the air takes all (uFogFull), the furthest ground is the air's own
+        // colour - so the sky is too, at the horizon and below it: no seam
+        // where the last of the ground meets it.
+        vec3 d = normalize(vWorld - uViewPos);
+        vec3 s = mix(sky(d), uFogColor, uFogFull * (1.0 - smoothstep(0.0, 0.35, d.y)));
+        FragColor = vec4((s + air_light(1e9)) * (1.0 - uDim), 0.0);
         return;
     }
     float rough_mod;
