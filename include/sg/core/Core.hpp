@@ -233,7 +233,19 @@ public:
     Params& set(Key key, Value v) {
         if (const Value* held = slot_of(key)) {
             if (*held == v) return *this;
-            *slot_of_mine(key) = std::move(v);
+            if (entries_.use_count() > 1) {
+                // Shared: this copy's own entries, with the new value where
+                // the old would have been - never copying what is replaced
+                // (a long text, written over in a trial, costs nothing more).
+                auto own = std::make_shared<std::vector<Entry>>();
+                own->reserve(entries_->size());
+                for (const Entry& e : *entries_)
+                    if (e.first == key) own->emplace_back(key, std::move(v));
+                    else own->push_back(e);
+                entries_ = std::move(own);
+            } else {
+                *slot_of_mine(key) = std::move(v);
+            }
         } else {
             mine().emplace_back(key, std::move(v));
         }

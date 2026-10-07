@@ -76,8 +76,9 @@ protected:
     virtual bool stale() { return false; }
 
     // The whole buffer, RGBA rows top to bottom, for painters that write it
-    // directly (blending, blitting an image).
-    std::vector<unsigned char>& pixels() { return pixels_; }
+    // directly (blending, blitting an image). Made, blank, when first wanted:
+    // a surface nobody has painted yet holds no picture, only its size.
+    std::vector<unsigned char>& pixels() { return pixels_.empty() ? blank() : pixels_; }
 
     struct Rgb {
         int r, g, b;
@@ -86,6 +87,7 @@ protected:
     bool layout_changed();
 
     void redraw() {
+        pixels();
         paint();
         dirty_ = false;
         ++revision_;
@@ -108,6 +110,8 @@ protected:
     void outline(int x0, int y0, int w, int h, int r, int g, int b);
 
 private:
+    std::vector<unsigned char>& blank();
+
     int cell_;
     Rgb bg_{18, 22, 32};
     Key selected_;

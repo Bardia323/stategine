@@ -1,6 +1,73 @@
 #include "sg/core/Text.hpp"
 
+#include <string_view>
+
 namespace sg::text_detail {
+
+namespace {
+// What is escaped, and what it is written as.
+const char* escaped(char c) {
+    switch (c) {
+        case '\\': return "\\\\";
+        case '\n': return "\\n";
+        case '\t': return "\\t";
+        case '\r': return "\\r";
+        case ' ': return "\\s";
+        default: return nullptr;
+    }
+}
+
+// A run of text read back, escapes undone. (The same as unescape, on a piece
+// of a line where it lies: a paint's strokes run to megabytes, and are taken
+// in runs, not a character at a time.)
+std::string unescaped(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        const std::size_t slash = s.find('\\', i);
+        if (slash == std::string_view::npos || slash + 1 == s.size()) {
+            out.append(s.data() + i, s.size() - i);
+            break;
+        }
+        out.append(s.data() + i, slash - i);
+        switch (const char c = s[slash + 1]) {
+            case 'n': out += '\n'; break;
+            case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;
+            case 's': out += ' '; break;
+            default: out += c;
+        }
+        i = slash + 2;
+    }
+    return out;
+}
+
+bool parsed(std::string_view t, Value& out) {
+    if (t == "-") return out = std::monostate{}, true;
+    if (t.size() < 2 || t[1] != ':') return false;
+    const std::string_view body = t.substr(2);
+    switch (t[0]) {
+        case 'b': out = body == "true"; return body == "true" || body == "false";
+        case 'i': {
+            int64_t i = 0;
+            const auto r = std::from_chars(body.data(), body.data() + body.size(), i);
+            out = i;
+            return r.ec == std::errc{};
+        }
+        case 'd': {
+            const std::string text(body);
+            char* end = nullptr;
+            out = std::strtod(text.c_str(), &end);
+            return end && *end == '\0';
+        }
+        case 's': out = unescaped(body); return true;
+        default: return false;
+    }
+}
+
+// As a stream reads words: what the C locale calls space parts them.
+bool space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'; }
+}  // namespace
 
 std::string escape(const std::string& s) {
     std::string out;
@@ -10,36 +77,18 @@ std::string escape(const std::string& s) {
 }
 
 void append_escaped(std::string& out, const std::string& s) {
-    for (char c : s) {
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\t': out += "\\t"; break;
-            case '\r': out += "\\r"; break;
-            case ' ': out += "\\s"; break;
-            default: out += c;
+    // Plain runs whole, and what is escaped between them.
+    std::size_t from = 0;
+    for (std::size_t i = 0; i < s.size(); ++i)
+        if (const char* e = escaped(s[i])) {
+            out.append(s, from, i - from);
+            out += e;
+            from = i + 1;
         }
-    }
+    out.append(s, from, std::string::npos);
 }
 
-std::string unescape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != '\\' || i + 1 == s.size()) {
-            out += s[i];
-            continue;
-        }
-        switch (s[++i]) {
-            case 'n': out += '\n'; break;
-            case 't': out += '\t'; break;
-            case 'r': out += '\r'; break;
-            case 's': out += ' '; break;
-            default: out += s[i];
-        }
-    }
-    return out;
-}
+std::string unescape(const std::string& s) { return unescaped(s); }
 
 std::string value(const Value& v) {
     std::string out;
@@ -83,27 +132,7 @@ void append_element(std::string& out, const Element& e) {
     }
 }
 
-bool parse(const std::string& t, Value& out) {
-    if (t == "-") return out = std::monostate{}, true;
-    if (t.size() < 2 || t[1] != ':') return false;
-    const std::string body = t.substr(2);
-    switch (t[0]) {
-        case 'b': out = body == "true"; return body == "true" || body == "false";
-        case 'i': {
-            int64_t i = 0;
-            const auto r = std::from_chars(body.data(), body.data() + body.size(), i);
-            out = i;
-            return r.ec == std::errc{};
-        }
-        case 'd': {
-            char* end = nullptr;
-            out = std::strtod(body.c_str(), &end);
-            return end && *end == '\0';
-        }
-        case 's': out = unescape(body); return true;
-        default: return false;
-    }
-}
+bool parse(const std::string& t, Value& out) { return parsed(t, out); }
 
 }  // namespace sg::text_detail
 
@@ -160,41 +189,50 @@ bool from_text(State& s, const std::string& text, std::string* why, bool exact) 
         bool dead = false;
     };
     std::vector<Line> lines;
-    std::istringstream in(text);
-    std::string line;
     int n = 0;
     bool in_element = false;
     const auto fail = [&](const std::string& msg) {
         if (why) *why = "line " + std::to_string(n) + ": " + msg;
         return false;
     };
-    while (std::getline(in, line)) {
+    // Line by line, and each line's first four words, as a stream would read
+    // them - but where they lie in the text, not copied out on the way.
+    const std::string_view all(text);
+    for (std::size_t at = 0; at < all.size();) {
+        const std::size_t nl = all.find('\n', at);
+        std::string_view line = all.substr(at, nl == std::string_view::npos ? std::string_view::npos : nl - at);
+        at = nl == std::string_view::npos ? all.size() : nl + 1;
         ++n;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         if (line.empty() || line[0] == '#') continue;
         const bool indented = line[0] == ' ';
-        std::istringstream words(line);
-        std::string w0, w1, w2, w3;
-        words >> w0 >> w1 >> w2 >> w3;
+        std::string_view w[4];
+        for (std::size_t i = 0, k = 0; k < 4; ++k) {
+            while (i < line.size() && space(line[i])) ++i;
+            const std::size_t from = i;
+            while (i < line.size() && !space(line[i])) ++i;
+            w[k] = line.substr(from, i - from);
+        }
+        const std::string_view w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
         if (indented) {
             if (!in_element) return fail("a parameter indented under no element");
-            Line l{2, unescape(w0), {}, {}};
-            if (!parse(w1, l.v)) return fail("cannot read the value " + w1);
+            Line l{2, unescaped(w0), {}, {}};
+            if (!parsed(w1, l.v)) return fail("cannot read the value " + std::string(w1));
             lines.push_back(std::move(l));
         } else if (w0 == "state") {
             continue;
         } else if (w0 == "param") {
-            Line l{0, unescape(w1), {}, {}};
-            if (!parse(w2, l.v)) return fail("cannot read the value " + w2);
+            Line l{0, unescaped(w1), {}, {}};
+            if (!parsed(w2, l.v)) return fail("cannot read the value " + std::string(w2));
             lines.push_back(std::move(l));
         } else if (w0 == "element") {
             if (w1.empty() || w2.empty()) return fail("an element needs an id and a kind");
-            Line l{1, unescape(w1), unescape(w2), {}};
+            Line l{1, unescaped(w1), unescaped(w2), {}};
             l.dead = w3 == "dead";
             lines.push_back(std::move(l));
             in_element = true;
         } else {
-            return fail("not a line of a state: " + w0);
+            return fail("not a line of a state: " + std::string(w0));
         }
     }
     // Read whole: now change the state.

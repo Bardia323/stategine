@@ -4,10 +4,17 @@ namespace sg {
 
 const std::string& TextStore::bind(const std::string& key, const std::filesystem::path& file, const std::string& initial) {
     Entry& e = entries_[key];
-    if (e.file != file) order_.push_back(key);
+    const bool again = e.file == file;
+    if (!again) order_.push_back(key);
     e.file = file;
     std::error_code ec;
     if (std::filesystem::exists(file, ec)) {
+        // Bound to it already, and its time stamp has not moved since it was
+        // last read or written: what is kept is what it says.
+        if (again && e.stamp != std::filesystem::file_time_type{}) {
+            const auto stamp = std::filesystem::last_write_time(file, ec);
+            if (!ec && stamp == e.stamp) return e.text;
+        }
         e.text = read(file);
         e.stamp = std::filesystem::last_write_time(file, ec);
     } else {

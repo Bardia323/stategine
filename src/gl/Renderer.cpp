@@ -86,6 +86,15 @@ void Texture::create(int w, int h, bool mipmaps, bool srgb, bool pixel) {
     glBindTexture(GL_TEXTURE_2D, id_);
     glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), w, h, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    // Every level it will have, made now: the mipmaps made from the picture
+    // later are then written where they are, not the texture made over again
+    // at each upload to hold them.
+    if (mipmaps)
+        for (int level = 1, lw = w, lh = h; lw > 1 || lh > 1; ++level) {
+            lw = std::max(1, lw / 2), lh = std::max(1, lh / 2);
+            glTexImage2D(GL_TEXTURE_2D, level, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), lw, lh, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                         nullptr);
+        }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);

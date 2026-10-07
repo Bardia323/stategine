@@ -1,6 +1,7 @@
 #include "sg/core/Laws.hpp"
 
 #include <array>
+#include <optional>
 #include <cmath>
 
 namespace sg {
@@ -424,22 +425,30 @@ std::string event_str(const Event& e) {
 
 std::vector<Violation> diff(const Equation& eq, const Outcome& l, const Outcome& r, const State::Snapshot& before) {
     std::vector<Violation> out;
-    Violation base;
-    base.law = eq.law;
-    base.where = eq.where;
-    base.lhs = eq.lhs.str();
-    base.rhs = eq.rhs.str();
-    base.args = args_str(eq.args);
+    // What every violation of it says, written out only when there is one:
+    // most equations hold, and their paths and arguments are never read.
+    std::optional<Violation> said;
+    const auto base_of = [&]() -> const Violation& {
+        if (!said) {
+            said.emplace();
+            said->law = eq.law;
+            said->where = eq.where;
+            said->lhs = eq.lhs.str();
+            said->rhs = eq.rhs.str();
+            said->args = args_str(eq.args);
+        }
+        return *said;
+    };
 
     const auto fail = [&](std::string why) {
-        Violation v = base;
+        Violation v = base_of();
         v.detail = std::move(why);
         out.push_back(std::move(v));
     };
     // A side that would change the graph's structure was stopped: the
     // equation is not false, it cannot be checked - said once, as that.
     if (l.refused || r.refused) {
-        Violation v = base;
+        Violation v = base_of();
         v.refused = true;
         v.detail = "cannot be checked on trial: " + (l.refused ? l.error : r.error);
         out.push_back(std::move(v));
@@ -495,7 +504,7 @@ std::vector<Violation> diff(const Equation& eq, const Outcome& l, const Outcome&
         return e && e->params.has(k) ? to_string(e->params.get(k)) : std::string("<unset>");
     };
     const auto at = [&](Key id, std::string key, std::string was, std::string a, std::string b) {
-        Violation v = base;
+        Violation v = base_of();
         v.state = l.state;
         v.element = id;
         v.key = std::move(key);
@@ -628,6 +637,29 @@ void append(std::vector<Violation>& to, std::vector<Violation> from) {
     for (auto& v : from) to.push_back(std::move(v));
 }
 
+// Two equations with one side the same path on the same arguments (an
+// associativity triple's two share their left, an arrow's two identities
+// their right): that side is run once - a run is a function of the data it
+// starts on, and both start on the same. With a cache, each as it would be.
+std::vector<Violation> check_two(StateGraph& g, LawCache* cache, const Equation& a, const Equation& b, bool share_left) {
+    std::vector<Violation> out;
+    if (cache && cache->strategy() != LawCache::Strategy::Direct) {
+        append(out, check(g, cache, a));
+        append(out, check(g, cache, b));
+        return out;
+    }
+    Accelerator* fast = accelerating();
+    std::optional<Outcome> shared;
+    for (const Equation* eq : {&a, &b}) {
+        if (fast && fast->take(g, *eq)) continue;
+        const Path& same = share_left ? eq->lhs : eq->rhs;
+        if (!shared) shared = run(g, same, eq->args);
+        const Outcome other = run(g, share_left ? eq->rhs : eq->lhs, eq->args);
+        append(out, share_left ? settle(g, *eq, *shared, other) : settle(g, *eq, other, *shared));
+    }
+    return out;
+}
+
 std::vector<Violation> identity(StateGraph& g, const LawOptions& o, LawCache* cache) {
     if (cache) cache->begin(g);
     std::vector<Violation> out;
@@ -640,14 +672,12 @@ std::vector<Violation> identity(StateGraph& g, const LawOptions& o, LawCache* ca
             const Params args = args_for(o, m.trigger);
             const std::string where = sid.str() + "." + m.name.str();
             const Path f = Path(sid, dom(m)).arrow(m.name);
-            append(out, check(g, cache, {"identity", where,
-                                  Path(sid, dom(m)).arrow(State::composite(
-                                      Key{m.name.str() + ".id"}, id_dom, m, m.trigger)),
-                                  f, args}));
-            append(out, check(g, cache, {"identity", where,
-                                  Path(sid, dom(m)).arrow(State::composite(
-                                      Key{"id." + m.name.str()}, m, id_cod, m.trigger)),
-                                  f, args}));
+            append(out, check_two(g, cache,
+                                  {"identity", where,
+                                   Path(sid, dom(m)).arrow(State::composite(Key{m.name.str() + ".id"}, id_dom, m, m.trigger)), f, args},
+                                  {"identity", where,
+                                   Path(sid, dom(m)).arrow(State::composite(Key{"id." + m.name.str()}, m, id_cod, m.trigger)), f, args},
+                                  /*share_left=*/false));
         }
     }
     for (const auto& kv : g.functors()) {
@@ -698,11 +728,10 @@ std::vector<Violation> associativity(StateGraph& g, const LawOptions& o, LawCach
             const std::string where =
                 sid.str() + ": " + f.name.str() + ", " + gm.name.str() + ", " + h.name.str();
             const Params args = args_for(o, t);
-            append(out, check(g, cache, {"associativity", where, Path(sid, dom(f)).arrow(left),
-                                  Path(sid, dom(f)).arrow(right), args}));
-            append(out, check(g, cache, {"associativity", where, Path(sid, dom(f)).arrow(left),
-                                  Path(sid, dom(f)).arrow(f.name).arrow(gm.name).arrow(h.name),
-                                  args}));
+            append(out, check_two(g, cache, {"associativity", where, Path(sid, dom(f)).arrow(left), Path(sid, dom(f)).arrow(right), args},
+                                  {"associativity", where, Path(sid, dom(f)).arrow(left),
+                                   Path(sid, dom(f)).arrow(f.name).arrow(gm.name).arrow(h.name), args},
+                                  /*share_left=*/true));
         };
         for (const Morphism& f : s.morphisms()) {
             if (!s.find(dom(f)) || !s.find(cod(f))) continue;

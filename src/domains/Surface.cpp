@@ -2,9 +2,13 @@
 
 namespace sg {
 
-Surface2D::Surface2D(Key id, int cols, int rows, int cell_px) : Spatial2D(id, cols, rows), cell_(cell_px) {
-    pixels_.assign(static_cast<std::size_t>(px_w()) * static_cast<std::size_t>(px_h()) * 4,
-                   0);
+// Its picture is made when it is first painted (pixels()): a world of many
+// surfaces is not made to hold them all, blank, before any is painted.
+Surface2D::Surface2D(Key id, int cols, int rows, int cell_px) : Spatial2D(id, cols, rows), cell_(cell_px) {}
+
+std::vector<unsigned char>& Surface2D::blank() {
+    pixels_.assign(static_cast<std::size_t>(px_w()) * static_cast<std::size_t>(px_h()) * 4, 0);
+    return pixels_;
 }
 
 const std::vector<unsigned char>& Surface2D::raster() {
@@ -16,6 +20,9 @@ const std::vector<unsigned char>& Surface2D::raster() {
 }
 
 const unsigned char* Surface2D::pixel(int x, int y) const {
+    // Not painted yet: blank, as every pixel of it is.
+    static const unsigned char none[4] = {0, 0, 0, 0};
+    if (pixels_.empty()) return none;
     return &pixels_[(static_cast<std::size_t>(y) * static_cast<std::size_t>(px_w()) +
                      static_cast<std::size_t>(x)) *
                     4];
@@ -25,7 +32,7 @@ void Surface2D::resize(int cols, int rows) {
     if (cols == this->cols() && rows == this->rows()) return;
     params().set(keys::w, static_cast<int64_t>(std::max(1, cols)));
     params().set(keys::h, static_cast<int64_t>(std::max(1, rows)));
-    pixels_.assign(static_cast<std::size_t>(px_w()) * static_cast<std::size_t>(px_h()) * 4, 0);
+    std::vector<unsigned char>().swap(pixels_);  // made again, at the new size, when painted
     dirty_ = true;
 }
 
@@ -92,10 +99,11 @@ void Surface2D::put(int x, int y, int r, int g, int b) {
     const std::size_t i = (static_cast<std::size_t>(y) * static_cast<std::size_t>(px_w()) +
                            static_cast<std::size_t>(x)) *
                           4;
-    pixels_[i] = static_cast<unsigned char>(r);
-    pixels_[i + 1] = static_cast<unsigned char>(g);
-    pixels_[i + 2] = static_cast<unsigned char>(b);
-    pixels_[i + 3] = 255;
+    std::vector<unsigned char>& px = pixels();
+    px[i] = static_cast<unsigned char>(r);
+    px[i + 1] = static_cast<unsigned char>(g);
+    px[i + 2] = static_cast<unsigned char>(b);
+    px[i + 3] = 255;
 }
 
 void Surface2D::fill(int r, int g, int b) {
