@@ -5,6 +5,7 @@
 #include <cmath>
 #include <exception>
 #include <optional>
+#include <sstream>
 #include <thread>
 
 namespace sg {
@@ -1319,6 +1320,10 @@ std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::siz
                             " at the doorway (State::overlap), so whether it agrees is not known");
                         out.back().refused = true;
                     }
+            // Walked through, it carries whoever walks: a seam that admits
+            // no things is only looked through (Channel::Objects).
+            if ((A.num(walk, 0.0) > 0.5 || B.num(walk, 0.0) > 0.5) && !g.admits(sm, Channel::Objects))
+                say("walked through, yet it admits no things - whoever walks into it is carried nowhere: say `objects` in its `admits`, or make it not walked");
             if (lets("crossing")) continue;
             for (const bool from_a : {true, false}) {
                 const Params& side = from_a ? A : B;
@@ -1331,6 +1336,52 @@ std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::siz
             }
         }
     }
+    return out;
+}
+
+std::vector<Violation> channels(const StateGraph& g) {
+    using namespace seam_detail;
+    std::vector<Violation> out;
+    const Key admits{"admits"};
+    for (const Seam& sm : g.seams()) {
+        const std::string where = "seam " + sm.name.str();
+        for (const auto& [state, boundary] : {std::pair{sm.a, &sm.boundary_a}, std::pair{sm.b, &sm.boundary_b}}) {
+            const State* s = g.find(state);
+            const Element* e = s && !boundary->empty() ? s->find(boundary->front()) : nullptr;
+            if (!e || !e->params.has(admits)) continue;
+            std::istringstream words(e->params.get_or<std::string>(admits, ""));
+            for (std::string w; words >> w;)
+                if (w != "view" && w != "light" && w != "sound" && w != "objects")
+                    report(out, where, state.str() + "." + e->id.str(), "admits",
+                           "`" + w + "` is not something a seam lets through: view, light, sound, objects");
+        }
+    }
+    // Each channel's pieces, joined again here from the seams alone, against
+    // what the graph says they are: one piece here is one piece there.
+    for (int i = 0; i < kChannels; ++i) {
+        const Channel c = static_cast<Channel>(i);
+        std::unordered_map<Key, Key> parent;
+        const auto find = [&](Key k) {
+            while (parent.count(k) && parent[k] != k) k = parent[k];
+            return k;
+        };
+        for (const Seam& sm : g.seams()) {
+            if (sm.a == sm.b || g.passes(sm, c) <= 0.0) continue;
+            parent.emplace(sm.a, sm.a);
+            parent.emplace(sm.b, sm.b);
+            const Key ra = find(sm.a), rb = find(sm.b);
+            if (ra != rb) parent[rb] = ra;
+        }
+        std::unordered_map<Key, Key> ours_to_its, its_to_ours;
+        for (const Key& k : g.ids()) {
+            const Key ours = find(k), its = g.component(c, k);
+            const auto a = ours_to_its.emplace(ours, its), b = its_to_ours.emplace(its, ours);
+            if (a.first->second != its || b.first->second != ours)
+                report(out, std::string("channel ") + channel_name(c), k.str(), "its seams",
+                       std::string("the piece the ") + channel_name(c) + " reaches " + k.str() + " in is not the one its seams join it to");
+        }
+    }
+    for (Violation& v : out) v.law = "channels";
     return out;
 }
 
@@ -1373,6 +1424,7 @@ LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams, const LawO
         laws::sort_into(r, laws::drives(g, o));
         laws::sort_into(r, laws::seams(g));
         laws::sort_into(r, laws::overlaps(g));
+        laws::sort_into(r, laws::channels(g));
         for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d));
     }
     if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));
@@ -1392,6 +1444,7 @@ LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagram>& dia
         laws::sort_into(r, laws::drives(g, o, &cache));
         laws::sort_into(r, laws::seams(g));
         laws::sort_into(r, laws::overlaps(g));
+        laws::sort_into(r, laws::channels(g));
         for (const Diagram& d : diagrams) laws::sort_into(r, laws::diagram(g, d, &cache));
     }
     if (o.accelerate) laws::sort_into(r, o.accelerate->finish(g));
