@@ -24,9 +24,15 @@
 // it was meant to be and settles back. A hit hard enough (`fall_at`) takes
 // all its strength, which comes back as it recovers (`recover`).
 //
-// Its root (the hips) goes on as the being means it, swayed by its balance;
-// all the rest has weight, legs too - kicked, a leg swings and comes back.
-// Standing on two feet it balances: its hips sway over them as an inverted
+// Standing on two feet it stands firm: its hips and legs go on exactly as
+// the being means them, and only the body above gives - struck, held,
+// pulled, it bends and comes back, and never sways, steps or rocks. What
+// pushes it past what its feet hold builds up and ebbs in a second; past
+// `fall_at` (N s) it goes down - a body run into and kept pushing, not one
+// struck or leant on - and, lain still a while, gets up into that stance.
+// A ragdoll that says `stepping` = 1 balances instead: its root (the hips)
+// goes on as the being means it, swayed by its balance, all the rest has
+// weight, legs too, and its hips sway over its feet as an inverted
 // pendulum does, pushed by what moves above them and held by the soles as
 // far as they reach; when where it would come to rest (the capture point)
 // is off its soles, a foot steps there (the leg bent to it), as many times
@@ -105,6 +111,8 @@ private:
     // stepped to catch it or home, its legs aimed there; falling, and getting
     // up again.
     void balance(double dt);
+    // Standing firm: on two feet, up, not stepping (`stepping`), not let fall.
+    bool firm() const;
     // The contacts the last step left, and what each recent step began
     // from, by everything it started from: kept so that resting contact holds
     // steady, and so that one start always begins the same.

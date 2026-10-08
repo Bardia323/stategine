@@ -58,6 +58,8 @@ struct Scene {
         rag->dispatch_pending();
     }
     sg::Vec3d hand() const { return ann->pose_of("hand_l").position; }
+    // A body that balances by stepping, not one standing firm.
+    void stepping() { rag->element(sg::Ragdoll::self_id()).params.set("stepping", 1.0); }
     bool awake() const { return rag->element(sg::Ragdoll::self_id()).params.num("awake") > 0.5; }
 };
 }  // namespace
@@ -226,8 +228,10 @@ int main() {
     }
     {
         // Kicked: the lower body has weight too - the shin swings, and the
-        // leg comes back under her.
+        // leg comes back under her (stepping: standing firm, her legs are
+        // where she means them).
         Scene w;
+        w.stepping();
         w.start();
         w.run(0.3);
         const sg::Vec3d foot0 = w.ann->pose_of("foot_r").position;
@@ -409,10 +413,50 @@ int main() {
         check(most > 0.005 && turns <= 1, "hit at the chest, the head goes out and comes back - no rocking (" + std::to_string(turns) + " times past, " + std::to_string(most) + " m out)");
     }
     {
+        // Standing firm (as every body does that does not say it steps):
+        // shoved at the chest, the body above the hips bends and comes back
+        // up; the hips and feet stay where they are meant, and it stays up.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d hips0 = w.ann->pose_of("hips").position, foot0 = w.ann->pose_of("foot_l").position, head0 = w.ann->pose_of("head").position;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 60.0));
+        double hips = 0, feet = 0, head = 0, fell = 0;
+        for (int i = 0; i < 180; ++i) {
+            w.run(1.0 / 60);
+            hips = std::max(hips, sg::distance(w.ann->pose_of("hips").position, hips0));
+            feet = std::max(feet, sg::distance(w.ann->pose_of("foot_l").position, foot0));
+            head = std::max(head, sg::distance(w.ann->pose_of("head").position, head0));
+            fell = std::max(fell, w.rag->element(sg::Ragdoll::self_id()).params.num("fallen"));
+        }
+        const double back = sg::distance(w.ann->pose_of("head").position, head0);
+        check(hips < 0.01 && feet < 0.01 && fell == 0, "shoved standing firm, its hips and feet stay (" + std::to_string(hips) + ", " + std::to_string(feet) + " m) and it stays up");
+        check(head > 0.03 && back < 0.02, "and the body above them gives (the head " + std::to_string(head) + " m out) and comes back (" + std::to_string(back) + " m off)");
+    }
+    {
+        // Bumped every step for two seconds (someone walking into it): each
+        // knock weakens it as hard as it struck, and no more for coming
+        // again - it does not go limp, nor fall.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        double weakest = 1, fell = 0;
+        for (int i = 0; i < 120; ++i) {
+            auto& chest = w.rag->element(sg::Key{"chest"}).params;
+            chest.set("kx", 6.0).set("ky", 0.0).set("kz", 0.0).set("knock_n", chest.num("knock_n") + 1);
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id()).params;
+            weakest = std::min(weakest, self.num("strength", 1.0) * w.rag->element(sg::Key{"chest"}).params.num("weak", 1.0));
+            fell = std::max(fell, self.num("fallen"));
+        }
+        check(weakest > 0.4 && fell == 0, "bumped every step, it keeps its strength (" + std::to_string(weakest) + " at the weakest) and stays up");
+    }
+    {
         // Its feet planted where it woke, its clip then shifting its weight
         // (the meant feet moving a few centimetres): the hips stay where the
         // clip stands them - they do not wander after the shifting feet.
         Scene w;
+        w.stepping();
         const double hips = w.ann->element("hips").params.num(sg::keys::y);
         w.ann->clip("shift", "0 hips p 0 " + std::to_string(hips) + " 0\n1 hips p 0 " + std::to_string(hips) + " 0\n0 thigh_l 0 0 3\n1 thigh_l 0 0 3\n");
         w.start();
@@ -431,6 +475,7 @@ int main() {
         // Balance. Nudged at the chest: the hips sway over the feet and come
         // back; no step is needed.
         Scene w;
+        w.stepping();
         w.start();
         w.run(0.3);
         w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 6.0));
@@ -448,6 +493,7 @@ int main() {
         // back - its feet step home and the hips stay over them: no rocking
         // onto one foot and back, and onto the other.
         Scene w;
+        w.stepping();
         w.start();
         w.run(0.3);
         w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 1.0));
@@ -476,6 +522,7 @@ int main() {
         // out to catch it; then she is steady, her feet step home, and she
         // settles where she stood.
         Scene w;
+        w.stepping();
         w.start();
         w.run(0.3);
         const sg::Vec3d foot0 = w.ann->pose_of("foot_l").position, foot1 = w.ann->pose_of("foot_r").position;

@@ -159,6 +159,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         .set("strength", 1.0)
         .set("recover", 0.6)
         .set("fall_at", 150.0)
+        .set("stepping", 0.0)
         .set("full", 0.0)
         .set("floor", 0.0)
         .set("damping", 1.0)
@@ -517,8 +518,11 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         double mass = 0;
         for (const Element& n : s.elements())
             if (n.kind == kBone) mass += n.params.num("mass", 1.0);
+        // (Standing firm, its feet hold its hips and legs: the body above
+        // them takes it, bends, and comes back up.)
+        const bool firm = static_cast<const Ragdoll&>(s).firm();
         for (Element& n : s.elements())
-            if (n.kind == kBone) set_vec(n, vec(n, "vx", "vy", "vz") + j * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
+            if (n.kind == kBone && !(firm && (n.params.num("leg") > 0.5 || n.params.get_or<std::string>("parent", "").empty()))) set_vec(n, vec(n, "vx", "vy", "vz") + j * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
         V3 kick = j * (0.35 / b->params.num("mass", 1.0));
         if (spatial::length(kick) > 3.0) kick = kick * (3.0 / spatial::length(kick));
         set_vec(*b, vec(*b, "vx", "vy", "vz") + kick, "vx", "vy", "vz");
@@ -529,14 +533,15 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         for (Element& n : s.elements()) {
             if (n.kind != kBone) continue;
             const bool near = &n == b || n.id.str() == b->params.get_or<std::string>("parent", "") || n.params.get_or<std::string>("parent", "") == b->id.str();
-            if (near) n.params.set("weak", std::max(0.02, n.params.num("weak", 1.0) * (&n == b ? weaken : 0.5 + 0.5 * weaken))).set("weak_rate", rate);
+            if (near) n.params.set("weak", std::max(0.02, std::min(n.params.num("weak", 1.0), &n == b ? weaken : 0.5 + 0.5 * weaken))).set("weak_rate", rate);
         }
         // What it was hit with moves the whole of it: its sway takes it.
         self.params.set("push_x", self.params.num("push_x") + j.x).set("push_z", self.params.num("push_z") + j.z);
-        // The whole body staggers as hard as it was hit; past `fall_at`, all
-        // its strength goes.
+        // The whole body staggers as hard as it was hit - no more for being
+        // hit again (blows close together do not add up to limp); past
+        // `fall_at`, unless it stands firm, all its strength goes.
         const double how = spatial::length(j) / std::max(1.0, self.params.num("fall_at", 150.0));
-        self.params.set("strength", how >= 1.0 ? 0.0 : self.params.num("strength", 1.0) * std::max(0.6, 1.0 - 0.8 * how));
+        self.params.set("strength", std::min(self.params.num("strength", 1.0), how >= 1.0 && !firm ? 0.0 : std::max(0.6, 1.0 - 0.8 * how)));
         self.params.set("awake", 1.0).set("still", 0.0);
     });
     //   self --grab--> self: a hand holding a bone, pulling it toward a point.
@@ -746,18 +751,21 @@ void Ragdoll::step(double dt) {
         const V3 k = vec(b, "kx", "ky", "kz");
         // As a hit is taken: the whole body by what it carries, the bone a
         // kick of its own, no faster than a limb is thrown.
+        // (Standing firm, its feet hold its hips and legs: the body above
+        // them takes it.)
         double mass = 0;
         for (const Element& n : elements())
             if (n.kind == kBone) mass += n.params.num("mass", 1.0);
         for (Element& n : elements())
-            if (n.kind == kBone) set_vec(n, vec(n, "vx", "vy", "vz") + k * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
+            if (n.kind == kBone && !(firm() && (n.params.num("leg") > 0.5 || n.params.get_or<std::string>("parent", "").empty()))) set_vec(n, vec(n, "vx", "vy", "vz") + k * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
         V3 kick = k * (0.35 / b.params.num("mass", 1.0));
         if (spatial::length(kick) > 3.0) kick = kick * (3.0 / spatial::length(kick));
         set_vec(b, vec(b, "vx", "vy", "vz") + kick, "vx", "vy", "vz");
         const double how = spatial::length(k) / std::max(1.0, self.params.num("fall_at", 150.0));
-        self.params.set("strength", how >= 1.0 ? 0.0 : self.params.num("strength", 1.0) * std::max(0.6, 1.0 - 0.8 * how));
-        // (Weakened as hard as it was struck: a touch, a lean, weakens nothing.)
-        b.params.set("knock_seen", b.params.num("knock_n")).set("weak", b.params.num("weak", 1.0) * std::max(0.6, 1.0 - spatial::length(k) / 25.0));
+        // (As hard as it was struck, and no more for being struck again: a
+        // body leant on is knocked every step, and must not go limp.)
+        self.params.set("strength", std::min(self.params.num("strength", 1.0), how >= 1.0 && !firm() ? 0.0 : std::max(0.6, 1.0 - 0.8 * how)));
+        b.params.set("knock_seen", b.params.num("knock_n")).set("weak", std::min(b.params.num("weak", 1.0), std::max(0.6, 1.0 - spatial::length(k) / 25.0)));
         self.params.set("push_x", self.params.num("push_x") + k.x).set("push_z", self.params.num("push_z") + k.z);
         knocked = true;
     }
@@ -804,7 +812,7 @@ void Ragdoll::step(double dt) {
     }
 
     balance(dt);
-    const bool full = self.params.num("full") > 0.5;
+    const bool full = self.params.num("full") > 0.5, stands = firm() || self.params.num("rising") > 0.5;
     const double strong = self.params.num("strength", 1.0), zeta = self.params.num("damping", 0.9);
     struct Driven {
         rigid::Body* body;
@@ -827,10 +835,12 @@ void Ragdoll::step(double dt) {
         // out - not as a bone is jolted for a moment: a jolted neck still
         // holds its head.)
         body->receives = {{"gravity", field::Response::Acceleration, 1.0 - strong * 0.95}};
-        if (!full && b.params.get_or<std::string>("parent", "").empty()) {
-            // The hips: where the being means them, swayed by balance, and
+        const bool hips = b.params.get_or<std::string>("parent", "").empty();
+        if (!full && (hips || (stands && b.params.num("leg") > 0.5))) {
+            // The hips: where the being means them, swayed by balance; and,
+            // standing firm, the legs where the being means them too - and
             // no faster than a body can move (getting up is not a jump).
-            V3 to = self.params.num("balance") > 0.5 ? vec(self, "hip_x", "hip_y", "hip_z") : vec(b, "tx", "ty", "tz");
+            V3 to = hips && self.params.num("balance") > 0.5 ? vec(self, "hip_x", "hip_y", "hip_z") : vec(b, "tx", "ty", "tz");
             const V3 go = to - body->x;
             const double most = 1.6 * dt;
             if (spatial::length(go) > most) to = body->x + go * (most / spatial::length(go));
@@ -919,6 +929,11 @@ void Ragdoll::step(double dt) {
     if (still > 0.4 && !disturbed()) self.params.set("awake", 0.0).set("lead", 0.0);
 }
 
+bool Ragdoll::firm() const {
+    const Params& p = element(self_id()).params;
+    return p.num("balance") > 0.5 && p.num("stepping") < 0.5 && p.num("fallen") < 0.5 && p.num("full") < 0.5 && p.num("rising") < 0.5;
+}
+
 void Ragdoll::balance(double dt) {
     // Standing over two feet: the hips sway as a body on its feet does (an
     // inverted pendulum, w0 = sqrt(g / h)), pushed by what moves above them;
@@ -968,6 +983,32 @@ void Ragdoll::balance(double dt) {
         unplan();
         self.params.set("push_x", 0.0).set("push_z", 0.0);
         if (spatial::length(vec(root, "x", "y", "z") - home) < 0.05) self.params.set("rising", 0.0);
+        return;
+    }
+    if (firm()) {
+        // Firm: it stands as its being stands it - no sway, no step - and
+        // only its upper body gives. What pushes it past what its feet hold
+        // builds up (and ebbs in a second); past `fall_at`, it goes down: a
+        // body run into and kept pushing, not one leant on or struck.
+        P2 push{self.params.num("push_x"), self.params.num("push_z")};
+        const double braced = std::max(0.0, len(push) - self.params.num("hold", 300.0) * dt);
+        push = len(push) > 1e-12 ? push * (braced / len(push)) : P2{0, 0};
+        P2 load = P2{self.params.num("load_x"), self.params.num("load_z")} * std::exp(-dt) + push;
+        self.params.set("push_x", 0.0).set("push_z", 0.0);
+        if (self.params.num("anchor", -1.0) < 0 && len(load) > self.params.num("fall_at", 150.0)) {
+            double mass = 0;
+            for (Element& b : elements())
+                if (b.kind == kBone) mass += b.params.num("mass", 1.0);
+            // (Down the way it was pushed, with what got past its feet.)
+            for (Element& b : elements())
+                if (b.kind == kBone) set_vec(b, vec(b, "vx", "vy", "vz") + V3{load.x, 0.0, load.z} * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
+            self.params.set("fallen", 1.0).set("full", 1.0).set("lie", 0.0).set("load_x", 0.0).set("load_z", 0.0);
+            unplan();
+            return;
+        }
+        self.params.set("load_x", load.x).set("load_z", load.z).set("sway_x", 0.0).set("sway_z", 0.0).set("sway_vx", 0.0).set("sway_vz", 0.0);
+        set_hips(home);
+        unplan();
         return;
     }
     double mass = 0;
