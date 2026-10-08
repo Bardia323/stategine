@@ -276,6 +276,11 @@ public:
     // it matters. Drivers finish a shader, or a framebuffer, the first time it
     // is drawn with, not when it is made - so without this the first step into
     // another world stalls. Fades are left exactly as they were.
+    //
+    // Every texture bound is packed first (sg/render/Pack.hpp), on as many
+    // cores as there are and kept on disk, where the quality says and the
+    // card takes it: what things wear goes to the card a quarter the size,
+    // whole, before the first frame.
     void warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h);
 
     // One room, standing on its own.
@@ -310,6 +315,10 @@ private:
         // The frame it was last asked whether it changed: once a frame, however
         // many things wear it, in however many copies of a room.
         uint64_t asked = 0;
+        // The picture packed for the card (warm), and which of the surface's
+        // pictures it is: shown packed while the surface still shows that one.
+        std::shared_ptr<const render::Packed> packed;
+        uint64_t packed_revision = 0;
     };
 
     // Where a doorway is on the view, in -1..1 each way, and what of it a
@@ -499,7 +508,13 @@ private:
     Pose pose_of(const State& st, const Element& e) const;
     const RoomMatrix& box_matrix(const State& st, const Element& e) const;
     mutable std::unordered_map<const Element*, Placed> placed_;
-    mutable std::unordered_map<const Element*, std::pair<uint64_t, const gl::Mesh*>> shape_memo_;  // each thing's mesh, by its stamp
+    // Each thing's mesh, by its stamp - and, drawn as a model, by the
+    // model's making (made again, the thing's params need not change).
+    struct ShapeMemo {
+        uint64_t stamp = 0, made = 0;
+        const gl::Mesh* mesh = nullptr;
+    };
+    mutable std::unordered_map<const Element*, ShapeMemo> shape_memo_;
 
     static Key terrain_kind() {
         static const Key k{"terrain"};
@@ -662,6 +677,11 @@ private:
     // Its matrix and material, as an instance of its batch (kept until it moves).
     void append_record(const State& st, const Element& e, Batch& b);
     void upload_skin(BoundSurface& bound);
+    // The surface's picture on the card as it is now: packed, while it is the
+    // picture that was packed; its pixels, once it has changed.
+    void refresh(BoundSurface& bound);
+    // Every texture bound, packed (warm).
+    void pack_skins();
     // A thing is drawn with the others of its shape unless it wears a skin (a
     // surface bound to it) or is being pointed at.
     bool instanceable(const Element& e) const;
@@ -831,7 +851,13 @@ private:
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
-    mutable std::unordered_map<const std::vector<float>*, gl::Mesh> model_meshes_;  // each model a state keeps, as a mesh
+    // Each model a state keeps, as a mesh: by the state and the model's
+    // name, made again when the model is (by its making, `model_revision`).
+    struct ModelMesh {
+        uint64_t revision = 0;
+        gl::Mesh mesh;
+    };
+    mutable std::map<std::pair<const State*, std::string>, ModelMesh> model_meshes_;
     // Each picture a state keeps, as a texture - painted again when the
     // picture is.
     struct PictureTexture {

@@ -1,4 +1,7 @@
 #include "sg/domains/Spatial.hpp"
+
+#include <atomic>
+
 #include "sg/domains/Walk.hpp"
 
 #include "sg/spatial/Math.hpp"
@@ -229,12 +232,19 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
 }
 
 void Spatial3D::model(Key name, std::vector<float> corners) {
-    models_[name.str()] = std::make_shared<const std::vector<float>>(std::move(corners));
+    // (One count for every state's models, from every thread that makes one.)
+    static std::atomic<uint64_t> makings{0};
+    models_[name.str()] = {std::make_shared<const std::vector<float>>(std::move(corners)), ++makings};
 }
 
 const std::vector<float>* Spatial3D::model(Key name) const {
     const auto it = models_.find(name.str());
-    return it == models_.end() ? nullptr : it->second.get();
+    return it == models_.end() ? nullptr : it->second.corners.get();
+}
+
+uint64_t Spatial3D::model_revision(Key name) const {
+    const auto it = models_.find(name.str());
+    return it == models_.end() ? 0 : it->second.revision;
 }
 
 Element& Spatial3D::terrain(Key id, Height height) {

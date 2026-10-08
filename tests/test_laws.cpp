@@ -7,9 +7,13 @@
 //
 // The domain is deliberately not spatial - a shop and its ledger - since
 // nothing here is allowed to know what a room is.
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
@@ -1416,6 +1420,100 @@ void test_a_kept_functor_follows() {
     check(g.kept().empty() && !g.validate().empty(), "dropped, it is kept no more - and the model, reached by nothing now, is named");
 }
 
+// Many states, checked at once: each state's own arrows on a thread of its
+// own. What is found is what one thread finds, in the same order - the
+// broken laws, and those that cannot be checked - and every state is as it
+// was after.
+void test_many_states_are_checked_at_once() {
+    sg::StateGraph g;
+    const int kStates = 96, kItems = 48;
+    for (int i = 0; i < kStates; ++i) {
+        auto& s = g.add<sg::State>(sg::Key{"stall" + std::to_string(i)});
+        for (int k = 0; k < kItems; ++k) s.add_element(sg::Key{"item" + std::to_string(k)}, "item").params.set("n", double(k));
+        s.loop("count", "item0", "count", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+            e.params.set("n", e.params.num("n") + ev.args.num("by", 1.0));
+        });
+        s.arrow("pass", "item0", "item1", "pass", [](sg::State&, sg::Element& a, sg::Element* b, const sg::Event&) {
+            b->params.set("n", a.params.num("n") * 2.0);
+        });
+        s.loop("again", "item1", "again", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event&) {
+            e.params.set("n", e.params.num("n") - 3.0);
+        });
+        s.arrow("back", "item1", "item0", "back", [](sg::State&, sg::Element& a, sg::Element* b, const sg::Event&) {
+            b->params.set("n", a.params.num("n") + 1.0);
+        });
+        // Every few stalls one that reads which event ran it: run as part of
+        // a composite it hears the composite's, and associativity breaks.
+        if (i % 7 == 0)
+            s.loop("heard", "item0", "heard", [](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+                e.params.set("heard", ev.name.str());
+            });
+        // And one that adds a thing: what the state is made of, which no
+        // trial may change - so its laws cannot be checked, and are said to.
+        if (i % 11 == 0)
+            s.loop("grow", "item1", "grow", [](sg::State& st, sg::Element&, sg::Element*, const sg::Event&) {
+                st.add_element(sg::Key{"sprout"}, "item");
+            });
+    }
+    g.set_initial("stall0");
+    for (int i = 1; i < kStates; ++i) g.connect("stall0", sg::Key{"go" + std::to_string(i)}, sg::Key{"stall" + std::to_string(i)});
+    std::vector<uint64_t> before;
+    for (sg::Key id : g.ids()) before.push_back(g.state(id).content_version());
+    const uint64_t revision = g.revision();
+
+    sg::LawOptions o;
+    o.args.set("by", 2.0);
+    o.max_triples = 32;
+    const sg::LawReport many = sg::verify(g, {}, o);
+    // One thread: a cache's checks are made in order, one after another.
+    sg::LawCache one_by_one(sg::LawCache::Strategy::Direct);
+    const sg::LawReport one = sg::verify(g, one_by_one, {}, o);
+    check(!many.violations.empty() && !many.unchecked.empty(), "the broken laws are found, and the ones that cannot be checked are said");
+    check(many.str() == one.str(), "checked at once, the report is the one one thread makes, in its order");
+    std::vector<uint64_t> after;
+    for (sg::Key id : g.ids()) after.push_back(g.state(id).content_version());
+    check(before == after, "and every state is as it was");
+    check(g.revision() == revision && !g.sealed(), "and the graph too: nothing rewritten, nothing left sealed");
+}
+
+// Names, stamps and shared params made on many threads at once: one name is
+// one name on all of them, no two changes share a stamp, and params copied and
+// let go everywhere keep their entries.
+void test_threads_share_names_stamps_and_params() {
+    const int kThreads = 8, kNames = 4000;
+    std::vector<std::vector<const void*>> seen(kThreads);
+    std::vector<std::vector<uint64_t>> stamps(kThreads);
+    sg::Params shared;
+    shared.set("kept", 42.0).set("text", std::string("a text long enough to be on the heap, not in the string"));
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t)
+        threads.emplace_back([&, t] {
+            for (int i = 0; i < kNames; ++i) {
+                // In another order on every thread, so they race for each name.
+                const int n = (i * 7 + t * 997) % kNames;
+                seen[t].push_back(nullptr);
+                seen[t][static_cast<std::size_t>(i)] = sg::Key{"threaded." + std::to_string(n)}.handle();
+                stamps[t].push_back(sg::next_stamp());
+                sg::Params copy = shared;
+                sg::Params other = copy;
+                other.set("mine", double(i));
+            }
+        });
+    for (auto& th : threads) th.join();
+    bool same = true;
+    for (int t = 0; t < kThreads; ++t)
+        for (int i = 0; i < kNames; ++i) {
+            const int n = (i * 7 + t * 997) % kNames;
+            same = same && seen[t][static_cast<std::size_t>(i)] == sg::Key{"threaded." + std::to_string(n)}.handle();
+        }
+    check(same, "a name made on many threads at once is one name");
+    std::vector<uint64_t> all;
+    for (auto& v : stamps) all.insert(all.end(), v.begin(), v.end());
+    std::sort(all.begin(), all.end());
+    check(std::adjacent_find(all.begin(), all.end()) == all.end() && sg::last_stamp() >= all.back(), "no two changes share a stamp");
+    check(shared.num("kept") == 42.0 && !shared.has("mine") && shared.size() == 2, "params copied and let go on every thread keep their entries");
+}
+
 }  // namespace
 
 int main() {
@@ -1454,6 +1552,8 @@ int main() {
     test_an_embedding_follows_its_portal();
     test_arriving_is_heard();
     test_a_kept_functor_follows();
+    test_many_states_are_checked_at_once();
+    test_threads_share_names_stamps_and_params();
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

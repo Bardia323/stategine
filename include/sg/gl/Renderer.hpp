@@ -12,6 +12,7 @@
 #include "sg/gl/GL.hpp"
 #include "sg/gl/Math.hpp"
 #include "sg/render/Geometry.hpp"
+#include "sg/render/Pack.hpp"
 
 namespace sg::gl {
 
@@ -68,11 +69,20 @@ public:
 
     void upload(const std::vector<unsigned char>& rgba);
 
+    // Made from a picture packed for the card (sg/render/Pack.hpp): BC7
+    // blocks, every level of its mipmaps as packed, filtered as `create`'s
+    // with mipmaps. Read as any texture; changed only by being made again.
+    void create_packed(const render::Packed& p);
+    // Whether this card takes packed pictures (BPTC). Asked of the current
+    // context, once.
+    static bool packs();
+
     void bind(int unit = 0) const;
 
     int width() const { return w_; }
     int height() const { return h_; }
     bool valid() const { return id_ != 0; }
+    bool packed() const { return packed_; }
     GLuint id() const { return id_; }
 
 private:
@@ -80,6 +90,7 @@ private:
     int w_ = 0;
     int h_ = 0;
     bool mipmaps_ = false;
+    bool packed_ = false;
 };
 
 // Interleaved position(3), normal(3), uv(2).

@@ -11,6 +11,7 @@
 #include "sg/core/Temporal.hpp"
 #include "sg/core/Text.hpp"
 #include "sg/domains/Being.hpp"
+#include "sg/domains/Spatial.hpp"
 #include "sg/spatial/Math.hpp"
 
 static int failures = 0;
@@ -219,21 +220,23 @@ int main() {
         // The same strip, held by what is no joint (an `Armature` turned a
         // quarter about x and scaled to centimetres, as a Mixamo export is):
         // read in, it stands, bends and is skinned exactly as the plain one.
-        const auto strip = [](bool held) {
+        // (`unit`: what a metre is in the plain one's mesh, its binds sizing it back.)
+        const auto strip = [](bool held, float unit = 1.f) {
             std::string bin;
             const auto f32 = [&](float v) { bin.append(reinterpret_cast<const char*>(&v), 4); };
             const auto u16 = [&](uint16_t v) { bin.append(reinterpret_cast<const char*>(&v), 2); };
-            for (float v : {-0.1f, 0.f, 0.f, 0.1f, 0.f, 0.f, -0.1f, 2.f, 0.f, 0.1f, 2.f, 0.f}) f32(v);
+            for (float v : {-0.1f, 0.f, 0.f, 0.1f, 0.f, 0.f, -0.1f, 2.f, 0.f, 0.1f, 2.f, 0.f}) f32(v * unit);
             for (int i = 0; i < 4; ++i) bin += char(i < 2 ? 0 : 1), bin += char(0), bin += char(0), bin += char(0);
             for (int i = 0; i < 4; ++i) f32(1.f), f32(0.f), f32(0.f), f32(0.f);
             for (uint16_t v : {0, 1, 2, 1, 3, 2}) u16(v);
+            const float k = 1.f / unit;
             if (held) {
                 // Inverse binds: the holder undone (scaled up, turned back), then the joint.
                 for (float v : {100.f, 0.f, 0.f, 0.f, 0.f, 0.f, -100.f, 0.f, 0.f, 100.f, 0.f, 0.f, 0.f, 0.f, 0.f, 1.f}) f32(v);
                 for (float v : {100.f, 0.f, 0.f, 0.f, 0.f, 0.f, -100.f, 0.f, 0.f, 100.f, 0.f, 0.f, 0.f, 0.f, 100.f, 1.f}) f32(v);
             } else {
-                for (float v : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}) f32(v);
-                for (float v : {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 1.f}) f32(v);
+                for (float v : {k, 0.f, 0.f, 0.f, 0.f, k, 0.f, 0.f, 0.f, 0.f, k, 0.f, 0.f, 0.f, 0.f, 1.f}) f32(v);
+                for (float v : {k, 0.f, 0.f, 0.f, 0.f, k, 0.f, 0.f, 0.f, 0.f, k, 0.f, 0.f, -1.f, 0.f, 1.f}) f32(v);
             }
             f32(0.f), f32(1.f);
             const float h = std::sqrt(0.5f);
@@ -266,10 +269,11 @@ int main() {
     {"buffer":0,"byteOffset":276,"byteLength":32}],
   "buffers":[{"byteLength":308,"uri":"data:application/octet-stream;base64,)" + enc + R"("}]})";
         };
-        const std::string plain = strip(false), held = strip(true);
+        const std::string plain = strip(false), held = strip(true), small = strip(false, 0.01f);
         sg::Being::files().read = [&](const std::string& path, std::string& bytes) {
             if (path == "plain.gltf") return bytes = plain, true;
             if (path == "held.gltf") return bytes = held, true;
+            if (path == "small.gltf") return bytes = small, true;
             return false;
         };
         sg::Being::files().stamp = [](const std::string&) { return 1LL; };
@@ -301,6 +305,36 @@ int main() {
         most = 0;
         for (std::size_t i = 0; i < bent_a.size() && i < bent_b.size(); ++i) most = std::max(most, double(std::fabs(bent_a[i] - bent_b[i])));
         check(most < 1e-3, "and it bends as the plain one bends (" + std::to_string(most) + " apart)");
+        // Shown in a room (`show_skins`), the thing a skin is drawn as holds
+        // all of it - its box is what the renderer culls it by and a hand
+        // finds it in - however it is posed, whatever units its mesh was
+        // made in. (Fitted in its bind pose's box, a mesh made in other
+        // units than the being's was a speck at its feet, and vanished from
+        // a picture that did not show them; a bend out of it, likewise.)
+        const auto holds = [](const sg::Being& being) {
+            sg::Spatial3D room{sg::Key{"room"}};
+            sg::show_skins(room, being, sg::Key{"spot"});
+            const sg::Element* e = room.find(sg::Key{"spot.skin"});
+            const std::vector<float>* drawn = room.model(sg::Key{being.id().str() + ".skin"});
+            const std::vector<float> tris = being.skinned("skin");
+            if (!e || !drawn || drawn->size() != tris.size() || tris.empty()) return 1e9;
+            const double x = e->params.num(sg::keys::x), y = e->params.num(sg::keys::y), z = e->params.num(sg::keys::z);
+            const double sx = e->params.num(sg::keys::sx), sy = e->params.num(sg::keys::sy), sz = e->params.num(sg::keys::sz);
+            double out = 0;  // how far the furthest corner is outside its box
+            for (std::size_t i = 0; i < tris.size(); i += 8) {
+                out = std::max({out, std::fabs(tris[i] - x) - sx / 2, y - tris[i + 1], tris[i + 1] - (y + sy), std::fabs(tris[i + 2] - z) - sz / 2});
+                // and drawn at that size, there, it is where the skin is
+                out = std::max({out, std::fabs(x + (*drawn)[i] * sx - tris[i]), std::fabs(y + ((*drawn)[i + 1] + 0.5) * sy - tris[i + 1]),
+                                std::fabs(z + (*drawn)[i + 2] * sz - tris[i + 2])});
+            }
+            return out;
+        };
+        sg::Being c{sg::Key{"small"}};
+        check(c.import_gltf("small.gltf", "", &why), "a skin made in hundredths of a metre is read " + why);
+        const double small_out = holds(c), bent_out = holds(a);
+        check(small_out < 1e-4, "shown in a room, a skin made in other units is in the box it is drawn in (" + std::to_string(small_out) +
+                                    " m out)");
+        check(bent_out < 1e-4, "and a skin bent far from its bind pose is too (" + std::to_string(bent_out) + " m out)");
     }
     {
         // Fitted to a reference: a body made in centimetres, facing +z and

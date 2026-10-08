@@ -1,8 +1,11 @@
 #include "sg/core/Laws.hpp"
 
 #include <array>
-#include <optional>
+#include <atomic>
 #include <cmath>
+#include <exception>
+#include <optional>
+#include <thread>
 
 namespace sg {
 
@@ -188,8 +191,12 @@ namespace sg::laws {
 Trial::~Trial() {
     --detail::trials();
     sealed_.reset();
+    // Putting back is undoing, not rewriting: refused by no other thread's
+    // trial still running.
+    ++detail::restoring();
     for (auto& kv : saved_)
         if (State* s = g_.find(kv.first)) s->restore(std::move(kv.second));
+    --detail::restoring();
 }
 
 State& Trial::touch(Key id) {
@@ -660,10 +667,71 @@ std::vector<Violation> check_two(StateGraph& g, LawCache* cache, const Equation&
     return out;
 }
 
+namespace {
+
+// The laws of a state's own arrows run nothing but that state: a trial takes
+// it, runs its arrows on its data, and puts it back - so two states' are
+// checked apart, at once, on as many cores as there are. Each state's
+// equations are checked on one thread, in their order, and what is found is
+// said in the order of the states: the report is the one one thread makes.
+//
+// Only where nothing is shared between the checks: no cache (it keeps what it
+// finds, for all of them) and no accelerator (it takes equations as they
+// come). And only where there is enough to share out - a small graph is
+// checked sooner than threads are started.
+template <typename Each>
+void each_state(StateGraph& g, LawCache* cache, std::vector<Violation>& out, Each&& each) {
+    const std::vector<Key> ids = g.ids();
+    // What checking a state costs, roughly: each trial is a pass over its
+    // elements, and there are a few for each arrow.
+    std::vector<std::size_t> cost(ids.size(), 0);
+    std::size_t all = 0, busy = 0;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const State& s = g.state(ids[i]);
+        cost[i] = s.morphisms().size() * (s.elements().size() + 4);
+        all += cost[i];
+        busy += cost[i] > 0;
+    }
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    if (cache || accelerating() || cores < 2 || busy < 2 || all < (std::size_t{1} << 14)) {
+        for (Key sid : ids) each(sid, out);
+        return;
+    }
+    // The dearest first, so no thread is left with a big one at the end.
+    std::vector<std::size_t> order;
+    for (std::size_t i = 0; i < ids.size(); ++i)
+        if (cost[i] > 0) order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return cost[a] > cost[b]; });
+    std::vector<std::vector<Violation>> found(ids.size());
+    std::vector<std::exception_ptr> failed(ids.size());
+    std::atomic<std::size_t> next{0};
+    const auto hand = [&] {
+        for (std::size_t k; (k = next.fetch_add(1)) < order.size();) {
+            const std::size_t i = order[k];
+            try {
+                each(ids[i], found[i]);
+            } catch (...) {
+                failed[i] = std::current_exception();
+            }
+        }
+    };
+    std::vector<std::thread> hands;
+    const std::size_t n = std::min<std::size_t>(cores, order.size());
+    for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+    hand();
+    for (std::thread& t : hands) t.join();
+    // What failed first, as one thread would have met it.
+    for (const std::exception_ptr& e : failed)
+        if (e) std::rethrow_exception(e);
+    for (auto& f : found) append(out, std::move(f));
+}
+
+}  // namespace
+
 std::vector<Violation> identity(StateGraph& g, const LawOptions& o, LawCache* cache) {
     if (cache) cache->begin(g);
     std::vector<Violation> out;
-    for (Key sid : g.ids()) {
+    each_state(g, cache, out, [&](Key sid, std::vector<Violation>& out) {
         const State& s = g.state(sid);
         for (const Morphism& m : s.morphisms()) {
             if (!s.find(dom(m)) || !s.find(cod(m))) continue;  // validate() names it
@@ -679,7 +747,7 @@ std::vector<Violation> identity(StateGraph& g, const LawOptions& o, LawCache* ca
                                    Path(sid, dom(m)).arrow(State::composite(Key{"id." + m.name.str()}, m, id_cod, m.trigger)), f, args},
                                   /*share_left=*/false));
         }
-    }
+    });
     for (const auto& kv : g.functors()) {
         const Functor& f = kv.second;
         if (!g.find(f.from()) || !g.find(f.to())) continue;
@@ -709,7 +777,7 @@ Violation bounded(const std::string& law, const std::string& where, std::size_t 
 std::vector<Violation> associativity(StateGraph& g, const LawOptions& o, LawCache* cache) {
     if (cache) cache->begin(g);
     std::vector<Violation> out;
-    for (Key sid : g.ids()) {
+    each_state(g, cache, out, [&](Key sid, std::vector<Violation>& out) {
         const State& s = g.state(sid);
         std::unordered_map<Key, std::vector<const Morphism*>> leaving;
         for (const Morphism& m : s.morphisms())
@@ -739,14 +807,13 @@ std::vector<Violation> associativity(StateGraph& g, const LawOptions& o, LawCach
                 for (const Morphism* h : leaving[cod(*gm)]) {
                     if (budget == 0) {
                         out.push_back(bounded("associativity", sid.str(), o.max_triples));
-                        goto next_state;
+                        return;
                     }
                     --budget;
                     triple(f, *gm, *h);
                 }
         }
-    next_state:;
-    }
+    });
 
     std::size_t budget = o.max_triples;
     for (const auto& a : g.functors())

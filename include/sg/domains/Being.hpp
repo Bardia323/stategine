@@ -113,8 +113,8 @@ public:
     static Files& files();  // the program's (as Texture's reader)
     bool import_gltf(const std::string& path, const std::string& prefix = {}, std::string* why = nullptr);
     // A skin posed as the skeleton is now (linear blend skinning), in the
-    // being's frame: triangles, 8 floats a corner. Its bind pose's bounds, if asked.
-    std::vector<float> skinned(Key skin, Vec3d* bind_lo = nullptr, Vec3d* bind_hi = nullptr) const;
+    // being's frame: triangles, 8 floats a corner.
+    std::vector<float> skinned(Key skin) const;
     // The picture a skin wears by its uvs (its material's base colour), as
     // read with it; null if it wears none.
     const std::vector<unsigned char>* skin_picture(Key skin, int& w, int& h) const;

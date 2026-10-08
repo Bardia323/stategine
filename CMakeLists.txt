@@ -89,6 +89,10 @@ file(GLOB _sg_render_sources CONFIGURE_DEPENDS
 add_library(stategine_render STATIC ${_sg_render_sources})
 add_library(stategine::render ALIAS stategine_render)
 target_link_libraries(stategine_render PUBLIC stategine)
+# A picture packed for the card (sg/render/Pack.hpp) is kept on disk by its
+# pixels and by this - the code that packs it.
+stategine_code_digest(stategine_render SG_PACK_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/render/Pack.cpp
+                      ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render/Pack.hpp)
 if(NOT EMSCRIPTEN)
   file(GLOB _sg_gl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp)
   add_library(stategine_gl STATIC ${_sg_gl_sources})
@@ -247,6 +251,14 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
     endif()
     add_test(NAME sg_instancing_gl COMMAND sg_instancing_gl)
 
+    # A packed picture, read by a real card exactly as it is decoded here.
+    add_executable(sg_pack_gl tests/pack_gl.cpp)
+    target_link_libraries(sg_pack_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_pack_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_pack_gl COMMAND sg_pack_gl)
+
     # What is not seen is not drawn: shadow maps hold what their lamp sees, and specks are left out.
     add_executable(sg_culling_gl tests/culling_gl.cpp)
     target_link_libraries(sg_culling_gl PRIVATE stategine_dev glfw)
@@ -270,6 +282,14 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_coplanar_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_coplanar_gl COMMAND sg_coplanar_gl)
+
+    # A model made again is drawn as it is now: never a mesh made before it.
+    add_executable(sg_models_gl tests/models_gl.cpp)
+    target_link_libraries(sg_models_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_models_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_models_gl COMMAND sg_models_gl)
 
     # A world's air lit by its lamps, shadowed, gathered once while nothing
     # moves; and a look's grade.
@@ -329,6 +349,10 @@ if(SG_BUILD_TESTS)
   add_executable(sg_texture tests/test_texture.cpp)
   target_link_libraries(sg_texture PRIVATE stategine_dev)
   add_test(NAME sg_texture COMMAND sg_texture)
+  # A picture packed for the card: the picture, within a level, every time.
+  add_executable(sg_pack tests/test_pack.cpp)
+  target_link_libraries(sg_pack PRIVATE stategine_dev)
+  add_test(NAME sg_pack COMMAND sg_pack)
   add_executable(sg_modeler tests/test_modeler.cpp)
   target_link_libraries(sg_modeler PRIVATE stategine_dev)
   add_test(NAME sg_modeler COMMAND sg_modeler)
@@ -580,9 +604,9 @@ endif()
 
 # Native programs stay at the build root; archives and checks have their folders.
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
-  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
+  foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
-      sg_instancing_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape)

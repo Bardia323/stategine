@@ -1,12 +1,41 @@
 #include "sg/core/Core.hpp"
 
 #include <algorithm>
+#include <mutex>
 
 auto std::hash<sg::Key>::operator()(const sg::Key& k) const noexcept -> std::size_t {
     return std::hash<const void*>{}(k.handle());
 }
 
 namespace sg {
+
+namespace {
+// The names, in shards by their hash, each behind its own lock: any thread
+// may name things, and two seldom want one shard at once. A set's nodes never
+// move, so a name, once made, is where it is for good.
+struct Shard {
+    std::mutex lock;
+    std::unordered_set<std::string> names;
+};
+Shard& shard_of(const std::string& s) {
+    static Shard shards[64];
+    const std::size_t h = std::hash<std::string>{}(s);
+    return shards[(h ^ (h >> 29)) & 63];
+}
+}  // namespace
+
+const std::string* Key::intern(std::string s) {
+    Shard& sh = shard_of(s);
+    std::lock_guard<std::mutex> held(sh.lock);
+    return &*sh.names.insert(std::move(s)).first;
+}
+
+const std::string* Key::intern_ref(const std::string& s) {
+    Shard& sh = shard_of(s);
+    std::lock_guard<std::mutex> held(sh.lock);
+    const auto it = sh.names.find(s);
+    return it != sh.names.end() ? &*it : &*sh.names.insert(s).first;
+}
 
 std::string to_string(const Value& v) {
     struct Vis {
@@ -47,6 +76,11 @@ void set_observers(Observers policy, std::function<void(const std::string&)> rep
 }  // namespace sg
 
 namespace sg::detail {
+
+void Revision::refuse(const char* what) const {
+    if (sealed.load(std::memory_order_relaxed) > 0 && restoring() == 0)
+        throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
+}
 
 void Revision::element(const char* what) {
     refuse(what);

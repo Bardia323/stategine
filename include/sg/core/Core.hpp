@@ -5,6 +5,7 @@
 // of characters. Everything still takes plain strings at the API surface.
 #pragma once
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -26,7 +27,9 @@ namespace sg {
 // ---------------------------------------------------------------------------
 // Key: an interned name. Cheap to copy, compare and hash.
 // The table is process-wide and never shrinks; intern during setup, not per
-// frame. Not thread safe - build your graph on one thread.
+// frame. A name may be made on any thread - the laws check states on many
+// cores at once, and each check names what it runs - and is the same name on
+// all of them.
 // ---------------------------------------------------------------------------
 class Key {
 public:
@@ -50,34 +53,27 @@ public:
     const void* handle() const { return text_; }
 
 private:
-    static std::unordered_set<std::string>& table() {
-        static std::unordered_set<std::string> t;
-        return t;
-    }
-    static const std::string* intern(std::string s) { return &*table().insert(std::move(s)).first; }
-    // Looked up without copying when it is there already - the usual case.
-    // inline: every name made in a frame goes through it.
-    static const std::string* intern_ref(const std::string& s) {
-        auto& t = table();
-        const auto it = t.find(s);
-        return it != t.end() ? &*it : &*t.insert(s).first;
-    }
+    // The table, in shards that each keep their own lock (Core.cpp): two
+    // threads naming things at once seldom wait on each other, and a name,
+    // once made, never moves. Looked up without copying when it is there
+    // already - the usual case.
+    static const std::string* intern(std::string s);
+    static const std::string* intern_ref(const std::string& s);
     // Most names in code are string literals, met over and over in a frame
     // (`params.num("x")`): each is remembered by where its characters are, in
     // a small table keyed by that address, and taken from there after one
     // comparison of the characters - a buffer reused for another name is
-    // simply looked up again. inline: every Key{"..."} in a frame is this.
+    // simply looked up again. A slot holds one pointer, read and written
+    // whole, so any thread may use it with no lock: what it finds is always
+    // a name, and the comparison says whether it is this one.
+    // inline: every Key{"..."} in a frame is this.
     static const std::string* intern_literal(const char* s) {
-        struct Slot {
-            const char* at = nullptr;
-            const std::string* key = nullptr;
-        };
-        static Slot slots[4096];
-        Slot& slot = slots[(reinterpret_cast<std::uintptr_t>(s) >> 2) & 4095];
-        if (slot.at == s && std::strcmp(slot.key->c_str(), s) == 0) return slot.key;
-        const std::string* key = intern_ref(std::string(s));
-        slot.at = s;
-        slot.key = key;
+        static std::atomic<const std::string*> slots[4096];
+        std::atomic<const std::string*>& slot = slots[(reinterpret_cast<std::uintptr_t>(s) >> 2) & 4095];
+        const std::string* key = slot.load(std::memory_order_acquire);
+        if (key && std::strcmp(key->c_str(), s) == 0) return key;
+        key = intern_ref(std::string(s));
+        slot.store(key, std::memory_order_release);
         return key;
     }
 
@@ -117,13 +113,15 @@ std::string to_string(const Value& v);
 // it is never part of what a state *is*: nothing reads a stamp to decide what
 // the world does, only whether work already done still stands.
 // ---------------------------------------------------------------------------
-inline uint64_t& stamp_count() {
-    static uint64_t n = 0;
+// The count is one for every thread (the laws run trials on many at once),
+// so it is counted atomically: no two changes anywhere share a stamp.
+inline std::atomic<uint64_t>& stamp_count() {
+    static std::atomic<uint64_t> n{0};
     return n;
 }
-inline uint64_t next_stamp() { return ++stamp_count(); }
+inline uint64_t next_stamp() { return stamp_count().fetch_add(1, std::memory_order_relaxed) + 1; }
 // The newest stamp given out: if it has not moved, nothing anywhere changed.
-inline uint64_t last_stamp() { return stamp_count(); }
+inline uint64_t last_stamp() { return stamp_count().load(std::memory_order_relaxed); }
 
 // ---------------------------------------------------------------------------
 // A change to what the graph is made of, refused: the graph was being checked
@@ -194,20 +192,28 @@ namespace detail {
 // never comes here. While a law's trial runs, no change of structure is let
 // through at all - not of what joins the states, and not of what is in one:
 // a trial undoes data, and structure is not data.
+//
+// Counted atomically: the laws run trials of many states at once, each on a
+// thread of its own, and every one of them seals the graph while it runs.
 struct Revision {
-    uint64_t all = 0;       // anything structural: elements and arrows too
-    uint64_t topology = 0;  // the interfaces: states, functors, embeddings, seams, transitions
-    int sealed = 0;         // > 0 while a law's trial runs
+    std::atomic<uint64_t> all{0};       // anything structural: elements and arrows too
+    std::atomic<uint64_t> topology{0};  // the interfaces: states, functors, embeddings, seams, transitions
+    std::atomic<int> sealed{0};         // > 0 while a law's trial runs, on any thread
 
     void element(const char* what);
     void rewired(const char* what);
 
 private:
-    void refuse(const char* what) const {
-        if (sealed)
-            throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
-    }
+    void refuse(const char* what) const;
 };
+
+// Whether this thread is putting back what its own trial touched (Laws.hpp's
+// Trial): that is undoing, not rewriting, and another thread's trial, still
+// sealing the graph, does not refuse it.
+inline int& restoring() {
+    static thread_local int n = 0;
+    return n;
+}
 
 }  // namespace detail
 
@@ -222,27 +228,56 @@ uint64_t mix_stamp(uint64_t h, uint64_t v);
 // snapshot, a law's trial, a default kept) costs a pointer per element, and
 // only what is then changed is copied for real.
 //
+// How many copies share them is counted by an atomic of their own, not a
+// shared_ptr's: with some standard libraries (MinGW's) a shared_ptr's count
+// is kept under one lock for the whole program, and the laws' trials, copying
+// states on many cores at once, would all wait on it.
+//
 // inline: every arrow reads and writes through it, every frame.
 // ---------------------------------------------------------------------------
 class Params {
 public:
     using Entry = std::pair<Key, Value>;
 
+    Params() = default;
+    Params(const Params& o) noexcept : entries_(o.entries_), stamp_(o.stamp_) {
+        if (entries_) entries_->copies.fetch_add(1, std::memory_order_relaxed);
+    }
+    Params(Params&& o) noexcept : entries_(o.entries_), stamp_(o.stamp_) { o.entries_ = nullptr; }
+    Params& operator=(const Params& o) noexcept {
+        if (this == &o) return *this;
+        if (o.entries_) o.entries_->copies.fetch_add(1, std::memory_order_relaxed);
+        release();
+        entries_ = o.entries_;
+        stamp_ = o.stamp_;
+        return *this;
+    }
+    Params& operator=(Params&& o) noexcept {
+        if (this == &o) return *this;
+        release();
+        entries_ = o.entries_;
+        o.entries_ = nullptr;
+        stamp_ = o.stamp_;
+        return *this;
+    }
+    ~Params() { release(); }
+
     // Setting a value it already holds is no change, and is not stamped as
     // one: whatever follows from these params need not look again.
     Params& set(Key key, Value v) {
         if (const Value* held = slot_of(key)) {
             if (*held == v) return *this;
-            if (entries_.use_count() > 1) {
+            if (shared()) {
                 // Shared: this copy's own entries, with the new value where
                 // the old would have been - never copying what is replaced
                 // (a long text, written over in a trial, costs nothing more).
-                auto own = std::make_shared<std::vector<Entry>>();
-                own->reserve(entries_->size());
-                for (const Entry& e : *entries_)
-                    if (e.first == key) own->emplace_back(key, std::move(v));
-                    else own->push_back(e);
-                entries_ = std::move(own);
+                auto own = std::make_unique<Shared>();
+                own->entries.reserve(entries_->entries.size());
+                for (const Entry& e : entries_->entries)
+                    if (e.first == key) own->entries.emplace_back(key, std::move(v));
+                    else own->entries.push_back(e);
+                release();
+                entries_ = own.release();
             } else {
                 *slot_of_mine(key) = std::move(v);
             }
@@ -308,7 +343,7 @@ public:
     bool empty() const { return all().empty(); }
     void clear() {
         if (empty()) return;
-        entries_.reset();
+        release();
         stamp_ = next_stamp();
     }
 
@@ -316,15 +351,34 @@ public:
     std::vector<Entry>::const_iterator end() const { return all().end(); }
     const std::vector<Entry>& all() const {
         static const std::vector<Entry> none;
-        return entries_ ? *entries_ : none;
+        return entries_ ? entries_->entries : none;
     }
 
 private:
+    // The entries, and how many copies share them.
+    struct Shared {
+        std::atomic<long> copies{1};
+        std::vector<Entry> entries;
+    };
+
+    // Whether another copy shares these entries. Only a copy that holds them
+    // can make another, so seen alone here, they are this copy's alone.
+    bool shared() const { return entries_->copies.load(std::memory_order_acquire) > 1; }
+    void release() {
+        if (entries_ && entries_->copies.fetch_sub(1, std::memory_order_acq_rel) == 1) delete entries_;
+        entries_ = nullptr;
+    }
     // The entries, this copy's own to write: shared ones are copied first.
     std::vector<Entry>& mine() {
-        if (!entries_) entries_ = std::make_shared<std::vector<Entry>>();
-        else if (entries_.use_count() > 1) entries_ = std::make_shared<std::vector<Entry>>(*entries_);
-        return *entries_;
+        if (!entries_) {
+            entries_ = new Shared;
+        } else if (shared()) {
+            auto own = std::make_unique<Shared>();
+            own->entries = entries_->entries;
+            release();
+            entries_ = own.release();
+        }
+        return entries_->entries;
     }
     Value* slot_of_mine(Key key) {
         for (auto& e : mine())
@@ -334,12 +388,12 @@ private:
 
     const Value* slot_of(Key key) const {
         if (!entries_) return nullptr;
-        for (const auto& e : *entries_)
+        for (const auto& e : entries_->entries)
             if (e.first == key) return &e.second;
         return nullptr;
     }
 
-    std::shared_ptr<std::vector<Entry>> entries_;
+    Shared* entries_ = nullptr;
     uint64_t stamp_ = 0;
 };
 

@@ -367,6 +367,21 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         Element& s = add_element(Key{prefix + "skin"}, Key{"skin"});
         s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix).set("rig", rig);
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
+        // Which joints the skin binds anything to (`bound`): a joint it binds
+        // nothing to only marks a place - the end of a head, a toe.
+        const J& node = nodes[std::size_t(mesh_node)];
+        const J& sk = d.j["skins"][std::size_t(node["skin"].i(0))];
+        std::vector<bool> used(sk["joints"].a.size(), false);
+        for (const J& prim : d.j["meshes"][std::size_t(node["mesh"].i(0))]["primitives"].a) {
+            const J& at = prim["attributes"];
+            if (!at.has("JOINTS_0") || !at.has("WEIGHTS_0")) continue;
+            int c = 0;
+            const std::vector<float> js = d.floats(at["JOINTS_0"].i(), c), ws = d.floats(at["WEIGHTS_0"].i(), c);
+            for (std::size_t k = 0; k < js.size() && k < ws.size(); ++k)
+                if (ws[k] > 0.01f && js[k] >= 0 && std::size_t(js[k]) < used.size()) used[std::size_t(js[k])] = true;
+        }
+        for (std::size_t k = 0; k < sk["joints"].a.size(); ++k)
+            if (Element* j = find(Key{prefix + node_name(d.j, sk["joints"][k].i())})) j->params.set("bound", used[k] ? 1.0 : 0.0);
     }
     // Its motions: each animation a clip, its channels the joints' rotations
     // (`q` keys) and translations (`p` keys).
@@ -410,7 +425,7 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
     return true;
 }
 
-std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) const {
+std::vector<float> Being::skinned(Key skin_id) const {
     std::vector<float> out;
     const Element* s = find(skin_id);
     if (!s) return out;
@@ -495,7 +510,6 @@ std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) c
         const M4 sized = scaled(now, s->params.num("rig", 1.0));
         m[i] = i < sd.inverse_bind.size() ? mul(sized, sd.inverse_bind[i]) : sized;
     }
-    Vec3d lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
     std::vector<Vec3d> P(sd.pos.size()), N(sd.pos.size());
     for (std::size_t v = 0; v < sd.pos.size(); ++v) {
         Vec3d p{}, nn{};
@@ -512,11 +526,7 @@ std::vector<float> Being::skinned(Key skin_id, Vec3d* bind_lo, Vec3d* bind_hi) c
         }
         if (wsum <= 0) p = sd.pos[v], nn = v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0};
         P[v] = p, N[v] = nn;
-        lo = {std::min(lo.x, sd.pos[v].x), std::min(lo.y, sd.pos[v].y), std::min(lo.z, sd.pos[v].z)};
-        hi = {std::max(hi.x, sd.pos[v].x), std::max(hi.y, sd.pos[v].y), std::max(hi.z, sd.pos[v].z)};
     }
-    if (bind_lo) *bind_lo = lo;
-    if (bind_hi) *bind_hi = hi;
     out.reserve(sd.index.size() * 8);
     for (uint32_t i : sd.index) {
         if (i >= P.size()) continue;
@@ -541,21 +551,25 @@ const std::vector<unsigned char>* Being::skin_picture(Key skin_id, int& w, int& 
 void show_skins(Spatial3D& host, const Being& b, Key anchor) {
     for (const Element& s : b.elements()) {
         if (s.kind != Key{"skin"}) continue;
-        Vec3d lo, hi;
-        std::vector<float> tris = b.skinned(s.id, &lo, &hi);
+        std::vector<float> tris = b.skinned(s.id);
         if (tris.empty()) continue;
-        // Fitted in a box half again its bound size, so the thing it is drawn as
-        // keeps its size as it moves.
-        const Vec3d mid = (lo + hi) * 0.5, half = (hi - lo) * 0.75 + Vec3d{0.05, 0.05, 0.05};
-        Vec3d size;
+        // Fitted in the box round it as it is posed, in the being's frame -
+        // the frame it is drawn in: the thing's box is what the renderer
+        // culls it by and a hand finds it in, so it holds all that is drawn,
+        // however it moves. (Never the box its bind pose was made in: that
+        // is in the model's own units - a Mixamo export's a box a centimetre
+        // high at the feet, and the body vanished when they were out of view.)
+        Vec3d lo, hi, size;
+        shapes::bounds(tris, lo, hi);
+        const Vec3d mid = (lo + hi) * 0.5;
         const Key model{b.id().str() + "." + s.id.str()};
-        host.model(model, shapes::fit(std::move(tris), size, mid - half, mid + half));
+        host.model(model, shapes::fit(std::move(tris), size, lo, hi));
         const Key there{anchor.str() + "." + s.id.str()};
         Element* e = host.find(there);
         if (!e) e = &host.add_element(there, kinds::mesh);
         e->params.set(keys::parent, anchor.str()).set("shape", std::string("model")).set("model", model.str());
         e->params.set(keys::sx, size.x).set(keys::sy, size.y).set(keys::sz, size.z);
-        e->params.set(keys::x, mid.x).set(keys::y, mid.y - half.y).set(keys::z, mid.z);
+        e->params.set(keys::x, mid.x).set(keys::y, lo.y).set(keys::z, mid.z);
         for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, s.params.num(k, 0.7));
         // Its picture, worn by its own uvs (given to the host once).
         int w = 0, h = 0;

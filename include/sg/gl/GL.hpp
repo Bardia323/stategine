@@ -77,6 +77,11 @@ constexpr GLenum GL_MULTISAMPLE = 0x809D;
 constexpr GLenum GL_RGBA16F = 0x881A;
 constexpr GLenum GL_RGB16F = 0x881B;
 constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;
+// BC7 blocks (BPTC: core from 4.2, ARB_texture_compression_bptc before).
+constexpr GLenum GL_COMPRESSED_RGBA_BPTC_UNORM = 0x8E8C;
+constexpr GLenum GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM = 0x8E8D;
+constexpr GLenum GL_EXTENSIONS = 0x1F03;
+constexpr GLenum GL_NUM_EXTENSIONS = 0x821D;
 constexpr GLenum GL_TEXTURE_COMPARE_MODE = 0x884C;
 constexpr GLenum GL_TEXTURE_COMPARE_FUNC = 0x884D;
 constexpr GLenum GL_COMPARE_REF_TO_TEXTURE = 0x884E;
@@ -162,6 +167,10 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
       (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))  \
     X(void, TexSubImage2D,                                                                    \
       (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*))           \
+    X(void, CompressedTexImage2D,                                                             \
+      (GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void*))                 \
+    X(const unsigned char*, GetStringi, (GLenum, GLuint))                                     \
+    X(void, GetTexImage, (GLenum, GLint, GLenum, GLenum, void*))                              \
     X(void, GenFramebuffers, (GLsizei, GLuint*))                                              \
     X(void, BindFramebuffer, (GLenum, GLuint))                                                \
     X(void, DeleteFramebuffers, (GLsizei, const GLuint*))                                     \

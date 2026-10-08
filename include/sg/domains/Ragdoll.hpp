@@ -17,7 +17,7 @@
 // What is done to it moves it: a hit (`<id>.hit`, an impulse on a bone)
 // moves the whole body by what it carries and kicks the limb hit, and what
 // hangs from it and what it hangs from give, each as heavy as it is; its feet
-// brace against a push up to what they hold (`hold`, newtons), so leaning on
+// brace against a push up to what they hold (`hold`, newtons - 600 by default), so leaning on
 // it or pulling at it does not drag it; the bone and its neighbours are weakened a moment and
 // come back. A hand may hold a bone and pull (`<id>.grab`, `<id>.let_go`):
 // the arm is drawn out against its muscles and, let go, swings on past where

@@ -82,6 +82,7 @@ void Texture::create(int w, int h, bool mipmaps, bool srgb, bool pixel) {
     w_ = w;
     h_ = h;
     mipmaps_ = mipmaps;
+    packed_ = false;
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
     glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), w, h, 0,
@@ -116,6 +117,40 @@ void Texture::upload(const std::vector<unsigned char>& rgba) {
     glBindTexture(GL_TEXTURE_2D, id_);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     if (mipmaps_) glGenerateMipmap(GL_TEXTURE_2D);
+}
+
+void Texture::create_packed(const render::Packed& p) {
+    if (id_) glDeleteTextures(1, &id_);
+    w_ = p.w;
+    h_ = p.h;
+    mipmaps_ = true;
+    packed_ = true;
+    glGenTextures(1, &id_);
+    glBindTexture(GL_TEXTURE_2D, id_);
+    const GLenum format = p.srgb ? GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM : GL_COMPRESSED_RGBA_BPTC_UNORM;
+    for (std::size_t level = 0; level < p.levels.size(); ++level) {
+        const render::Packed::Level& l = p.levels[level];
+        glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), format, l.w, l.h, 0, static_cast<GLsizei>(l.size),
+                               p.bytes.data() + l.at);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0f);
+    glGetError();  // as create's: without anisotropy, plain trilinear
+}
+
+bool Texture::packs() {
+    static const bool yes = [] {
+        GLint n = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (GLint i = 0; i < n; ++i)
+            if (const unsigned char* e = glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)))
+                if (std::strcmp(reinterpret_cast<const char*>(e), "GL_ARB_texture_compression_bptc") == 0) return true;
+        return false;
+    }();
+    return yes;
 }
 
 void Texture::bind(int unit) const {

@@ -7,6 +7,9 @@ struct Quality {
     float bloom_strength=0.55f,bloom_threshold=1.05f,exposure=1.15f;
     int bloom_passes=3;
     bool instancing=true;
+    // What things wear sent to the card packed (sg/render/Pack.hpp), where
+    // the card takes it: a quarter of the bytes, as warmed before the first frame.
+    bool pack=true;
 };
 void standard_look(LookState& look,const Quality& quality={});
 }

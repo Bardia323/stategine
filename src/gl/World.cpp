@@ -3,9 +3,11 @@
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Texture.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <thread>
 
 namespace sg::render {
 
@@ -181,6 +183,7 @@ void GLWorldView::release_feed(Feed& f) {
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
     const LookFader fader = fader_;
     const Mix post = post_;
+    pack_skins();
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
     // And every picture a thing wears, made on the card now: one first seen
@@ -2065,9 +2068,14 @@ const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
     // Asked every frame, in every pass, of every thing: remembered until
     // the thing's parameters change.
     auto& memo = shape_memo_[&e];
-    if (memo.first == e.params.stamp() && memo.second) return *memo.second;
+    const auto made = [&] {
+        static const Key shape{"shape"}, model{"model"};
+        const auto* space = dynamic_cast<const Spatial3D*>(&st);
+        return space && e.params.is(shape, "model") ? space->model_revision(Key{e.params.get_or<std::string>(model, "")}) : 0;
+    };
+    if (memo.mesh && memo.stamp == e.params.stamp() && (memo.made == 0 || memo.made == made())) return *memo.mesh;
     const gl::Mesh& m = find_shape(st, e);
-    memo = {e.params.stamp(), &m};
+    memo = {e.params.stamp(), made(), &m};
     return m;
 }
 
@@ -2078,11 +2086,15 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
     // mesh the first time it is drawn, kept after.
     if (s == "model") {
         const auto* space = dynamic_cast<const Spatial3D*>(&st);
-        const std::vector<float>* corners = space ? space->model(Key{e.params.get_or<std::string>(model, "")}) : nullptr;
+        const Key name{e.params.get_or<std::string>(model, "")};
+        const std::vector<float>* corners = space ? space->model(name) : nullptr;
         if (!corners || corners->empty()) return cube_;
-        gl::Mesh& m = model_meshes_[corners];
-        if (!m.valid()) m.create(*corners);
-        return m;
+        // (Kept by whose model it is and which making, never by where its
+        // corners lie: a model made again may be given an old one's place.)
+        ModelMesh& m = model_meshes_[{&st, name.str()}];
+        const uint64_t made = space->model_revision(name);
+        if (m.revision != made || !m.mesh.valid()) m.mesh.update(*corners), m.revision = made;
+        return m.mesh;
     }
     const double tp = e.params.num(taper, 1.0);
     if (s == "sphere") return sphere_;
@@ -2255,15 +2267,78 @@ void GLWorldView::upload_skin(BoundSurface& bound) {
     const uint64_t frame = (root_ ? root_->frame_count_ : frame_count_) + 1;
     if (bound.asked == frame && bound.texture.valid()) return;
     bound.asked = frame;
+    refresh(bound);
+}
+
+void GLWorldView::refresh(BoundSurface& bound) {
     Surface2D& surf = *bound.surface;
     const auto& pixels = surf.raster();
-    if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
+    if (bound.packed && bound.packed_revision == surf.revision()) {
+        if (!bound.texture.packed() || bound.revision != surf.revision()) {
+            bound.texture.create_packed(*bound.packed);
+            bound.revision = surf.revision();
+        }
+        return;
+    }
+    // Changed since it was packed (painted on, written over): its pixels from
+    // now on, as any surface's.
+    bound.packed.reset();
+    if (!bound.texture.valid() || bound.texture.packed() || bound.texture.width() != surf.px_w() ||
+        bound.texture.height() != surf.px_h()) {
         bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
         bound.revision = ~uint64_t{0};
     }
     if (bound.revision != surf.revision()) {
         bound.texture.upload(pixels);
         bound.revision = surf.revision();
+    }
+}
+
+void GLWorldView::pack_skins() {
+    if (!q_.pack || !gl::Texture::packs()) return;
+    // Each texture once, however many things it is bound to; its picture
+    // made here, on this thread, if it was not yet.
+    struct Job {
+        Surface2D* surface;
+        const std::vector<unsigned char>* pixels;
+        uint64_t revision;
+        std::shared_ptr<const render::Packed> packed;
+    };
+    std::vector<Job> jobs;
+    std::unordered_map<const Surface2D*, std::size_t> job_of;
+    for (auto& [id, bound] : surfaces_) {
+        Surface2D* s = bound.surface;
+        if (!s || !dynamic_cast<const Texture*>(s) || job_of.count(s)) continue;
+        const std::vector<unsigned char>* pixels = &s->raster();
+        if (!render::packable(s->px_w(), s->px_h())) continue;
+        job_of.emplace(s, jobs.size());
+        jobs.push_back(Job{s, pixels, s->revision(), nullptr});
+    }
+    // The biggest first, so no core is left with one at the end; each a
+    // picture of its own pixels alone.
+    std::vector<std::size_t> order(jobs.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return jobs[a].pixels->size() > jobs[b].pixels->size();
+    });
+    std::atomic<std::size_t> next{0};
+    const auto hand = [&] {
+        for (std::size_t k; (k = next.fetch_add(1)) < order.size();) {
+            Job& j = jobs[order[k]];
+            j.packed = std::make_shared<const render::Packed>(
+                render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb()));
+        }
+    };
+    std::vector<std::thread> hands;
+    const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), jobs.size());
+    for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+    hand();
+    for (std::thread& t : hands) t.join();
+    for (auto& [id, bound] : surfaces_) {
+        const auto it = bound.surface ? job_of.find(bound.surface) : job_of.end();
+        if (it == job_of.end()) continue;
+        bound.packed = jobs[it->second].packed;
+        bound.packed_revision = jobs[it->second].revision;
     }
 }
 
@@ -2551,15 +2626,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     if (skin != surfaces_.end()) {
         BoundSurface& bound = skin->second;
         Surface2D& surf = *bound.surface;
-        const auto& pixels = surf.raster();
-        if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
-            bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
-            bound.revision = ~uint64_t{0};
-        }
-        if (bound.revision != surf.revision()) {
-            bound.texture.upload(pixels);
-            bound.revision = surf.revision();
-        }
+        refresh(bound);
         bound.texture.bind(0);
         scene_->set("uTexMix", 1.0f);
         scene_->set("uSkin", 1.0f);
@@ -2983,16 +3050,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening
         BoundSurface& bound = it->second;
         Surface2D& surf = *bound.surface;
-        const auto& pixels = surf.raster();
         // A surface that has changed size gets a texture its new size.
-        if (!bound.texture.valid() || bound.texture.width() != surf.px_w() || bound.texture.height() != surf.px_h()) {
-            bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
-            bound.revision = ~uint64_t{0};
-        }
-        if (bound.revision != surf.revision()) {
-            bound.texture.upload(pixels);
-            bound.revision = surf.revision();
-        }
+        refresh(bound);
         bound.texture.bind(0);
         tex_w = surf.px_w(), tex_h = surf.px_h();
     }

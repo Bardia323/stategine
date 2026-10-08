@@ -108,8 +108,14 @@ public:
     // and `model` = its name, sized by sx, sy, sz as a box is. Made as the
     // state is built, as its fixtures are - what it looks like, not what it
     // is doing.
+    // Made again (a skin posed anew), a model is another making of it: each
+    // making has a number no other making of any model has had
+    // (`model_revision`, 0 for none) - what whoever keeps something made
+    // from a model (a renderer's mesh) keeps it by, never by where its
+    // corners lie in memory, which a later making may be given.
     void model(Key name, std::vector<float> corners);
     const std::vector<float>* model(Key name) const;
+    uint64_t model_revision(Key name) const;
 
     // --- pictures -----------------------------------------------------------------
     // What its things may wear: RGBA pixels, row 0 at the top, kept by name.
@@ -144,7 +150,11 @@ public:
 
 private:
     std::map<std::string, std::shared_ptr<const Height>> grounds_;
-    std::map<std::string, std::shared_ptr<const std::vector<float>>> models_;
+    struct KeptModel {
+        std::shared_ptr<const std::vector<float>> corners;
+        uint64_t revision = 0;
+    };
+    std::map<std::string, KeptModel> models_;
     std::map<std::string, std::shared_ptr<Picture>> pictures_;
     uint64_t picture_revisions_ = 0;
 };
