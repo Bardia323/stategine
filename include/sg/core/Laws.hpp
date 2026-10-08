@@ -209,6 +209,9 @@ struct LawOptions {
     double drive_dt = 0.5;                       // the step a drive's laws take
     // Offered every equation first, when set (see laws::Accelerator).
     laws::Accelerator* accelerate = nullptr;
+    // How many things a footprint does not say it reads are changed to see
+    // that it does not, per transport or arrow: a seeded sample past this.
+    std::size_t max_perturbed = 64;
 };
 
 namespace laws {
@@ -482,6 +485,29 @@ std::vector<Violation> drives(StateGraph& g, const LawOptions& o = {},
 //             that adds rather than sets.
 std::vector<Violation> lenses(StateGraph& g, const LawOptions& o = {},
                                     LawCache* cache = nullptr);
+
+// --- footprints ------------------------------------------------------------------
+// Where a transport or an arrow says what it reads and writes (Footprint,
+// Core.hpp), it is held to it:
+//
+//   reads    a change to anything it does not say it reads - a param of its
+//            state, a key of another of its elements - moves nothing it leaves
+//   writes   it leaves nothing changed under a key it does not say it writes
+//
+// Run on trial: once as things stand, then again with each thing it does not
+// say it reads changed (all of them, or a seeded sample of
+// `LawOptions::max_perturbed`), what it leaves compared each time. What says
+// no footprint is not looked at: it is unchecked, as before.
+std::vector<Violation> footprints(StateGraph& g, const LawOptions& o = {});
+
+// A carry that runs before what it reads is written in the same frame sees
+// it a frame late: a kept functor (carried at the start of the frame) from a
+// driven state, or a View's `in` from a subject that keeps its own time
+// (stepped after the guests), whose footprint reads what one of the source's
+// driven arrows says it writes. Reported unless the footprint says it lags -
+// only reported: the frame's order is the graph's, and is never changed to
+// suit it. Where either side says nothing, nothing is known, and nothing said.
+std::vector<Violation> lags(const StateGraph& g);
 
 // Caller-declared diagrams, against the data as it stands.
 std::vector<Violation> diagram(StateGraph& g, const Diagram& d, LawCache* cache = nullptr);

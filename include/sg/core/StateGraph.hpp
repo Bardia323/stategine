@@ -42,6 +42,9 @@ struct Transition {
     // What the state entered is told, as data: set in the Params handed to
     // on_enter before `action` runs. What is a constant is not a lambda.
     Params enter;
+    // What becomes of it when a state it joins is taken away (Cleanup):
+    // Cascade takes the functor it carries too.
+    Cleanup cleanup = Cleanup::Drop;
 };
 
 // A seam: two states that meet as one place - two rooms and the doorway
@@ -75,6 +78,9 @@ struct Seam {
     // seam that wraps may join a state to itself; every ring that does not
     // pass through one must still close.
     bool wraps = false;
+    // What becomes of it when a side, or an element of a boundary, is taken
+    // away (Cleanup): Cascade takes its travel and glue too.
+    Cleanup cleanup = Cleanup::Drop;
 };
 
 // What may pass through a seam, each a channel of its own: what is seen
@@ -154,6 +160,22 @@ struct Edit {
     Apply apply;
     Key reply;  // what it hears back; `<event>.done` when empty
     Key native;  // the native computation `apply` is, when a source declared one (Morphism::native)
+};
+
+// Something taken out of the world - a state, an element of one (a portal, a
+// doorway), or a relation itself - and everything that goes with it, as each
+// relation touching it says (Cleanup): found first (StateGraph::removal,
+// removal_of_embedding, removal_of_seam), then done all at once
+// (StateGraph::remove; Engine::remove closes what is open first). Found, it
+// changes nothing: it can be looked at, and refused.
+struct Removal {
+    Key state;    // the state that goes, or whose element goes
+    Key element;  // the element that goes; empty: the whole state, or only relations
+    std::vector<Key> embeddings, seams, transitions, functors, drives, edits;
+    // Why it may not go: a relation touching it refuses (Cleanup::Refuse), or
+    // it is what everything is reached from. Refused, nothing goes.
+    std::vector<std::string> refused;
+    bool ok() const { return refused.empty(); }
 };
 
 // What a graph was made of at a moment, to go back to (StateGraph::checkpoint,
@@ -253,6 +275,10 @@ public:
     std::vector<Key> sources(const Transition& t) const;
 
     const Transition* transition(Key name) const;
+    // Where the transitions that carry `functor` sit in `transitions()`, in
+    // the order declared: what a crossing of a seam takes (Engine::cross).
+    // (Those that carry nothing, under the empty name.)
+    const std::vector<std::size_t>& transitions_carrying(Key functor) const;
 
     // First transition out of `from` for this event whose guard passes.
     // Concrete sources win over "*".
@@ -289,6 +315,10 @@ public:
     Functor* functor(Key name);
 
     const std::map<Key, Functor>& functors() const { return functors_; }
+    // The functors out of a state, and those from one state to another, by
+    // name in the order `functors()` has them - looked up, not scanned.
+    const std::vector<const Functor*>& functors_from(Key state) const;
+    const std::vector<const Functor*>& functors_between(Key from, Key to) const;
 
     // Composite of a chain of registered functors, registered under `name`.
     Functor& compose_functors(Key name, const std::vector<Key>& chain);
@@ -359,6 +389,8 @@ public:
     // no list built. Good until the graph's revision moves.
     const std::vector<std::size_t>& embeddings_hosted_by(Key host_id) const;
     const std::vector<std::size_t>& embeddings_holding(Key guest_id) const;
+    // Where the embeddings in one portal of a host sit, in the order embedded.
+    const std::vector<std::size_t>& embeddings_at(Key host_id, Key portal) const;
 
     // --- drives -----------------------------------------------------------------
     // Registered by name; registering the same name again replaces it.
@@ -389,6 +421,10 @@ public:
     const Edit& edit(Key state, Key event, Edit::Apply apply);
     void drop_edit(Key name);
     const std::deque<Edit>& edits() const { return edits_; }
+    // The edits a state asks for by saying `event`, where they sit in
+    // `edits()`; and one by its name. Looked up, not scanned.
+    const std::vector<std::size_t>& edits_for(Key state, Key event) const;
+    const Edit* edit_named(Key name) const;
 
     // --- seams ------------------------------------------------------------------
     // Registered by name; registering the same name again replaces it (a seam
@@ -399,6 +435,29 @@ public:
     void drop_seam(Key name);
     const std::deque<Seam>& seams() const { return seams_; }
     const Seam* seam(Key name) const;
+    // Where the seams with `state` on either side sit in `seams()`, in the
+    // order glued (each once, a seam that wraps too).
+    const std::vector<std::size_t>& seams_of(Key state) const;
+
+    // --- taking things away ------------------------------------------------------
+    // What taking a state away would take with it - or one element of a
+    // state, its portal or a doorway on a seam's boundary: every relation
+    // touching it, as each says (Cleanup). Drop takes the relation; Cascade
+    // takes it and what it owns - an embedding's functors, a seam's travel
+    // and glue, a transition's functor - and what those take in turn, each
+    // once; Refuse refuses the whole removal. A drive, an edit, a port and a
+    // kept functor go with their state. Nothing changes here.
+    Removal removal(Key state, Key element = Key{}) const;
+    // An embedding, or a seam, taken away by name: it goes, and what it owns
+    // too if it cascades.
+    Removal removal_of_embedding(Key name) const;
+    Removal removal_of_seam(Key name) const;
+    // Done, all at once, as one change of structure: what the removal names
+    // dropped, then the element or the state. Throws if it was refused, or if
+    // an embedding it drops is open - close those first (Engine::remove
+    // does). For whoever holds the graph: an edit's apply, the code that
+    // builds the world.
+    void remove(const Removal& r);
 
     // --- what passes through the seams (Channel) ---------------------------------
     // Whether the seam lets the channel through at all, as its doorways say.
@@ -507,6 +566,37 @@ private:
 
     void index_embedding(std::size_t i);
 
+    // Collects what goes with a removal, depth first, each relation once.
+    struct Removing;
+    void take_relation(Removing& r, char kind, Key name, bool reached) const;
+    void take_functor_users(Removing& r, Key functor) const;
+
+    // The lookups the engine runs by (edits by who asks and what, seams by
+    // state, functors by their ends, embeddings by portal, transitions by
+    // what they carry): derived from the graph, made again when its
+    // interfaces change (topology), never kept beside them.
+    struct KeyPair {
+        Key a, b;
+        bool operator==(const KeyPair& o) const { return a == o.a && b == o.b; }
+    };
+    struct KeyPairHash {
+        // inline: hashed at every lookup the engine runs by, every frame.
+        std::size_t operator()(const KeyPair& k) const noexcept {
+            const std::size_t x = std::hash<Key>{}(k.a), y = std::hash<Key>{}(k.b);
+            return x ^ (y + 0x9e3779b97f4a7c15ull + (x << 6) + (x >> 2));
+        }
+    };
+    struct Indexes {
+        uint64_t topology = ~uint64_t{0};
+        std::unordered_map<KeyPair, std::vector<std::size_t>, KeyPairHash> edits_for, embeddings_at;
+        std::unordered_map<Key, std::size_t> edit_named;
+        std::unordered_map<Key, std::vector<std::size_t>> seams_of, carrying;
+        std::unordered_map<Key, std::vector<const Functor*>> functors_from;
+        std::unordered_map<KeyPair, std::vector<const Functor*>, KeyPairHash> functors_between;
+    };
+    const Indexes& indexes() const;
+    mutable Indexes indexes_;
+
     // Everything reachable from the initial state: through a transition, a
     // host's portal (a guest is reached through it), or a seam (a doorway goes
     // both ways). Each interface is followed once, from an index of where it
@@ -517,6 +607,11 @@ private:
 
     void check_portal_functor(std::vector<std::string>& errors, const Embedding& e, Key fname,
                               Key want_from, Key want_to) const;
+    // Embeddings that nest round without saying they recurse, and portals
+    // with more than one guest open that do not say they are shared.
+    void check_nesting(std::vector<std::string>& errors) const;
+    // Keys that name another thing (State::refers), held to their traits.
+    void check_references(std::vector<std::string>& errors) const;
 
     std::map<Key, StatePtr> states_;  // ordered: deterministic dot output
     std::unordered_map<Key, State*> state_index_;  // the same states by name, found in constant time

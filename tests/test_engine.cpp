@@ -176,22 +176,29 @@ void test_integration() {
     check(near(s.element("p").params.num(sg::keys::x), 4.0), "integration can be switched off");
 }
 
-// A fixed run is the same every run: a tick's time is the steps taken, not the
-// wall clock.
+// A fixed run is the same every run: a state's time is the steps it took, on
+// its own line of a clock - not the wall clock, and not a time the engine
+// keeps for everyone (it keeps none).
 struct Clocked : sg::State {
-    using sg::State::State;
+    explicit Clocked(sg::Key id) : sg::State(id) {
+        add_element("hand", "hand");
+        loop("tick", "hand", "clocked.tick", [](sg::State& s, sg::Element&, sg::Element*, const sg::Event& ev) {
+            static_cast<Clocked&>(s).times.push_back(ev.args.num(sg::keys::time));
+        });
+    }
     std::vector<double> times;
-    void on_update(const sg::Tick& t) override { times.push_back(t.time); }
 };
 
 void test_time_is_simulated() {
     sg::StateGraph g;
     auto& c = g.add<Clocked>("clocked");
+    auto& clock = g.add<sg::Temporal>("clock");
+    sg::drive(g, clock, c.id(), "clocked.tick");
     g.set_initial("clocked");
     sg::Engine e(g);
     e.run_fixed(0.25, 4);
-    check(c.times.size() == 4 && c.times[0] == 0.25 && c.times[3] == 1.0 && e.simulated_time() == 1.0,
-          "a tick's time is the sum of the steps, whatever the wall clock says");
+    check(c.times.size() == 4 && c.times[0] == 0.25 && c.times[3] == 1.0 && clock.time(c.id()) == 1.0,
+          "a state's time is the sum of its own steps, whatever the wall clock says");
 }
 
 // --- functors ---------------------------------------------------------------

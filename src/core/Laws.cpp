@@ -817,18 +817,18 @@ std::vector<Violation> associativity(StateGraph& g, const LawOptions& o, LawCach
     });
 
     std::size_t budget = o.max_triples;
+    // Composable triples found by the graph's own lookup of what leaves each
+    // state, in the order the functors are kept - not by trying every pair.
     for (const auto& a : g.functors())
-        for (const auto& b : g.functors()) {
-            if (a.second.to() != b.second.from()) continue;
-            for (const auto& c : g.functors()) {
-                if (b.second.to() != c.second.from()) continue;
+        for (const Functor* b : g.functors_from(a.second.to())) {
+            for (const Functor* c : g.functors_from(b->to())) {
                 if (budget-- == 0) {
                     out.push_back(bounded("associativity", "functors", o.max_triples));
                     return out;
                 }
                 const Functor& f = a.second;
-                const Functor& gf = b.second;
-                const Functor& h = c.second;
+                const Functor& gf = *b;
+                const Functor& h = *c;
                 const Functor left = Functor::compose(Functor::compose(f, gf), h,
                                                       Key{"(" + f.name().str() + ";" +
                                                           gf.name().str() + ");" + h.name().str()});
@@ -938,6 +938,284 @@ std::vector<Violation> drives(StateGraph& g, const LawOptions& o, LawCache* cach
                                          .event(when(a, t0 + a, f0 + 1))
                                          .event(when(a, t0 + 2 * a, f0 + 2)),
                                      Path(d.state).event(when(2 * a, t0 + 2 * a, f0 + 1)), {}}));
+    }
+    return out;
+}
+
+// --- footprints ----------------------------------------------------------------------
+
+namespace {
+
+// A value made different, as a change to it would be.
+Value perturbed(const Value& v) {
+    if (const double* d = std::get_if<double>(&v)) return *d + 1.2345;
+    if (const int64_t* i = std::get_if<int64_t>(&v)) return *i + 7;
+    if (const bool* b = std::get_if<bool>(&v)) return !*b;
+    if (const std::string* t = std::get_if<std::string>(&v)) return *t + "~";
+    return 1.0;
+}
+
+// One thing that may be changed to see whether something reads it: a key of
+// the state's own params (no element), or of one of its elements.
+struct Probe {
+    Key element;
+    Key key;
+};
+
+const Value* value_of(const State& s, const Probe& p) {
+    const Params* ps = &s.params();
+    if (!p.element.empty()) {
+        const Element* e = s.find(p.element);
+        if (!e) return nullptr;
+        ps = &e->params;
+    }
+    return ps->has(p.key) ? &ps->get(p.key) : nullptr;
+}
+
+void set_value(State& s, const Probe& p, Value v) {
+    if (p.element.empty()) s.params().set(p.key, std::move(v));
+    else if (Element* e = s.find(p.element)) e->params.set(p.key, std::move(v));
+}
+
+// Everything in `s` it does not say it reads - apart from its own elements,
+// which it is handed - or a sample of it, the same each run.
+std::vector<Probe> unsaid(const State& s, const Footprint& fp, Key own_a, Key own_b, std::size_t cap, uint32_t seed) {
+    std::vector<Probe> all;
+    for (const auto& kv : s.params())
+        if (!fp.reads_param(kv.first)) all.push_back({Key{}, kv.first});
+    for (const Element& e : s.elements()) {
+        if (e.id == own_a || e.id == own_b || fp.reads_element(e.id)) continue;
+        for (const auto& kv : e.params) all.push_back({e.id, kv.first});
+    }
+    if (all.size() <= cap) return all;
+    for (std::size_t i = 0; i < cap; ++i) {
+        const std::size_t j = i + hash32(seed + static_cast<uint32_t>(i) * 0x9e3779b9u) % (all.size() - i);
+        std::swap(all[i], all[j]);
+    }
+    all.resize(cap);
+    return all;
+}
+
+uint32_t seed_of(Key a, Key b) { return hash32(static_cast<uint32_t>(std::hash<Key>{}(a) ^ (std::hash<Key>{}(b) << 1))); }
+
+// Where two params differ: the keys, in either.
+std::vector<Key> changed(const Params& a, const Params& b) {
+    std::vector<Key> out;
+    if (a.stamp() == b.stamp()) return out;
+    for (const auto& kv : a)
+        if (!b.has(kv.first) || !same_value(kv.first, kv.second, b.get(kv.first))) out.push_back(kv.first);
+    for (const auto& kv : b)
+        if (!a.has(kv.first)) out.push_back(kv.first);
+    return out;
+}
+
+// Everywhere two pictures of one state's data differ - its params, each
+// element's - but the one thing changed on purpose (`skip`); and whether
+// what it queued and said differs.
+std::vector<Probe> differences(const State::Snapshot& a, const State::Snapshot& b, const Probe* skip) {
+    std::vector<Probe> out;
+    const auto skipped = [&](Key el, Key k) { return skip && skip->element == el && skip->key == k; };
+    for (Key k : changed(a.params, b.params))
+        if (!skipped(Key{}, k)) out.push_back({Key{}, k});
+    for (std::size_t i = 0; i < a.elements.size() && i < b.elements.size(); ++i) {
+        const Element &x = a.elements[i], &y = b.elements[i];
+        if (x.alive != y.alive) out.push_back({x.id, Key{"<alive>"}});
+        for (Key k : changed(x.params, y.params))
+            if (!skipped(x.id, k)) out.push_back({x.id, k});
+    }
+    const auto same_events = [](const std::vector<Event>& p, const std::vector<Event>& q) {
+        if (p.size() != q.size()) return false;
+        for (std::size_t i = 0; i < p.size(); ++i)
+            if (!same_event(p[i], q[i])) return false;
+        return true;
+    };
+    if (!same_events(a.queue, b.queue) || !same_events(a.said, b.said)) out.push_back({Key{}, Key{"<emitted>"}});
+    return out;
+}
+
+std::string probe_str(const Probe& p) { return p.element.empty() ? "param " + p.key.str() : p.element.str() + "." + p.key.str(); }
+
+// Puts a state back between runs within one trial: undoing, as the trial's
+// own end does.
+void put_back(State& s, const State::Snapshot& snap) {
+    ++detail::restoring();
+    s.restore(snap);
+    --detail::restoring();
+}
+
+Violation footprint_violation(const std::string& where, const std::string& what, const std::string& detail) {
+    Violation v;
+    v.law = "footprint";
+    v.where = where;
+    v.lhs = what;
+    v.detail = detail;
+    return v;
+}
+
+void transport_footprint(StateGraph& g, const LawOptions& o, const Functor& f, Key src_id, Key dst_id, const Footprint& fp,
+                         std::vector<Violation>& out) {
+    const std::string where = "functor " + f.name().str() + ": " + src_id.str() + " -> " + dst_id.str();
+    if (!g.find(f.from()) || !g.find(f.to())) return;
+    const Transport* t = f.transport_of(src_id);
+    const auto run = [&](const Element& s, Element& d) {
+        if (t && *t) (*t)(s, d);
+        else transport::copy_all(s, d);
+    };
+    try {
+        Trial trial(g);
+        State& S = trial.touch(f.from());
+        State& D = trial.touch(f.to());
+        const Element* se = S.find(src_id);
+        Element* de = D.find(dst_id);
+        if (!se || !de) return;  // validate() names it
+        const Params before = de->params;
+        run(*se, *de);
+        const Params base = de->params;
+        if (fp.writes_said)
+            for (Key k : changed(before, base))
+                if (!fp.may_write(k)) out.push_back(footprint_violation(where, "writes " + k.str(), "it does not say it writes " + k.str()));
+        for (const Probe& p : unsaid(S, fp, src_id, &S == &D ? dst_id : Key{}, o.max_perturbed, seed_of(f.name(), src_id))) {
+            const Value* was = value_of(S, p);
+            if (!was) continue;
+            const Value keep = *was;
+            set_value(S, p, perturbed(keep));
+            de->params = before;
+            run(*S.find(src_id), *de);
+            const bool moved = !same_params(de->params, base);
+            set_value(S, p, keep);
+            if (moved)
+                out.push_back(footprint_violation(where, "reads " + probe_str(p),
+                                                  "what it carries moved when " + probe_str(p) + " of " + S.id().str() +
+                                                      " changed, which it does not say it reads"));
+        }
+        de->params = before;
+    } catch (const RewriteRefused& e) {
+        Violation v = footprint_violation(where, "run", e.what());
+        v.refused = true;
+        out.push_back(std::move(v));
+    }
+}
+
+void arrow_footprint(StateGraph& g, const LawOptions& o, Key sid, Key arrow, std::vector<Violation>& out) {
+    const std::string where = sid.str() + "." + arrow.str();
+    try {
+        Trial trial(g);
+        State& S = trial.touch(sid);
+        const Morphism* m = S.morphism(arrow);
+        if (!m || !m->handler || !m->footprint) return;
+        const Footprint fp = *m->footprint;
+        // Fired as it is fired: by its drive, with what the clock says, if
+        // it is driven on its trigger; else with the probe's arguments.
+        Event ev{m->trigger, args_for(o, m->trigger)};
+        for (const Drive& d : g.drives()) {
+            if (d.state != sid || d.trigger != m->trigger) continue;
+            const State* c = g.find(d.clock);
+            const Element* line = c ? c->find(timeline_of(d)) : nullptr;
+            if (!line) break;
+            const Event de = drive_event(d, o.drive_dt, line->params.num(keys::time) + o.drive_dt,
+                                         line->params.get_or<int64_t>(keys::frame, 0) + 1);
+            for (const auto& kv : de.args) ev.args.set(kv.first, kv.second);
+            ev.source = de.source;
+            break;
+        }
+        const auto fire = [&] {
+            const Morphism* now = S.morphism(arrow);
+            Element* a = now ? S.find(now->from) : nullptr;
+            Element* b = now && !now->to.empty() ? S.find(now->to) : nullptr;
+            if (a && (now->to.empty() || b)) now->handler(S, *a, b, ev);
+        };
+        const State::Snapshot start = S.snapshot();
+        fire();
+        const State::Snapshot base = S.snapshot();
+        if (fp.writes_said)
+            for (const Probe& p : differences(start, base, nullptr))
+                if (p.key.str()[0] != '<' && !fp.may_write(p.key))
+                    out.push_back(footprint_violation(where, "writes " + probe_str(p), "it does not say it writes " + p.key.str()));
+        for (const Probe& p : unsaid(S, fp, m->from, m->to, o.max_perturbed, seed_of(sid, arrow))) {
+            put_back(S, start);
+            const Value* was = value_of(S, p);
+            if (!was) continue;
+            set_value(S, p, perturbed(*was));
+            fire();
+            // Begun the same but for the one thing changed, an arrow that
+            // does not read it leaves the same everywhere else.
+            const bool moved = !differences(base, S.snapshot(), &p).empty();
+            if (moved)
+                out.push_back(footprint_violation(where, "reads " + probe_str(p),
+                                                  "what it leaves moved when " + probe_str(p) + " changed, which it does not say it reads"));
+        }
+        put_back(S, start);
+    } catch (const RewriteRefused& e) {
+        Violation v = footprint_violation(where, "run", e.what());
+        v.refused = true;
+        out.push_back(std::move(v));
+    }
+}
+
+}  // namespace
+
+std::vector<Violation> footprints(StateGraph& g, const LawOptions& o) {
+    std::vector<Violation> out;
+    for (const auto& kv : g.functors()) {
+        const Functor& f = kv.second;
+        std::vector<std::pair<Key, Key>> mapped;
+        f.for_each_object([&](Key src, Key dst) { mapped.push_back({src, dst}); });
+        std::sort(mapped.begin(), mapped.end());  // the same order every run
+        for (const auto& m : mapped)
+            if (const Footprint* fp = f.footprint_of(m.first)) transport_footprint(g, o, f, m.first, m.second, *fp, out);
+    }
+    for (Key sid : g.ids()) {
+        std::vector<Key> arrows;
+        for (const Morphism& m : g.state(sid).morphisms())
+            if (m.footprint && m.handler) arrows.push_back(m.name);
+        for (Key a : arrows) arrow_footprint(g, o, sid, a, out);
+    }
+    return out;
+}
+
+std::vector<Violation> lags(const StateGraph& g) {
+    std::vector<Violation> out;
+    // What a carry from `src` by `f` reads that `src`'s driven arrows say they
+    // write: each such meeting is a frame's lag, unless the carry says so.
+    const auto meet = [&](const Functor& f, Key src, const std::string& how) {
+        const State* s = g.find(src);
+        if (!s) return;
+        std::vector<Key> triggers;
+        for (const Drive& d : g.drives())
+            if (d.state == src) triggers.push_back(d.trigger);
+        if (triggers.empty()) return;
+        std::vector<std::pair<Key, Key>> mapped;
+        f.for_each_object([&](Key a, Key b) { mapped.push_back({a, b}); });
+        std::sort(mapped.begin(), mapped.end());
+        for (const auto& obj : mapped) {
+            const Footprint* fp = f.footprint_of(obj.first);
+            if (!fp || fp->lags) continue;  // reads unknown, or the lag is meant
+            for (const Morphism& m : s->morphisms()) {
+                if (!m.footprint || !m.footprint->writes_said || m.footprint->writes.empty()) continue;
+                if (std::find(triggers.begin(), triggers.end(), m.trigger) == triggers.end()) continue;
+                const auto reads_el = [&](Key e) { return !e.empty() && (e == obj.first || fp->reads_element(e)); };
+                bool meets = reads_el(m.from) || reads_el(m.to);
+                for (Key w : m.footprint->writes) meets = meets || fp->reads_param(w);
+                if (!meets) continue;
+                Violation v;
+                v.law = "lag";
+                v.where = "functor " + f.name().str() + " (" + how + ")";
+                v.lhs = obj.first.str();
+                v.detail = "it reads what " + src.str() + "." + m.name.str() + " writes later in the same frame, so it sees it a frame late - "
+                           "say so (Footprint::lags) if that is meant";
+                out.push_back(std::move(v));
+            }
+        }
+    };
+    for (Key k : g.kept())
+        if (const Functor* f = g.functor(k)) meet(*f, f->from(), "kept, carried at the start of the frame");
+    for (const Embedding& e : g.embeddings()) {
+        if (e.sync != EmbedSync::View || e.in.empty() || e.subject.empty() || e.subject == e.host) continue;
+        bool own_time = false;
+        for (const Drive& d : g.drives())
+            own_time = own_time || (d.state == e.subject && (d.keeps == Keeps::Always || d.keeps == Keeps::WhileShown));
+        if (!own_time) continue;
+        if (const Functor* f = g.functor(e.in)) meet(*f, e.subject, "the View " + e.name.str() + " carries it before its subject steps");
     }
     return out;
 }
@@ -1422,6 +1700,7 @@ LawReport verify(StateGraph& g, const std::vector<Diagram>& diagrams, const LawO
         laws::sort_into(r, laws::functoriality(g, o));
         laws::sort_into(r, laws::lenses(g, o));
         laws::sort_into(r, laws::drives(g, o));
+        laws::sort_into(r, laws::footprints(g, o));
         laws::sort_into(r, laws::seams(g));
         laws::sort_into(r, laws::overlaps(g));
         laws::sort_into(r, laws::channels(g));
@@ -1442,6 +1721,7 @@ LawReport verify(StateGraph& g, LawCache& cache, const std::vector<Diagram>& dia
         laws::sort_into(r, laws::functoriality(g, o, &cache));
         laws::sort_into(r, laws::lenses(g, o, &cache));
         laws::sort_into(r, laws::drives(g, o, &cache));
+        laws::sort_into(r, laws::footprints(g, o));
         laws::sort_into(r, laws::seams(g));
         laws::sort_into(r, laws::overlaps(g));
         laws::sort_into(r, laws::channels(g));

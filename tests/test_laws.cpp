@@ -927,7 +927,7 @@ struct Sly : sg::State {
 };
 struct Painter : sg::State {
     using sg::State::State;
-    void on_render(const sg::Tick& t) override { params().set("drawn", t.time); }
+    void on_render(const sg::Tick& t) override { params().set("drawn", static_cast<double>(t.frame) + t.dt); }
 };
 struct Greeter : sg::State {
     using sg::State::State;

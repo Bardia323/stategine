@@ -5,6 +5,7 @@
 // of characters. Everything still takes plain strings at the API surface.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -483,6 +484,42 @@ class State;
 
 struct DeclaredStep;  // Declared.hpp
 
+// ---------------------------------------------------------------------------
+// Footprint: what a transport or an arrow reads and writes beyond what it is
+// handed, said - so that the laws can hold it to what it says, and an
+// embedding can carry it only when what it reads has moved.
+//
+// A transport is handed two elements, and may read both; an arrow its own
+// one or two. Anything else it reads is said here: the state's own params,
+// by key, and other elements of its state, whole. What it writes is said by
+// key, when it is said at all. The laws then check both: a change to
+// anything it does not say it reads moves nothing it leaves, and it leaves
+// nothing changed under a key it does not say it writes. No footprint is
+// the old way - it may read and write anything, and nothing is checked.
+// ---------------------------------------------------------------------------
+struct Footprint {
+    std::vector<Key> params;    // the state's own params it reads
+    std::vector<Key> elements;  // other elements of its state it reads, whole
+    std::vector<Key> writes;    // the keys it writes - when `writes_said`
+    bool writes_said = false;
+    // It reads what a later step of the same frame writes, and so sees it a
+    // frame late - on purpose, said, and not reported (laws::lags).
+    bool lags = false;
+
+    bool reads_param(Key k) const { return std::find(params.begin(), params.end(), k) != params.end(); }
+    bool reads_element(Key k) const { return std::find(elements.begin(), elements.end(), k) != elements.end(); }
+    bool may_write(Key k) const { return !writes_said || std::find(writes.begin(), writes.end(), k) != writes.end(); }
+};
+
+// What becomes of a relation - an embedding, a seam, a transition, a functor
+// - when something it joins is taken away (StateGraph::removal):
+//   Refuse   nothing goes: the removal is refused, whole
+//   Drop     it goes with it
+//   Cascade  it goes, and so does what it owns (an embedding's functors, a
+//            seam's travel and glue, a transition's carry), and whatever
+//            those take with them in turn
+enum class Cleanup { Refuse, Drop, Cascade };
+
 struct Morphism {
     using Handler = std::function<void(State&, Element& from, Element* to, const Event&)>;
 
@@ -501,6 +538,8 @@ struct Morphism {
     // of its handler, when a source declared one. Identity for holding two
     // declarations side by side; nothing is claimed about what the C++ does.
     Key native = Key{};
+    // What it reads and writes beyond its own elements, when said (Footprint).
+    std::shared_ptr<const Footprint> footprint;
 };
 
 // The type of an arrow. An endomorphism leaves `to` empty, but its codomain is
