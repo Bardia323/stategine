@@ -62,6 +62,38 @@ std::string fingerprint(const sg::render::ViewPlan &plan) {
         instance(d);
     return out.str();
 }
+// A sun's shadow box moves in whole texels of its map: an eye that moves less
+// than a texel - any way, the sun's way too - sees the same map, to the last
+// bit, so it is not drawn again; one that moves a texel's worth sees another.
+void sun_box_steps() {
+    using sg::render::DrawLight;
+    using sg::render::ViewCamera;
+    DrawLight sun;
+    sun.sun = true;
+    sun.dir = sg::spatial::projection::normalize({0.43f, -0.71f, 0.29f});
+    sun.extent = 20.0f;
+    const int size = 2048;
+    const float texel = 2.0f * sun.extent / static_cast<float>(size);
+    const auto map_at = [&](double x, double y, double z) {
+        float bias = 0.0f;
+        ViewCamera eye;
+        eye.eye = {x, y, z};
+        eye.forward = {0.6, 0.0, -0.8};
+        const auto m = sg::render::shadow_projection(sun, eye, size, bias);
+        return std::vector<float>(m.m, m.m + 16);
+    };
+    const auto first = map_at(3.1, 1.7, -2.3);
+    int same = 0, tried = 0;
+    for (int i = 1; i <= 40; ++i) {
+        const double s = 0.001 * i;  // a millimetre at a time, slantwise
+        same += map_at(3.1 + s, 1.7 + s * 0.5, -2.3 - s * 0.7) == first;
+        ++tried;
+    }
+    // A texel is about 2 cm here: of 40 steps of a millimetre, most stay in it.
+    require(same >= tried / 4, "a sun's map stays the same while the eye moves less than a texel");
+    require(map_at(3.1 + 3.0 * texel, 1.7, -2.3 + 3.0 * texel) != first, "and moves when the eye moves texels");
+}
+
 // A lamp's range: its light ends there, smoothly, and a lamp left out for
 // reaching nothing lit nothing. The law: a gated lamp kept is one whose sphere
 // meets its gate - some point of the opening is lit by it - and one left out
@@ -177,6 +209,7 @@ int main() {
             std::cerr << laws.str();
         require(g.validate().empty() && laws.holds(), "strict laws");
         lamp_ranges();
+        sun_box_steps();
         std::cout << "reconstruction, graph supremacy and one time ontology pass\n";
         return 0;
     } catch (const std::exception &ex) {

@@ -281,12 +281,17 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         // Whole texels of the map itself - across it and up it, as the sun
         // sees - not of the world's axes, which run slantwise over a map the
         // sun looks down on at a slant: snapped on those, the box moved by
-        // parts of a texel and the edges crawled. Along the sun's way the box
-        // may go where it likes: depth moves no edge.
+        // parts of a texel and the edges crawled. Along the sun's way too,
+        // though depth moves no edge: a box that slid with every step of the
+        // eye was a new map every frame, drawn again with all it casts. And
+        // made of the snapped steps alone, not the eye's place moved by them:
+        // what is left of that in the last bit of a float is a new map too.
         const spatial::projection::Vec3 right = spatial::projection::normalize(spatial::projection::cross(d, up));
         const spatial::projection::Vec3 upward = spatial::projection::cross(right, d);
-        const float cr = spatial::projection::dot(c, right), cu = spatial::projection::dot(c, upward);
-        c = c + right * (std::floor(cr / texel) * texel - cr) + upward * (std::floor(cu / texel) * texel - cu);
+        const auto step = [&](const spatial::projection::Vec3& axis) {
+            return std::floor(spatial::projection::dot(c, axis) / texel) * texel;
+        };
+        c = right * step(right) + upward * step(upward) + d * step(d);
         result = spatial::projection::Mat4::ortho(-e, e, -e, e, 1.0f, reach * 2.0f) *
                  spatial::projection::Mat4::look_at(c - d * reach, c, up);
         bias = 45.0f / (reach * 2.0f);
