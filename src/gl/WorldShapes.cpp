@@ -1,5 +1,6 @@
 // The GL view's shapes: where each thing is, its mesh, the room's walls,
 // and the sky and the ground of an open world.
+#include <cstring>
 #include "sg/gl/World.hpp"
 
 #include <functional>
@@ -282,6 +283,36 @@ const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
     return m;
 }
 
+auto GLWorldView::corners_key(const std::vector<float>& corners) -> CornersKey {
+    // Four lanes over the corners' bits, eight bytes a step each (so the
+    // processor keeps them all going at once), folded into two.
+    const std::size_t bytes = corners.size() * sizeof(float);
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(corners.data());
+    uint64_t lane[4] = {0x9e3779b97f4a7c15ull, 0xc2b2ae3d27d4eb4full, 0x165667b19e3779f9ull, 0x27d4eb2f165667c5ull};
+    const auto mix = [](uint64_t h, uint64_t w) {
+        h ^= w * 0xff51afd7ed558ccdull;
+        h = (h << 31) | (h >> 33);
+        return h * 0xc4ceb9fe1a85ec53ull;
+    };
+    std::size_t i = 0;
+    for (; i + 32 <= bytes; i += 32)
+        for (int k = 0; k < 4; ++k) {
+            uint64_t w;
+            std::memcpy(&w, p + i + 8 * k, 8);
+            lane[k] = mix(lane[k], w);
+        }
+    for (int k = 0; i < bytes; i += 8, ++k) {
+        uint64_t w = 0;
+        std::memcpy(&w, p + i, std::min<std::size_t>(8, bytes - i));
+        lane[k & 3] = mix(lane[k & 3], w);
+    }
+    CornersKey key;
+    key.a = mix(mix(lane[0], lane[1]), bytes);
+    key.b = mix(mix(lane[2], lane[3]), bytes ^ 0x5bd1e995ull);
+    key.n = corners.size();
+    return key;
+}
+
 const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const {
     static const Key shape{"shape"}, bevel{"bevel"}, taper{"taper"}, model{"model"};
     const std::string s = e.params.get_or<std::string>(shape, "");
@@ -296,8 +327,22 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
         // corners lie: a model made again may be given an old one's place.)
         ModelMesh& m = model_meshes_[{&st, name.str()}];
         const uint64_t made = space->model_revision(name);
-        if (m.revision != made || !m.mesh.valid()) m.mesh.update(*corners), m.revision = made;
-        return m.mesh;
+        if (m.revision == made && m.mesh().valid()) return m.mesh();
+        m.revision = made;
+        if (!m.shared && !m.own.valid()) {
+            // First seen: the mesh of all that are the same, sent once.
+            std::unique_ptr<gl::Mesh>& same = meshes_made_[corners_key(*corners)];
+            if (!same) {
+                same = std::make_unique<gl::Mesh>();
+                same->create(*corners);
+            }
+            m.shared = same.get();
+            return *m.shared;
+        }
+        // Made again: a mesh of its own from now on, changed in place.
+        m.shared = nullptr;
+        m.own.update(*corners);
+        return m.own;
     }
     const double tp = e.params.num(taper, 1.0);
     if (s == "sphere") return sphere_;

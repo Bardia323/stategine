@@ -382,7 +382,8 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     if (boxes.empty()) return rl;
     // Everything at once the first time (a room is seen whole from its first
     // frame), or when asked; else a frame's share.
-    if (std::all_of(rl.drawn.begin(), rl.drawn.end(), [](const Digest& d) { return d == Digest{}; })) all_now = true;
+    const bool first_sight = std::all_of(rl.drawn.begin(), rl.drawn.end(), [](const Digest& d) { return d == Digest{}; });
+    if (first_sight) all_now = true;
 
     // What moves: a thing whose params moved is out of what the probes see
     // until it has stood still kSettle relights - and so is all that hangs
@@ -456,6 +457,62 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         for (const ProbeBox& b : boxes) h.number(b.mid.x).number(b.mid.y).number(b.mid.z);
         rl.shell = h.digest();
         rl.shell_known = true;
+    }
+
+    // The room's light from all round as it was kept for this very shell
+    // (sg::cache): what its boxes see - the pictures drawing them would make,
+    // to the bit - and each light's sets, with where that light stood. Seen
+    // for the first time, the room takes them instead of drawing: a light
+    // that stands where it stood is as it was, and one that stands elsewhere
+    // now is worked out again at once, from the same surroundings - the same
+    // light as had nothing been kept.
+    const Digest kept_as = Hasher{}
+                               .text("light from all round")
+                               .text(SG_PROBE_CODE)
+                               .integer(size)
+                               .integer(bounces)
+                               .integer(static_cast<int64_t>(rl.shell.hi))
+                               .integer(static_cast<int64_t>(rl.shell.lo))
+                               .digest();
+    bool from_kept = false;
+    const int kept_w = 6 * size, kept_h = static_cast<int>(boxes.size()) * size;
+    const std::size_t kept_floats = static_cast<std::size_t>(kept_w) * kept_h * 4;
+    std::string text, seen;
+    if (first_sight && rl.lamps.empty() && cache::load("gi", kept_as, text) && cache::load("gi surroundings", kept_as, seen) &&
+        seen.size() == 3 * kept_floats * sizeof(float)) {
+        {
+            std::size_t at = 0;
+            for (OwnedTarget* t : {&rl.where, &rl.facing, &rl.scatter}) {
+                t->t.destroy();
+                t->t.create(kept_w, kept_h, gl::GL_RGBA32F, 0, false);
+                t->t.bind_color(0);
+                gl::glTexSubImage2D(gl::GL_TEXTURE_2D, 0, 0, 0, kept_w, kept_h, gl::GL_RGBA, gl::GL_FLOAT, seen.data() + at);
+                at += kept_floats * sizeof(float);
+            }
+            gl::glActiveTexture(gl::GL_TEXTURE0);
+            std::fill(rl.drawn.begin(), rl.drawn.end(), rl.shell);
+        }
+            std::istringstream in(text);
+            std::string line;
+            while (std::getline(in, line)) {
+                std::istringstream row(line);
+                std::string name;
+                int let = 0;
+                uint64_t hi = 0, lo = 0;
+                if (!std::getline(row, name, '\t') || !(row >> let >> hi >> lo)) continue;
+                std::vector<Sh9> sets(boxes.size());
+                bool whole = true;
+                for (Sh9& sh : sets)
+                    for (auto& c : sh.c)
+                        for (double& v : c) whole = whole && static_cast<bool>(row >> v);
+                if (!whole) continue;
+                LampLight& ll = rl.lamps[name];
+                ll.let_in = let != 0;
+                ll.place = Digest{hi, lo};
+                ll.shell = rl.shell;
+                ll.sets = std::move(sets);
+            }
+        from_kept = true;
     }
 
     // The views that draw: the surroundings, and lights' distances (each of
@@ -553,7 +610,10 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
                 L.dir = {static_cast<float>(d.x), static_cast<float>(d.y), static_cast<float>(d.z)};
                 L.pos = {0.0f, 0.0f, 0.0f};
             }
-            const std::string name = "in." + std::to_string(L.gate) + "." + std::to_string(k);
+            // (Named by where its opening is, to the centimetre, and its
+            // place in what that opening lets in: the same name every run.)
+            const auto cm = [](float v) { return std::to_string(std::lround(v * 100.0f)); };
+            const std::string name = "in." + cm(L.gate_at.x) + "," + cm(L.gate_at.y) + "," + cm(L.gate_at.z) + "." + std::to_string(k);
             now[name] = L;
             let_in.insert(name);
         }
@@ -728,6 +788,35 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
             v->shadow_sets_.clear();
             v->room_casters_.clear();
         }
+    // Kept once for the shell, when every light's sets are of it as it is:
+    // what the next start shows first.
+    published = published || from_kept;
+    const bool current = drawn_all && jobs > 0 &&
+                         std::none_of(rl.lamps.begin(), rl.lamps.end(), [](const auto& l) { return l.second.pending || l.second.sets.empty(); });
+    if (current && rl.kept != rl.shell && !rl.lamps.empty()) {
+        std::ostringstream out;
+        out.precision(9);
+        for (const auto& [name, ll] : rl.lamps) {
+            if (ll.sets.size() != boxes.size()) continue;
+            out << name << '\t' << (ll.let_in ? 1 : 0) << ' ' << ll.place.hi << ' ' << ll.place.lo;
+            for (const Sh9& sh : ll.sets)
+                for (const auto& c : sh.c)
+                    for (double v : c) out << ' ' << v;
+            out << '\n';
+        }
+        // (And what its boxes see, read back once for the shell.)
+        std::string pictures(3 * kept_floats * sizeof(float), '\0');
+        std::size_t at = 0;
+        for (const OwnedTarget* t : {&rl.where, &rl.facing, &rl.scatter}) {
+            gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, t->t.framebuffer());
+            gl::glReadPixels(0, 0, kept_w, kept_h, gl::GL_RGBA, gl::GL_FLOAT, pictures.data() + at);
+            at += kept_floats * sizeof(float);
+        }
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+        cache::store("gi surroundings", kept_as, pictures);
+        cache::store("gi", kept_as, out.str());
+        rl.kept = rl.shell;
+    }
     if (published) {
         rl.sets.assign(boxes.size(), {});
         rl.let_in.assign(boxes.size(), Sh9{});

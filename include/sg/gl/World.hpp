@@ -378,7 +378,17 @@ private:
         // pictures it is: shown packed while the surface still shows that one.
         std::shared_ptr<const render::Packed> packed;
         uint64_t packed_revision = 0;
+        // Its texture is the one its packed picture is on the card as, shared
+        // by every surface that packs to the same (`packed_on_card_`): not its
+        // own to make again or let go.
+        bool shared = false;
     };
+    // Each packed picture on the card once, however many surfaces show it.
+    struct PackedOnCard {
+        std::shared_ptr<const render::Packed> keep;
+        gl::Texture texture;
+    };
+    std::unordered_map<const render::Packed*, PackedOnCard> packed_on_card_;
 
     // Where a doorway is on the view, in -1..1 each way, and what of it a
     // view through another leaves open.
@@ -615,6 +625,7 @@ private:
         // scatters; that lit by one light (`light`), and in harmonics (`sh`).
         OwnedTarget where, facing, scatter, light, sh, sh2;  // (sh, sh2: one bounce's harmonics, the next's)
         uint64_t calls = 0;  // relights so far
+        Digest kept;         // the shell whose sets were last kept on disk
         std::vector<Light> let_in_lights;  // what its openings let in, as last looked at
         uint64_t let_in_seen = 0;          // the relight that was at
         std::vector<Digest> drawn;  // per box and face: the shell that was drawn for
@@ -1114,11 +1125,29 @@ private:
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
     // Each model a state keeps, as a mesh: by the state and the model's
     // name, made again when the model is (by its making, `model_revision`).
+    // A model first seen is sent to the card once for all that are the same
+    // to the last corner (`shared`, by what it is: the same lamp in every
+    // street, the same door in every room); one made again after has a mesh
+    // of its own (`own`), changed in place as it is made again.
     struct ModelMesh {
         uint64_t revision = 0;
-        gl::Mesh mesh;
+        gl::Mesh own;
+        const gl::Mesh* shared = nullptr;
+        const gl::Mesh& mesh() const { return shared ? *shared : own; }
     };
     mutable std::map<std::pair<const State*, std::string>, ModelMesh> model_meshes_;
+    // The meshes models first seen share, by what they are made of (their
+    // corners' digest and count); never changed once sent.
+    struct CornersKey {
+        uint64_t a = 0, b = 0, n = 0;
+        bool operator==(const CornersKey& o) const { return a == o.a && b == o.b && n == o.n; }
+    };
+    struct CornersHash {
+        std::size_t operator()(const CornersKey& k) const { return static_cast<std::size_t>(k.a ^ (k.b * 0x9e3779b97f4a7c15ull) ^ k.n); }
+    };
+    mutable std::unordered_map<CornersKey, std::unique_ptr<gl::Mesh>, CornersHash> meshes_made_;
+    // Corners by what they are: 128 bits of every one of their bits, and how many.
+    static CornersKey corners_key(const std::vector<float>& corners);
     // Each picture a state keeps, as a texture - painted again when the
     // picture is.
     struct PictureTexture {

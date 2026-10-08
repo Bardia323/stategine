@@ -102,14 +102,26 @@ void GLWorldView::refresh(BoundSurface& bound) {
     const auto& pixels = surf.raster();
     if (bound.packed && bound.packed_revision == surf.revision()) {
         if (!bound.texture.packed() || bound.revision != surf.revision()) {
-            bound.texture.create_packed(*bound.packed);
+            // The card's one copy of that picture, made the first time.
+            PackedOnCard& on = packed_on_card_[bound.packed.get()];
+            if (!on.texture.valid()) {
+                on.keep = bound.packed;
+                on.texture.create_packed(*bound.packed);
+            }
+            if (!bound.shared && bound.texture.valid()) {
+                const gl::GLuint was = bound.texture.id();  // (its own, from before: let go)
+                gl::glDeleteTextures(1, &was);
+            }
+            bound.texture = on.texture;
+            bound.shared = true;
             bound.revision = surf.revision();
         }
         return;
     }
     // Changed since it was packed (painted on, written over): its pixels from
-    // now on, as any surface's.
+    // now on, as any surface's - in a texture of its own.
     bound.packed.reset();
+    if (bound.shared) bound.texture = gl::Texture{}, bound.shared = false;
     if (!bound.texture.valid() || bound.texture.packed() || bound.texture.width() != surf.px_w() ||
         bound.texture.height() != surf.px_h()) {
         bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
@@ -133,11 +145,31 @@ void GLWorldView::pack_skins() {
     };
     std::vector<Job> jobs;
     std::unordered_map<const Surface2D*, std::size_t> job_of;
+    // (Surfaces that say their pixels are the same - made from the same
+    // strokes, at the same size - are packed once, and share the picture.)
+    struct Same {
+        Digest made;
+        int w = 0, h = 0;
+        bool srgb = false;
+        bool operator==(const Same& o) const { return made == o.made && w == o.w && h == o.h && srgb == o.srgb; }
+    };
+    struct SameHash {
+        std::size_t operator()(const Same& k) const { return static_cast<std::size_t>(k.made.hi ^ (k.made.lo * 31) ^ static_cast<uint64_t>(k.w) ^ (static_cast<uint64_t>(k.h) << 20)); }
+    };
+    std::unordered_map<Same, std::size_t, SameHash> job_by_made;
     for (auto& [id, bound] : surfaces_) {
         Surface2D* s = bound.surface;
         if (!s || !dynamic_cast<const Texture*>(s) || job_of.count(s)) continue;
         const std::vector<unsigned char>* pixels = &s->raster();
         if (!render::packable(s->px_w(), s->px_h())) continue;
+        Digest made;
+        if (s->pixels_digest(made)) {
+            const auto [it, fresh] = job_by_made.emplace(Same{made, s->px_w(), s->px_h(), s->srgb()}, jobs.size());
+            if (!fresh) {
+                job_of.emplace(s, it->second);
+                continue;
+            }
+        }
         job_of.emplace(s, jobs.size());
         jobs.push_back(Job{s, pixels, s->revision(), nullptr});
     }
@@ -170,7 +202,9 @@ void GLWorldView::pack_skins() {
         const auto it = bound.surface ? job_of.find(bound.surface) : job_of.end();
         if (it == job_of.end()) continue;
         bound.packed = jobs[it->second].packed;
-        bound.packed_revision = jobs[it->second].revision;
+        // (Its own surface's revision: a surface that shares another's picture
+        // shows it while it is still the picture it was packed as.)
+        bound.packed_revision = bound.surface->revision();
     }
 }
 
