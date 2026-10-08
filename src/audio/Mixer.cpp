@@ -31,6 +31,19 @@ std::string text_or(const Params& p, Key k, const char* fallback) {
     return t && !t->empty() ? *t : std::string(fallback);
 }
 
+// The same, as a name: the text read where it is, not copied out.
+Key key_or(const Params& p, Key k, const char* fallback) {
+    const std::string* t = p.text(k);
+    return t && !t->empty() ? Key{*t} : Key{fallback};
+}
+
+// The bus a thing says it is on, or `fallback` - whose name is the one
+// `text_or` would have given in its place.
+Bus bus_or(const Params& p, Key k, Bus fallback) {
+    const std::string* t = p.text(k);
+    return t && !t->empty() ? bus_of(*t, fallback) : fallback;
+}
+
 // How a sound `rel` from the ear (in the ear's frame) is heard, as its curve
 // says at `dist`: louder in the nearer ear and a little sooner there, duller
 // from behind (the ear's own shadow), from both sides when it is all round.
@@ -623,13 +636,13 @@ struct Mixer::Impl {
             if (!v.take || v.take->empty()) continue;
             v.pitch = std::max(0.1, e->params.num(keys::pitch, 1.0));
             v.priority = e->params.num(keys::priority, 1.0);
-            const Curve& curve = curves.of(Key{text_or(e->params, keys::curve, "machine")});
+            const Curve& curve = curves.of(key_or(e->params, keys::curve, "machine"));
             if (!hear(g, ear, place, at, curve, v, v.id)) continue;
             double clock = -1.0;
             if (!clock_of(g, src.state, clock)) clock_of(g, place, clock);
             if (e->params.get_or<bool>(keys::loop, false) && clock >= 0) v.sync = clock;
             ease(v, e->params.num(keys::gain, 1.0) * by_hour(*ps, e->params), &e->params, clock, dt, 0.12,
-                 bus_of(text_or(e->params, keys::bus, "sfx"), Bus::Sfx));
+                 bus_or(e->params, keys::bus, Bus::Sfx));
         }
     }
 
@@ -657,8 +670,8 @@ struct Mixer::Impl {
             Take take = samples.loop ? samples.loop(*name) : nullptr;
             if (!take || take->empty()) continue;
             const double gain = e.params.num(keys::gain, 1.0) * by_hour(*ps, e.params);
-            const Curve& curve = curves.of(Key{text_or(e.params, keys::curve, "ambient")});
-            const Bus bus = bus_of(text_or(e.params, keys::bus, "ambient"), Bus::Ambient);
+            const Curve& curve = curves.of(key_or(e.params, keys::curve, "ambient"));
+            const Bus bus = bus_or(e.params, keys::bus, Bus::Ambient);
             const double pitch = std::max(0.1, e.params.num(keys::pitch, 1.0));
             const bool synced = e.params.get_or<bool>(keys::loop, false) && clock >= 0;
             const std::string base = place.str() + "#" + e.id.str();

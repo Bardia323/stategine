@@ -1,6 +1,7 @@
 #include "sg/audio/Sound.hpp"
 
 #include <algorithm>
+#include <array>
 #include <set>
 
 #include "sg/audio/Curve.hpp"
@@ -21,8 +22,23 @@ Bus bus_of(const std::string& word, Bus fallback) {
     return fallback;
 }
 
-Key bus_key(Bus b) { return Key{std::string("bus.") + bus_name(b)}; }
-Key attend_bus_key(Bus b) { return Key{std::string("attend.bus.") + bus_name(b)}; }
+// Each bus's names, made once: they are read every time the mix is.
+Key bus_key(Bus b) {
+    static const std::array<Key, kBuses> names = [] {
+        std::array<Key, kBuses> n;
+        for (int i = 0; i < kBuses; ++i) n[i] = Key{std::string("bus.") + kBusNames[i]};
+        return n;
+    }();
+    return names[static_cast<int>(b)];
+}
+Key attend_bus_key(Bus b) {
+    static const std::array<Key, kBuses> names = [] {
+        std::array<Key, kBuses> n;
+        for (int i = 0; i < kBuses; ++i) n[i] = Key{std::string("attend.bus.") + kBusNames[i]};
+        return n;
+    }();
+    return names[static_cast<int>(b)];
+}
 
 Element& sound_slot(State& host) {
     if (Element* e = host.find(sound_slot_id())) return *e;

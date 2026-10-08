@@ -11,8 +11,7 @@ uint64_t GLWorldView::chain_stamp(const State& st, const Element& e) {
     uint64_t h = e.params.stamp();
     const Element* cur = &e;
     for (int i = 0; i < 8; ++i) {
-        if (!cur->params.has(keys::parent)) break;
-        const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+        const std::string* parent_id = cur->params.text(keys::parent);
         if (!parent_id || parent_id->empty()) break;
         const Element* parent = st.find(Key{*parent_id});
         if (!parent) break;
@@ -35,8 +34,7 @@ uint64_t GLWorldView::chain_stamp(const State& st, const Element& e, Chain& memo
     uint64_t h = e.params.stamp();
     const Element* cur = &e;
     for (int i = 0; i < 8; ++i) {
-        if (!cur->params.has(keys::parent)) break;
-        const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+        const std::string* parent_id = cur->params.text(keys::parent);
         if (!parent_id || parent_id->empty()) break;
         const Element* parent = st.find(Key{*parent_id});
         if (!parent) break;

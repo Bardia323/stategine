@@ -63,7 +63,9 @@ void set_look(State& host, Key look) {
 Key active_look(const State& s) {
     const Element* slot = s.find(look_slot_id());
     if (!slot) return Key{};
-    return Key{slot->params.get_or<std::string>(look_keys::active, "")};
+    // (The name read where it is, not copied out.)
+    const std::string* name = slot->params.text(look_keys::active);
+    return name ? Key{*name} : Key{""};
 }
 
 std::vector<Key> worn_looks(const StateGraph& g, Key host) {

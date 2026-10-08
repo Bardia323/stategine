@@ -4,6 +4,7 @@
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 #include <sstream>
@@ -336,10 +337,19 @@ auto GLWorldView::grid_of(const Spatial3D& room) -> std::vector<ProbeBox> {
     int nz = std::clamp(static_cast<int>(std::ceil(d / kCell)), 1, kMaxProbes);
     while (nx * nz > kMaxProbes) (w / nx < d / nz ? nx : nz) -= 1;
     const double cw = w / nx, cd = d / nz, soft = std::min({cw, cd, h}) * 0.3;
+    // The boxes' names, made once: a room's grid is asked for every frame.
+    static const auto names = [] {
+        std::array<std::array<Key, kMaxProbes>, kMaxProbes> n;
+        for (int i = 0; i < kMaxProbes; ++i)
+            for (int j = 0; j < kMaxProbes; ++j)
+                n[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                    Key{"gi." + std::to_string(i) + "." + std::to_string(j)};
+        return n;
+    }();
     for (int i = 0; i < nx; ++i)
         for (int j = 0; j < nz; ++j) {
             ProbeBox b;
-            b.id = Key{"gi." + std::to_string(i) + "." + std::to_string(j)};
+            b.id = names[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
             b.mid = {cw * (i + 0.5), 0.5 * h, cd * (j + 0.5)};
             b.half = {0.5 * cw, 0.5 * h, 0.5 * cd};
             b.soft_lo = b.soft_hi = {soft, soft, soft};

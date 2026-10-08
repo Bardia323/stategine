@@ -31,6 +31,20 @@ const std::string* Key::intern(std::string s) {
 }
 
 const std::string* Key::intern_ref(const std::string& s) {
+    // Each slot holds one pointer to a name, read and written whole: any
+    // thread may use it with no lock, and the comparison says whether what
+    // it found is this name.
+    static std::atomic<const std::string*> slots[16384];
+    const uint64_t mixed = uint64_t(reinterpret_cast<std::uintptr_t>(s.data())) * 0x9E3779B97F4A7C15ULL;
+    std::atomic<const std::string*>& slot = slots[mixed >> 50];
+    const std::string* key = slot.load(std::memory_order_acquire);
+    if (key && *key == s) return key;
+    key = intern_shared(s);
+    slot.store(key, std::memory_order_release);
+    return key;
+}
+
+const std::string* Key::intern_shared(const std::string& s) {
     Shard& sh = shard_of(s);
     std::lock_guard<std::mutex> held(sh.lock);
     const auto it = sh.names.find(s);

@@ -59,7 +59,15 @@ private:
     // once made, never moves. Looked up without copying when it is there
     // already - the usual case.
     static const std::string* intern(std::string s);
+    // A name held as text (an element's `parent`, a worn look's name) is met
+    // where it is kept, frame after frame: it is remembered by where its
+    // characters are, as a literal is (below), and taken from there after
+    // one comparison of the characters - so the same text, read again, is
+    // not hashed and looked up under a lock. A slot that held another name,
+    // or a buffer since reused, is only a miss.
     static const std::string* intern_ref(const std::string& s);
+    // The table itself, under its lock.
+    static const std::string* intern_shared(const std::string& s);
     // Most names in code are string literals, met over and over in a frame
     // (`params.num("x")`): each is remembered by where its characters are, in
     // a small table keyed by that address, and taken from there after one
@@ -77,7 +85,7 @@ private:
         std::atomic<const std::string*>& slot = slots[mixed >> 50];
         const std::string* key = slot.load(std::memory_order_acquire);
         if (key && std::strcmp(key->c_str(), s) == 0) return key;
-        key = intern_ref(std::string(s));
+        key = intern_shared(std::string(s));
         slot.store(key, std::memory_order_release);
         return key;
     }

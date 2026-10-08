@@ -1,5 +1,7 @@
 #include "sg/domains/Spatial.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 
 #include "sg/domains/Probe.hpp"
@@ -330,15 +332,29 @@ Pose compose_pose(const Pose& parent, const Pose& local) {
 Pose world_pose(const State& s, const Element& e) {
     Pose p = local_pose(e);
     const Element* cur = &e;
-    std::vector<const Element*> seen{cur};
+    // What has been passed, so a ring of anchors ends: the first few kept
+    // where they are, any more (a long chain is rare) in a list.
+    std::array<const Element*, 8> near{};
+    std::size_t passed = 0;
+    std::vector<const Element*> far;
+    const auto seen = [&](const Element* x) {
+        for (std::size_t i = 0; i < passed && i < near.size(); ++i)
+            if (near[i] == x) return true;
+        return std::find(far.begin(), far.end(), x) != far.end();
+    };
+    const auto pass = [&](const Element* x) {
+        if (passed < near.size()) near[passed] = x;
+        else far.push_back(x);
+        ++passed;
+    };
+    pass(cur);
     for (;;) {
         // (The parent's name read where it is, not copied out.)
-        if (!cur->params.has(keys::parent)) break;
-        const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+        const std::string* parent_id = cur->params.text(keys::parent);
         if (!parent_id || parent_id->empty()) break;
         const Element* parent = s.find(Key{*parent_id});
-        if (!parent || std::find(seen.begin(), seen.end(), parent) != seen.end()) break;
-        seen.push_back(parent);
+        if (!parent || seen(parent)) break;
+        pass(parent);
         p = compose_pose(local_pose(*parent), p);
         cur = parent;
     }

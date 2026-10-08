@@ -217,16 +217,17 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
             const Vec3d a = across(door.yaw + placed.pose.yaw), in = heading(door.yaw + placed.pose.yaw);
             const LookState& look = look_of(*it->second.world);
             const double amb = value(look, passes::scene, Key{"uAmbient"}, 0.55);
-            const auto v3 = [&](const char* k, double fx, double fy, double fz) {
-                return gl::Vec3{static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".x"}, fx) * amb),
-                                static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".y"}, fy) * amb),
-                                static_cast<float>(value(look, passes::scene, Key{std::string(k) + ".z"}, fz) * amb)};
+            const auto v3 = [&](Key kx, Key ky, Key kz, double fx, double fy, double fz) {
+                return gl::Vec3{static_cast<float>(value(look, passes::scene, kx, fx) * amb),
+                                static_cast<float>(value(look, passes::scene, ky, fy) * amb),
+                                static_cast<float>(value(look, passes::scene, kz, fz) * amb)};
             };
             scene_->set(name("uDoorAt", count), at.x, at.y, at.z, static_cast<float>(e.params.num(keys::w, 3.0) * 0.5));
             scene_->set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
                         static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), 0.0f);
             scene_->set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), shut ? 1.0f : 0.0f, 0.0f);
-            gl::Vec3 sky = v3("uSky", 0.10, 0.13, 0.20), ground = v3("uGround", 0.14, 0.10, 0.07);
+            gl::Vec3 sky = v3(Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}, 0.10, 0.13, 0.20),
+                     ground = v3(Key{"uGround.x"}, Key{"uGround.y"}, Key{"uGround.z"}, 0.14, 0.10, 0.07);
             // And what the far room's probe nearest the doorway holds of its
             // lamps' light come back, from above and from below.
             const Spatial3D& far = *it->second.world;
