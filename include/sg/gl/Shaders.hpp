@@ -635,4 +635,34 @@ const char* composite_fs();
 // composite shader (LookState::shader), setting the uniforms it reads.
 const char* pixel_composite_fs();
 
+// --- after the composite --------------------------------------------------------
+// What a look may lay over its finished picture, each off unless the look's
+// composite pass says (settings, not uniforms: no look's shader reads them):
+//   deband      0..1: where the view has no depth - a world drawn on its
+//               clear colour, with no sky - the steps a smooth fall of light
+//               shows there are smoothed away. Rings of four taps round the
+//               pixel, each half as far again as the last (1, 1.5, 2.25 ...
+//               pixels, eight at most), each mixed into the centre as
+//               (c + sum) / 5, stopping at the first ring that touches
+//               anything drawn: an edge is never smeared into the empty.
+//   smear       0..1: how much of the last frame shown stays, blurred, under
+//               this one - a picture that trails, as a slow tube does. Kept
+//               per second as `smear` is kept per thirtieth of one, so it
+//               trails as long at any frame rate.
+//   smear.blur  how far apart the blur's taps are, in pixels (0: 1).
+// The last frame is presentation history, as a TAA's is: kept by the view on
+// the screen only (a feed does not smear), and let go on a cut - a look
+// that cuts in or out (`fade` 0), or the eye taken to a world by anything
+// but a seam that admits `view`.
+//
+// `deband(uv, c)`, GLSL to paste after uFrame (the composited picture),
+// uDepth (the view's depth) and uTexel.
+const char* deband_glsl();
+// The pass itself: the composited picture (uFrame) debanded (uDeband) and
+// laid over the last frame shown (uHistory, by uSmearKeep, its taps
+// uSmearBlur pixels apart).
+const char* finish_fs();
+// A picture put on the screen exactly as it is (uFrame, pixel for pixel).
+const char* present_fs();
+
 }  // namespace sg::gl

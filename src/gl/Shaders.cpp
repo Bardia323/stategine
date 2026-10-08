@@ -1313,4 +1313,70 @@ void main() {
     return source.c_str();
 }
 
+const char* deband_glsl() {
+    return R"(
+uniform float uDeband;
+// Only where nothing was drawn (depth 1: the clear colour). Each ring is
+// turned from the last by the golden angle, so the taps lay no cross.
+vec3 deband(vec2 uv, vec3 c) {
+    if (uDeband <= 0.0 || texture(uDepth, uv).r < 1.0) return c;
+    vec3 smooth_c = c;
+    float r = 1.0, a = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        vec2 d = vec2(cos(a), sin(a)) * r;   // in pixels
+        vec2 o = d * uTexel, p = vec2(-d.y, d.x) * uTexel;
+        vec2 t0 = uv + o, t1 = uv - o, t2 = uv + p, t3 = uv - p;
+        float near = min(min(texture(uDepth, t0).r, texture(uDepth, t1).r), min(texture(uDepth, t2).r, texture(uDepth, t3).r));
+        if (near < 1.0) break;
+        vec3 sum = texture(uFrame, t0).rgb + texture(uFrame, t1).rgb + texture(uFrame, t2).rgb + texture(uFrame, t3).rgb;
+        smooth_c = (smooth_c + sum) / 5.0;
+        r *= 1.5;
+        a += 2.3999632;
+    }
+    return mix(c, smooth_c, min(uDeband, 1.0));
+}
+)";
+}
+
+const char* finish_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+
+uniform sampler2D uFrame;
+uniform sampler2D uDepth;
+uniform sampler2D uHistory;
+uniform vec2  uTexel;
+uniform float uSmearKeep;   // how much of the last frame stays (0: none)
+uniform float uSmearBlur;   // the blur's taps apart, in pixels
+)") + deband_glsl() + R"(
+// The last frame, blurred: 4, 2 and 1 over the centre, its edges and its
+// corners, of sixteen.
+vec3 blur9(vec2 uv) {
+    vec2 t = uTexel * max(uSmearBlur, 1.0);
+    vec3 s = texture(uHistory, uv).rgb * 4.0;
+    s += (texture(uHistory, uv + vec2(t.x, 0.0)).rgb + texture(uHistory, uv - vec2(t.x, 0.0)).rgb +
+          texture(uHistory, uv + vec2(0.0, t.y)).rgb + texture(uHistory, uv - vec2(0.0, t.y)).rgb) * 2.0;
+    s += texture(uHistory, uv + t).rgb + texture(uHistory, uv - t).rgb +
+         texture(uHistory, uv + vec2(t.x, -t.y)).rgb + texture(uHistory, uv + vec2(-t.x, t.y)).rgb;
+    return s / 16.0;
+}
+
+void main() {
+    vec3 now = deband(vUV, texture(uFrame, vUV).rgb);
+    if (uSmearKeep > 0.0) now = mix(now, blur9(vUV), uSmearKeep);
+    FragColor = vec4(now, 1.0);
+})";
+    return source.c_str();
+}
+
+const char* present_fs() {
+    return R"(#version 330 core
+out vec4 FragColor;
+uniform sampler2D uFrame;
+void main() {
+    FragColor = vec4(texelFetch(uFrame, ivec2(gl_FragCoord.xy), 0).rgb, 1.0);
+})";
+}
+
 }  // namespace sg::gl

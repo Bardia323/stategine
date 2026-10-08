@@ -68,7 +68,11 @@
 // before it is shaded - resolve, ambient occlusion (when the look asks for
 // it: the composite pass's `ao` setting is its strength, `ao.radius` its
 // reach in metres), bright pass, blur, composite (the look's grade and curve,
-// and the glow thick air spreads: film_glsl, fog_bloom_glsl).
+// and the glow thick air spreads: film_glsl, fog_bloom_glsl), and - only when
+// the look's composite pass says - its finish (gl::finish_fs): `deband`
+// smooths the steps where nothing was drawn, and `smear` (`smear.blur`) lays
+// the last frame shown, blurred, under this one. Both are 0 unless said, and
+// then there is no such pass at all.
 //
 // A look's air (scene pass settings): `scatter`, how much of the light
 // passing through it a metre of the air scatters towards the eye - 0, as
@@ -1098,6 +1102,39 @@ private:
     // the scene with it laid on. `scene_src_` is what the post chain reads.
     gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
     bool fog_depth_ = false;  // this frame's composite reads depth_ (uFogBloom)
+    // What a look lays over its composited picture (gl::finish_fs): `deband`
+    // where nothing was drawn, `smear` of the last frame shown. Both off
+    // unless the look says, and then the composite writes the screen as it
+    // always did, with no pass and no picture more.
+    struct Finish {
+        float deband = 0.0f;  // 0..1
+        float keep = 0.0f;    // how much of the last frame stays this frame (0: none)
+        float blur = 1.0f;    // the last frame's blur, its taps apart in pixels
+        bool smear = false;   // the last frame is kept: the view on the screen, smearing
+        bool on() const { return deband > 0.0f || smear; }
+    };
+    Finish finish_of();
+    // The composited picture (post_frame_) finished into the output: debanded,
+    // and laid over the last frame shown, which it then is.
+    void finish(int fb_w, int fb_h, const Finish& f);
+    // Its programs, built once; null (and why, in `error`) if they do not build.
+    const gl::Program* finish_program(std::string* error = nullptr);
+    // Whether a seam joining two worlds lets the picture through it (its
+    // doorways' `admits`, absent: all): a step through one goes on smearing.
+    bool view_carried(Key from, Key to) const;
+    gl::RenderTarget post_frame_;
+    std::unique_ptr<gl::Program> finish_prog_, present_prog_;
+    bool finish_tried_ = false;
+    std::string finish_error_;
+    // The last frame shown - presentation history, as a TAA's is, never a
+    // state's - two pictures, one read while the other is drawn; and what
+    // it was drawn of (the world, and whether its look cuts), so a cut or
+    // a world reached by no seam that lets the view through lets it go.
+    gl::RenderTarget smear_hist_[2];
+    int smear_front_ = 0;
+    bool smear_valid_ = false;
+    Key smear_world_, smear_look_;
+    bool smear_look_cuts_ = false;
     const gl::RenderTarget* scene_src_ = &resolve_;
     std::unique_ptr<gl::Program> ao_prog_, ao_blur_prog_, ao_apply_prog_;
     struct ViewParams {
@@ -1171,6 +1208,7 @@ private:
     struct Targets {
         int w = 0, h = 0;
         gl::RenderTarget scene, resolve, depth, lit, ao_a, ao_b, bloom_a, bloom_b, chain[kBloomLevels];
+        gl::RenderTarget post;  // the composited picture, when a look finishes it (finish)
         int levels = 0;
         std::vector<RootView> roots;
         std::vector<Nested> nested;

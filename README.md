@@ -741,6 +741,23 @@ shows - a lamp deep in fog is haloed more than one near - and `uFogBloomCap`,
 the optical depth past which it spreads no more (3 unless it says). The
 renderer hands it the view's depth only while a look asks for it.
 
+**Finish** (composite pass settings, drawn by the renderer's own pass after
+whatever composite the look has: `gl::finish_fs`). Both 0 unless said, and
+then there is no such pass, no picture kept and nothing paid.
+
+| Setting | Means | Unless it says |
+| --- | --- | --- |
+| `deband` | 0..1: where nothing was drawn (no depth: a world on its clear colour, with no sky), rings of four taps round each pixel - 1, 1.5, 2.25 ... pixels out, eight at most - mixed into it as (c + sum) / 5, stopping at the first ring that touches anything drawn | 0: none |
+| `smear` | 0..1: how much of the last frame shown stays under this one, blurred (4, 2 and 1 over its centre, edges and corners), per thirtieth of a second: `mix(now, blur(last), smear^(interval x 30))` | 0: none |
+| `smear.blur` | how far apart that blur's taps are, in pixels | 1 |
+
+The last frame is presentation history, as a TAA's is: kept inside the
+renderer, by the view on the screen only (a feed does not smear), never in a
+state. It is let go on a cut - a look cut to or from (`fade` 0), or the eye
+taken to another world by anything but a seam whose doorways admit `view`
+(their `admits`, a space-separated list; absent, all) - and a frame drawn with
+no interval (a still) shows only itself.
+
 ## The notation
 
 What this page has written in C++ - a state and its arrows, a functor, an

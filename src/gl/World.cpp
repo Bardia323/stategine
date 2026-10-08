@@ -640,6 +640,7 @@ void GLWorldView::swap_targets(Targets& t) {
     std::swap(bloom_b_, t.bloom_b);
     for (int i = 0; i < kBloomLevels; ++i) std::swap(bloom_chain_[i], t.chain[i]);
     std::swap(bloom_levels_, t.levels);
+    std::swap(post_frame_, t.post);
     root_pool_.swap(t.roots);  // (the vectors' own storage goes with them: doorways hold their pictures)
     pool_.swap(t.nested);
 }
@@ -650,7 +651,7 @@ void GLWorldView::keep_sizes(const std::vector<std::pair<int, int>>& sizes) {
     // What is kept is what the picture may be made at: the sets of sizes it
     // is no longer are given back.
     const auto give_back = [](Targets& t) {
-        for (gl::RenderTarget* r : {&t.scene, &t.resolve, &t.depth, &t.lit, &t.ao_a, &t.ao_b, &t.bloom_a, &t.bloom_b}) r->destroy();
+        for (gl::RenderTarget* r : {&t.scene, &t.resolve, &t.depth, &t.lit, &t.ao_a, &t.ao_b, &t.bloom_a, &t.bloom_b, &t.post}) r->destroy();
         for (gl::RenderTarget& r : t.chain) r.destroy();
         for (RootView& v : t.roots) v.ms.destroy(), v.target.destroy();
         for (Nested& n : t.nested) n.target.destroy();
@@ -3224,7 +3225,16 @@ void GLWorldView::run_wide_bloom(float wide) {
 }
 
 void GLWorldView::composite(int fb_w, int fb_h) {
-    if (output_) {
+    // A look that finishes its picture (deband, smear) has it composited
+    // aside first; one that does not, straight to the output, as ever.
+    Finish fin = finish_of();
+    // (A finish that does not build - prepare() says so - is left off.)
+    if (fin.on() && !finish_program()) fin = Finish{};
+    if (fin.on()) {
+        if (!post_frame_.valid() || post_frame_.width() != fb_w || post_frame_.height() != fb_h)
+            post_frame_.create(fb_w, fb_h, gl::GL_RGBA16F, 0, false);
+        post_frame_.bind();
+    } else if (output_) {
         output_->bind();
     } else {
         gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
@@ -3287,7 +3297,139 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         draw(*e.first);
         gl::glDisable(gl::GL_BLEND);
     }
+    if (fin.on()) finish(fb_w, fb_h, fin);
     gl::glEnable(gl::GL_DEPTH_TEST);
+}
+
+GLWorldView::Finish GLWorldView::finish_of() {
+    Finish f;
+    const Spatial3D* world = last_world_;
+    // Debanding is for what nothing was drawn over: a world with a sky has
+    // none of that, and pays nothing.
+    if (world && world->params().num(Key{"sky"}, 0.0) <= 0.5)
+        f.deband = static_cast<float>(std::clamp(setting(post_, passes::composite, "deband", 0.0), 0.0, 1.0));
+    // Only the view on the screen smears: a feed's picture, or a view drawn
+    // for another, is this frame's alone.
+    const double smear = root_ ? 0.0 : std::clamp(setting(post_, passes::composite, "smear", 0.0), 0.0, 1.0);
+    f.smear = smear > 0.0;
+    if (!f.smear) {
+        // Nothing kept while nothing is smeared: no picture held, and the
+        // next smear starts from its own first frame.
+        if (smear_hist_[0].valid()) smear_hist_[0].destroy(), smear_hist_[1].destroy();
+        smear_valid_ = false;
+        smear_world_ = Key{};
+        smear_look_ = Key{};
+        return f;
+    }
+    // Let go on a cut: a look cut to or from (fade 0), or a world reached by
+    // anything but a seam that lets the picture through.
+    const LookState* look = world ? &look_of(*world) : nullptr;
+    const Key world_id = world ? world->id() : Key{};
+    const Key look_id = look ? look->id() : Key{};
+    const bool look_cuts = look && look->fade_seconds() <= 0.0;
+    if (smear_valid_ && look_id != smear_look_ && (look_cuts || smear_look_cuts_)) smear_valid_ = false;
+    if (smear_valid_ && world_id != smear_world_ && !view_carried(smear_world_, world_id)) smear_valid_ = false;
+    smear_world_ = world_id;
+    smear_look_ = look_id;
+    smear_look_cuts_ = look_cuts;
+    // `smear` stays of each thirtieth of a second, so a trail is as long at
+    // any frame rate. The shell's transient interval, as look fades use: a
+    // frame with none (a still, drawn on its own) is shown as it is.
+    f.keep = smear_valid_ && dt_ > 0.0 ? static_cast<float>(std::pow(smear, dt_ * 30.0)) : 0.0f;
+    const double blur = setting(post_, passes::composite, "smear.blur", 0.0);
+    f.blur = blur > 0.0 ? static_cast<float>(blur) : 1.0f;
+    return f;
+}
+
+bool GLWorldView::view_carried(Key from, Key to) const {
+    if (!graph_ || from == Key{} || to == Key{}) return false;
+    const auto admits_view = [&](Key state, Key doorway) {
+        const State* st = graph_->find(state);
+        const Element* e = st ? st->find(doorway) : nullptr;
+        if (!e || !e->params.has(Key{"admits"})) return true;
+        const auto* words = std::get_if<std::string>(&e->params.get(Key{"admits"}));
+        if (!words) return true;
+        for (std::size_t at = 0; at < words->size();) {
+            const std::size_t end = std::min(words->find(' ', at), words->size());
+            if (words->compare(at, end - at, "view") == 0) return true;
+            at = end + 1;
+        }
+        return false;
+    };
+    for (const Seam& s : graph_->seams()) {
+        if (!((s.a == from && s.b == to) || (s.a == to && s.b == from))) continue;
+        for (std::size_t i = 0; i < s.boundary_a.size() && i < s.boundary_b.size(); ++i)
+            if (admits_view(s.a, s.boundary_a[i]) && admits_view(s.b, s.boundary_b[i])) return true;
+    }
+    return false;
+}
+
+const gl::Program* GLWorldView::finish_program(std::string* error) {
+    if (!finish_tried_) {
+        finish_tried_ = true;
+        try {
+            finish_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::finish_fs(), "finish");
+            present_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::present_fs(), "present");
+        } catch (const std::exception& e) {
+            finish_error_ = e.what();
+            finish_prog_.reset();
+            present_prog_.reset();
+        }
+    }
+    if (error) *error = finish_error_;
+    return finish_prog_ && present_prog_ ? finish_prog_.get() : nullptr;
+}
+
+void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
+    const auto to_output = [&] {
+        if (output_) {
+            output_->bind();
+        } else {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glViewport(0, 0, fb_w, fb_h);
+        }
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    };
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    const gl::Program* p = finish_program();  // (built: composite asked)
+    // Where nothing was drawn is read from the view's depth: resolved already
+    // if the occlusion or the air's glow read it this frame, else now.
+    if (f.deband > 0.0f && !fog_depth_ && setting(post_, passes::composite, "ao", 0.0) <= 0.0)
+        scene_target_.blit_depth_to(depth_);
+    if (f.smear)
+        for (gl::RenderTarget& h : smear_hist_)
+            if (!h.valid() || h.width() != fb_w || h.height() != fb_h) {
+                h.create(fb_w, fb_h, gl::GL_RGBA16F, 0, false);
+                smear_valid_ = false;
+            }
+    const bool keep = f.smear && smear_valid_ && f.keep > 0.0f;
+    // Smearing, the picture is drawn into the history first (it is the last
+    // frame shown, next frame) and then put on the output as it is.
+    if (f.smear) smear_hist_[1 - smear_front_].bind();
+    else to_output();
+    p->use();
+    p->set("uFrame", 0);
+    p->set("uDepth", 1);
+    p->set("uHistory", 2);
+    post_frame_.bind_color(0);
+    depth_.bind_depth(1);
+    if (f.smear) smear_hist_[smear_front_].bind_color(2);
+    else post_frame_.bind_color(2);  // (read by nothing: uSmearKeep is 0)
+    p->set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
+    p->set("uDeband", f.deband);
+    p->set("uSmearKeep", keep ? f.keep : 0.0f);
+    p->set("uSmearBlur", f.blur);
+    screen_.draw();
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    if (!f.smear) return;
+    smear_front_ = 1 - smear_front_;
+    smear_valid_ = true;
+    to_output();
+    present_prog_->use();
+    present_prog_->set("uFrame", 0);
+    smear_hist_[smear_front_].bind_color(0);
+    screen_.draw();
 }
 
 void GLWorldView::advance_fades() {
@@ -3476,6 +3618,15 @@ void GLWorldView::check_look(const LookState& look, std::vector<std::string>& ou
                               "and never used)");
         }
     }
+    // What it lays over its finished picture (deband, smear) is drawn by the
+    // renderer's own pass: built now, and named if it does not build.
+    if (const Element* c = look.find(passes::composite))
+        if (c->params.num(Key{"deband"}, 0.0) > 0.0 || c->params.num(Key{"smear"}, 0.0) > 0.0) {
+            std::string error;
+            if (!finish_program(&error))
+                out.push_back(tag + "its finish (deband, smear) does not build, so the picture is shown as composited - " +
+                              error.substr(0, error.find('\n')));
+        }
 }
 
 const char* GLWorldView::clip_uniform(int i) {
