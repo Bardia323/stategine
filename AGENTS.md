@@ -32,7 +32,7 @@ none of the others. States are connected **only** by the graph:
 | --- | --- | --- | --- |
 | Transition | `graph.connect` / `push` / `pop`, on what a state `says` | directed change of active state | flags one state sets and another polls |
 | Functor / lens | `add_functor`, `add_lens` | object/arrow/data transport; `sg::kan::left` / `right` can derive an ordinary functor, not a new kind of thing | copying params in a game loop or another state's arrow |
-| Embedding | `graph.embed` | guest in a host portal, with `in`/`out`, subject, sync and focus | holding a guest pointer as the interface |
+| Embedding | `graph.embed` | guest in a host portal, with `in`/`out`, subject, sync and focus; whether it is open and focused is the portal's to say (`open_key`, `focus_key`), and the engine follows | holding a guest pointer as the interface; an open flag kept outside the host |
 | Seam | `add_seam`, `glue_doorway` | bidirectional boundary identification, including a doorway and its door | hand-placed global room coordinates |
 | Drive | `graph.drive` / `sg::drive` | a line of the state's own on a `Temporal` fires its arrows with `{dt, time, frame}`; additive drives omit `frame` | one clock other states must follow; a state reading another state's time; a second clock beside a state's own line (a sum of `dt` in its params); wall-clock time from outside any state |
 | Adjunction | `Adjunction` | paired functors with checked unit and counit | treating a lossy adjunction as an isomorphism |

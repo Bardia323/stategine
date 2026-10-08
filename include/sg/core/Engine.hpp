@@ -185,9 +185,12 @@ private:
     // on a model) is answered before it follows its source again.
     void carry_kept();
 
-    // Each embedding that follows its portal, opened or closed as the portal
-    // now says (its `open`): what its host's arrows decided this frame, done
-    // by the end of it. Found by index, remade when the graph is rewired.
+    // Each embedding opened, closed and focused as its portal now says
+    // (`open_key`, `focus_key`): what its host's arrows decided this frame,
+    // or a host put back from a snapshot, done by the end of it. A following
+    // embedding is looked at every frame; any other only when its portal's
+    // params moved, and only for what the portal says. Found by index,
+    // remade when the graph is rewired.
     void follow_portals();
 
     // A room glued to others is seen into from where it is seen: across each
@@ -350,7 +353,20 @@ private:
     std::vector<const Drive*> always_;  // one per state that keeps its time always
     std::unordered_map<Key, Functor::Memo> kept_memos_;
     std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
-    std::vector<Key> following_;  // the embeddings that follow their portals (follow_portals)
+    // Every embedding, with where its portal is and the stamp of the portal's
+    // params last looked at, so a frame reads only portals that moved
+    // (follow_portals). Pointers hold while the host's structure does.
+    struct Followed {
+        Key name, open, focus;
+        bool follows = false;
+        State* host = nullptr;
+        uint64_t structure = 0, stamp = 0;
+        const Element* portal = nullptr;
+    };
+    std::vector<Followed> following_;
+    bool restamp_ = false;  // the engine wrote portals since follow_portals last looked
+    // Whether an embedding takes input, as its portal says, else as declared.
+    bool takes_focus(const Embedding& e) const;
     std::unordered_map<Key, Functor::Memo> kept_carries_;  // what each kept functor last carried
     uint64_t follow_revision_ = 0;
     bool followed_ = false;

@@ -303,7 +303,8 @@ public:
     // - and is read, not rewritten, once it is in the graph: what it joins
     // changes only through `set_sync`, `set_propagation` or dropping it and
     // embedding another, each counted. Whether it takes focus when opened is
-    // not structure (`set_focus`); whether it is open is the engine's.
+    // declared (`set_focus`); whether it is open, and focused, is its host's -
+    // what its portal says (`open_key`, `focus_key`) - and the engine follows.
     const Embedding& embed(Embedding e);
 
     const Embedding& embed(Key name, Key host, Key portal, Key guest, Key in, Key out,

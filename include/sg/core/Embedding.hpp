@@ -16,6 +16,13 @@
 //   View    in every frame   - a read-only window (a doorway into another room,
 //                              where `in` carries the viewer's pose through the
 //                              portal and becomes the guest's camera)
+//
+// Whether a guest is open, and whether it takes input, is its host's: an
+// embedding is a span host <- portal -> guest, and the portal - an element of
+// the host - is where the two meet. So the portal says it (`open_key`,
+// `focus_key`), and the engine follows what it says: a host put back from a
+// snapshot, its start or a save puts back which guests are open in it. A
+// portal that says nothing of an embedding leaves it as it is.
 #pragma once
 
 #include <string>
@@ -60,13 +67,22 @@ struct Embedding {
     EmbedSync sync = EmbedSync::Commit;
     Propagation propagate = Propagation::OnChange;
     // With focus off the guest still ticks, but input keeps going to the host.
+    // Declared: what the portal's `focus_key` says, when it says nothing.
     bool focus = true;
     // Open exactly while its portal says so (the portal's `open`): the host
     // opens and closes it by its own arrows, as a set shows a picture while
     // it is on - the engine only follows (StateGraph::set_follows).
     bool follows = false;
-    // Runtime flag, owned by the engine.
+    // Whether the engine has it open: derived, following the portal.
     bool open = false;
 };
+
+// The key of its portal an embedding is open by: a following one the
+// portal's own `open`, which its host's arrows set; any other a key of its
+// own, since one portal can hold several (a thing that wears a texture and is
+// shaped by a recipe), and they open apart.
+Key open_key(const Embedding& e);
+// The key of its portal that says whether it takes input when open.
+Key focus_key(const Embedding& e);
 
 }  // namespace sg

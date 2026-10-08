@@ -377,6 +377,62 @@ void test_embedding() {
     check(seen == 1, "input is routed to the focused guest");
 }
 
+// Whether a guest is open, and whether it takes input, is its host's: the
+// portal says it, so a host put back puts back what is open in it.
+void test_the_host_says_what_is_open() {
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("room");
+    auto& map = g.add<sg::Spatial2D>("map");
+    auto& note = g.add<sg::Spatial2D>("note");
+    room.portal("table", {0, 1, 0}, 1.0, 1.0);
+    g.embed("map_portal", "room", "table", "map", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit);
+    // Two at one portal - a thing that wears one picture and holds another -
+    // open apart.
+    g.set_focus(g.embed("note_portal", "room", "table", "note", sg::Key{}, sg::Key{}, sg::EmbedSync::Commit).name, false);
+    g.set_initial("room");
+    sg::Engine e(g);
+    e.start();
+
+    const sg::State::Snapshot shut = room.snapshot();
+    e.open_embed("map_portal");
+    check(e.embed_open("map_portal") && !e.embed_open("note_portal"), "two at one portal open apart");
+    check(e.focused() == &map, "the opened guest holds focus");
+    const sg::State::Snapshot open = room.snapshot();
+
+    e.close_embed("map_portal", false);
+    room.restore(open);
+    e.tick(0.0);
+    check(e.embed_open("map_portal"), "the host put back as it was open, it is open again");
+    check(e.focused() == &map, "and focused again, as its portal says");
+    check(!e.embed_open("note_portal"), "what the portal says nothing of is left as it is");
+
+    e.focus_embed("map_portal", false);
+    check(e.focused() == nullptr, "focus taken away");
+    check(g.embedding("map_portal")->focus, "what was declared stays as declared");
+    room.restore(open);
+    e.tick(0.0);
+    check(e.focused() == &map, "the portal said focused, and is put back so");
+
+    room.restore(shut);
+    e.tick(0.0);
+    check(e.embed_open("map_portal"), "a portal that never said leaves the guest as it is");
+    e.close_embed("map_portal", false);
+    const sg::State::Snapshot closed = room.snapshot();
+    e.open_embed("map_portal");
+    room.restore(closed);
+    e.tick(0.0);
+    check(!e.embed_open("map_portal"), "the host put back as it was shut, it is shut");
+
+    e.open_embed("note_portal");
+    check(e.embed_open("note_portal") && e.focused() != &note, "a guest declared without focus takes none");
+    e.close_embed("note_portal", false);  // the portal has said it shut
+    g.keep_default(sg::Key{"room"});
+    e.open_embed("note_portal");
+    g.restore_default(sg::Key{"room"});
+    e.tick(0.0);
+    check(!e.embed_open("note_portal"), "back to its start, the room shows what it showed then");
+}
+
 // --- anchored groups ---------------------------------------------------------------
 void test_anchors() {
     sg::Spatial3D w("w");
@@ -2225,6 +2281,7 @@ int main() {
     test_kan_extensions();
     test_lens();
     test_embedding();
+    test_the_host_says_what_is_open();
     test_anchors();
     test_camera_queries_follow_anchors();
     test_wall_collisions();

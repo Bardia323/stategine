@@ -3,6 +3,15 @@
 
 namespace sg {
 
+Key open_key(const Embedding& e) { return e.follows ? keys::open : Key{"open." + e.name.str()}; }
+Key focus_key(const Embedding& e) { return Key{"focus." + e.name.str()}; }
+
+bool Engine::takes_focus(const Embedding& e) const {
+    const State* host = graph_.find(e.host);
+    const Element* portal = host ? host->find(e.portal) : nullptr;
+    return portal ? portal->params.get_or<bool>(focus_key(e), e.focus) : e.focus;
+}
+
 Engine::Engine(StateGraph& graph) : graph_(graph) {
     for (Key id : graph_.ids()) graph_.state(id).attach(this);
 }
@@ -91,11 +100,19 @@ void Engine::open_embed(Key name, Params args) {
         f->apply(subject, guest);
     }
     // The portal says it is open - unless it is the portal that decides
-    // (a following embedding), and has.
-    if (Element* portal = host.find(e->portal); portal && !e->follows) portal->params.set(keys::open, true);
+    // (a following embedding), and has. It is the host's to say: the
+    // embedding is open as long as it does.
+    if (Element* portal = host.find(e->portal); portal && !e->follows) {
+        portal->params.set(keys::open, true);
+        portal->params.set(open_key(*e), true);
+    }
     e->open = true;
     hook(guest, "on_enter", [&] { guest.on_enter(args); });
-    if (e->focus) focus_.push_back(e->name);
+    // And whether it takes input, so the portal says all of it while open.
+    const bool focus = takes_focus(*e);
+    if (Element* portal = host.find(e->portal)) portal->params.set(focus_key(*e), focus);
+    if (focus) focus_.push_back(e->name);
+    restamp_ = true;
     if (trace_)
         std::cout << "[sg] open  " << e->host.str() << "." << e->portal.str() << " <= "
                   << e->guest.str() << "\n";
@@ -115,8 +132,12 @@ void Engine::close_embed(Key name, bool commit) {
     }
     hook(guest, "on_exit", [&] { guest.on_exit(); });
     e->open = false;
-    if (Element* portal = host.find(e->portal); portal && !e->follows) portal->params.set(keys::open, false);
+    if (Element* portal = host.find(e->portal); portal && !e->follows) {
+        portal->params.set(keys::open, false);
+        portal->params.set(open_key(*e), false);
+    }
     focus_.erase(std::remove(focus_.begin(), focus_.end(), e->name), focus_.end());
+    restamp_ = true;
     if (trace_)
         std::cout << "[sg] close " << e->host.str() << "." << e->portal.str()
                   << (commit ? " (commit)" : " (discard)") << "\n";
@@ -143,13 +164,17 @@ bool Engine::embed_open(Key name) {
 
 void Engine::focus_embed(Key name, bool on) {
     if (detail::observing() > 0) detail::refused_to_observer(std::string("moved focus: ") + name.str());
-    Embedding* e = graph_.embedding_rw(name);
+    const Embedding* e = graph_.embedding(name);
     if (!e) return;
     const bool listed = std::find(focus_.begin(), focus_.end(), name) != focus_.end();
-    if (e->focus == on && listed == (on && e->open)) return;  // as it is already: nothing moves
-    e->focus = on;
+    if (takes_focus(*e) == on && listed == (on && e->open)) return;  // as it is already: nothing moves
+    // The portal says it, as it says whether the guest is open: what was
+    // declared (Embedding::focus) stays as declared.
+    if (State* host = graph_.find(e->host))
+        if (Element* portal = host->find(e->portal)) portal->params.set(focus_key(*e), on);
     focus_.erase(std::remove(focus_.begin(), focus_.end(), name), focus_.end());
     if (on && e->open) focus_.push_back(name);
+    restamp_ = true;
 }
 
 std::vector<std::string> Engine::check_graph() {
@@ -362,18 +387,44 @@ void Engine::follow_portals() {
     if (follow_revision_ != graph_.topology() || !followed_) {
         following_.clear();
         for (const Embedding& e : graph_.embeddings())
-            if (e.follows) following_.push_back(e.name);
+            following_.push_back(Followed{e.name, open_key(e), focus_key(e), e.follows, graph_.find(e.host)});
         follow_revision_ = graph_.topology();
         followed_ = true;
     }
-    for (Key name : following_) {
-        const Embedding* e = graph_.embedding(name);
-        const State* host = e ? graph_.find(e->host) : nullptr;
-        const Element* portal = host ? host->find(e->portal) : nullptr;
-        if (!portal) continue;
-        const bool want = portal->params.get_or<bool>(keys::open, false);
-        if (want == e->open) continue;
-        want ? open_embed(name) : close_embed(name, false);
+    // A stamp names content, and the engine has moved since it last looked
+    // at it: a portal put back to content it had followed before would pass
+    // for unchanged. So, the engine having written portals, every one is
+    // looked at again - a frame's pass that changes nothing.
+    if (restamp_) {
+        for (Followed& f : following_) f.stamp = ~uint64_t{0};
+        restamp_ = false;
+    }
+    for (Followed& f : following_) {
+        if (!f.host) continue;
+        if (!f.portal || f.host->structure() != f.structure) {
+            f.structure = f.host->structure();
+            const Embedding* e = graph_.embedding(f.name);
+            f.portal = e ? f.host->find(e->portal) : nullptr;
+            f.stamp = 0;
+        }
+        if (!f.portal) continue;
+        // A following embedding answers to its portal every frame, as it
+        // always has - opened by hand, it is closed again if the portal says
+        // so. Any other only to what its portal says, when that moved.
+        if (!f.follows && f.portal->params.stamp() == f.stamp) continue;
+        const Params& p = f.portal->params;
+        const Embedding* e = graph_.embedding(f.name);
+        if (!e) continue;
+        if (f.follows || p.has(f.open)) {
+            const bool want = p.get_or<bool>(f.open, false);
+            if (want != e->open) want ? open_embed(f.name) : close_embed(f.name, false);
+        }
+        if (e->open && p.has(f.focus)) {
+            const bool want = p.get_or<bool>(f.focus, e->focus);
+            const bool listed = std::find(focus_.begin(), focus_.end(), f.name) != focus_.end();
+            if (want != listed) focus_embed(f.name, want);
+        }
+        f.stamp = f.portal->params.stamp();
     }
 }
 
