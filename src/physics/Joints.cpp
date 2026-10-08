@@ -183,13 +183,15 @@ void World::solve_joints(double hstep, bool springs) {
         if (j.kind == Joint::Ball && h.B) {
             const M3 rel = transpose(h.A->r) * h.B->r;
             // The muscle: the spin between them drawn toward the turn that
-            // takes b where it is aimed, softly, within its torque.
+            // takes b where it is aimed, softly, within its torque - over
+            // and above the spin it is meant to have (`aim_spin`: the motion
+            // it follows, not only the pose).
             if (j.muscle && springs) {
                 double mms = 1, mis = 0;
                 const double rate = soft(j.aim_hertz, j.aim_damping, hstep, mms, mis);
                 const V3 err = log_map(h.A->r * j.aim * transpose(h.B->r));  // the turn still to go, in the room
                 const M3 k = inverse(h.ia + h.ib);
-                V3 imp = k * (spin_between(h) - err * rate) * -mms - j.turn * mis;
+                V3 imp = k * (spin_between(h) - j.aim_spin - err * rate) * -mms - j.turn * mis;
                 V3 total = j.turn + imp;
                 const double most = j.aim_torque * hstep, l = length(total);
                 if (l > most && l > 1e-12) total = total * (most / l);

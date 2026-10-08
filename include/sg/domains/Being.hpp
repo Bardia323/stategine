@@ -13,8 +13,10 @@
 //   spirit     its behaviour: one arrow on its line of time (`<id>.live`,
 //              driven), and its intentions as events. What it intends is a
 //              target - a clip playing (`clip`, sampled and blended across its
-//              `layer`s), a joint held (`<id>.turn`), a hand reaching for a
-//              point (`goal`, by inverse kinematics) - and its joints *go*
+//              `layer`s, each over the joints its `mask` names, or added to
+//              what the others play when it is `additive`), a joint held
+//              (`<id>.turn`), a hand reaching for a point or a head looking
+//              at one (`goal`, by inverse kinematics) - and its joints *go*
 //              there, each at its own `stiffness`: the intention says what
 //              must hold, the body's own dynamics, in time, get there.
 //   led        its joints given over, by how much it gives itself (`lead`), to
@@ -22,8 +24,9 @@
 //              (`lead_q` on a joint, `lead_t` where one travels): another
 //              being's motion carried across (`retarget`), or a ragdoll's
 //              bones (Ragdoll.hpp). Under it the being still means what it
-//              means (`aq`, `ax ay az`: its pose as its clips and holds say),
-//              for whatever leads it to aim at.
+//              means (`aq`, `ax ay az`: its pose as its clips and holds say,
+//              and `awx awy awz`: how fast its clips turn each joint then, in
+//              radians a second of its line), for whatever leads it to aim at.
 //   (soul)     what wants - talk, choice - is another state, sending this one
 //              intentions (`play`, `reach`, `turn`) by the graph.
 //
@@ -60,9 +63,22 @@ public:
     static Key self_id() { return Key{"self"}; }
     // Its intentions, each its own (so many beings never share one).
     Key live_event() const { return Key{id().str() + ".live"}; }    // driven: {dt}
-    Key play_event() const { return Key{id().str() + ".play"}; }    // {clip, fade=0.3, speed=1, loop=1, weight=1, alone=1}
+    // {clip, fade=0.3, speed=1, loop=1, weight=1, alone=1, mask, additive}: `mask` names
+    // joints and their weights (`spine 1, hips 0`: a joint not named takes its
+    // parent's, a root 1); `additive` ("rest" or "first") adds the clip's turn
+    // away from that pose to what the other layers play.
+    Key play_event() const { return Key{id().str() + ".play"}; }
     Key stop_event() const { return Key{id().str() + ".stop"}; }    // {clip (empty: all), fade}
-    Key reach_event() const { return Key{id().str() + ".reach"}; }  // {goal, x, y, z, fade}: a point in its own frame
+    // {goal, x, y, z, fade, pole_x, pole_y, pole_z, soften, twist}: a point in its own
+    // frame. A chain of two is solved exactly: its middle bends toward the
+    // pole if one is given (else as it bends now), turned `twist` degrees
+    // about the line to the point; past `soften` (0..1) of its full length it
+    // straightens slowly, never snapping.
+    Key reach_event() const { return Key{id().str() + ".reach"}; }
+    // {goal, x, y, z, fade, pole_x, pole_y, pole_z}: the goal's tip looks at a point, the
+    // turn shared down its chain (the goal's `shares`, from the top to the
+    // tip; the tip's whole), its up turned toward the pole if one is given.
+    Key look_event() const { return Key{id().str() + ".look"}; }
     Key release_event() const { return Key{id().str() + ".release"}; }  // {goal, fade}
     Key turn_event() const { return Key{id().str() + ".turn"}; }    // {joint, yaw, pitch, roll (degrees), weight=1}: held so
     Key free_event() const { return Key{id().str() + ".free"}; }    // {joint (empty: all)}: let go
@@ -90,6 +106,9 @@ public:
     Element& blend(const std::string& name, const std::string& points, double x = 0, double y = 0, double rate = 6.0);
     // A goal: the end of a chain of `links` joints ending at `tip`, reached
     // for by inverse kinematics when asked (`reach`).
+    // Looked with (`look`), the tip's own turn and `links` above it share the
+    // turn: its forward is `fwd_x/y/z` and its up `up_x/y/z`, both in the
+    // being's frame as it is bound (default +x and +y).
     Element& goal(const std::string& name, const std::string& tip, int links = 2);
     // A clip read from BVH (motion capture): its joints made where it names
     // ones not there yet, its motion a clip `name`. False, with why, if it
@@ -122,6 +141,10 @@ public:
     // --- read ---------------------------------------------------------------------
     // A joint's or part's pose in the being's own frame, as last resolved.
     Pose pose_of(Key element) const;
+    // A clip's turn of one joint (w x y z) at `t` seconds of its own time, as
+    // it is played - keys found by halving, a cubic one by its tangents.
+    // False if the clip does not turn the joint.
+    bool sample(const std::string& clip, Key joint, double t, double out[4]) const;
     double tempo() const;
     std::vector<Key> parts() const;
     std::vector<Key> joints() const;
@@ -153,6 +176,10 @@ private:
     struct Key3 {
         double t;
         double q[4];
+        // A cubic key (glTF's CUBICSPLINE): its tangents in and out, in the
+        // value's units a second, and the way to the next is Hermite's.
+        double in[4] = {0, 0, 0, 0}, out[4] = {0, 0, 0, 0};
+        bool cubic = false;
     };
     struct Track {
         std::vector<Key3> keys;
@@ -164,6 +191,9 @@ private:
         std::unordered_map<Key, Track> tracks;
     };
     const Parsed& parsed(const Element& clip) const;
+    // A track's turn (w x y z) and place (x y z) at phase `ph`.
+    static void turn_at(const Track& tr, double ph, bool loop, double length, double out[4]);
+    static void move_at(const Track& tr, double ph, double out[3]);
     mutable std::unordered_map<Key, Parsed> clips_;
     void resolve();
 };
@@ -197,6 +227,14 @@ std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to)
 // dance one dance. `to` follows as far as it gives itself (`lead`); one
 // source may lead many. Returns the functor's name.
 Key retarget(StateGraph& g, const Being& from, const Being& to, Key name = {});
+
+// Which keys of a track can go: `values` is `width` numbers a key - a turn
+// (4: w x y z, slerped) or a place (3, straight between) - at `times`. A key
+// goes when its neighbours, joined, still put every key between them within
+// `tolerance` metres of where it was, measured `reach` metres from the joint
+// (its furthest descendant) for a turn; again until none goes. The first and
+// last are always kept. Returns the indices kept, in order.
+std::vector<std::size_t> kept_keys(const std::vector<double>& times, const std::vector<double>& values, int width, double reach, double tolerance);
 
 // A person, roughly: hips, spine, chest, neck, head; shoulders, arms,
 // forearms, hands; thighs, shins, feet - parts of a mannequin on them; goals
