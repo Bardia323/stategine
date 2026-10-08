@@ -49,7 +49,8 @@
 //                        `sound.distance` off), `sound.through` (how much of
 //                        it another place hears from its opening)
 //
-// An opening lets sound through as its seam says (`admits`; absent, all).
+// An opening lets sound through as its seam says: the graph's own
+// `admits`, `passes` and `fade` for the channel `Sound` (StateGraph.hpp).
 #pragma once
 
 #include <functional>
@@ -86,8 +87,6 @@ inline const Key attend_look{"attend.look"};
 inline const Key attend_uniform{"attend.uniform"};
 inline const Key attend_full{"attend.full"};
 
-inline const Key aperture{"aperture"};
-inline const Key admits{"admits"};
 }  // namespace keys
 
 namespace kinds {
@@ -121,14 +120,6 @@ Key active_sound_look(const State& host);
 void set_sound_look(State& host, Key look);
 // Everything that lives in its slot: its sound looks, and what else sounds there.
 std::vector<Key> in_sound_slot(const StateGraph& g, Key host);
-
-// --- what an opening lets through ------------------------------------------------
-// Whether a seam lets `what` through (`view light sound objects`): its own
-// `admits`, or either of its doorways'; said by none, everything.
-bool admits(const StateGraph& g, const Seam& s, const std::string& what);
-// How long a crossing of it takes to fade one thing into another: its `fade`
-// (seconds), or either doorway's, else 1.
-double seam_fade(const StateGraph& g, const Seam& s);
 
 // --- the laws ----------------------------------------------------------------------
 // What stops the world's sound being heard as declared: a `sound` that names

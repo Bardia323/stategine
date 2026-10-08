@@ -26,8 +26,6 @@ constexpr std::size_t kEchoes = 3;   // reverbs at once: the ear's place's and t
 constexpr double kSteal = 0.010;     // seconds a voice put out of room takes to go
 constexpr double kLow = 250.0, kHigh = 4000.0;  // where the three bands part
 
-double length(const Vec3d& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
-
 std::string text_or(const Params& p, Key k, const char* fallback) {
     const std::string* t = p.text(k);
     return t && !t->empty() ? *t : std::string(fallback);

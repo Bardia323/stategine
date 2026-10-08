@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <set>
-#include <sstream>
 
 #include "sg/audio/Curve.hpp"
 
@@ -11,40 +10,6 @@ namespace sg::audio {
 namespace {
 
 const char* const kBusNames[kBuses] = {"sfx", "ambient", "music", "voice", "ui"};
-
-// A seam's own word on something, where seams carry params of their own (the
-// shared contract: `admits`, `fade`); where they carry none, it says nothing
-// and its doorways speak for it.
-template <class S>
-auto own_text(const S& s, Key k, int) -> decltype(s.params.text(k)) {
-    return s.params.text(k);
-}
-template <class S>
-const std::string* own_text(const S&, Key, long) {
-    return nullptr;
-}
-template <class S>
-auto own_num(const S& s, Key k, int) -> decltype(s.params.num(k, -1.0)) {
-    return s.params.num(k, -1.0);
-}
-template <class S>
-double own_num(const S&, Key, long) {
-    return -1.0;
-}
-
-const Element* doorway_of(const StateGraph& g, Key state, const std::vector<Key>& boundary) {
-    if (boundary.empty()) return nullptr;
-    const State* s = g.find(state);
-    return s ? s->find(boundary.front()) : nullptr;
-}
-
-bool names_word(const std::string& list, const std::string& word) {
-    std::istringstream in(list);
-    std::string w;
-    while (in >> w)
-        if (w == word) return true;
-    return false;
-}
 
 }  // namespace
 
@@ -99,25 +64,6 @@ std::vector<Key> in_sound_slot(const StateGraph& g, Key host) {
     return out;
 }
 
-bool admits(const StateGraph& g, const Seam& s, const std::string& what) {
-    if (const std::string* t = own_text(s, keys::admits, 0)) return names_word(*t, what);
-    // Either doorway that says what it lets through is heeded: a wall of
-    // glass on one side keeps out what the other side would let in.
-    for (const Element* d : {doorway_of(g, s.a, s.boundary_a), doorway_of(g, s.b, s.boundary_b)})
-        if (d)
-            if (const std::string* t = d->params.text(keys::admits))
-                if (!names_word(*t, what)) return false;
-    return true;
-}
-
-double seam_fade(const StateGraph& g, const Seam& s) {
-    const double own = own_num(s, keys::fade, 0);
-    if (own >= 0.0) return own;
-    for (const Element* d : {doorway_of(g, s.a, s.boundary_a), doorway_of(g, s.b, s.boundary_b)})
-        if (d && d->params.has(keys::fade)) return std::max(0.0, d->params.num(keys::fade, 1.0));
-    return 1.0;
-}
-
 std::vector<std::string> sound_defects(const StateGraph& g, const std::function<bool(const std::string&)>& known) {
     std::vector<std::string> out;
     // Every sound names something there is to hear.
@@ -137,7 +83,7 @@ std::vector<std::string> sound_defects(const StateGraph& g, const std::function<
     // Every place a sound can reach through an opening says how it sounds.
     std::set<Key> places;
     for (const Seam& sm : g.seams()) {
-        if (!admits(g, sm, "sound")) continue;
+        if (!g.admits(sm, Channel::Sound)) continue;
         places.insert(sm.a);
         places.insert(sm.b);
     }
