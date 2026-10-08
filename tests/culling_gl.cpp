@@ -54,6 +54,26 @@ int main() {
               "a still world costs a frame nothing but drawing it: no light read, no caster listed, no index built, no look's "
               "uniform found by name, no question put to the graph");
     }
+    // A lamp lit by a still picture: eased to it, and arrived - then it
+    // lights nothing again. One lit by a picture that keeps changing, in a
+    // room not drawn here, lights nothing of this one.
+    {
+        auto& tv = g.add<sg::Surface2D>("tv", 4, 3);
+        tv.set_background(200, 120, 40);
+        room.light("glow", {3.0, 1.0, 6.0}).params.set(sg::keys::intensity, 0.2);
+        view.spill("glow", &tv, 0.5);
+        auto& other = g.add<sg::Spatial3D>("other");
+        other.light("far_glow", {0.0, 1.0, 0.0}).params.set(sg::keys::intensity, 0.2);
+        auto& flicker = g.add<sg::Surface2D>("flicker", 4, 3);
+        view.spill("far_glow", &flicker, 0.5);
+        int last = 0;
+        for (int i = 0; i < 90; ++i) {
+            flicker.set_background(i % 2 ? 250 : 10, 30, 30);
+            last = frame().lights_read;
+        }
+        std::printf("a still picture's lamp, eased: lights read %d\n", last);
+        check(last == 0, "a lamp eased to a still picture arrives, and lights nothing again; a screen in another room lights nothing here");
+    }
     behind.params.set(sg::keys::x, 3.4);
     const auto behind_moved = frame();
     check(behind_moved.shadow_maps == 0, "a thing moved behind the lamp, where it sees nothing: its map stands");

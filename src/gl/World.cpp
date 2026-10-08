@@ -731,7 +731,14 @@ void GLWorldView::ease_spills(const std::vector<PlacedRoom>& rooms) {
         const Rgb c = average_colour(*sp.from);
         const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
         const double m = std::max({c.r, c.g, c.b, 1e-4});
-        const auto toward = [](double& v, double to) { v += (to - v) * 0.25; };
+        // Eased, and arrived: where it is within a step of where it goes, it
+        // is there - an easing that never arrives changes every frame for
+        // ever, and lights its room again each time. (What it goes to, in
+        // steps of 1/512: a picture's colour moving by less lights nothing.)
+        const auto toward = [](double& v, double to) {
+            to = std::round(to * 512.0) / 512.0;
+            v = std::fabs(to - v) < 1.0 / 1024.0 ? to : v + (to - v) * 0.25;
+        };
         toward(sp.r, 0.35 + 0.65 * c.r / m);
         toward(sp.g, 0.35 + 0.65 * c.g / m);
         toward(sp.b, 0.35 + 0.65 * c.b / m);
@@ -3644,7 +3651,13 @@ uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std
         for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) h = fnv(h, bits_of(v));
         for (Key d : p.doorways) h = fnv(h, std::hash<Key>{}(d));
         const KindIndex& ix = index_of(room);
-        for (const Element* e : ix.lights) h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+        for (const Element* e : ix.lights) {
+            h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+            // A lamp lit by a picture (spill): as it is now. Only the rooms
+            // drawn here: a screen in another room lights nothing of these.
+            if (auto sp = spills_.find(e->id); sp != spills_.end() && sp->second.from && sp->second.begun)
+                for (double v : {sp->second.r, sp->second.g, sp->second.b, sp->second.intensity}) h = fnv(h, bits_of(v));
+        }
         const RoomCasters& rc = *casters[r];
         h = fnv(h, rc.flip_count);
         for (const Element* e : ix.portals) {
@@ -3663,9 +3676,6 @@ uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std
             }
         }
     }
-    for (const auto& [id, sp] : spills_)
-        if (sp.from && sp.begun)
-            for (double v : {sp.r, sp.g, sp.b, sp.intensity}) h = fnv(h, bits_of(v));
     return h;
 }
 
@@ -3681,7 +3691,11 @@ uint64_t GLWorldView::worlds_stamp() const {
         h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
         // Its lights, not all it holds: snow falling in it lets in no more
         // light than it did.
-        for (const Element* e : index_of(*wp.world).lights) h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
+        for (const Element* e : index_of(*wp.world).lights) {
+            h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
+            if (auto sp = spills_.find(e->id); sp != spills_.end() && sp->second.from && sp->second.begun)
+                for (double v : {sp->second.r, sp->second.g, sp->second.b, sp->second.intensity}) h = fnv(h, bits_of(v));
+        }
         // And the sky it lets in (through_doorways), not the look as a whole:
         // grain and clouds move every frame, and light nothing again.
         static const Key sky[] = {Key{"uAmbient"}, Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}};
