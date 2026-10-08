@@ -39,6 +39,66 @@ HalfSpace GLWorldView::far_side(const Spatial3D& host,const Element& portal,cons
     return portal_clip(host,portal,eye_of(host),guest);
 }
 
+double GLWorldView::slab_of(const Element& portal) {
+    // The wall's depth (`depth`), and a little more: the near plane cuts a
+    // leaf the eye comes within a few centimetres of.
+    return std::max(portal.params.num(Key{"depth"}, 0.34), 0.2) + 2.0 * static_cast<double>(kNear);
+}
+
+bool GLWorldView::shut_to(const Element& portal, const Vec3d& eye) {
+    if (portal.params.num(Key{"closed"}, 0.0) < 0.5) return false;
+    // (Measured as opens_from measures which side the eye is on.)
+    const Pose p = local_pose(portal);
+    const Vec3d face = upright(p) ? heading(p.yaw) : facing(p);
+    return std::fabs(dot(eye - p.position, face)) > slab_of(portal);
+}
+
+auto GLWorldView::through(const Element& portal, const Spatial3D& guest, const Element& back, const Camera& cam) const -> Through {
+    Through t;
+    if (cam.ortho > 0.0f || portal.params.has(Key{"ball"}) || back.params.has(Key{"ball"}) || is_screen(portal)) return t;
+    // The far doorway is the near one identified (a seam): its plane, its
+    // outline, as the carried eye sees them.
+    const Pose p = pose_of(guest, back);
+    const Vec3d c = p.position, n = facing(p), side = across_of(p), up = up_of(p);
+    const Vec3d eye{cam.eye.x, cam.eye.y, cam.eye.z};
+    const double d = dot(eye - c, n), away = std::fabs(d);
+    const double inset = portal_inset(portal);
+    if (away < std::max(slab_of(portal), slab_of(back)) || away <= 2.0 * inset) return t;
+    // The doorway's picture is drawn `inset` nearer the eye than its plane
+    // (portal_inset): seen from the eye, that is its outline on the plane
+    // grown about the foot of the eye by away / (away - inset).
+    const Vec3d toward = n * (d > 0.0 ? 1.0 : -1.0), foot = eye - n * d;
+    const double grow = away / (away - inset);
+    const double w = back.params.num(keys::w, 3.0) * 0.5, h = back.params.num(keys::h, 2.0) * 0.5;
+    const Vec3d f = unit(Vec3d{cam.forward.x, cam.forward.y, cam.forward.z});
+    const Vec3d middle = foot + (c - foot) * grow;
+    // Round the outline, corner after corner.
+    const double a[4] = {-1.0, 1.0, 1.0, -1.0}, b[4] = {-1.0, -1.0, 1.0, 1.0};
+    Vec3d corner[4];
+    double nearest = 1e30;
+    for (int i = 0; i < 4; ++i) {
+        const Vec3d q = c + side * (a[i] * w) + up * (b[i] * h);
+        nearest = std::min(nearest, dot(q + toward * inset - eye, f));
+        const Vec3d s = foot + (q - foot) * grow;
+        // A little wider than it is (a centimetre and a hundredth of how far
+        // off), so nothing a pixel inside its edge is lost to rounding.
+        corner[i] = s + unit(s - middle) * (0.01 + 0.01 * length(s - eye));
+    }
+    // Everything the view shows is past the doorway, so no nearer than its
+    // nearest corner: the near plane just short of that.
+    if (nearest > static_cast<double>(kNear)) t.znear = std::max(kNear, static_cast<float>(0.9 * nearest));
+    // The pyramid's sides: through the eye and each edge, facing in.
+    for (int i = 0; i < 4; ++i) {
+        const Vec3d m = cross(corner[i] - eye, corner[(i + 1) % 4] - eye);
+        const double len = length(m);
+        if (len < 1e-12) continue;
+        Vec3d k = m * (1.0 / len);
+        if (dot(k, middle - eye) < 0.0) k = k * -1.0;
+        t.sides.push_back(spatial::HalfSpace{{k.x, k.y, k.z}, -dot(k, eye)});
+    }
+    return t;
+}
+
 void GLWorldView::set_frame(const Pose& p) {
     frame_ = p;
     frame_matrix_ = gl::Mat4::translate({static_cast<float>(p.position.x),
@@ -94,7 +154,16 @@ auto GLWorldView::query_bounds(const RoomMatrix& local) const -> DrawBound {
     return bound;
 }
 
-std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Frustum& view,const gl::Vec3* shift) {
+std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Frustum& given,const gl::Vec3* shift) {
+    // Through a doorway, only what is in the pyramid from the eye through
+    // it and past its plane can be seen (cull_): the planes the GPU clips
+    // by, used here too, so what they would cut away is never sent.
+    Frustum narrowed;
+    if(!cull_.empty()) {
+        narrowed=given;
+        narrowed.planes.insert(narrowed.planes.end(),cull_.begin(),cull_.end());
+    }
+    const Frustum& view=cull_.empty()?given:narrowed;
     auto& plan=draw_plans_[&room];
     const auto& elements=room.elements();
     // Whether a thing, its bounds moved by `o`, is to be drawn: in what is

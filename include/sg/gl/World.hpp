@@ -383,6 +383,30 @@ private:
     // Of every view planned this frame, the biggest on the screen - as many
     // as the room in view says (`views_most`) - drawn before whatever shows it.
     void draw_views(const Spatial3D& world, float aspect);
+    // A doorway whose door is shut stops the view through it: its portal says
+    // so (`closed`, carried there from whatever hangs in it) and the eye is
+    // not in the doorway's own thickness - walking through a shut leaf, what
+    // is beyond is what is seen.
+    static bool shut_to(const Element& portal, const Vec3d& eye);
+    // How far either side of its plane a doorway is a wall's thickness.
+    static double slab_of(const Element& portal);
+    // A view through the doorway `portal`, seen on its far side through
+    // `back` from `cam`: everything it shows lies past the doorway, in the
+    // pyramid from the eye through it. So its near plane can stand just short
+    // of the doorway (`znear` - the depth buffer spent on the room beyond, not
+    // on the air before it), and what is drawn of it is culled by that
+    // pyramid's sides on the CPU too (`sides`). With the eye in the
+    // doorway's thickness, or through a screen or a ball, neither: kNear and
+    // no sides.
+    struct Through {
+        float znear = kNear;
+        std::vector<spatial::HalfSpace> sides;
+    };
+    Through through(const Element& portal, const Spatial3D& guest, const Element& back, const Camera& cam) const;
+    // While a view through a doorway is drawn: the planes besides the
+    // picture's own that what it draws is culled by (its pyramid's sides,
+    // the doorway's cut) - the same planes the GPU clips by, used on the CPU.
+    std::vector<spatial::HalfSpace> cull_;
 
     void set_frame(const Pose& p);
 
