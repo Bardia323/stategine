@@ -149,7 +149,8 @@ void guards() {
 
     // What the guard reads is the state it leaves and the event: nothing else is a word of it.
     const auto bare = sg::dsl::compile_source("state a\nstate b\ninitial a\ntransition a -[go]-> b when stock > 0\n");
-    check(!bare.ok() && has(bare.report(), "neither"), "a bare word is neither the state left nor the event: " + bare.report());
+    const bool bare_refused = !bare.ok() && has(bare.report(), "neither");
+    check(bare_refused, "a bare word is neither the state left nor the event" + (bare_refused ? std::string() : ": " + bare.report()));
     const auto stray = sg::dsl::compile_source("state a\nstate b\ninitial a\ntransition a -[go]-> b when from[shelf].n > 0\n");
     check(!stray.ok() && has(stray.report(), "no element shelf"), "an element the state left does not have is named");
     // A `when` of its own, on the next line, is still an event's mapping.
@@ -166,9 +167,9 @@ initial room
 
 state room {
     speed = 2
-    element ball { x = 0 }
+    element ball { x = 0 v = 2 }
     element tv : portal { w = 1 h = 1 open = true }
-    ball -> ball : roll(dt) on room.tick { x = x + speed * dt }
+    ball -> ball : roll(dt) on room.tick { x = x + v * dt }
 }
 
 state show {
@@ -243,8 +244,10 @@ void reload_law() {
     check(line_time(g) == t0 && g.revision() == rev, "every state's time as it was, and the graph's revision");
 
     // A changed source: only what changed is made again.
-    const std::string v2_text = edited(edited(edited(kRoom, "x = x + speed * dt", "x = x + 2 * speed * dt"), "speed = 2", "speed = 9"),
-                                       "element ball { x = 0 }", "element ball { x = 0 }\n    element ball2 { y = 5 }");
+    // The arrow made twice as fast, the ball's start made otherwise, and a ball more.
+    const std::string v2_text = edited(edited(edited(kRoom, "x = x + v * dt", "x = x + 2 * v * dt"), "element ball { x = 0 v = 2 }",
+                                              "element ball { x = 0 v = 2 }\n    element ball2 { y = 5 }"),
+                                       "v = 2", "v = 9");
     const sg::dsl::Compiled v2 = live(v2_text, g);
     check(v2.ok(), "the edited source compiles: " + v2.report());
     const sg::State* room_was = &g.state(sg::Key{"room"});
@@ -252,7 +255,7 @@ void reload_law() {
     check(r1.ok && r1.changed == std::vector<std::string>{"state room"}, "reloaded edited, the room alone is made again: " + r1.why);
     const sg::State& room = g.state(sg::Key{"room"});
     check(&room == room_was, "the same state, kept in place");
-    check(room.params().num("speed") == 2.0, "its params carried: the speed it had, not the source's new start");
+    check(room.element(sg::Key{"ball"}).params.num("v") == 2.0, "its params carried: the speed the ball had, not the source's new start");
     check(room.element(sg::Key{"ball"}).params.num("x") == x0, "the ball where it was");
     check(room.find(sg::Key{"ball2"}) && room.element(sg::Key{"ball2"}).params.num("y") == 5.0, "what the source newly says is added");
     check(line_time(g) == t0, "its time where it was");
@@ -278,7 +281,7 @@ void reload_law() {
     // All or nothing.
     const std::vector<std::string> facts_before = sg::dsl::facts(g);
     const Seen held = seen(g);
-    const std::string v4_text = edited(v3_text, "on room.tick { x = x + 2 * speed * dt }", "on room.tick { x = x + 2 * speed * dt }\n    ball -> ball : spin on room.spin native nobody");
+    const std::string v4_text = edited(v3_text, "on room.tick { x = x + 2 * v * dt }", "on room.tick { x = x + 2 * v * dt }\n    ball -> ball : spin on room.spin native nobody");
     const sg::dsl::Compiled v4 = live(v4_text, g);
     const sg::dsl::Reloaded r3 = sg::dsl::reload(v3.plan, v4.plan, g, {}, &b);
     check(!r3.ok && has(r3.why, "nobody"), "a native nobody registered is refused: " + r3.why);

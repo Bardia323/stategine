@@ -82,7 +82,7 @@ std::string embed_fact(const Embedding& e) {
                        : e.propagate == Propagation::Manual ? "manual" : "onchange";
     return "embed " + e.name.str() + " host=" + e.host.str() + " portal=" + e.portal.str() + " guest=" + e.guest.str() +
            " subject=" + dash(e.subject) + " in=" + dash(e.in) + " out=" + dash(e.out) + " sync=" + sync + " propagate=" + prop +
-           " focus=" + (e.focus ? "1" : "0") + " follows=" + (e.follows ? "1" : "0");
+           " focus=" + (e.focus ? "1" : "0") + " follows=" + (e.follows ? "1" : "0") + (e.recurses ? " recurses=1" : "");
 }
 
 std::string list_text(const std::vector<Key>& ks) {

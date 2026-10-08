@@ -168,10 +168,13 @@ state camera : camera {
 film camera -> room
     rig tripod
 
+# The monitor shows what the camera films, and the camera films the room the
+# monitor stands in: a world seen inside itself, and meant.
 embed room.monitor -> camera
     sync live
     focus false
     follows true
+    recurses
 
 # --- someone in the room, sitting: what they say the camera hears ------------------------
 state player {

@@ -251,6 +251,7 @@ private:
         }
         if (!e.focus) o << "        e.focus = false;\n";
         if (e.follows) o << "        e.follows = true;\n";
+        if (e.recurses) o << "        e.recurses = true;\n";
         o << "        graph.embed(std::move(e));\n" << I() << "}\n";
     }
     void step(std::ostream& o, const plan::Glue& g) {
