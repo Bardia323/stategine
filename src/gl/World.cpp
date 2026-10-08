@@ -3438,28 +3438,44 @@ void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
     // frame shown, next frame) and then put on the output as it is.
     if (f.smear) smear_hist_[1 - smear_front_].bind();
     else to_output();
+    // The textures are put back as the composite left them (its picture,
+    // its bloom, the depth if it read it, that unit last): what comes after
+    // finds the units as it always did, finished or not.
+    const auto as_composite_left = [&] {
+        scene_src_->bind_color(0);
+        bloom_a_.bind_color(1);
+        if (fog_depth_) {
+            depth_.bind_depth(2);
+        } else if (f.smear) {
+            // (Nor is the history left on a unit: it is drawn into next frame.)
+            gl::glActiveTexture(gl::GL_TEXTURE0 + 2u);
+            gl::glBindTexture(gl::GL_TEXTURE_2D, 0);
+            gl::glActiveTexture(gl::GL_TEXTURE0 + 1u);
+        }
+    };
     p->use();
     p->set("uFrame", 0);
     p->set("uDepth", 1);
-    p->set("uHistory", 2);
+    // (Not smearing, the history is never read: it shares the frame's unit.)
+    p->set("uHistory", f.smear ? 2 : 0);
     post_frame_.bind_color(0);
     depth_.bind_depth(1);
     if (f.smear) smear_hist_[smear_front_].bind_color(2);
-    else post_frame_.bind_color(2);  // (read by nothing: uSmearKeep is 0)
     p->set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
     p->set("uDeband", f.deband);
     p->set("uSmearKeep", keep ? f.keep : 0.0f);
     p->set("uSmearBlur", f.blur);
     screen_.draw();
-    gl::glActiveTexture(gl::GL_TEXTURE0);
-    if (!f.smear) return;
-    smear_front_ = 1 - smear_front_;
-    smear_valid_ = true;
-    to_output();
-    present_prog_->use();
-    present_prog_->set("uFrame", 0);
-    smear_hist_[smear_front_].bind_color(0);
-    screen_.draw();
+    if (f.smear) {
+        smear_front_ = 1 - smear_front_;
+        smear_valid_ = true;
+        to_output();
+        present_prog_->use();
+        present_prog_->set("uFrame", 0);
+        smear_hist_[smear_front_].bind_color(0);
+        screen_.draw();
+    }
+    as_composite_left();
 }
 
 void GLWorldView::advance_fades() {

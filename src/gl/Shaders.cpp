@@ -1383,24 +1383,36 @@ void main() {
 const char* deband_glsl() {
     return R"(
 uniform float uDeband;
-// Only where nothing was drawn (depth 1: the clear colour). Each ring is
-// turned from the last by the golden angle, so the taps lay no cross.
+// Nothing drawn here: the depth the view was cleared to. (Read back from a
+// 24-bit buffer the clear may come as a hair under 1; nothing drawn stands
+// that far.)
+bool deband_empty(vec2 uv) { return texture(uDepth, uv).r >= 0.9999999; }
+// Only where nothing was drawn, and nothing drawn is within a pixel: an
+// antialiased edge's pixel may say "empty" by its one depth while its colour
+// holds some of what was drawn, so neither it nor any pixel beside a drawn
+// one is changed, and none is taken into a ring. Each ring is turned from
+// the last by the golden angle, so the taps lay no cross; a ring is taken
+// only if its taps, and the pixel beyond each, are empty.
 vec3 deband(vec2 uv, vec3 c) {
-    if (uDeband <= 0.0 || texture(uDepth, uv).r < 1.0) return c;
+    if (uDeband <= 0.0 || !deband_empty(uv)) return c;
+    if (!deband_empty(uv + vec2(uTexel.x, 0.0)) || !deband_empty(uv - vec2(uTexel.x, 0.0)) ||
+        !deband_empty(uv + vec2(0.0, uTexel.y)) || !deband_empty(uv - vec2(0.0, uTexel.y))) return c;
     vec3 smooth_c = c;
     float r = 1.0, a = 0.0;
     for (int i = 0; i < 8; ++i) {
-        vec2 d = vec2(cos(a), sin(a)) * r;   // in pixels
-        vec2 o = d * uTexel, p = vec2(-d.y, d.x) * uTexel;
-        vec2 t0 = uv + o, t1 = uv - o, t2 = uv + p, t3 = uv - p;
-        float near = min(min(texture(uDepth, t0).r, texture(uDepth, t1).r), min(texture(uDepth, t2).r, texture(uDepth, t3).r));
-        if (near < 1.0) break;
-        vec3 sum = texture(uFrame, t0).rgb + texture(uFrame, t1).rgb + texture(uFrame, t2).rgb + texture(uFrame, t3).rgb;
+        vec2 d = vec2(cos(a), sin(a));       // a unit step, in pixels
+        vec2 e = vec2(-d.y, d.x);
+        vec2 o = d * r * uTexel, p = e * r * uTexel, o1 = d * (r + 1.0) * uTexel, p1 = e * (r + 1.0) * uTexel;
+        if (!(deband_empty(uv + o) && deband_empty(uv - o) && deband_empty(uv + p) && deband_empty(uv - p) &&
+              deband_empty(uv + o1) && deband_empty(uv - o1) && deband_empty(uv + p1) && deband_empty(uv - p1))) break;
+        vec3 sum = texture(uFrame, uv + o).rgb + texture(uFrame, uv - o).rgb + texture(uFrame, uv + p).rgb + texture(uFrame, uv - p).rgb;
         smooth_c = (smooth_c + sum) / 5.0;
         r *= 1.5;
         a += 2.3999632;
     }
-    return mix(c, smooth_c, min(uDeband, 1.0));
+    // A band is a step of a level or two; more than that is a picture, and
+    // is kept.
+    return c + clamp(smooth_c - c, vec3(-2.0 / 255.0), vec3(2.0 / 255.0)) * min(uDeband, 1.0);
 }
 )";
 }
@@ -1430,7 +1442,8 @@ vec3 blur9(vec2 uv) {
 }
 
 void main() {
-    vec3 now = deband(vUV, texture(uFrame, vUV).rgb);
+    // (The pixel itself, exactly: what deband leaves is the picture as composited.)
+    vec3 now = deband(vUV, texelFetch(uFrame, ivec2(gl_FragCoord.xy), 0).rgb);
     if (uSmearKeep > 0.0) now = mix(now, blur9(vUV), uSmearKeep);
     FragColor = vec4(now, 1.0);
 })";
