@@ -59,11 +59,11 @@ const Morphism& State::add_morphism(Morphism m) {
 }
 
 const Morphism& State::arrow(Key name, Key from, Key to, Key trigger, Morphism::Handler fn, Key native) {
-    return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}, nullptr, native});
+    return add_morphism(Morphism{name, from, to, trigger, std::move(fn), {}, nullptr, native, nullptr});
 }
 
 const Morphism& State::loop(Key name, Key on, Key trigger, Morphism::Handler fn, Key native) {
-    return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}, nullptr, native});
+    return add_morphism(Morphism{name, on, Key{}, trigger, std::move(fn), {}, nullptr, native, nullptr});
 }
 
 const Morphism& State::affine(Key name, Key from, Key to, Key trigger, Affine a) {
@@ -81,6 +81,51 @@ const Morphism& State::affine(Key name, Key from, Key to, Key trigger, Affine a)
 const Morphism* State::morphism(Key name) const {
     auto it = by_name_.find(name);
     return it == by_name_.end() ? nullptr : &morphisms_[it->second];
+}
+
+const Morphism& State::with_footprint(Key arrow, Footprint fp) {
+    auto it = by_name_.find(arrow);
+    if (it == by_name_.end()) throw std::runtime_error("no arrow " + arrow.str() + " in state " + id_.str());
+    restructured("with_footprint");
+    Morphism& m = morphisms_[it->second];
+    m.footprint = std::make_shared<const Footprint>(std::move(fp));
+    return m;
+}
+
+void State::refers(Key key, Reference r) {
+    restructured("refers");
+    for (auto& kv : references_)
+        if (kv.first == key) {
+            kv.second = r;
+            return;
+        }
+    references_.emplace_back(key, r);
+}
+
+const std::vector<Key>& State::referrers(Key key, Key target) const {
+    static const std::vector<Key> none;
+    RefIndex& ix = ref_index_[key];
+    // Still what it was made from: nothing anywhere changed since it was
+    // last looked at, or no element's params have.
+    bool fresh = ix.built && ix.structure == structure_ && ix.stamps.size() == elements_.size();
+    if (fresh && ix.seen != last_stamp()) {
+        for (std::size_t i = 0; fresh && i < elements_.size(); ++i) fresh = ix.stamps[i] == elements_[i].params.stamp();
+        if (fresh) ix.seen = last_stamp();
+    }
+    if (!fresh) {
+        ix.by_target.clear();
+        ix.stamps.resize(elements_.size());
+        for (std::size_t i = 0; i < elements_.size(); ++i) {
+            const Element& e = elements_[i];
+            ix.stamps[i] = e.params.stamp();
+            if (const std::string* t = e.params.text(key); t && !t->empty()) ix.by_target[Key{*t}].push_back(e.id);
+        }
+        ix.structure = structure_;
+        ix.seen = last_stamp();
+        ix.built = true;
+    }
+    auto at = ix.by_target.find(target);
+    return at == ix.by_target.end() ? none : at->second;
 }
 
 const Morphism& State::compose(Key name, Key f_name, Key g_name, Key trigger) {

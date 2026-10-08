@@ -62,6 +62,8 @@ Embedding film_embedding(Key camera, Key world, Key rig) {
     e.focus = false;
     e.follows = true;
     if (!rig.empty()) e.propagate = Propagation::Continuous;
+    // Its rig's functor is made for it alone: taken away, it goes too.
+    e.cleanup = Cleanup::Cascade;
     return e;
 }
 
