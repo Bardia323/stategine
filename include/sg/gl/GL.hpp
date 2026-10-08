@@ -75,6 +75,7 @@ constexpr GLenum GL_CLAMP_TO_BORDER = 0x812D;
 constexpr GLenum GL_DEPTH_COMPONENT24 = 0x81A6;
 constexpr GLenum GL_MULTISAMPLE = 0x809D;
 constexpr GLenum GL_RGBA16F = 0x881A;
+constexpr GLenum GL_RGBA32F = 0x8814;
 constexpr GLenum GL_RGB16F = 0x881B;
 constexpr GLenum GL_RG = 0x8227;
 constexpr GLenum GL_RG16F = 0x822F;

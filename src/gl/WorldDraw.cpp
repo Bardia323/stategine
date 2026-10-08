@@ -451,27 +451,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uLightCount", static_cast<int>(lights.size()));
         p.set("uShadowCount", unshadowed ? 0 : static_cast<int>(shadowed));
         for (std::size_t i = 0; i < lights.size(); ++i) {
-            const Light& l = lights[i];
-            p.set(light_uniform(i, 0), l.pos);
-            p.set(light_uniform(i, 1), l.dir);
-            p.set(light_uniform(i, 2), l.color);
-            p.set(light_uniform(i, 3), l.power);
-            p.set(light_uniform(i, 4), std::cos(l.inner));
-            p.set(light_uniform(i, 5), std::cos(l.outer));
-            p.set(light_uniform(i, 6), l.sun ? 1.0f : 0.0f);
-            p.set(light_uniform(i, 7), l.floor);
-            // (1: lit as bounce and standing in for it; 0.6: lit as bounce only.)
-            p.set(light_uniform(i, 8), l.indirect ? (l.bounce ? 1.0f : 0.6f) : 0.0f);
-            p.set(light_uniform(i, 9), l.falloff);
+            lamp_to(p, i, lights[i]);
             p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(i, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
             p.set(light_uniform(i, 18), cube_of[i]);
-            p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
-            p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
-            p.set(light_uniform(i, 13), l.open);
-            p.set(light_uniform(i, 14), l.scatter);
-            p.set(light_uniform(i, 15), l.frame_w, l.frame_h, l.frame_soft, l.frame_w > 0.0f && l.frame_h > 0.0f ? 1.0f : 0.0f);
-            p.set(light_uniform(i, 16), l.range);
         }
         p.set("uShadowMaps", 1);
     };

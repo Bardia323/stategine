@@ -817,9 +817,14 @@ across, eight at most), relit before each frame (`light_rooms`) - and so do
 a room's declared probes that hold no bake. Relit, not baked: what each box
 sees every way - where each surface is, which way it faces, its diffuse
 colour, the scene shader drawing `uSurfaceOnly` - is drawn once for the
-room's shell, lamps or none; a lamp's light on that, shadowed by a cube of
-distances drawn from the lamp (a sun's: one view down its way), is projected
-back to the boxes, and their light on it again for the second bounce. A lamp
+room's shell, lamps or none, into pictures kept on the card; a light's light
+on that - by the scene shader's own lamp code, shadowed by a cube of
+distances drawn from the lamp (a sun's: one view down its way) - is taken to
+harmonics on the card, with the boxes' light on it again for the second
+bounce, and read back a frame on. The lights are the room's own lamps and
+whatever its openings let in from beyond them (`through_doorways`: a world's
+sun and sky, another room's lamps), gated by the opening; an opening's
+`light`, 0 to 1, is how much it lets in. A lamp
 moved or turned costs its own cube and a little arithmetic; one that did not,
 nothing. What moves (its params' stamp) is left out of what the boxes see
 until it has stood still a moment, the room quiet a moment more: a chair put

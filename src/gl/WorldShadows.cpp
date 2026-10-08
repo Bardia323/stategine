@@ -74,7 +74,7 @@ uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std
             h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
             // What stands in a doorway lets less through (covered): what
             // moves near one is part of its light.
-            if (!e->alive || is_screen(*e) || e->params.num(Key{"light"}, 1.0) < 0.5) continue;
+            if (!e->alive || is_screen(*e) || e->params.num(Key{"light"}, 1.0) <= 0.0) continue;
             auto it = worlds_.find(e->id);
             if (it == worlds_.end() || !it->second.world || rc.movers.empty()) continue;
             const Pose door = pose_of(room, *e);

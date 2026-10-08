@@ -198,6 +198,15 @@ uniform mat4  uAirUnproject;    // the view's clip space back to the world
 uniform vec3  uViewPos;
 uniform float uFogDensity;      // the air, as the scene fogs it: thick
 uniform float uFogStart;        // and clear near the eye
+// How much of the way to `d` is in the air that begins `start` from the
+// eye: eased in over half `start` either side of where it begins, so the
+// place it begins draws no line (on a ceiling, a ring round the eye).
+float air_past(float d, float start) {
+    float w = 0.5 * start;
+    float x = d - start;
+    if (w <= 0.0) return max(x, 0.0);
+    return x >= w ? x : (x <= -w ? 0.0 : (x + w) * (x + w) / (4.0 * w));
+}
 uniform float uScatter;         // how much of the light through it a metre of it scatters
 uniform float uScatterAhead;    // how much of that goes on ahead (-1..1, 0 every way alike)
 uniform vec4  uAirClip;         // only the air on this plane's side is this view's (a doorway's far side)
@@ -256,7 +265,7 @@ vec3 slice_light(vec3 dir, float k, float down) {
     lit /= float(steps);
     // (Pi: the lights carry it folded in, as the scene's diffuse does.)
     float m = 0.5 * (a + b);
-    float t = exp(-uFogDensity * max(m - uFogStart, 0.0));
+    float t = exp(-uFogDensity * air_past(m, uFogStart));
     float near = uFogStart > 0.0 ? smoothstep(0.0, uFogStart, m) : 1.0;
     vec3 s = lit * (3.14159265 * uScatter * (b - a) * t * near);
     return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
@@ -301,6 +310,156 @@ void main() {
 }
 )";
 }
+
+// --- relighting a room's light from all round (GLWorldView::relight_room) ----------
+//
+// What each box sees, a box a row of six faces (`size` square each, rows
+// from the bottom), lit by one light - its own (the scene's light_reach, as
+// light 0) shadowed by how far the light sees (a lamp's six faces in a row,
+// or one view down a sun's way) - and, after the first bounce, by the boxes'
+// light as the scene shader blends them.
+const char* relight_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+)") + lights_glsl() + R"(
+uniform sampler2D uWhere;    // where each surface is
+uniform sampler2D uFacing;   // which way it faces (none: no surface)
+uniform sampler2D uScatter;  // what of the light it scatters
+uniform sampler2D uFar;      // how far the light sees, every way
+uniform int   uFarSun;       // 1: one view down a sun's way; 0: a lamp's six faces in a row
+uniform int   uFarSize;
+uniform vec3  uFarAt;        // where it sees from
+uniform vec3  uFarF, uFarR, uFarU;
+uniform float uFarT;         // a sun's view: the tangent of its half-angle
+uniform int   uBoxes;
+uniform vec4  uBoxAt[8];     // each box's middle, and its turn
+uniform vec3  uBoxHalf[8];
+uniform vec3  uBoxLo[8];
+uniform vec3  uBoxHi[8];
+uniform sampler2D uBefore;   // the boxes' light, the bounce before: nine across, a face of a box up (relight_sh_fs)
+uniform int   uBounce;       // 1: and the boxes' light on it
+out vec4 FragColor;
+
+const vec3 kFaceF[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+const vec3 kFaceU[6] = vec3[6](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 0));
+
+// Whether the light reaches `p` with nothing in the way.
+float seen_by_light(vec3 p) {
+    vec3 d = p - uFarAt;
+    float len = length(d);
+    ivec2 q;
+    if (uFarSun == 1) {
+        float z = dot(d, uFarF);
+        if (z <= 0.0) return 0.0;
+        vec2 uv = vec2(dot(d, uFarR), dot(d, uFarU)) / (z * uFarT);
+        if (abs(uv.x) >= 1.0 || abs(uv.y) >= 1.0) return 1.0;  // beyond what its shadow holds
+        q = clamp(ivec2((uv + 1.0) * 0.5 * float(uFarSize)), ivec2(0), ivec2(uFarSize - 1));
+    } else {
+        vec3 a = abs(d);
+        int f = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1) : a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5);
+        vec3 r = normalize(cross(kFaceF[f], kFaceU[f]));
+        float z = dot(d, kFaceF[f]);
+        vec2 uv = vec2(dot(d, r), dot(d, kFaceU[f])) / z;
+        q = clamp(ivec2((uv + 1.0) * 0.5 * float(uFarSize)), ivec2(0), ivec2(uFarSize - 1));
+        q.x += f * uFarSize;
+    }
+    float seen = texelFetch(uFar, q, 0).r;
+    return seen <= 0.0 || len <= seen + 0.05 + 0.03 * (uFarSun == 1 ? 1.0 : len) ? 1.0 : 0.0;
+}
+
+// How much box `i` holds `p`: the scene shader's probe_weight.
+float box_weight(int i, vec3 p) {
+    vec3 d = p - uBoxAt[i].xyz;
+    float c = cos(uBoxAt[i].w), s = sin(uBoxAt[i].w);
+    vec3 q = vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+    vec3 a = clamp(1.0 + (q + uBoxHalf[i]) / max(uBoxLo[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 b = clamp(1.0 + (uBoxHalf[i] - q) / max(uBoxHi[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 w = a * b;
+    w = w * w * (3.0 - 2.0 * w);
+    return w.x * w.y * w.z;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec3 n = texelFetch(uFacing, px, 0).xyz;
+    if (length(n) < 0.5) {
+        FragColor = vec4(0.0);
+        return;
+    }
+    n = normalize(n);
+    vec3 p = texelFetch(uWhere, px, 0).xyz;
+    vec3 albedo = texelFetch(uScatter, px, 0).rgb;
+    vec3 l;
+    float reach = light_reach(0, p, l);
+    float ndl = dot(n, l);
+    vec3 c = reach > 0.0 && ndl > 0.0 ? albedo * uLightColor[0] * (reach * ndl * seen_by_light(p)) : vec3(0.0);
+    if (uBounce == 1) {
+        // The boxes' light on it, as a surface facing `n` is given it (2/3
+        // and 1/4 on the finer bands), blended by how much each holds it.
+        float b[9] = float[9](0.282095, 0.488603 * n.y * (2.0 / 3.0), 0.488603 * n.z * (2.0 / 3.0), 0.488603 * n.x * (2.0 / 3.0),
+                              1.092548 * n.x * n.y * 0.25, 1.092548 * n.y * n.z * 0.25, 0.315392 * (3.0 * n.z * n.z - 1.0) * 0.25,
+                              1.092548 * n.x * n.z * 0.25, 0.546274 * (n.x * n.x - n.y * n.y) * 0.25);
+        vec3 sum = vec3(0.0);
+        float total = 0.0;
+        for (int i = 0; i < 8; ++i) {
+            if (i >= uBoxes) break;
+            float w = box_weight(i, p);
+            if (w <= 0.0) continue;
+            vec3 e = vec3(0.0);
+            for (int k = 0; k < 9; ++k)
+                for (int f = 0; f < 6; ++f) e += texelFetch(uBefore, ivec2(k, i * 6 + f), 0).rgb * b[k];
+            sum += max(e, vec3(0.0)) * w;
+            total += w;
+        }
+        if (total > 0.0) c += albedo * sum * (min(total, 1.0) / total);
+    }
+    FragColor = vec4(c, 1.0);
+}
+)";
+    return source.c_str();
+}
+
+// The light a box sees, every way, as nine harmonics: a pixel a harmonic
+// (across) and a face of a box (up: six a box), each the sum over the face
+// of the light seen that way times the harmonic there, over the solid angle
+// a texel covers (Sh9::add, the same basis) - a box's six added up after.
+const char* relight_sh_fs() {
+    return R"(#version 330 core
+uniform sampler2D uLight;   // what each box sees, lit (relight_fs)
+uniform int uSize;
+out vec4 FragColor;
+const vec3 kFaceF[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+const vec3 kFaceU[6] = vec3[6](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 0));
+float basis(int k, vec3 d) {
+    if (k == 0) return 0.282095;
+    if (k == 1) return 0.488603 * d.y;
+    if (k == 2) return 0.488603 * d.z;
+    if (k == 3) return 0.488603 * d.x;
+    if (k == 4) return 1.092548 * d.x * d.y;
+    if (k == 5) return 1.092548 * d.y * d.z;
+    if (k == 6) return 0.315392 * (3.0 * d.z * d.z - 1.0);
+    if (k == 7) return 1.092548 * d.x * d.z;
+    return 0.546274 * (d.x * d.x - d.y * d.y);
+}
+void main() {
+    int k = int(gl_FragCoord.x), row = int(gl_FragCoord.y);
+    int box = row / 6, f = row - box * 6;
+    float texel = 2.0 / float(uSize);
+    vec3 sum = vec3(0.0);
+    vec3 r = normalize(cross(kFaceF[f], kFaceU[f]));
+    for (int y = 0; y < uSize; ++y)
+        for (int x = 0; x < uSize; ++x) {
+            vec3 c = texelFetch(uLight, ivec2(f * uSize + x, box * uSize + y), 0).rgb;
+            if (c == vec3(0.0)) continue;
+            float u = (float(x) + 0.5) * texel - 1.0, v = (float(y) + 0.5) * texel - 1.0;
+            vec3 d = normalize(kFaceF[f] + r * u + kFaceU[f] * v);
+            float w = texel * texel / pow(1.0 + u * u + v * v, 1.5);
+            sum += c * (basis(k, d) * w);
+        }
+    FragColor = vec4(sum, 1.0);
+}
+)";
+}
+
 
 const char* scene_fs() {
     static const std::string source = std::string(R"(#version 330 core
@@ -360,6 +519,15 @@ uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 uniform float uFogStart;      // how far from the eye the air begins
+// How much of the way to `d` is in the air that begins `start` from the
+// eye: eased in over half `start` either side of where it begins, so the
+// place it begins draws no line (on a ceiling, a ring round the eye).
+float air_past(float d, float start) {
+    float w = 0.5 * start;
+    float x = d - start;
+    if (w <= 0.0) return max(x, 0.0);
+    return x >= w ? x : (x <= -w ? 0.0 : (x + w) * (x + w) / (4.0 * w));
+}
 uniform vec4  uHostFog;       // seen through a doorway from another world: its air (density, start, full, and 1)
 uniform vec3  uHostFogColor;
 uniform vec4  uDoorPlane;     // and the doorway's plane, here: normal and offset
@@ -1340,7 +1508,8 @@ void main() {
         float dn = dot(uDoorPlane.xyz, to_frag / max(len, 1e-5));
         if (abs(dn) > 1e-5) t = clamp(-(dot(uDoorPlane.xyz, uViewPos) + uDoorPlane.w) / dn, 0.0, len);
     }
-    float fog = 1.0 - exp(-uFogDensity * max(len - max(t, uFogStart), 0.0));
+    // (This side's air from the doorway on, eased in where it begins.)
+    float fog = 1.0 - exp(-uFogDensity * max(air_past(len, uFogStart) - air_past(t, uFogStart), 0.0));
     float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
     // Air that takes all at last is the background too: as far as it goes,
     // what is seen is what is beyond the last thing drawn.
@@ -1373,6 +1542,15 @@ const char* fog_bloom_glsl() {
 uniform sampler2D uDepth;
 uniform vec4  uDepthView;
 uniform vec2  uAirThick;
+// How much of the way to `d` is in the air that begins `start` from the
+// eye: eased in over half `start` either side of where it begins, so the
+// place it begins draws no line (on a ceiling, a ring round the eye).
+float air_past(float d, float start) {
+    float w = 0.5 * start;
+    float x = d - start;
+    if (w <= 0.0) return max(x, 0.0);
+    return x >= w ? x : (x <= -w ? 0.0 : (x + w) * (x + w) / (4.0 * w));
+}
 uniform float uFogBloom;
 uniform float uFogBloomCap;
 float fog_bloom(vec2 uv) {
@@ -1383,7 +1561,7 @@ float fog_bloom(vec2 uv) {
     // is as far as the view goes.
     float z = d >= 1.0 ? f : 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
     vec2 p = (uv * 2.0 - 1.0) * vec2(uDepthView.z * uDepthView.w, uDepthView.z);
-    float tau = uAirThick.x * max(z * length(vec3(p, 1.0)) - uAirThick.y, 0.0);
+    float tau = uAirThick.x * air_past(z * length(vec3(p, 1.0)), uAirThick.y);
     return uFogBloom * min(tau, uFogBloomCap > 0.0 ? uFogBloomCap : 3.0);
 }
 )";

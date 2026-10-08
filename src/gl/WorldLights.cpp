@@ -18,6 +18,26 @@ void GLWorldView::aim_rays(const Spatial3D& first) {
     rays_tan_ = std::tan(half);
 }
 
+void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l) {
+    p.set(light_uniform(i, 0), l.pos);
+    p.set(light_uniform(i, 1), l.dir);
+    p.set(light_uniform(i, 2), l.color);
+    p.set(light_uniform(i, 3), l.power);
+    p.set(light_uniform(i, 4), std::cos(l.inner));
+    p.set(light_uniform(i, 5), std::cos(l.outer));
+    p.set(light_uniform(i, 6), l.sun ? 1.0f : 0.0f);
+    p.set(light_uniform(i, 7), l.floor);
+    // (1: lit as bounce and standing in for it; 0.6: lit as bounce only.)
+    p.set(light_uniform(i, 8), l.indirect ? (l.bounce ? 1.0f : 0.6f) : 0.0f);
+    p.set(light_uniform(i, 9), l.falloff);
+    p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
+    p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
+    p.set(light_uniform(i, 13), l.open);
+    p.set(light_uniform(i, 14), l.scatter);
+    p.set(light_uniform(i, 15), l.frame_w, l.frame_h, l.frame_soft, l.frame_w > 0.0f && l.frame_h > 0.0f ? 1.0f : 0.0f);
+    p.set(light_uniform(i, 16), l.range);
+}
+
 auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> std::vector<Light> {
     std::vector<Light> out;
     for (const Element* ep : index_of(room).lights) {
@@ -43,7 +63,10 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
     if (!placed.room || baking_) return out;
     const Spatial3D& room = *placed.room;
     for (const auto& e : room.elements()) {
-        if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
+        // (`light`: how much of what is beyond it an opening lets in, 0 to 1 -
+        // a curtain half drawn, a window's day turned down; 0, none.)
+        const float pass = static_cast<float>(std::clamp(e.params.num(Key{"light"}, 1.0), 0.0, 1.0));
+        if (e.kind != kinds::portal || !e.alive || is_screen(e) || pass <= 0.0f) continue;
         const auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !it->second.carry || !declared_world(room,e,*it->second.world)) continue;
         const Spatial3D& far = *it->second.world;
@@ -78,8 +101,9 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
             l.gated = true;
             l.gate = std::hash<Key>{}(e.id);
             l.gate_at = at, l.gate_across = across_door, l.gate_in = into, l.gate_w = half_w, l.gate_h = half_h;
-            // In the shadow of what stands in the way, none of it gets through.
-            l.open = open, l.floor = 0.0f;
+            // In the shadow of what stands in the way, none of it gets through;
+            // of the rest, as much as the opening lets in.
+            l.open = open * pass, l.floor = 0.0f;
             // Shut, nothing gets through - but onto the leaf itself, which is
             // half in that room.
             if (shut) l.hung_only = true;
@@ -143,6 +167,9 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
             out.push_back(glow);
         }
     }
+    // (What comes in before what only falls on a shut door's leaf: a window's
+    // sky is not left out for a closed door's lamps.)
+    std::stable_partition(out.begin(), out.end(), [](const Light& l) { return !l.hung_only; });
     if (out.size() > 8) out.resize(8);
     return out;
 }
@@ -164,7 +191,7 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
     if (placed.room)
         for (const auto& e : placed.room->elements()) {
             if (count >= 4) break;
-            if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
+            if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) <= 0.0) continue;
             const auto it = worlds_.find(e.id);
             if (it == worlds_.end() || !it->second.world || !declared_world(*placed.room,e,*it->second.world)) continue;
             const Pose door = pose_of(*placed.room, e);

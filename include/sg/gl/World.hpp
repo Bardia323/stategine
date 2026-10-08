@@ -547,7 +547,7 @@ private:
     Key solo_;
     const std::vector<Sh9>* probe_override_ = nullptr;
     std::unique_ptr<GLWorldView> baker_;  // the view that bakes, kept
-    std::unique_ptr<GLWorldView> lamp_seer_;  // the view that draws lamps' cubes of distances (relight_probes), kept
+    std::unique_ptr<GLWorldView> lamp_seer_, sun_seer_;  // the view that draws lamps' cubes of distances (relight_probes), kept
     // The room seen every way from `at`, lit as baking says, as harmonics.
     Sh9 capture(const Spatial3D& room, const Vec3d& at, int size);
 
@@ -557,29 +557,41 @@ private:
     // The lamp a view is drawn from (its cube of distances): its own
     // fitting is not drawn.
     Key own_lamp_;
-    // The room seen every way from `at`, `size` a face, as the shader writes
-    // it in `mode`: six faces of RGBA floats, rows from the bottom; nothing
-    // nearer than `znear`.
-    std::vector<float> see_round(const Spatial3D& room, const Vec3d& at, int size, int mode, float znear = kNear);
-    // One view of it, `fov` high and wide, as see_round draws each face.
-    std::vector<float> see_from(const Spatial3D& room, const Vec3d& at, const Vec3d& forward, const Vec3d& up, float fov, int size,
-                                int mode, float znear = kNear);
-    // What a probe sees one way: a surface, the way to it, its solid angle.
-    struct ProbeTexel {
-        Vec3d at, n, dir;
-        Rgb albedo;
-        double w = 0;
-        std::array<float, kMaxProbes> held{};  // how much each probe holds it, as the scene shader blends them
+    // One view of a room, `fov` high and wide, `size` square, as the shader
+    // writes it in `mode`, nothing nearer than `znear` - into `into` at
+    // (`x`, `y`), on the card: what a relight is drawn from.
+    void see_into(const Spatial3D& room, const Vec3d& at, const Vec3d& forward, const Vec3d& up, float fov, int size, int mode,
+                  float znear, const gl::RenderTarget& into, int x, int y);
+    // A target that lets go of what it holds with whatever holds it.
+    struct OwnedTarget {
+        gl::RenderTarget t;
+        OwnedTarget() = default;
+        OwnedTarget(const OwnedTarget&) = delete;
+        OwnedTarget& operator=(const OwnedTarget&) = delete;
+        ~OwnedTarget() { t.destroy(); }
+    };
+    // And a buffer on the card the same way (what is read back through it).
+    struct OwnedBuffer {
+        gl::GLuint id = 0;
+        OwnedBuffer() = default;
+        OwnedBuffer(const OwnedBuffer&) = delete;
+        OwnedBuffer& operator=(const OwnedBuffer&) = delete;
+        ~OwnedBuffer();
     };
     // A lamp's light on a room's surroundings (per bounce, per box), kept
     // while it stands where it was and the shell is the same (`place`).
     struct LampLight {
+        bool let_in = false;  // let in at an opening: its set is as it is, not at 1 in white
         Digest place, shell;
-        std::vector<std::vector<Sh9>> by_bounce;
-        // Its cube of distances while it is being drawn, a face a frame, for `drawing`.
+        std::vector<Sh9> sets;  // per box: its light come back off the room, all its bounces
+        OwnedBuffer pbo;        // what is read back through, a frame on
+        bool pending = false;   // worked out, not yet read back
+        uint64_t done_at = 0;   // the relight it was last worked out at
+        // How far it sees every way (a lamp's six faces in a row; a sun's one
+        // view), drawn a face a frame for `drawing`.
         Digest drawing;
         int faces = 0;
-        std::vector<float> far;
+        OwnedTarget far;
     };
     // All a room's relighting keeps (relight_room): what moves in it and
     // what stands still, its shell (a digest of all that stands still), what
@@ -597,13 +609,24 @@ private:
         bool shell_known = false;
         int size = 0, bounces = 0;
         std::vector<ProbeBox> boxes;
-        std::vector<std::vector<ProbeTexel>> of;  // per box and face (6 a box): what it sees
-        std::vector<Digest> drawn;               // per box and face: the shell that was drawn for
+        // What each box sees, on the card, a box a row of six faces: where
+        // each surface is, which way it faces, what of the light it
+        // scatters; that lit by one light (`light`), and in harmonics (`sh`).
+        OwnedTarget where, facing, scatter, light, sh, sh2;  // (sh, sh2: one bounce's harmonics, the next's)
+        uint64_t calls = 0;  // relights so far
+        std::vector<Light> let_in_lights;  // what its openings let in, as last looked at
+        uint64_t let_in_seen = 0;          // the relight that was at
+        std::vector<Digest> drawn;  // per box and face: the shell that was drawn for
         std::map<std::string, LampLight> lamps;
-        std::vector<std::map<std::string, Sh9>> sets;  // per box, per lamp
+        std::vector<std::map<std::string, Sh9>> sets;  // per box, per lamp of the room's own (at 1, in white)
+        std::vector<Sh9> let_in;                       // per box, all that its openings let in, as it is
         uint64_t revision = 0;                         // moves whenever the sets do
     };
     std::unordered_map<const Spatial3D*, RoomLight> room_light_;
+    std::unique_ptr<gl::Program> relight_prog_, relight_sh_prog_;
+    // A light's own uniforms as light `i` of a program that lights
+    // (lights_glsl): all but its shadow maps'.
+    static void lamp_to(const gl::Program& p, std::size_t i, const Light& l);
     // What the views that relight do not draw (relight_room: what moves).
     const std::unordered_set<Key>* hidden_ = nullptr;
     // A room relit: its boxes' surroundings drawn for the shell as it is,

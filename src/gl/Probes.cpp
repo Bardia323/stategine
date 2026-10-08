@@ -77,7 +77,8 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
     if (const RoomLight* rl = placed.room && !baking_ ? live_light(*placed.room) : nullptr) {
         for (std::size_t i = 0; i < rl->boxes.size() && count < kMaxProbes; ++i) {
             const ProbeBox& b = rl->boxes[i];
-            const Sh9 sh = i < rl->sets.size() ? probe_light(*placed.room, rl->sets[i]) : Sh9{};
+            Sh9 sh = i < rl->sets.size() ? probe_light(*placed.room, rl->sets[i]) : Sh9{};
+            if (i < rl->let_in.size()) sh.add(rl->let_in[i], Rgb{1.0, 1.0, 1.0});
             const Pose p = compose_pose(placed.pose, Pose{b.mid, b.yaw, 0.0, 0.0});
             scene_->set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
@@ -245,6 +246,11 @@ constexpr uint32_t kSettle = 90;
 // And how many relights the room must be quiet - nothing starting to move
 // or coming to rest - before what its probes see is taken again.
 constexpr uint32_t kQuiet = 60;
+// How many relights light let in that keeps changing waits between being
+// worked out again.
+constexpr uint64_t kLetInEvery = 20;
+// How many relights a room is new for: what moves in it is taken once, after.
+constexpr uint64_t kWarm = 180;
 
 // What of a lamp its light on the room depends on (not how bright, nor its
 // colour: a set is multiplied by those), and the shell it lights.
@@ -258,59 +264,6 @@ Digest place_of(const DrawLight& l, const Digest& shell, int size, int bounces) 
     return h.digest();
 }
 
-// How much of a lamp's light reaches `p`, and the way to it (`l`): the
-// scene shader's light_reach, not let in at a doorway.
-double reach_of(const DrawLight& L, const Vec3d& p, Vec3d& l) {
-    if (L.sun) {
-        l = unit(Vec3d{-L.dir.x, -L.dir.y, -L.dir.z});
-        return L.power;
-    }
-    const Vec3d at{L.pos.x, L.pos.y, L.pos.z};
-    const Vec3d to = at - p;
-    const double dist = length(to);
-    l = to * (1.0 / std::max(dist, 1e-4));
-    const Vec3d f = unit(Vec3d{L.dir.x, L.dir.y, L.dir.z});
-    double cone;
-    if (L.frame_w > 0.0f && L.frame_h > 0.0f) {
-        const Vec3d r = std::fabs(f.y) > 0.99 ? Vec3d{1, 0, 0} : unit(cross(f, Vec3d{0, 1, 0}));
-        const Vec3d u = cross(r, f), v = p - at;
-        const double z = dot(v, f);
-        if (z <= 1e-4) return 0.0;
-        const double qx = std::fabs(dot(v, r) / z) / std::max<double>(L.frame_w, 1e-4);
-        const double qy = std::fabs(dot(v, u) / z) / std::max<double>(L.frame_h, 1e-4);
-        const auto smooth = [](double a, double b, double x) {
-            const double t = std::clamp((x - a) / (b - a), 0.0, 1.0);
-            return t * t * (3.0 - 2.0 * t);
-        };
-        const double s = L.frame_soft;
-        cone = std::sqrt((1.0 - smooth(1.0 - s, 1.0, qx)) * (1.0 - smooth(1.0 - s, 1.0, qy)));
-    } else {
-        const double ci = std::cos(L.inner), co = std::cos(L.outer);
-        cone = std::clamp((dot(l * -1.0, f) - co) / std::max(ci - co, 1e-4), 0.0, 1.0);
-    }
-    if (cone <= 0.0) return 0.0;
-    const double soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
-    const double square = 1.0 / (1.0 + 2.0 * dist * dist);
-    const double window = range_window(static_cast<float>(dist), L.range);
-    if (window <= 0.0) return 0.0;
-    return L.power * (soft + (square - soft) * L.falloff) * window * cone * cone;
-}
-
-// How much probe `e` holds `p`: the scene shader's probe_weight.
-
-// How much a probe's box holds `p`: the scene shader's probe_weight.
-double weight_of(const GLWorldView::ProbeBox& b, const Vec3d& p) {
-    const Vec3d d = p - b.mid;
-    const double c = std::cos(b.yaw), s = std::sin(b.yaw);
-    const Vec3d q{c * d.x + s * d.z, d.y, -s * d.x + c * d.z};
-    const auto one = [](double lo, double hi, double slo, double shi) {
-        double w = std::clamp(1.0 + lo / std::max(slo, 1e-4), 0.0, 1.0) * std::clamp(1.0 + hi / std::max(shi, 1e-4), 0.0, 1.0);
-        return w * w * (3.0 - 2.0 * w);
-    };
-    return one(q.x + b.half.x, b.half.x - q.x, b.soft_lo.x, b.soft_hi.x) * one(q.y + b.half.y, b.half.y - q.y, b.soft_lo.y, b.soft_hi.y) *
-           one(q.z + b.half.z, b.half.z - q.z, b.soft_lo.z, b.soft_hi.z);
-}
-
 bool same_boxes(const std::vector<GLWorldView::ProbeBox>& a, const std::vector<GLWorldView::ProbeBox>& b) {
     if (a.size() != b.size()) return false;
     for (std::size_t i = 0; i < a.size(); ++i)
@@ -320,27 +273,17 @@ bool same_boxes(const std::vector<GLWorldView::ProbeBox>& a, const std::vector<G
     return true;
 }
 
-// Which face of a cube round a point a way `d` falls on, and where on it
-// (0..size), as see_round drew them.
-int face_of(const Vec3d& d, int size, int& x, int& y) {
-    const double ax = std::fabs(d.x), ay = std::fabs(d.y), az = std::fabs(d.z);
-    const int f = ax >= ay && ax >= az ? (d.x > 0 ? 0 : 1) : ay >= az ? (d.y > 0 ? 2 : 3) : (d.z > 0 ? 4 : 5);
-    const Vec3d right = unit(cross(kFace[f], kFaceUp[f]));
-    const double z = dot(d, kFace[f]);
-    const double u = dot(d, right) / z, v = dot(d, kFaceUp[f]) / z;
-    x = std::clamp(static_cast<int>((u + 1.0) * 0.5 * size), 0, size - 1);
-    y = std::clamp(static_cast<int>((v + 1.0) * 0.5 * size), 0, size - 1);
-    return f;
-}
-
 }  // namespace
 
-std::vector<float> GLWorldView::see_from(const Spatial3D& room, const Vec3d& at, const Vec3d& forward, const Vec3d& up, float fov,
-                                         int size, int mode, float znear) {
+GLWorldView::OwnedBuffer::~OwnedBuffer() {
+    if (id) gl::glDeleteBuffers(1, &id);
+}
+
+void GLWorldView::see_into(const Spatial3D& room, const Vec3d& at, const Vec3d& forward, const Vec3d& up, float fov, int size,
+                           int mode, float znear, const gl::RenderTarget& into, int x, int y) {
     ensure_resources();
     ensure_targets(size, size);
     const std::vector<PlacedRoom> rooms{PlacedRoom{&room, Pose{}, {}}};
-    std::vector<float> out(static_cast<std::size_t>(size) * size * 4);
     surface_only_ = mode;
     Camera cam;
     cam.eye = to_vec3(at);
@@ -350,20 +293,10 @@ std::vector<float> GLWorldView::see_from(const Spatial3D& room, const Vec3d& at,
     draw_world(rooms, cam, 1.0f, scene_target_, 0, znear);
     scene_target_.blit_to(resolve_);
     gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, resolve_.framebuffer());
-    gl::glReadPixels(0, 0, size, size, gl::GL_RGBA, gl::GL_FLOAT, out.data());
+    gl::glBindFramebuffer(gl::GL_DRAW_FRAMEBUFFER, into.framebuffer());
+    gl::glBlitFramebuffer(0, 0, size, size, x, y, x + size, y + size, gl::GL_COLOR_BUFFER_BIT, gl::GL_NEAREST);
     surface_only_ = 0;
     gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
-    return out;
-}
-
-std::vector<float> GLWorldView::see_round(const Spatial3D& room, const Vec3d& at, int size, int mode, float znear) {
-    std::vector<float> out;
-    out.reserve(static_cast<std::size_t>(size) * size * 4 * 6);
-    for (int f = 0; f < 6; ++f) {
-        const std::vector<float> face = see_from(room, at, kFace[f], kFaceUp[f], 1.5707963f, size, mode, znear);
-        out.insert(out.end(), face.begin(), face.end());
-    }
-    return out;
 }
 
 auto GLWorldView::declared_boxes(const Spatial3D& room) const -> std::vector<ProbeBox> {
@@ -418,6 +351,7 @@ auto GLWorldView::grid_of(const Spatial3D& room) -> std::vector<ProbeBox> {
 auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox>& boxes, int size, int bounces, bool all_now)
     -> RoomLight& {
     RoomLight& rl = room_light_[&room];
+    ++rl.calls;
     size = std::clamp(size, 4, 256);
     bounces = std::clamp(bounces, 1, 4);
     constexpr int kLampSize = 64;       // a lamp's cube of distances, a face
@@ -430,7 +364,6 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         rl.boxes = boxes;
         rl.size = size;
         rl.bounces = bounces;
-        rl.of.assign(boxes.size() * 6, {});
         rl.drawn.assign(boxes.size() * 6, Digest{});
         rl.lamps.clear();
         rl.sets.assign(boxes.size(), {});
@@ -475,7 +408,10 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     }
     rl.restless = rl.restless || restless;
     if (rl.quiet < kQuiet) ++rl.quiet;
-    if (rl.restless && (rl.quiet >= kQuiet || all_now || !rl.shell_known)) {
+    // (While a room is new to the relight - its things settling as it comes
+    // to life - what moves is followed but not taken: once, after.)
+    const bool warm = rl.calls > kWarm;
+    if (rl.restless && ((warm && rl.quiet >= kQuiet) || all_now || !rl.shell_known || rl.calls == kWarm + 1)) {
         rl.restless = false;
         rl.hidden.clear();
         for (std::size_t i = 0; i < things.size(); ++i) {
@@ -512,74 +448,67 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         rl.shell_known = true;
     }
 
-    // The views that draw: the surroundings, and lamps' cubes of distances
-    // (each of its own: one view drawing both would make its pictures again
-    // at every turn), what moves left out of both.
+    // The views that draw: the surroundings, and lights' distances (each of
+    // its own: one view drawing both would make its pictures again at every
+    // turn), what moves left out of both.
     if (!baker_) baker_ = std::make_unique<GLWorldView>(q_);
     if (!lamp_seer_) lamp_seer_ = std::make_unique<GLWorldView>(q_);
+    if (!sun_seer_) sun_seer_ = std::make_unique<GLWorldView>(q_);
     GLWorldView& baker = *baker_;
     GLWorldView& seer = *lamp_seer_;
-    for (GLWorldView* v : {&baker, &seer}) {
-        v->graph_ = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr);
-        v->baking_ = true;
-        v->solo_ = Key{};  // no lamp: only what the surfaces are is drawn
-        v->probe_override_ = nullptr;
-        v->hidden_ = &rl.hidden;
-        v->lights_memo_.clear();
-    }
+    GLWorldView& sun_seer = *sun_seer_;
+    // (Made ready only if one of them draws this time, and put back only then:
+    // a relight that draws nothing costs them nothing.)
+    bool views_ready = false;
+    const auto ready = [&] {
+        if (views_ready) return;
+        views_ready = true;
+        for (GLWorldView* v : {&baker, &seer, &sun_seer}) {
+            v->graph_ = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr);
+            v->baking_ = true;
+            v->solo_ = Key{};  // no lamp: only what the surfaces are is drawn
+            v->probe_override_ = nullptr;
+            v->hidden_ = &rl.hidden;
+            v->lights_memo_.clear();
+        }
+    };
     // A frame's share of the work: one face of one box, or one face of a
     // lamp's cube (a sun's view, whole), unless all of it is wanted now.
     int jobs = all_now ? 1 << 30 : 1;
 
-    // What each box sees every way, drawn for the shell as it is, a face a job.
-    const double texel = 2.0 / size;
+    // What each box sees every way - where each surface is, which way it
+    // faces, what of the light it scatters - drawn for the shell as it is,
+    // into pictures kept on the card (a box a row of six faces), a face a job.
+    const int atlas_w = 6 * size, atlas_h = static_cast<int>(boxes.size()) * size;
+    for (OwnedTarget* t : {&rl.where, &rl.facing, &rl.scatter, &rl.light})
+        if (!t->t.valid() || t->t.width() != atlas_w || t->t.height() != atlas_h) {
+            t->t.destroy();
+            t->t.create(atlas_w, atlas_h, gl::GL_RGBA32F, 0, false);
+        }
+    for (OwnedTarget* t : {&rl.sh, &rl.sh2})
+        if (!t->t.valid()) t->t.create(9, kMaxProbes * 6, gl::GL_RGBA32F, 0, false);
     for (std::size_t bf = 0; bf < rl.drawn.size() && jobs > 0; ++bf) {
         if (rl.drawn[bf] == rl.shell) continue;
         --jobs;
         rl.drawn[bf] = rl.shell;
-        const std::size_t bi = bf / 6;
-        const int f = static_cast<int>(bf % 6);
-        const Vec3d at = boxes[bi].mid;
-        const std::vector<float> where = baker.see_from(room, at, kFace[f], kFaceUp[f], 1.5707963f, size, 1);
-        const std::vector<float> facing = baker.see_from(room, at, kFace[f], kFaceUp[f], 1.5707963f, size, 2);
-        const std::vector<float> scatter = baker.see_from(room, at, kFace[f], kFaceUp[f], 1.5707963f, size, 3);
-        std::vector<ProbeTexel>& of = rl.of[bf];
-        of.clear();
-        const Vec3d right = unit(cross(kFace[f], kFaceUp[f]));
-        for (int y = 0; y < size; ++y)
-            for (int x = 0; x < size; ++x) {
-                const std::size_t i = (static_cast<std::size_t>(y) * size + x) * 4;
-                const Vec3d n{facing[i], facing[i + 1], facing[i + 2]};
-                if (length(n) < 0.5) continue;  // nothing there
-                const double u = (x + 0.5) * texel - 1.0, v = (y + 0.5) * texel - 1.0;
-                ProbeTexel t;
-                t.at = {where[i], where[i + 1], where[i + 2]};
-                t.n = unit(n);
-                t.dir = unit(kFace[f] + right * u + kFaceUp[f] * v);
-                t.w = texel * texel / std::pow(1.0 + u * u + v * v, 1.5);
-                t.albedo = Rgb{scatter[i], scatter[i + 1], scatter[i + 2]};
-                // How much each box holds it, as the scene shader blends
-                // them (probe_light), and so how much of their light it is given.
-                double total = 0.0;
-                for (std::size_t bj = 0; bj < boxes.size() && bj < t.held.size(); ++bj) {
-                    t.held[bj] = static_cast<float>(weight_of(boxes[bj], t.at));
-                    total += t.held[bj];
-                }
-                if (total > 0.0)
-                    for (float& w : t.held) w = static_cast<float>(w * std::min(total, 1.0) / total);
-                of.push_back(t);
-            }
+        const int bi = static_cast<int>(bf / 6), f = static_cast<int>(bf % 6);
+        const Vec3d at = boxes[static_cast<std::size_t>(bi)].mid;
+        ready();
+        int mode = 1;
+        for (const OwnedTarget* t : {&rl.where, &rl.facing, &rl.scatter})
+            baker.see_into(room, at, kFace[f], kFaceUp[f], 1.5707963f, size, mode++, kNear, t->t, f * size, bi * size);
     }
     const bool drawn_all = std::all_of(rl.drawn.begin(), rl.drawn.end(), [&](const Digest& d) { return d == rl.shell; });
 
-    // Each lamp's light on them, worked out again only when it moved (or the
-    // shell did) - and only once every box sees the shell as it is.
+    // Each light's own light on them, worked out again only when it moved
+    // (or the shell did) - and only once every box sees the shell as it is.
     std::map<std::string, DrawLight> now;
     for (const Element* le : index_of(room).lights) {
         if (!le->alive) continue;
         DrawLight L = light_of(room, *le);
         if (L.bounce) continue;  // a stand-in for what the probes hold
         L.power = 26.0f;         // at 1, in white: what it gives now is this times its light now
+        L.color = {1.0f, 1.0f, 1.0f};
         if (L.sun) {
             // (Its way taken in steps of about a fifth of a degree, as its
             // shadow's is: a sun creeping across the sky is relit when it has
@@ -591,6 +520,34 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         }
         now[le->id.str()] = L;
     }
+    // And whatever light comes in at its openings from the rooms and worlds
+    // beyond - their lamps, their sun, their sky (through_doorways) - each
+    // as it is, gated by its opening: whatever an opening is glued to, its
+    // light is the room's. (Not of this room, they are kept as they are,
+    // in their own colour and strength, and worked out again as they change.)
+    std::set<std::string> let_in;
+    {
+        // (Looked at again every kLetInEvery relights - what is beyond a
+        // room's openings is many rooms' worth to look at every frame.)
+        if (all_now || rl.let_in_seen == 0 || rl.calls - rl.let_in_seen >= kLetInEvery) {
+            rl.let_in_lights = through_doorways(PlacedRoom{&room, Pose{}, {}});
+            rl.let_in_seen = rl.calls;
+        }
+        const std::vector<Light>& in = rl.let_in_lights;
+        for (std::size_t k = 0; k < in.size(); ++k) {
+            DrawLight L = in[k];
+            if (L.hung_only || L.open <= 0.0f || L.power <= 0.0f) continue;
+            if (L.sun) {
+                const Vec3d d = unit(Vec3d{std::round(L.dir.x * 300.0f) / 300.0, std::round(L.dir.y * 300.0f) / 300.0,
+                                           std::round(L.dir.z * 300.0f) / 300.0});
+                L.dir = {static_cast<float>(d.x), static_cast<float>(d.y), static_cast<float>(d.z)};
+                L.pos = {0.0f, 0.0f, 0.0f};
+            }
+            const std::string name = "in." + std::to_string(L.gate) + "." + std::to_string(k);
+            now[name] = L;
+            let_in.insert(name);
+        }
+    }
     bool published = false;
     for (auto it = rl.lamps.begin(); it != rl.lamps.end();) {
         if (now.count(it->first)) {
@@ -600,129 +557,176 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         it = rl.lamps.erase(it);  // (gone)
         published = true;
     }
+    // What was worked out on the card before, read back now - a frame on, so
+    // nothing waits for it (as the eye's exposure is read).
+    const auto collect = [&](LampLight& ll) {
+        std::vector<float> read(static_cast<std::size_t>(9) * boxes.size() * 6 * 4);
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, ll.pbo.id);
+        gl::glGetBufferSubData(gl::GL_PIXEL_PACK_BUFFER, 0, static_cast<long>(read.size() * sizeof(float)), read.data());
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+        ll.sets.assign(boxes.size(), Sh9{});
+        for (std::size_t bi = 0; bi < boxes.size(); ++bi)
+            for (std::size_t c = 0; c < 9; ++c)
+                for (std::size_t ch = 0; ch < 3; ++ch) {
+                    double sum = 0.0;
+                    for (std::size_t f = 0; f < 6; ++f) sum += read[((bi * 6 + f) * 9 + c) * 4 + ch];
+                    ll.sets[bi].c[c][ch] = sum;
+                }
+        ll.pending = false;
+        published = true;
+    };
+    for (auto& [name, ll] : rl.lamps)
+        if (ll.pending) collect(ll);
+    if (!relight_prog_) relight_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::relight_fs(), "relight");
+    if (!relight_sh_prog_) relight_sh_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::relight_sh_fs(), "relight harmonics");
     for (const auto& [name, L] : now) {
         if (!drawn_all || jobs <= 0) break;
-        const Digest place = place_of(L, rl.shell, size, bounces);
+        Digest place = place_of(L, rl.shell, size, bounces);
+        if (let_in.count(name)) {
+            // (Let in: its colour, strength and opening are in its set too.)
+            Hasher h;
+            h.integer(static_cast<int64_t>(place.hi)).integer(static_cast<int64_t>(place.lo));
+            // (In steps: a sun's colour easing with the hour, a door a
+            // hair from where it was, are the same light.)
+            const auto step = [](double v, double by) { return std::round(v / by); };
+            for (double v : {step(L.color.x, 1.0 / 128), step(L.color.y, 1.0 / 128), step(L.color.z, 1.0 / 128),
+                             step(L.power, std::max(0.01, L.power / 64.0)), step(L.open, 1.0 / 64), step(L.gate_at.x, 0.01),
+                             step(L.gate_at.y, 0.01), step(L.gate_at.z, 0.01), step(L.gate_across.x, 1.0 / 256),
+                             step(L.gate_across.z, 1.0 / 256), step(L.gate_w, 0.01), step(L.gate_h, 0.01), step(L.focus.x, 0.05),
+                             step(L.focus.y, 0.05), step(L.focus.z, 0.05)})
+                h.number(v);
+            place = h.digest();
+        }
         LampLight& ll = rl.lamps[name];
-        if (ll.place == place && !ll.by_bounce.empty()) continue;
+        ll.let_in = let_in.count(name) > 0;
+        if (ll.place == place && (!ll.sets.empty() || ll.pending)) continue;
+        // (Light let in that keeps changing - what is beyond keeps moving -
+        // is worked out again every so often, not every frame.)
+        if (ll.let_in && !ll.sets.empty() && !all_now && rl.calls - ll.done_at < kLetInEvery) continue;
         // Its shadow: how far it sees every way - all but its own fitting,
         // which would otherwise stand in the way of all it lights - a face a
         // job. A sun's: what it reaches, seen from far up its way, narrowly
         // enough to hold what its own shadow holds (its pin, its extent).
-        Vec3d lamp{L.pos.x, L.pos.y, L.pos.z};
-        Vec3d sun_f{0, -1, 0}, sun_r{1, 0, 0}, sun_u{0, 0, 1};
-        double sun_t = 1.0;
         if (ll.drawing != place) {
             ll.drawing = place;
             ll.faces = 0;
-            ll.far.clear();
         }
         // (A lamp that moved in a room as it was - carried, turned - is drawn
         // whole at once: it may move again before a face a frame were done.
         // Its faces are spread over frames only when the room changed and
         // every lamp is due.)
         if (ll.shell == rl.shell) jobs = std::max(jobs, 6);
+        Vec3d from{L.pos.x, L.pos.y, L.pos.z};
+        Vec3d sun_f{0, -1, 0}, sun_r{1, 0, 0}, sun_u{0, 0, 1};
+        double sun_t = 1.0;
+        const int far_size = L.sun ? kSunSize : kLampSize;
         if (L.sun) {
             const Vec3d focus = L.pinned ? Vec3d{L.focus.x, L.focus.y, L.focus.z}
                                          : Vec3d{room.params().num(Key{"room_w"}, 4.0) * 0.5, room.params().num(Key{"room_h"}, 3.0) * 0.5,
                                                  room.params().num(Key{"room_d"}, 4.0) * 0.5};
             sun_f = unit(Vec3d{L.dir.x, L.dir.y, L.dir.z});
-            lamp = focus - sun_f * kSunAway;
-            const Vec3d up = std::fabs(sun_f.y) > 0.99 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0};
-            sun_r = unit(cross(sun_f, up));
+            from = focus - sun_f * kSunAway;
+            sun_r = unit(cross(sun_f, std::fabs(sun_f.y) > 0.99 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0}));
             sun_u = cross(sun_r, sun_f);
             sun_t = std::max<double>(L.extent, 1.0) * 1.2 / kSunAway;
+        }
+        const int far_w = L.sun ? far_size : 6 * far_size;
+        if (!ll.far.t.valid() || ll.far.t.width() != far_w || ll.far.t.height() != far_size) {
+            ll.far.t.destroy();
+            ll.far.t.create(far_w, far_size, gl::GL_RGBA32F, 0, false);
+        }
+        ready();
+        if (L.sun) {
             if (ll.faces < 1) {
                 --jobs;
-                ll.far = seer.see_from(room, lamp, sun_f, up, static_cast<float>(2.0 * std::atan(sun_t)), kSunSize, 4, 1.0f);
+                const Vec3d up = std::fabs(sun_f.y) > 0.99 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0};
+                sun_seer.see_into(room, from, sun_f, up, static_cast<float>(2.0 * std::atan(sun_t)), far_size, 4, 1.0f, ll.far.t, 0, 0);
                 ll.faces = 6;
             }
         } else {
             seer.own_lamp_ = Key{name};
-            while (ll.faces < 6 && jobs > 0) {
+            for (; ll.faces < 6 && jobs > 0; ++ll.faces) {
                 --jobs;
-                const std::vector<float> face =
-                    seer.see_from(room, lamp, kFace[ll.faces], kFaceUp[ll.faces], 1.5707963f, kLampSize, 4, kLampNear);
-                ll.far.insert(ll.far.end(), face.begin(), face.end());
-                ++ll.faces;
+                seer.see_into(room, from, kFace[ll.faces], kFaceUp[ll.faces], 1.5707963f, far_size, 4, kLampNear, ll.far.t,
+                              ll.faces * far_size, 0);
             }
             seer.own_lamp_ = Key{};
         }
         if (ll.faces < 6) break;  // (its next face, next frame)
         ll.place = place;
         ll.shell = rl.shell;
-        published = true;
-        const std::vector<float>& far = ll.far;
-        const auto lit = [&](const Vec3d& p) {
-            const Vec3d d = p - lamp;
-            const double d_len = length(d);
-            std::size_t at = 0;
-            if (L.sun) {
-                const double z = dot(d, sun_f);
-                if (z <= 0.0) return false;
-                const double u = dot(d, sun_r) / (z * sun_t), v = dot(d, sun_u) / (z * sun_t);
-                if (std::fabs(u) >= 1.0 || std::fabs(v) >= 1.0) return true;  // beyond what its shadow holds: lit
-                const int x = std::clamp(static_cast<int>((u + 1.0) * 0.5 * kSunSize), 0, kSunSize - 1);
-                const int y = std::clamp(static_cast<int>((v + 1.0) * 0.5 * kSunSize), 0, kSunSize - 1);
-                at = (static_cast<std::size_t>(y) * kSunSize + x) * 4;
-            } else {
-                int x = 0, y = 0;
-                const int f = face_of(d, kLampSize, x, y);
-                at = ((static_cast<std::size_t>(f) * kLampSize + y) * kLampSize + x) * 4;
-            }
-            const double seen = far[at];
-            return seen <= 0.0 || d_len <= seen + 0.05 + 0.03 * (L.sun ? 1.0 : d_len);
-        };
-        // What it gives each surface a box sees, at once (the first bounce's
-        // own light), shadowed.
-        std::vector<std::vector<Rgb>> direct(rl.of.size());
-        for (std::size_t bf = 0; bf < rl.of.size(); ++bf) {
-            direct[bf].reserve(rl.of[bf].size());
-            for (const ProbeTexel& t : rl.of[bf]) {
-                Vec3d l;
-                const double r = reach_of(L, t.at, l);
-                const double ndl = dot(t.n, l);
-                const double e = r > 0.0 && ndl > 0.0 && lit(t.at) ? r * ndl : 0.0;
-                direct[bf].push_back(Rgb{t.albedo.r * e, t.albedo.g * e, t.albedo.b * e});
-            }
-        }
-        ll.far.clear();
-        ll.far.shrink_to_fit();
-        ll.by_bounce.assign(static_cast<std::size_t>(bounces), std::vector<Sh9>(boxes.size()));
+        ll.done_at = rl.calls;
+        // Its light on what each box sees, and that taken to harmonics -
+        // and again, with the boxes' light it gave them (kept on the card),
+        // for the second bounce.
+        const gl::Program& P = *relight_prog_;
+        const gl::Program& H = *relight_sh_prog_;
+        gl::glDisable(gl::GL_DEPTH_TEST);
+        gl::glDisable(gl::GL_BLEND);
+        const OwnedTarget* before = nullptr;
         for (int b = 0; b < bounces; ++b) {
-            const std::vector<Sh9>* before = b > 0 ? &ll.by_bounce[static_cast<std::size_t>(b - 1)] : nullptr;
-            for (std::size_t bf = 0; bf < rl.of.size(); ++bf) {
-                Sh9& sh = ll.by_bounce[static_cast<std::size_t>(b)][bf / 6];
-                for (std::size_t ti = 0; ti < rl.of[bf].size(); ++ti) {
-                    const ProbeTexel& t = rl.of[bf][ti];
-                    Rgb c = direct[bf][ti];
-                    if (before) {
-                        // And the boxes' light on it, as the scene shader
-                        // gives it: blended by how much each holds it.
-                        for (std::size_t bj = 0; bj < boxes.size() && bj < t.held.size(); ++bj) {
-                            const double w = t.held[bj];
-                            if (w <= 0.0) continue;
-                            const Rgb e = (*before)[bj].irradiance(t.n);
-                            c.r += t.albedo.r * std::max(e.r, 0.0) * w, c.g += t.albedo.g * std::max(e.g, 0.0) * w,
-                                c.b += t.albedo.b * std::max(e.b, 0.0) * w;
-                        }
-                    }
-                    sh.add(t.dir, c, t.w);
-                }
+            const OwnedTarget& into = b % 2 == 0 ? rl.sh : rl.sh2;
+            rl.light.t.bind();
+            P.use();
+            rl.where.t.bind_color(0), rl.facing.t.bind_color(1), rl.scatter.t.bind_color(2), ll.far.t.bind_color(3);
+            P.set("uWhere", 0), P.set("uFacing", 1), P.set("uScatter", 2), P.set("uFar", 3);
+            P.set("uLightCount", 1), P.set("uShadowCount", 0), P.set("uStraddle", 0.0f);
+            lamp_to(P, 0, L);
+            P.set("uFarSun", L.sun ? 1 : 0), P.set("uFarSize", far_size);
+            P.set("uFarAt", to_vec3(from)), P.set("uFarF", to_vec3(sun_f)), P.set("uFarR", to_vec3(sun_r)), P.set("uFarU", to_vec3(sun_u));
+            P.set("uFarT", static_cast<float>(sun_t));
+            P.set("uBoxes", static_cast<int>(boxes.size()));
+            for (std::size_t bi = 0; bi < boxes.size(); ++bi) {
+                const ProbeBox& x = boxes[bi];
+                const std::string k = "[" + std::to_string(bi) + "]";
+                P.set(("uBoxAt" + k).c_str(), static_cast<float>(x.mid.x), static_cast<float>(x.mid.y), static_cast<float>(x.mid.z),
+                      static_cast<float>(x.yaw));
+                P.set(("uBoxHalf" + k).c_str(), to_vec3(x.half));
+                P.set(("uBoxLo" + k).c_str(), to_vec3(x.soft_lo));
+                P.set(("uBoxHi" + k).c_str(), to_vec3(x.soft_hi));
             }
+            if (before) before->t.bind_color(4);
+            P.set("uBefore", 4);
+            P.set("uBounce", before ? 1 : 0);
+            screen_.draw();
+            into.t.bind();
+            gl::glViewport(0, 0, 9, static_cast<int>(boxes.size()) * 6);
+            H.use();
+            rl.light.t.bind_color(0);
+            H.set("uLight", 0), H.set("uSize", size);
+            screen_.draw();
+            before = &into;
         }
+        // The last bounce's harmonics, read into its buffer on the card, to
+        // be read back next frame - or now, if all of it is wanted now.
+        const long bytes = static_cast<long>(9 * boxes.size() * 6 * 4 * sizeof(float));
+        if (!ll.pbo.id) gl::glGenBuffers(1, &ll.pbo.id);
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, ll.pbo.id);
+        gl::glBufferData(gl::GL_PIXEL_PACK_BUFFER, bytes, nullptr, gl::GL_STREAM_READ);
+        gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, before->t.framebuffer());
+        gl::glReadPixels(0, 0, 9, static_cast<int>(boxes.size()) * 6, gl::GL_RGBA, gl::GL_FLOAT, nullptr);
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+        ll.pending = true;
+        if (all_now) collect(ll);
+        gl::glActiveTexture(gl::GL_TEXTURE0);
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
     }
-    for (GLWorldView* v : {&baker, &seer}) {
-        v->hidden_ = nullptr;
-        v->lights_memo_.clear();
-        v->shadow_sets_.clear();
-        v->room_casters_.clear();
-    }
+    if (views_ready)
+        for (GLWorldView* v : {&baker, &seer, &sun_seer}) {
+            v->hidden_ = nullptr;
+            v->lights_memo_.clear();
+            v->shadow_sets_.clear();
+            v->room_casters_.clear();
+        }
     if (published) {
         rl.sets.assign(boxes.size(), {});
+        rl.let_in.assign(boxes.size(), Sh9{});
         for (const auto& [name, ll] : rl.lamps)
-            if (!ll.by_bounce.empty())
-                for (std::size_t bi = 0; bi < boxes.size(); ++bi) rl.sets[bi][name] = ll.by_bounce.back()[bi];
+            if (ll.sets.size() == boxes.size())
+                for (std::size_t bi = 0; bi < boxes.size(); ++bi) {
+                    if (ll.let_in) rl.let_in[bi].add(ll.sets[bi], Rgb{1.0, 1.0, 1.0});
+                    else rl.sets[bi][name] = ll.sets[bi];
+                }
         ++rl.revision;
     }
     return rl;

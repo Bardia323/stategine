@@ -146,6 +146,10 @@ const char* air_fs();
 // And the same slices added up from the eye out, eight a pass, each pass on
 // its own: the light gathered up to each slice's distance.
 const char* air_sum_fs();
+// Relighting a room's light from all round (GLWorldView::relight_room): what
+// each box sees lit by one light, and that taken to nine harmonics a box.
+const char* relight_fs();
+const char* relight_sh_fs();
 
 // The same air as a scene shader reads it: GLSL giving `air_light(d)`, the
 // light gathered up to `d` metres from the eye at this pixel (after
