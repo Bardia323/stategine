@@ -78,6 +78,20 @@ struct DrawLight {
 DrawLight light_of(const State& room,const Element& element,const Pose& placement = {});
 spatial::projection::Mat4 shadow_projection(const DrawLight& light,const ViewCamera& camera,int size,float& bias);
 
+// A lamp with no cone to speak of - lighting more than a hemisphere round it
+// (`outer` past kCubeCone), not a sun, not a projector, not let in at a
+// doorway - is seen from by six maps, one a face of a cube round it, not by
+// one that would hold only a cone of what it lights. How many maps a light
+// takes: 6 for such a lamp, else 1.
+constexpr float kCubeCone = 1.75f;
+int shadow_faces(const DrawLight& light);
+// The map of one face of such a lamp's cube (0..5: +x, -x, +y, -y, +z, -z),
+// a little wider than the face (kCubeFaceSpread, the tangent of its
+// half-angle) so the edge a map fades its shadow out at lies past where the
+// next face takes over, and the soft filter reaches across the seam.
+constexpr float kCubeFaceSpread = 1.25f;
+spatial::projection::Mat4 shadow_face(const DrawLight& light, int face);
+
 float portal_occlusion(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut);
 struct RoomDraw {
     const Spatial3D* room = nullptr;

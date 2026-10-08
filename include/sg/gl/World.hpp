@@ -113,6 +113,7 @@
 
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
+#include "sg/domains/Probe.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
 #include "sg/gl/Renderer.hpp"
@@ -143,7 +144,8 @@ using GLQuality = Quality;
 class GLWorldView {
 public:
     static constexpr std::size_t kMaxLights = 24;   // matches the scene shader
-    static constexpr std::size_t kShadowMaps = 10;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kShadowLights = 10;  // lights with maps, and suns' close-up maps: a lamp with no cone counts once for its six layers
     static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
@@ -191,6 +193,26 @@ public:
     // shader time. Zero keeps fades still; world time is declared by Temporal.
     void set_fixed_step(double seconds) { fixed_step_ = seconds; }
     void set_frame_delta(double seconds) { fixed_step_ = seconds; }
+
+    // The eye's exposure. A look whose scene pass says `exposure.auto` = 1
+    // has the eye adjust to what it sees: the scene's light, measured each
+    // frame (the log of its brightness, the middle of the view counting
+    // most), is brought to `exposure.key` (0.18, mid-grey), opened or closed
+    // by no more than `exposure.min` .. `exposure.max` stops (-8 .. 8), at
+    // `exposure.rate` stops a second (1.5) of the interval handed in - the
+    // look's own `uExposure` laid on top, as a bias. A look that says none
+    // of it is drawn exactly as before. It is how the eye is, not how the
+    // world is: nothing of it is written into a state or its time. Only the
+    // eye's view adjusts; a screen's picture keeps its look's own exposure,
+    // and a room seen through a doorway is seen with the eye's.
+    //
+    // Settled: the next frame takes the measured exposure at once, not eased
+    // there - as the first frame the eye adjusts at all does, and as a look
+    // first seen is shown as it is. A shot's first frame asks for it, so a
+    // shot is the same picture however it was come to.
+    void settle_exposure() { exposure_.settle = true; }
+    // How many stops the eye is opened by now (0 when no look asks it to adjust).
+    double exposure_stops() const { return exposure_.weight > 0.0f ? exposure_.ev : 0.0; }
 
     // Compile every look the graph can show - those worn by the states
     // reachable from its initial one - and check each against what this
@@ -282,6 +304,18 @@ public:
     // card takes it: what things wear goes to the card a quarter the size,
     // whole, before the first frame.
     void warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h);
+
+    // The light probes of `room` baked (sg/domains/Probe.hpp): for each probe
+    // and each of the room's lamps alone - lit at unit strength, in white,
+    // nothing else glowing, no light from all round, no air - the room seen
+    // every way from the probe's middle (a cube, `size` pixels a face) and
+    // taken to spherical harmonics; then, `bounces` 2, again, the room lit
+    // by that lamp and by what the probes saw of it, for the light that
+    // comes back twice. Only the room's own lamps (not a sun, not one that
+    // stands in for bounce). The renderer's work, handed back as data for
+    // an edit to write (sg::bake_into): nothing of the world is changed
+    // here. Needs prepare() first.
+    std::vector<ProbeBake> bake_probes(const Spatial3D& room, int size = 32, int bounces = 2);
 
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
@@ -451,8 +485,32 @@ private:
     std::vector<Light> through_doorways(const PlacedRoom& placed);
 
     // The doorways of a room, and the light from all round beyond each, for
-    // the scene shader (around_at): a thing through a doorway is lit as one.
+    // the scene shader (around_at): a thing through a doorway is lit as one -
+    // with what the far room's probe nearest the doorway holds, if it has any.
     void doors_to_program(const PlacedRoom& placed);
+
+    // A room's light probes on the scene program (up to kMaxProbes): each
+    // box placed as the room is, and what its lamps give it now (or, baking
+    // its second bounce, what the first saw: probe_override_).
+    static constexpr int kMaxProbes = 8;  // matches the scene shader
+    void probes_to_program(const PlacedRoom& placed);
+    // A probe's sets, read from its params once while they stand.
+    struct ProbeSets {
+        uint64_t stamp = ~uint64_t{0};
+        std::map<std::string, Sh9> sets;
+    };
+    mutable std::unordered_map<const Element*, ProbeSets> probe_sets_;
+    const std::map<std::string, Sh9>& sets_of(const Element& probe) const;
+    // Baking (bake_probes): this view draws its room lit by the lamp `solo_`
+    // alone, at 1 in white, nothing glowing, no light from all round, none
+    // through its doorways - the probes, if it says, lit as the first
+    // bounce saw them.
+    bool baking_ = false;
+    Key solo_;
+    const std::vector<Sh9>* probe_override_ = nullptr;
+    std::unique_ptr<GLWorldView> baker_;  // the view that bakes, kept
+    // The room seen every way from `at`, lit as baking says, as harmonics.
+    Sh9 capture(const Spatial3D& room, const Vec3d& at, int size);
 
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the
@@ -462,10 +520,11 @@ private:
     // a sliver. `shut`: something lying flat in the opening fills it.
     float covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h, bool& shut) const;
 
-    // Every lamp that lights these rooms, strongest first: the first four of
-    // their own get shadow maps (`shadowed` of them), the rest light without
-    // casting. What comes in through their doorways goes after the shadowed,
-    // before their fainter own.
+    // Every lamp that lights these rooms, strongest first: the first six of
+    // their own get shadow maps (`shadowed` of them; one each, or six - a
+    // face of a cube each - for a lamp with no cone, while the array holds
+    // them), the rest light without casting. What comes in through their
+    // doorways goes after the shadowed, before their fainter own.
     std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed);
 
     // The doorway in `guest` that leads back to `host` - the one being looked
@@ -733,6 +792,32 @@ private:
 
     void run_bloom();
 
+    // The eye's adjustment (settle_exposure): measured from the scene's
+    // light into a small picture whose mipmaps average it, read back a frame
+    // late (or at once, settling), and eased to by the interval handed in.
+    struct Exposure {
+        gl::RenderTarget meter;
+        gl::GLuint pbo[2] = {0, 0};
+        bool asked[2] = {};
+        int next = 0;
+        double ev = 0.0, target = 0.0;  // stops opened by now, and as the last measure says
+        bool known = false, settle = false;
+        float weight = 0.0f;  // how much the look on screen says auto (it fades as looks do)
+    };
+    static constexpr int kMeterW = 128, kMeterH = 64, kMeterLevels = 8;  // 128 x 64 down to 1 x 1
+    Exposure exposure_;
+    std::unique_ptr<gl::Program> meter_prog_;
+    // At the start of the eye's frame: what was measured last frame, eased to.
+    void adapt_exposure();
+    // After the scene is drawn: measured, to be read the next frame - or at
+    // once, when settling.
+    void meter_exposure();
+    // Where a measure (the meter's last level: the weighted log, the weight) puts the eye.
+    double exposure_target(const float rg[2]) const;
+    // What the eye's adjustment multiplies a look's `uExposure` by in this
+    // view: its own, the eye's (a doorway drawn in its own look), or none (a screen).
+    float exposure_gain() const;
+
     // The wide glow (bloom_down_fs): the tight bloom taken down the chain and
     // back up, each level adding its own, then mixed into the tight bloom by
     // `wide` - how much of the glow spreads far rather than near.
@@ -993,7 +1078,7 @@ private:
     // (lamps, doorways, terrain), found again only when its structure moves.
     struct KindIndex {
         uint64_t structure = ~uint64_t{0};
-        std::vector<const Element*> lights, portals, terrains;
+        std::vector<const Element*> lights, portals, terrains, probes;
     };
     mutable std::unordered_map<const State*, KindIndex> kind_index_;
     const KindIndex& index_of(const State& s) const;

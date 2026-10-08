@@ -57,15 +57,29 @@ uniform vec4  uLightGateAxis[MAX_LIGHTS];
 uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
 uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
 uniform vec4  uLightFrame[MAX_LIGHTS];    // a projector's: the tangents of its half-angles across and up, how soft its edge; 1 if framed
+uniform float uLightLayer[MAX_LIGHTS];    // the first layer of its shadow maps, or < 0 for none
+uniform float uLightCube[MAX_LIGHTS];     // 1: a lamp with no cone, its maps six, a face of a cube round it each
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
-// The first `uShadowCount` lights each have a depth map, a layer each of one
-// array: where it sees from (`uShadowVP`), and how much its depth is let slip
-// (`uShadowBias` - a sun's range is far longer than a lamp's).
-const int MAX_SHADOWS = 10;
+// The first `uShadowCount` lights each have depth maps, layers of one array
+// (from `uLightLayer`: one, or six for a lamp with no cone): where each sees
+// from (`uShadowVP`), and how much its depth is let slip (`uShadowBias` - a
+// sun's range is far longer than a lamp's).
+const int MAX_SHADOWS = 24;
 uniform sampler2DArrayShadow uShadowMaps;
 uniform mat4 uShadowVP[MAX_SHADOWS];
 uniform float uShadowBias[MAX_SHADOWS];
+
+// Which of light `i`'s maps sees `p`: its one, or - a lamp with no cone -
+// the face of its cube the way from the lamp to `p` goes out through (the
+// greatest of the three coordinates of that way: +x, -x, +y, -y, +z, -z).
+int shadow_layer(int i, vec3 p) {
+    int first = int(uLightLayer[i] + 0.5);
+    if (uLightCube[i] < 0.5) return first;
+    vec3 d = p - uLightPos[i], a = abs(d);
+    int face = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1) : a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5);
+    return first + face;
+}
 
 // How much of light `i` comes through its doorway to `p`: the way to it
 // (towards a lamp, the whole way; towards a sun, a direction) must pass
@@ -218,7 +232,7 @@ vec3 slice_light(vec3 dir, float k, float down) {
         vec3 l;
         float reach = light_reach(i, p, l);
         if (reach <= 1e-5) continue;
-        if (i < uShadowCount) reach *= air_shadow(i, p);
+        if (i < uShadowCount && uLightLayer[i] > -0.5) reach *= air_shadow(shadow_layer(i, p), p);
         // Mostly on ahead, some back: two lobes, as haze has.
         float c = dot(dir, l);
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
@@ -346,6 +360,19 @@ uniform vec4 uDoorIn[MAX_DOORS];
 uniform vec3 uDoorSky[MAX_DOORS];
 uniform vec3 uDoorGround[MAX_DOORS];
 uniform float uAmbient;
+// Light probes of the room being drawn (sg/domains/Probe.hpp): a box each -
+// its middle and its turn (yaw), half its size, how far in from each side
+// its light fades in (the low sides, the high) - and what its lamps give it
+// from every way after lighting the room, as nine coefficients of spherical
+// harmonics.
+const int MAX_PROBES = 8;
+uniform int  uProbeCount;
+uniform vec4 uProbeAt[MAX_PROBES];
+uniform vec3 uProbeHalf[MAX_PROBES];
+uniform vec3 uProbeSoftLo[MAX_PROBES];
+uniform vec3 uProbeSoftHi[MAX_PROBES];
+uniform vec3 uProbeSH[MAX_PROBES * 9];
+uniform float uDark;          // 1: what glows of itself does not (a probe's bake, lamp by lamp)
 
 // An open world has a sky instead of a ceiling: a gradient, and the sun in it.
 uniform vec3  uSkyTop;
@@ -632,6 +659,45 @@ void around_at(vec3 p, out vec3 sky, out vec3 ground) {
     }
 }
 
+// How much probe `i` holds `p`: 1 in its box, fading to 0 over its soft
+// edge beyond each side (so a box the size of its room holds its walls).
+float probe_weight(int i, vec3 p) {
+    vec4 at = uProbeAt[i];
+    vec3 d = p - at.xyz;
+    float c = cos(at.w), s = sin(at.w);
+    vec3 q = vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+    vec3 lo = q + uProbeHalf[i], hi = uProbeHalf[i] - q;
+    vec3 a = clamp(1.0 + lo / max(uProbeSoftLo[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 b = clamp(1.0 + hi / max(uProbeSoftHi[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 w = a * b;
+    w = w * w * (3.0 - 2.0 * w);
+    return w.x * w.y * w.z;
+}
+
+// The light the probes hold arriving along `d` - each band weighted as a
+// surface takes it (w1, w2: 2/3 and 1/4 for the light a surface facing `d`
+// is given, over pi; 1 and 1 for what arrives along it) - blended by how much
+// each holds `p`; and how much they hold it at all, in `cover` (0: none).
+vec3 probe_light(vec3 p, vec3 d, float w1, float w2, out float cover) {
+    float x = d.x, y = d.y, z = d.z;
+    float b[9] = float[9](0.282095, 0.488603 * y * w1, 0.488603 * z * w1, 0.488603 * x * w1,
+                          1.092548 * x * y * w2, 1.092548 * y * z * w2, 0.315392 * (3.0 * z * z - 1.0) * w2,
+                          1.092548 * x * z * w2, 0.546274 * (x * x - y * y) * w2);
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < MAX_PROBES; ++i) {
+        if (i >= uProbeCount) break;
+        float w = probe_weight(i, p);
+        if (w <= 0.0) continue;
+        vec3 e = vec3(0.0);
+        for (int k = 0; k < 9; ++k) e += uProbeSH[i * 9 + k] * b[k];
+        sum += max(e, vec3(0.0)) * w;
+        total += w;
+    }
+    cover = min(total, 1.0);
+    return total > 0.0 ? sum / total : vec3(0.0);
+}
+
 // Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
 // hardware's own 2x2, the spiral turned for each pixel so the penumbra is a
 // smooth gradient dithered finely, not the steps of a fixed grid. The disc
@@ -695,7 +761,7 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
 // door, the leaf's edge, a chair's legs), the two blended before the near
 // one's own edge begins to fade.
 float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
-    float wide = shadow_factor(i, n, l, floor_);
+    float wide = shadow_factor(shadow_layer(i, vLit), n, l, floor_);
     if (uLightNear[i] < -0.5) return wide;
     int near = int(uLightNear[i] + 0.5);
     vec4 light_space = uShadowVP[near] * vec4(vLit, 1.0);
@@ -1077,6 +1143,11 @@ void main() {
     float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
 
+    // The light the room's probes hold for a surface facing this way, and
+    // how much they hold this point (0: the light from all round below).
+    float probe_cover = 0.0;
+    vec3 probe_given = uProbeCount > 0 ? probe_light(vLit, n, 2.0 / 3.0, 0.25, probe_cover) : vec3(0.0);
+
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
@@ -1098,7 +1169,7 @@ void main() {
         float shadow = 1.0;
         // (Only where the lamp reaches: outside its cone it adds nothing,
         // and its shadow there is nothing.)
-        if (ndl > 0.0 && i < uShadowCount && !let_in) {
+        if (ndl > 0.0 && i < uShadowCount && uLightLayer[i] > -0.5 && !let_in) {
             float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }
@@ -1116,7 +1187,9 @@ void main() {
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
 
-        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * reach * shadow;
+        // (Light standing in for bounce is the probes' where they hold: their
+        // bake saw the bounce itself, and it would count twice.)
+        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - probe_cover);
         else direct += lobe * ndl * uLightColor[i] * reach * shadow;
     }
 
@@ -1150,12 +1223,23 @@ void main() {
     }
     vec3 around = mix(ground_here, sky_here, n.y * 0.5 + 0.5);
     vec3 mirrored = mix(ground_here, sky_here, smoothstep(-0.35, 0.35, up));
+    if (probe_cover > 0.0) {
+        // Where the probes hold, the light from all round is the look's and
+        // the lamps' come back off the room, as the probes saw it: given to
+        // the diffuse as a surface facing this way takes it, and seen in the
+        // mirror direction - blurred toward the normal, its finer bands
+        // fading, as the surface roughens.
+        float rr = roughness * roughness, unused;
+        vec3 m = probe_light(vLit, normalize(mix(r, n, rr)), mix(1.0, 2.0 / 3.0, rr), mix(1.0, 0.25, rr), unused);
+        around += probe_given * probe_cover;
+        mirrored += m * probe_cover;
+    }
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
     if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
     vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected + bounced;
 
-    vec3 color = ambient + direct + albedo * (mEmissive + uGlow);
+    vec3 color = ambient + direct + albedo * (mEmissive + uGlow) * (1.0 - uDark);
     // How much of what is seen here is light from all round - the only part
     // occlusion takes away (ao_apply_fs): a corner in lamplight stays lit.
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
@@ -1223,6 +1307,29 @@ float fog_bloom(vec2 uv) {
     return uFogBloom * min(tau, uFogBloomCap > 0.0 ? uFogBloomCap : 3.0);
 }
 )";
+}
+
+const char* exposure_meter_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform vec2 uCell;  // one pixel of the meter, in the scene's 0..1
+void main() {
+    // Four looks about the cell, so a lamp or a dark seam between two
+    // samples is not missed - each as bright as its light, not its colour.
+    float sum = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec2 o = (vec2(i & 1, i >> 1) - 0.5) * 0.5 * uCell;
+        vec3 c = texture(uScene, vUV + o).rgb;
+        sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1.0 / 16384.0));
+    }
+    // The middle of the view counts most, as the eye looks at it; the edges
+    // still a quarter as much, so a lamp at the edge is not all ignored.
+    vec2 d = vUV - 0.5;
+    float w = 0.25 + exp(-dot(d, d) / (2.0 * 0.2 * 0.2));
+    FragColor = vec4(w * sum * 0.25, w, 0.0, 1.0);
+})";
 }
 
 const char* composite_fs() {

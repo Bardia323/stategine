@@ -2,6 +2,7 @@
 
 #include <atomic>
 
+#include "sg/domains/Probe.hpp"
 #include "sg/domains/Walk.hpp"
 
 #include "sg/spatial/Math.hpp"
@@ -230,6 +231,8 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
     e.params.set(keys::open, false);
     return e;
 }
+
+std::vector<std::string> Spatial3D::faults() const { return probe_faults(*this); }
 
 void Spatial3D::model(Key name, std::vector<float> corners) {
     // (One count for every state's models, from every thread that makes one.)
