@@ -102,6 +102,15 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(stategine_gl PUBLIC stategine_render)
 endif()
 
+# Sound (sg/audio): a library of its own on top, as drawing is. A mixer that
+# reads the states - what each thing sounds as, each place's sound look, the
+# curves - and owns only voices, filters and reverbs. No sound device: the
+# program hands it one (the lab's miniaudio) and asks it for samples.
+file(GLOB _sg_audio_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/*.cpp)
+add_library(stategine_audio STATIC ${_sg_audio_sources})
+add_library(stategine::audio ALIAS stategine_audio)
+target_link_libraries(stategine_audio PUBLIC stategine)
+
 # A game's modules, built the same way: stategine_module(), and
 # stategine_check_modules() to hold them to it.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineModules.cmake)
@@ -346,6 +355,12 @@ if(SG_BUILD_TESTS)
   add_executable(sg_cache tests/test_cache.cpp)
   target_link_libraries(sg_cache PRIVATE stategine_dev)
   add_test(NAME sg_cache COMMAND sg_cache)
+  # Sound as declared state (sg/audio): curves as data, ramps in dB, ways
+  # through doorways, a room's reverb from its shape, the laws, the mixer.
+  add_executable(sg_audio tests/test_audio.cpp)
+  target_link_libraries(sg_audio PRIVATE stategine_dev stategine_audio)
+  add_test(NAME sg_audio COMMAND sg_audio)
+  set_target_properties(sg_audio PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
   add_executable(sg_rooms tests/test_room.cpp)
   target_link_libraries(sg_rooms PRIVATE stategine_dev)
   add_test(NAME sg_rooms COMMAND sg_rooms)
@@ -475,6 +490,10 @@ if(SG_BUILD_TESTS)
     "sg/gl=${CMAKE_CURRENT_SOURCE_DIR}/src/gl:sg/core,sg/domains,sg/render,sg/spatial"
     "sg/dsl=${CMAKE_CURRENT_SOURCE_DIR}/src/dsl:sg/core,sg/domains"
     "sg/web=${CMAKE_CURRENT_SOURCE_DIR}/src/web:sg/core,sg/domains,sg/render,sg/net,sg/dsl,sg/spatial")
+  # Sound, held to the same rules.
+  set_property(GLOBAL APPEND PROPERTY STATEGINE_MODULES
+    "sg/audio=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/audio:sg/core,sg/domains,sg/spatial"
+    "sg/audio=${CMAKE_CURRENT_SOURCE_DIR}/src/audio:sg/core,sg/domains,sg/spatial")
   stategine_check_modules(NAME sg_shape)
   set_property(GLOBAL PROPERTY STATEGINE_MODULES "")
 
