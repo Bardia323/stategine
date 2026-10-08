@@ -1,6 +1,16 @@
 #include "sg/core/Temporal.hpp"
 
+#include <unordered_map>
+
 namespace sg {
+
+Key Temporal::advance_event(Key line) {
+    // (Named once a line, on each thread: every drive asks it every frame.)
+    thread_local std::unordered_map<Key, Key> named;
+    auto it = named.find(line);
+    if (it == named.end()) it = named.emplace(line, Key{"advance." + line.str()}).first;
+    return it->second;
+}
 
 Element& Temporal::timeline(Key line) {
     if (Element* e = find(line)) return *e;

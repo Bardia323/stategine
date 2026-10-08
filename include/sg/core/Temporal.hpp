@@ -46,7 +46,7 @@ public:
         static const Key k{"timeline"};
         return k;
     }
-    static Key advance_event(Key line) { return Key{"advance." + line.str()}; }
+    static Key advance_event(Key line);
 
     double time(Key line) const { return element(line).params.num(keys::time); }
     // The frame count is how many steps were taken, which is not a matter of
