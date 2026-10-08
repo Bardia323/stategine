@@ -470,13 +470,17 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         // What the solver's spring turns: the bone against its parent (a
         // root stands fixed), as against all that hangs from it.
         if (rides[i]) {
-            element(js[i]).params.set("armature", 0.0).set("gain", 1.0);
+            element(js[i]).params.set("armature", 0.0).set("gain", 1.0).set("heavy", 1.0);
             continue;
         }
         const double pair = parent[i] < 0 ? stiff[i] : 1.0 / (1.0 / stiff[i] + 1.0 / stiff[std::size_t(parent[i])]);
         // (No stiffer than its steps can carry: a spring of more than a
         // fifth of a turn a substep shivers instead of holding.)
-        element(js[i]).params.set("armature", stiff[i] - own[i]).set("gain", std::clamp(std::sqrt(std::max(1.0, sub[i] / pair)), 1.0, 8.0));
+        // (`heavy`: how much heavier to turn all it moves is than the solver
+        // sees - the muscle's damping is sized by it, whole, so it settles
+        // without rocking even where its stiffness is capped.)
+        const double heavy = std::sqrt(std::max(1.0, sub[i] / pair));
+        element(js[i]).params.set("armature", stiff[i] - own[i]).set("gain", std::clamp(heavy, 1.0, 8.0)).set("heavy", heavy);
     }
 
     // Its balance: what it stands on (two feet), the sway of its hips over
@@ -847,7 +851,9 @@ void Ragdoll::step(double dt) {
         j.cone = b.params.num("cone", 1.9);
         const double gain = b.params.num("gain", 1.0);
         j.aim_hertz = std::max(0.2, b.params.num("omega", 14.0) * s) * gain / (2 * 3.14159265358979);
-        j.aim_damping = zeta * gain;
+        // Damped for all it moves, though no stiffer than its steps carry:
+        // a capped spring damped as if uncapped would rock like a bag.
+        j.aim_damping = zeta * b.params.num("heavy", gain);
         j.aim_torque = 2.0 + 600.0 * s;  // what is left of a limp joint: its friction
     }
     const std::string held = self.params.get_or<std::string>("grab", "");
@@ -1100,9 +1106,9 @@ void Ragdoll::balance(double dt) {
     self.params.set("sway_x", sway.x).set("sway_z", sway.z).set("sway_vx", v.x).set("sway_vz", v.z);
     self.params.set("swing", double(swing)).set("swing_t", t).set("stumble", stumble);
 
-    // The hips where the sway has them (a little lower while stepping), and
+    // The hips where the sway has them, and
     // each leg aimed to put its foot where it is planted or swinging to.
-    const V3 hips = home + V3{sway.x, swing >= 0 ? -0.02 : 0.0, sway.z};
+    const V3 hips = home + V3{sway.x, 0.0, sway.z};  // (level as a foot moves: a dip each step reads as a bob)
     set_hips(hips);
     const bool home_again = std::hypot(sway.x, sway.z) < 0.005 && swing < 0;
     const M3 rr = turn_of(root, "aim");

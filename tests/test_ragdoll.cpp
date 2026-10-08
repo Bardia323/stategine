@@ -390,6 +390,25 @@ int main() {
         check(woke && !w.awake(), "its feet meant into the floor, touched, it settles back and sleeps");
     }
     {
+        // Hit at the chest, it does not rock like a punching bag: the head
+        // goes out and comes back, at most once past where it is meant.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        const sg::Vec3d head0 = w.ann->pose_of("head").position;
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::z, 25.0));
+        int turns = 0;
+        double last = 0, most = 0;
+        for (int i = 0; i < 240; ++i) {
+            w.run(1.0 / 60);
+            const double d = w.ann->pose_of("head").position.z - head0.z;
+            most = std::max(most, std::fabs(d));
+            if (std::fabs(d) > 0.005 && last != 0 && (d > 0) != (last > 0)) ++turns;
+            if (std::fabs(d) > 0.005) last = d;
+        }
+        check(most > 0.005 && turns <= 1, "hit at the chest, the head goes out and comes back - no rocking (" + std::to_string(turns) + " times past, " + std::to_string(most) + " m out)");
+    }
+    {
         // Balance. Nudged at the chest: the hips sway over the feet and come
         // back; no step is needed.
         Scene w;
