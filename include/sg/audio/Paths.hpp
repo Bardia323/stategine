@@ -103,6 +103,9 @@ private:
         Vec3d pos[2], normal[2];
         double aperture = 1.0, fade = 1.0;  // what it passes, and its fade
         bool live = false;
+        // What all that was read from - the stamps of its doorways, and of
+        // what they hang on: read again only when one of them moves.
+        uint64_t stamp = ~uint64_t{0};
     };
     // Arrived at one side of an opening (in that side's place), from the ear.
     struct Landing {
@@ -118,6 +121,7 @@ private:
     Key ear_place_;
     Vec3d ear_;
     uint64_t revision_ = ~uint64_t{0};
+    bool found_ = false;  // the ways from the ear found, for ear_place_ and ear_ as they are
 };
 
 // What the walls between `from` and `to` in `place` let through: a ray from

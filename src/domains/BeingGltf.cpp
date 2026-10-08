@@ -255,7 +255,9 @@ std::string n6(double v) {
     return b;
 }
 
-// What a skin is made of, read once from its file (memoised on the file's stamp).
+// What a skin is made of, read once from its file - again when the being
+// imports it again (import_gltf lets go of it), not looked for on disk at
+// every pose.
 struct SkinData {
     long long stamp = -1;
     std::vector<Vec3d> pos, nrm;
@@ -287,6 +289,8 @@ Being::Files& Being::files() {
 }
 
 bool Being::import_gltf(const std::string& path, const std::string& prefix, std::string* why) {
+    // Read in again: its skins are read again from the file as it is now.
+    for (auto it = skins().lower_bound(path + "#"); it != skins().end() && it->first.rfind(path + "#", 0) == 0;) it = skins().erase(it);
     std::string bytes;
     if (!files().read || !files().read(path, bytes)) return why && (*why = "cannot read " + path, true), false;
     const Doc d = read_doc(bytes, path, &files());
@@ -580,16 +584,15 @@ std::vector<std::size_t> kept_keys(const std::vector<double>& times, const std::
     return out;
 }
 
-std::vector<float> Being::skinned(Key skin_id) const {
+std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
     std::vector<float> out;
     const Element* s = find(skin_id);
     if (!s) return out;
     const std::string path = s->params.get_or<std::string>("file", "");
-    const long long stamp = files().stamp ? files().stamp(path) : 0;
     auto& slot = skins()[path + "#" + std::to_string(int(s->params.num("node")))];
-    if (!slot || slot->stamp != stamp) {
+    if (!slot) {
         slot = std::make_shared<SkinData>();
-        slot->stamp = stamp;
+        slot->stamp = files().stamp ? files().stamp(path) : 0;
         std::string bytes;
         if (files().read && files().read(path, bytes)) {
             const Doc d = read_doc(bytes, path, &files());
@@ -682,14 +685,47 @@ std::vector<float> Being::skinned(Key skin_id) const {
         if (wsum <= 0) p = sd.pos[v], nn = v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0};
         P[v] = p, N[v] = nn;
     }
-    out.reserve(sd.index.size() * 8);
-    for (uint32_t i : sd.index) {
-        if (i >= P.size()) continue;
+    // Fitted (as shapes::fit fits a mesh into the box round it), each
+    // corner once - not each time a triangle names it.
+    if (fitted) {
+        Vec3d lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        bool any = false;
+        for (uint32_t i : sd.index) {
+            if (i >= P.size()) continue;
+            const Vec3d& p = P[i];
+            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+            hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+            any = true;
+        }
+        if (!any) lo = hi = Vec3d{};
+        const Vec3d sz{std::max(hi.x - lo.x, 1e-6), std::max(hi.y - lo.y, 1e-6), std::max(hi.z - lo.z, 1e-6)};
+        const Vec3d mid = (lo + hi) * 0.5;
+        fitted->lo = lo, fitted->hi = hi, fitted->size = sz;
+        for (std::size_t v = 0; v < P.size(); ++v) {
+            P[v] = {(P[v].x - mid.x) / sz.x, (P[v].y - lo.y) / sz.y - 0.5, (P[v].z - mid.z) / sz.z};
+            // (Stretched by the size again, a normal n comes out as size n;
+            // what is wanted is n / size: so it is kept as n / size^2.)
+            N[v] = {N[v].x / (sz.x * sz.x), N[v].y / (sz.y * sz.y), N[v].z / (sz.z * sz.z)};
+        }
+    }
+    // Each corner made once, then laid down wherever a triangle names it.
+    std::vector<float> corner(P.size() * 8);
+    for (std::size_t i = 0; i < P.size(); ++i) {
         const Vec3d& n = N[i];
         const double l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z) + 1e-12;
-        out.insert(out.end(), {float(P[i].x), float(P[i].y), float(P[i].z), float(n.x / l), float(n.y / l), float(n.z / l),
-                               i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2] : 0.f, i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2 + 1] : 0.f});
+        float* c = &corner[i * 8];
+        c[0] = float(P[i].x), c[1] = float(P[i].y), c[2] = float(P[i].z);
+        c[3] = float(n.x / l), c[4] = float(n.y / l), c[5] = float(n.z / l);
+        c[6] = i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2] : 0.f, c[7] = i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2 + 1] : 0.f;
     }
+    out.resize(sd.index.size() * 8);
+    std::size_t at = 0;
+    for (uint32_t i : sd.index) {
+        if (i >= P.size()) continue;
+        std::copy_n(&corner[std::size_t(i) * 8], 8, &out[at]);
+        at += 8;
+    }
+    out.resize(at);
     return out;
 }
 
@@ -706,19 +742,18 @@ const std::vector<unsigned char>* Being::skin_picture(Key skin_id, int& w, int& 
 void show_skins(Spatial3D& host, const Being& b, Key anchor) {
     for (const Element& s : b.elements()) {
         if (s.kind != Key{"skin"}) continue;
-        std::vector<float> tris = b.skinned(s.id);
-        if (tris.empty()) continue;
         // Fitted in the box round it as it is posed, in the being's frame -
         // the frame it is drawn in: the thing's box is what the renderer
         // culls it by and a hand finds it in, so it holds all that is drawn,
         // however it moves. (Never the box its bind pose was made in: that
         // is in the model's own units - a Mixamo export's a box a centimetre
         // high at the feet, and the body vanished when they were out of view.)
-        Vec3d lo, hi, size;
-        shapes::bounds(tris, lo, hi);
-        const Vec3d mid = (lo + hi) * 0.5;
+        Being::Fitted box;
+        std::vector<float> tris = b.skinned(s.id, &box);
+        if (tris.empty()) continue;
+        const Vec3d lo = box.lo, size = box.size, mid = (box.lo + box.hi) * 0.5;
         const Key model{b.id().str() + "." + s.id.str()};
-        host.model(model, shapes::fit(std::move(tris), size, lo, hi));
+        host.model(model, std::move(tris));
         const Key there{anchor.str() + "." + s.id.str()};
         Element* e = host.find(there);
         if (!e) e = &host.add_element(there, kinds::mesh);

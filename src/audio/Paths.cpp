@@ -156,13 +156,34 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
         }
         for (std::size_t i = 0; i < openings_.size(); ++i)
             for (int k = 0; k < 2; ++k) sides_of_[openings_[i].place[k]].push_back(static_cast<int>(2 * i) + k);
+        found_ = false;
     }
+    // What an opening is read from: its two doorways and the seam's first
+    // (what says how much it passes), and what each hangs on - by their
+    // stamps, so an opening nothing touched is not read again.
+    const auto stamp_of = [&](uint64_t h, Key place, Key portal) {
+        const State* s = g.find(place);
+        const Element* e = s ? s->find(portal) : nullptr;
+        for (int k = 0; k < 8 && e; ++k) {
+            h = mix_stamp(h, (e->params.stamp() << 1) | (e->alive ? 1u : 0u));
+            const std::string* parent = e->params.text(sg::keys::parent);
+            e = parent && !parent->empty() ? s->find(Key{*parent}) : nullptr;
+        }
+        return mix_stamp(h, s ? 1u : 0u);
+    };
+    bool moved = !found_;
     // Where each is now, and how open: a doorway moves with what it hangs on,
     // and a door swings.
     for (Opening& o : openings_) {
+        const Seam& seam = g.seams()[o.seam_index];
+        uint64_t stamp = stamp_of(stamp_of(0x9e3779b97f4a7c15ull, o.place[0], o.portal[0]), o.place[1], o.portal[1]);
+        if (!seam.boundary_a.empty() && !seam.boundary_b.empty())
+            stamp = stamp_of(stamp_of(stamp, seam.a, seam.boundary_a.front()), seam.b, seam.boundary_b.front());
+        if (stamp == o.stamp) continue;
+        o.stamp = stamp;
+        moved = true;
         // What a seam lets through, and how much of it, is the graph's to say
         // (its doorways' `admits`, `opening`, `muffle`), and may change as they do.
-        const Seam& seam = g.seams()[o.seam_index];
         o.aperture = g.passes(seam, Channel::Sound);
         o.live = o.aperture > 0.0;
         if (!o.live) continue;
@@ -180,6 +201,9 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
         }
     }
 
+    // Nothing moved, the ear where it was: the ways are as they were found.
+    if (!moved && ear_place == ear_place_ && ear.x == ear_.x && ear.y == ear_.y && ear.z == ear_.z) return;
+    found_ = true;
     ear_place_ = ear_place;
     ear_ = ear;
     landed_.clear();
