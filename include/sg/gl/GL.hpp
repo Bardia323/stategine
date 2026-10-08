@@ -76,6 +76,10 @@ constexpr GLenum GL_DEPTH_COMPONENT24 = 0x81A6;
 constexpr GLenum GL_MULTISAMPLE = 0x809D;
 constexpr GLenum GL_RGBA16F = 0x881A;
 constexpr GLenum GL_RGB16F = 0x881B;
+constexpr GLenum GL_RG = 0x8227;
+constexpr GLenum GL_RG16F = 0x822F;
+constexpr GLenum GL_PIXEL_PACK_BUFFER = 0x88EB;
+constexpr GLenum GL_STREAM_READ = 0x88E1;
 constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;
 // BC7 blocks (BPTC: core from 4.2, ARB_texture_compression_bptc before).
 constexpr GLenum GL_COMPRESSED_RGBA_BPTC_UNORM = 0x8E8C;
@@ -151,6 +155,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, BindBuffer, (GLenum, GLuint))                                                     \
     X(void, BufferData, (GLenum, GLsizeiptr, const void*, GLenum))                            \
     X(void, DeleteBuffers, (GLsizei, const GLuint*))                                          \
+    X(void, GetBufferSubData, (GLenum, GLintptr, GLsizeiptr, void*))                          \
     X(void, VertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*))    \
     X(void, EnableVertexAttribArray, (GLuint))                                                \
     X(void, GenTextures, (GLsizei, GLuint*))                                                  \

@@ -6,6 +6,27 @@ Rgb mix(const Rgb& a, const Rgb& b, double t) {
     return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t};
 }
 
+Rgb kelvin(double K) {
+    const double t = std::clamp(std::isfinite(K) ? K : 6500.0, 1667.0, 25000.0);
+    const double t1 = 1e3 / t, t2 = t1 * t1, t3 = t2 * t1;  // thousands of kelvin, inverted
+    // Where the locus is (Kim, Kang, Kim, Lee and Hwang 2002), x then y.
+    const double x = t <= 4000.0 ? -0.2661239 * t3 - 0.2343589 * t2 + 0.8776956 * t1 + 0.179910
+                                 : -3.0258469 * t3 + 2.1070379 * t2 + 0.2226347 * t1 + 0.240390;
+    const double x2 = x * x, x3 = x2 * x;
+    const double y = t <= 2222.0   ? -1.1063814 * x3 - 1.34811020 * x2 + 2.18555832 * x - 0.20219683
+                     : t <= 4000.0 ? -0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867
+                                   : 3.0817580 * x3 - 5.87338670 * x2 + 3.75112997 * x - 0.37001483;
+    // As bright as white (Y = 1), into linear sRGB (D65).
+    const double X = x / y, Y = 1.0, Z = (1.0 - x - y) / y;
+    Rgb c{3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z,
+          0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z};
+    // A candle is redder than sRGB has a red for: no channel below none,
+    // and as bright as white again after.
+    c.r = std::max(c.r, 0.0), c.g = std::max(c.g, 0.0), c.b = std::max(c.b, 0.0);
+    const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    return {c.r / lum, c.g / lum, c.b / lum};
+}
+
 
 Daylight daylight(double hour, const Rgb& ground) {
     constexpr double pi = 3.14159265358979323846;

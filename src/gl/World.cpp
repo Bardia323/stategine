@@ -176,6 +176,10 @@ void GLWorldView::release_feed(Feed& f) {
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
     const LookFader fader = fader_;
     const Mix post = post_;
+    // (And the eye as it was adjusted: what warming measures is of other worlds.)
+    const double ev = exposure_.ev, ev_target = exposure_.target;
+    const bool ev_known = exposure_.known, ev_settle = exposure_.settle;
+    const float ev_weight = exposure_.weight;
     pack_skins();
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
@@ -196,6 +200,9 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     gl::glFinish();
     fader_ = fader;
     post_ = post;
+    exposure_.ev = ev, exposure_.target = ev_target, exposure_.known = ev_known, exposure_.settle = ev_settle;
+    exposure_.weight = ev_weight;
+    exposure_.asked[0] = exposure_.asked[1] = false;
 }
 
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
@@ -356,6 +363,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     own_shown_ = own_shown_now_;
     own_shown_now_.clear();
     post_ = mix(view_key(), look_of(world));
+    adapt_exposure();
     const Camera eye_cam = eye_override_ ? camera_of(*eye_override_) : camera_of(world);
     const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
 
@@ -560,6 +568,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl).
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0;
     if (fog_depth_ && ao <= 0.0) scene_target_.blit_depth_to(depth_);
+    meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);
     if (timing_) gl::glFinish();
@@ -742,6 +751,14 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
         const Element& e = *ep;
         if (!e.alive) continue;
         Light l=light_of(room,e,pose);
+        if (baking_) {
+            // Baking a probe: the one lamp, at 1, in white - whatever it is now.
+            if (e.id != solo_ || l.sun || l.indirect) continue;
+            l.color = {1.0f, 1.0f, 1.0f};
+            l.power = 26.0f;
+            out.push_back(l);
+            continue;
+        }
         if (l.power <= 0.0f) continue;  // switched off
         out.push_back(l);
     }
@@ -750,7 +767,7 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
 
 auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Light> {
     std::vector<Light> out;
-    if (!placed.room) return out;
+    if (!placed.room || baking_) return out;
     const Spatial3D& room = *placed.room;
     for (const auto& e : room.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
@@ -895,8 +912,29 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
             scene_->set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
                         static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), 0.0f);
             scene_->set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), shut ? 1.0f : 0.0f, 0.0f);
-            scene_->set(name("uDoorSky", count), v3("uSky", 0.10, 0.13, 0.20));
-            scene_->set(name("uDoorGround", count), v3("uGround", 0.14, 0.10, 0.07));
+            gl::Vec3 sky = v3("uSky", 0.10, 0.13, 0.20), ground = v3("uGround", 0.14, 0.10, 0.07);
+            // And what the far room's probe nearest the doorway holds of its
+            // lamps' light come back, from above and from below.
+            const Spatial3D& far = *it->second.world;
+            if (!index_of(far).probes.empty()) {
+                const Element* back = !it->second.back.empty() ? far.find(it->second.back) : back_portal(far, *placed.room);
+                const Vec3d there = back ? world_pose(far, *back).position : Vec3d{};
+                const Element* nearest = nullptr;
+                double best = 1e300;
+                for (const Element* p : index_of(far).probes) {
+                    if (!p->alive) continue;
+                    const Vec3d d = world_pose(far, *p).position - there;
+                    if (dot(d, d) < best) best = dot(d, d), nearest = p;
+                }
+                if (nearest) {
+                    const Sh9 sh = probe_light(far, sets_of(*nearest));
+                    const Rgb up = sh.irradiance({0, 1, 0}), down = sh.irradiance({0, -1, 0});
+                    sky = sky + gl::Vec3{static_cast<float>(up.r), static_cast<float>(up.g), static_cast<float>(up.b)};
+                    ground = ground + gl::Vec3{static_cast<float>(down.r), static_cast<float>(down.g), static_cast<float>(down.b)};
+                }
+            }
+            scene_->set(name("uDoorSky", count), sky);
+            scene_->set(name("uDoorGround", count), ground);
             ++count;
         }
     scene_->set("uDoorCount", count);
@@ -1021,7 +1059,11 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
         if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
         return a.pos.y < b.pos.y;
     });
-    const std::size_t own = std::min(out.size(), kOwnShadows);
+    // (Lamps, not layers: a lamp with no cone takes six layers of the maps,
+    // one a face of a cube round it - while the array holds them.)
+    std::size_t own = 0, faces = 0;
+    while (own < std::min(out.size(), kOwnShadows) && faces + shadow_faces(out[own]) <= kShadowMaps)
+        faces += static_cast<std::size_t>(shadow_faces(out[own])), ++own;
     // What comes through a doorway, shut or not - the same lights in the
     // same places, only what they reach told by the door (hung_only) - gets
     // a shadow map of its own while there are maps: then what stands in the
@@ -1031,7 +1073,7 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
     for (const PlacedRoom& placed : rooms)
         if (!placed.image)
             for (const Light& l : through_doorways(placed)) in.push_back(l);
-    shadowed = std::min(own + in.size(), kShadowMaps);
+    shadowed = std::min({own + in.size(), std::max(kShadowLights, own), own + (kShadowMaps - faces)});
     for (std::size_t k = 0; k < shadowed - own && k < in.size(); ++k) in[k].open = 1.0f;
     out.insert(out.begin() + static_cast<std::ptrdiff_t>(own), in.begin(), in.end());
     shadowed = std::min(shadowed, out.size());
@@ -1154,23 +1196,45 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         return 2.0f * std::tan(std::min(l.outer * 2.05f, 2.7f) * 0.5f) / size;
     };
     gl::Mat4 light_vp[kShadowMaps];
-    float bias[kShadowMaps] = {1.0f, 1.0f, 1.0f, 1.0f};
-    for (std::size_t i = 0; i < kShadowMaps; ++i) {
-        const Light& l = lights[std::min(i, lights.size() - 1)];
+    float bias[kShadowMaps];
+    std::fill(bias, bias + kShadowMaps, 1.0f);
+    // Each light with maps takes its layers in turn: one, or - a lamp with no
+    // cone - six, a face of a cube round it each (shadow_faces). Which light
+    // a layer is of, and which face of its cube (-1: the light's one map).
+    std::array<std::size_t, kShadowMaps> layer_light{};
+    std::array<int, kShadowMaps> layer_face{};
+    std::vector<float> first_layer(lights.size(), -1.0f), cube_of(lights.size(), 0.0f);
+    std::size_t layers = 0, cube_extra = 0;
+    {
         const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
-        light_vp[i]=shadow_projection(l,eye,shadow_px,bias[i]);
-        bias[i] = texel_of(l);
+        const float face_texel = 2.0f * kCubeFaceSpread / static_cast<float>(std::max(shadow_px, 1));
+        for (std::size_t i = 0; i < shadowed && layers < kShadowMaps; ++i) {
+            const Light& l = lights[i];
+            const int faces = shadow_faces(l);
+            first_layer[i] = static_cast<float>(layers);
+            cube_of[i] = faces > 1 ? 1.0f : 0.0f;
+            for (int f = 0; f < faces && layers < kShadowMaps; ++f, ++layers) {
+                layer_light[layers] = i;
+                layer_face[layers] = faces > 1 ? f : -1;
+                if (faces > 1) {
+                    light_vp[layers] = shadow_face(l, f);
+                    bias[layers] = face_texel;
+                } else {
+                    light_vp[layers] = shadow_projection(l, eye, shadow_px, bias[layers]);
+                    bias[layers] = texel_of(l);
+                }
+            }
+            cube_extra += static_cast<std::size_t>(faces - 1);
+        }
     }
     // A sun whose map reaches far gets a second, small one round the viewer
     // (in the layers after the lamps'): close up, a texel is a centimetre,
     // not a hand's breadth - a door's edge, a chair's legs, a leaf half in
-    // each room would otherwise show the steps of the wide one.
+    // each room would otherwise show the steps of the wide one. (As many as
+    // there would be with no cube: a cube's six count as its lamp's one.)
     constexpr float kNearReach = 6.0f;
     std::vector<float> near_of(lights.size(), -1.0f);
-    std::array<std::size_t, kShadowMaps> layer_light{};
-    std::size_t layers = shadowed;
-    for (std::size_t i = 0; i < shadowed; ++i) layer_light[i] = i;
-    for (std::size_t i = 0; i < shadowed && layers < kShadowMaps; ++i) {
+    for (std::size_t i = 0; i < shadowed && layers < kShadowMaps && layers - cube_extra < kShadowLights; ++i) {
         const Light& l = lights[i];
         if (!l.sun || l.indirect || l.extent <= 2.0f * kNearReach) continue;
         Light close = l;
@@ -1181,6 +1245,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         bias[layers] = texel_of(close);
         near_of[i] = static_cast<float>(layers);
         layer_light[layers] = i;
+        layer_face[layers] = -1;
         ++layers;
     }
     // Narrowed to the part of the screen drawn (sub_): that part fills the
@@ -1326,7 +1391,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // another order) is laid now, never left standing as some other
         // lamp's shadow. (Colour and power are not in a depth map: a sun's go
         // with the hour.)
-        const uint64_t ident = fnv(fnv(fnv(li.sun ? 1 : 2, li.gate), near_of[layer_light[i]] == static_cast<float>(i) ? 1 : 0), li.sun ? 0 : 1);
+        // (And which face of a lamp's cube: a face's map is never another's.)
+        uint64_t ident = fnv(fnv(fnv(li.sun ? 1 : 2, li.gate), near_of[layer_light[i]] == static_cast<float>(i) ? 1 : 0), li.sun ? 0 : 1);
+        if (layer_face[i] >= 0) ident = fnv(ident, static_cast<uint64_t>(layer_face[i]) + 7);
         const Frustum volume = frustum_of(light_vp[i]);
         // What moves in the volume, and the terrain and panels in it.
         movers_in.clear(), extras_in.clear();
@@ -1487,6 +1554,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 8), l.indirect ? 1.0f : 0.0f);
             p.set(light_uniform(i, 9), l.falloff);
             p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
+            p.set(light_uniform(i, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
+            p.set(light_uniform(i, 18), cube_of[i]);
             p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
             p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
             p.set(light_uniform(i, 13), l.open);
@@ -1500,7 +1569,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // its air scatters, and only in a view of the eye's own or one doorway
     // on: a view deeper in is too small to see it in.
     const Air* air = nullptr;
-    const float scatter = static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
+    const float scatter = baking_ ? 0.0f : static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
     if (scatter > 0.0f && depth <= 1) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
@@ -1714,6 +1783,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         scene_->set("uClipCount", n);
         clip_count_ = n;
         doors_to_program(placed);
+        probes_to_program(placed);
+        if (baking_) {
+            // A probe's bake: only its lamp's light, nothing of its own.
+            scene_->set("uAmbient", 0.0f);
+            scene_->set("uDark", 1.0f);
+            scene_->set("uFogDensity", 0.0f);
+            scene_->set("uDoorCount", 0);
+        }
         return n;
     };
     std::vector<const Element*> sprites;
@@ -1762,7 +1839,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
 
         lap(2, part_at);
-        if (room.params().num(Key{"sky"}, 0.0) > 0.5) {
+        if (room.params().num(Key{"sky"}, 0.0) > 0.5 && !baking_) {
             // The sky is at no distance a plane can cut: it is the room's
             // ceiling, whatever bounds its ground.
             scene_->set("uClipCount", 0);
@@ -3254,6 +3331,88 @@ void GLWorldView::run_wide_bloom(float wide) {
     gl::glDisable(gl::GL_BLEND);
 }
 
+void GLWorldView::adapt_exposure() {
+    if (root_) return;  // a screen's picture, or a doorway's: the eye is the view on the screen's
+    Exposure& x = exposure_;
+    x.weight = static_cast<float>(std::clamp(setting(post_, passes::scene, "exposure.auto", 0.0), 0.0, 1.0));
+    if (x.weight <= 0.0f) {
+        // Not adjusting: the next time it does, it starts where it measures.
+        x.known = false, x.ev = 0.0;
+        x.asked[0] = x.asked[1] = false;
+        return;
+    }
+    // What was asked for last frame is on the card's side by now: read
+    // without waiting for this frame's drawing.
+    const int last = x.next ^ 1;
+    if (x.asked[last]) {
+        float rg[2] = {0, 0};
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, x.pbo[last]);
+        gl::glGetBufferSubData(gl::GL_PIXEL_PACK_BUFFER, 0, sizeof rg, rg);
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+        x.asked[last] = false;
+        if (rg[1] > 0.0f && std::isfinite(rg[0])) x.target = exposure_target(rg);
+    }
+    if (!x.known || x.settle) return;  // measured at once this frame (meter_exposure)
+    const double rate = std::max(0.0, setting(post_, passes::scene, "exposure.rate", 1.5));
+    const double step = rate * dt_;
+    x.ev += std::clamp(x.target - x.ev, -step, step);
+}
+
+void GLWorldView::meter_exposure() {
+    if (root_ || exposure_.weight <= 0.0f || !scene_src_->valid()) return;
+    Exposure& x = exposure_;
+    if (!meter_prog_) {
+        meter_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::exposure_meter_fs(), "exposure meter");
+        x.meter.create(kMeterW, kMeterH, gl::GL_RG16F, 0, false);
+        gl::glGenBuffers(2, x.pbo);
+        for (gl::GLuint b : x.pbo) {
+            gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, b);
+            gl::glBufferData(gl::GL_PIXEL_PACK_BUFFER, 2 * sizeof(float), nullptr, gl::GL_STREAM_READ);
+        }
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+    }
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    x.meter.bind();
+    meter_prog_->use();
+    meter_prog_->set("uScene", 0);
+    meter_prog_->set("uCell", 1.0f / kMeterW, 1.0f / kMeterH);
+    scene_src_->bind_color(0);
+    screen_.draw();
+    x.meter.mipmap();  // (leaves the meter's picture bound to unit 0)
+    if (!x.known || x.settle) {
+        // Settling: read now, and the eye is where it measures this frame.
+        float rg[2] = {0, 0};
+        gl::glGetTexImage(gl::GL_TEXTURE_2D, kMeterLevels - 1, gl::GL_RG, gl::GL_FLOAT, rg);
+        x.target = rg[1] > 0.0f && std::isfinite(rg[0]) ? exposure_target(rg) : 0.0;
+        x.ev = x.target;
+        x.known = true, x.settle = false;
+        x.asked[0] = x.asked[1] = false;
+        return;
+    }
+    gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, x.pbo[x.next]);
+    gl::glGetTexImage(gl::GL_TEXTURE_2D, kMeterLevels - 1, gl::GL_RG, gl::GL_FLOAT, nullptr);
+    gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+    x.asked[x.next] = true;
+    x.next ^= 1;
+}
+
+double GLWorldView::exposure_target(const float rg[2]) const {
+    const double mean_log = static_cast<double>(rg[0]) / static_cast<double>(rg[1]);
+    const double key = std::max(1e-4, setting(post_, passes::scene, "exposure.key", 0.18));
+    const double lo = setting(post_, passes::scene, "exposure.min", -8.0);
+    const double hi = setting(post_, passes::scene, "exposure.max", 8.0);
+    return std::clamp(std::log2(key) - mean_log, std::min(lo, hi), std::max(lo, hi));
+}
+
+float GLWorldView::exposure_gain() const {
+    // A doorway drawn in its own look is seen by the eye on the screen: with
+    // its adjustment. A screen's picture is a picture: its look's own.
+    const Exposure& x = root_ ? (film_of_viewer_ ? root_->exposure_ : exposure_) : exposure_;
+    if (root_ && !film_of_viewer_) return 1.0f;
+    if (x.weight <= 0.0f || !x.known) return 1.0f;
+    return static_cast<float>(std::exp2(static_cast<double>(x.weight) * x.ev));
+}
+
 void GLWorldView::composite(int fb_w, int fb_h) {
     // A look that finishes its picture (deband, smear) has it composited
     // aside first; one that does not, straight to the output, as ever.
@@ -3276,11 +3435,26 @@ void GLWorldView::composite(int fb_w, int fb_h) {
     if (fog_depth_) depth_.bind_depth(2);
     const float air_density = static_cast<float>(setting(post_, passes::scene, "uFogDensity", 0.0));
     const float air_start = static_cast<float>(setting(post_, passes::scene, "uFogStart", 0.0));
+    // The eye's adjustment, on whatever exposure the looks set: the room's,
+    // or the attended state's over it.
+    const float gain = exposure_gain();
+    float exposure = 1.0f;
+    if (gain != 1.0f) {
+        exposure = static_cast<float>(setting(post_, passes::composite, "uExposure", 1.0));
+        if (attend_) {
+            const Mix& am = mix(Key{"attend:" + attend_->id().str()}, look_of(*attend_));
+            for (const Mix::Part& part : am.parts)
+                if (const Element* e = part.look->find(passes::composite); e && e->params.has(Key{"uExposure"}))
+                    exposure = static_cast<float>(fader_.value(am, passes::composite, Key{"uExposure"}, 0.0));
+        }
+        exposure *= gain;
+    }
 
     const auto draw = [&](const gl::Program& p) {
         p.use();
         apply_uniforms(p, post_, passes::composite);
         apply_attended(p, passes::composite);
+        if (gain != 1.0f) p.set("uExposure", exposure);
         if (film_of_viewer_) p.set("uGrain", 0.0f);
         if (rays_on_) {
             p.set("uRayDir", to_vec3(rays_dir_));
@@ -3702,10 +3876,11 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
         static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame", "uLightRange"};
-        std::array<std::array<std::string, 17>, kMaxLights> n;
+                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame", "uLightRange",
+                                       "uLightLayer", "uLightCube"};
+        std::array<std::array<std::string, 19>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 17; ++f)
+            for (int f = 0; f < 19; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;
@@ -3824,11 +3999,12 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
     KindIndex& ix = kind_index_[&s];
     if (ix.structure == s.structure()) return ix;
     ix.structure = s.structure();
-    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear();
+    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear();
     for (const Element& e : s.elements()) {
         if (e.kind == kinds::light) ix.lights.push_back(&e);
         else if (e.kind == kinds::portal) ix.portals.push_back(&e);
         else if (e.kind == terrain_kind()) ix.terrains.push_back(&e);
+        else if (e.kind == kinds::probe) ix.probes.push_back(&e);
     }
     return ix;
 }

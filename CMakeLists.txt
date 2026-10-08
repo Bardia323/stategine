@@ -100,6 +100,11 @@ if(NOT EMSCRIPTEN)
   add_library(stategine_gl STATIC ${_sg_gl_sources})
   add_library(stategine::gl ALIAS stategine_gl)
   target_link_libraries(stategine_gl PUBLIC stategine_render)
+  # A room's light probes baked are kept on disk by the room and by this - the
+  # code that bakes them and draws what they are baked from.
+  stategine_code_digest(stategine_gl SG_PROBE_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Probes.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/World.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Shaders.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Probe.cpp)
 endif()
 
 # Sound (sg/audio): a library of its own on top, as drawing is. A mixer that
@@ -319,6 +324,32 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_finish_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_finish_gl COMMAND sg_finish_gl)
+
+    # The eye's exposure: as before when a look says nothing; adjusting to
+    # the light, eased at its rate, and settled the same however come to.
+    add_executable(sg_exposure_gl tests/exposure_gl.cpp)
+    target_link_libraries(sg_exposure_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_exposure_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_exposure_gl COMMAND sg_exposure_gl)
+
+    # A bare bulb shadows all round it: six maps, a face of a cube each, no seam.
+    add_executable(sg_point_shadow_gl tests/point_shadow_gl.cpp)
+    target_link_libraries(sg_point_shadow_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_point_shadow_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_point_shadow_gl COMMAND sg_point_shadow_gl)
+
+    # Light probes: baked lamp by lamp, a long room lit unlike from end to end,
+    # a lamp dimmed exactly, and the probes' laws.
+    add_executable(sg_probes_gl tests/probes_gl.cpp)
+    target_link_libraries(sg_probes_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_probes_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_probes_gl COMMAND sg_probes_gl)
   endif()
 endif()
 
@@ -657,7 +688,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
-      sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape sg_finish_gl)

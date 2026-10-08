@@ -36,6 +36,14 @@ struct Rgb {
 
 Rgb mix(const Rgb& a, const Rgb& b, double t);
 
+// The colour of a glowing body at `K` kelvin - a candle 1900, a tungsten
+// bulb 2700, a halogen 3200, noon 5500, an overcast sky 6500 - in linear
+// sRGB, as bright as white (luminance 1): only its colour, so a lamp says
+// how strong it is apart. Read off the Planckian locus (Kim et al.'s cubic
+// splines, 1667 to 25000 K; held there outside them) and taken from xy to
+// XYZ to linear sRGB; what falls outside sRGB is brought to its edge.
+Rgb kelvin(double K);
+
 // --- daylight ---------------------------------------------------------------------
 struct Daylight {
     Vec3d sun{0, -1, 0};  // towards the sun (or, at night, the moon)

@@ -1584,6 +1584,29 @@ void test_light() {
     check(dusk.light.r > dusk.light.b * 2.0, "the setting sun is red");
     check(sg::daylight(36.0).sun.y == noon.sun.y, "the hour wraps");
 
+    // A body glowing at a temperature: back to xy, it is on the Planckian
+    // locus where the CIE puts it - illuminant A (2856 K), 4000 K, 6500 K -
+    // as bright as white, and redder the cooler it is.
+    const auto xy = [](const sg::Rgb& c, double& x, double& y) {
+        const double X = 0.4124564 * c.r + 0.3575761 * c.g + 0.1804375 * c.b;
+        const double Y = 0.2126729 * c.r + 0.7151522 * c.g + 0.0721750 * c.b;
+        const double Z = 0.0193339 * c.r + 0.1191920 * c.g + 0.9503041 * c.b;
+        x = X / (X + Y + Z), y = Y / (X + Y + Z);
+        return Y;
+    };
+    bool on_locus = true;
+    const double locus[3][3] = {{2856.0, 0.44757, 0.40745}, {4000.0, 0.3805, 0.3768}, {6500.0, 0.3135, 0.3236}};
+    for (const auto& p : locus) {
+        double x = 0, y = 0;
+        const double Y = xy(sg::kelvin(p[0]), x, y);
+        on_locus = on_locus && std::fabs(x - p[1]) < 0.003 && std::fabs(y - p[2]) < 0.003 && std::fabs(Y - 1.0) < 1e-3;
+    }
+    check(on_locus, "a temperature is the colour the CIE gives it, as bright as white");
+    const sg::Rgb candle = sg::kelvin(1900.0), bulb = sg::kelvin(2700.0), sky = sg::kelvin(9000.0);
+    check(candle.r / std::max(candle.b, 1e-9) > bulb.r / bulb.b && bulb.r / bulb.b > 1.5 && sky.b > sky.r && candle.b >= 0.0 &&
+              std::fabs(0.2126 * candle.r + 0.7152 * candle.g + 0.0722 * candle.b - 1.0) < 1e-9,
+          "redder the cooler, bluer the hotter, never below none");
+
     sg::LookState look("sky");
     sg::show_daylight(look, noon);
     check(std::fabs(look.element(sg::passes::scene).params.num(sg::Key{"uAmbient"}) - noon.ambient) < 1e-12,
