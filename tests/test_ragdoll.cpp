@@ -409,6 +409,25 @@ int main() {
         check(most > 0.005 && turns <= 1, "hit at the chest, the head goes out and comes back - no rocking (" + std::to_string(turns) + " times past, " + std::to_string(most) + " m out)");
     }
     {
+        // Its feet planted where it woke, its clip then shifting its weight
+        // (the meant feet moving a few centimetres): the hips stay where the
+        // clip stands them - they do not wander after the shifting feet.
+        Scene w;
+        const double hips = w.ann->element("hips").params.num(sg::keys::y);
+        w.ann->clip("shift", "0 hips p 0 " + std::to_string(hips) + " 0\n1 hips p 0 " + std::to_string(hips) + " 0\n0 thigh_l 0 0 3\n1 thigh_l 0 0 3\n");
+        w.start();
+        w.e->fire(sg::Event{w.ann->play_event(), sg::Params{}.set("clip", std::string("shift")).set("fade", 0.0)});
+        w.run(0.3);
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 8.0));
+        double most = 0;
+        for (int i = 0; i < 240; ++i) {
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id()).params;
+            if (i > 60) most = std::max(most, std::hypot(self.num("sway_x"), self.num("sway_z")));
+        }
+        check(most < 0.02, "its clip shifting its weight, the hips do not wander after its feet (" + std::to_string(most) + " m after the first second)");
+    }
+    {
         // Balance. Nudged at the chest: the hips sway over the feet and come
         // back; no step is needed.
         Scene w;
@@ -423,6 +442,34 @@ int main() {
             steps = std::max(steps, self.params.num("steps"));
         }
         check(most < 0.01 && steps == 0, "nudged, its feet brace: under a centimetre of sway (" + std::to_string(most) + " m), no step");
+    }
+    {
+        // Left as a catching step leaves it - one foot out ahead, the other
+        // back - its feet step home and the hips stay over them: no rocking
+        // onto one foot and back, and onto the other.
+        Scene w;
+        w.start();
+        w.run(0.3);
+        w.tell(w.rag->hit_event(), sg::Params{}.set("bone", std::string("chest")).set(sg::keys::x, 1.0));
+        w.run(1.0 / 60);
+        auto& feet = w.rag->element(sg::Ragdoll::self_id()).params;
+        feet.set("plant0x", feet.num("plant0x") + 0.1).set("plant1x", feet.num("plant1x") - 0.06);
+        int turns = 0;
+        double most = 0, stepped = 0, ext[2] = {0, 0}, dir[2] = {0, 0};
+        for (int i = 0; i < 360; ++i) {
+            w.run(1.0 / 60);
+            const auto& self = w.rag->element(sg::Ragdoll::self_id()).params;
+            const double c[2] = {self.num("sway_x"), self.num("sway_z")};
+            // (A turn: a centimetre back from the furthest it went.)
+            for (int k = 0; k < 2; ++k) {
+                if (dir[k] * c[k] > dir[k] * ext[k] || (dir[k] == 0 && std::fabs(c[k]) > std::fabs(ext[k]))) ext[k] = c[k];
+                if (dir[k] == 0 && std::fabs(ext[k]) > 0.01) dir[k] = ext[k] > 0 ? 1 : -1;
+                else if (dir[k] != 0 && dir[k] * (ext[k] - c[k]) > 0.01) ++turns, dir[k] = -dir[k], ext[k] = c[k];
+            }
+            most = std::max(most, std::hypot(c[0], c[1]));
+            if (self.num("swing", -1) >= 0) stepped = 1;
+        }
+        check(stepped > 0 && turns <= 1 && most < 0.03, "its feet step home without rocking (" + std::to_string(turns) + " turns, the hips " + std::to_string(most) + " m out at most)");
     }
     {
         // Shoved: the sway would come to rest past her soles - a foot steps

@@ -989,18 +989,23 @@ void Ragdoll::balance(double dt) {
     double t = self.params.num("swing_t");
     const auto foot_of = [&](int f) -> const Element& { return element(Key{self.params.get_or<std::string>("foot" + std::to_string(f), "")}); };
     const auto plant = [&](int f) { return P2{self.params.num("plant" + std::to_string(f) + "x"), self.params.num("plant" + std::to_string(f) + "z")}; };
-    const auto soles = [&](int f, std::vector<P2>& out) {
+    const auto soles = [&](int f, std::vector<P2>& out, P2 at) {
         const Element& foot = foot_of(f);
-        const P2 at = plant(f);
         const M3 r = turn_of(foot, "aim");
         for (const V3& c : shape_of(foot).v) {
             const V3 q = r * c;
             out.push_back({at.x + q.x, at.z + q.z});
         }
     };
+    // (A foot going home, not catching, is a short light step: its weight is
+    // not all off it, so it still bears where it is on its way.)
     std::vector<P2> under;
     for (int f = 0; f < 2; ++f)
-        if (f != swing) soles(f, under);
+        if (f != swing) soles(f, under, plant(f));
+        else if (self.params.num("catching") < 0.5) {
+            const P2 from{self.params.num("from_x"), self.params.num("from_z")}, to{self.params.num("to_x"), self.params.num("to_z")};
+            soles(f, under, from + (to - from) * std::min(1.0, t));
+        }
     const std::vector<P2> support = hull2(under);
 
     // Where the feet push the body from: the capture point, and a little
@@ -1016,9 +1021,17 @@ void Ragdoll::balance(double dt) {
     int planted = 0;
     for (int f = 0; f < 2; ++f)
         if (f != swing && f != going) moved = moved + (plant(f) - P2{foot_of(f).params.num("tx"), foot_of(f).params.num("tz")}), ++planted;
-    const P2 centre = going >= 0 && swing < 0 ? plant(1 - going) : rest + moved * (1.0 / std::max(1, planted));
-    // (Pulled home at 0.2: the sway comes back without swinging past.)
-    const P2 cop = within(support, capture + (com - centre) * 0.2);
+    // (Where the animation stands it, unless a step really moved its feet:
+    // an idle shifting its weight under planted feet must not draw the hips
+    // after it, to and fro.)
+    // (A foot going home is light, not lifted off a body over the other
+    // foot: the hips lean a third of the way toward the foot that stays, and
+    // no further - a whole shift onto it and back, foot after foot, rocks.)
+    const P2 shift = moved * (1.0 / std::max(1, planted));
+    const P2 stood = len(shift) > 0.05 ? rest + shift : rest;
+    const P2 centre = going >= 0 && swing < 0 ? stood + (plant(1 - going) - stood) * (1.0 / 3) : stood;
+    // (Pulled home at a quarter: critically - straight back, never past.)
+    const P2 cop = within(support, capture + (com - centre) * 0.25);
     const P2 a = (com - cop) * (w0 * w0);
     v = v + a * dt;
     sway = sway + v * dt;
@@ -1032,6 +1045,16 @@ void Ragdoll::balance(double dt) {
         if (away > 0) v = v - out * away;
     }
 
+    // A planted foot within a few centimetres of where its clip has it simply
+    // follows the clip (an idle shifting its weight is not a stumble): only a
+    // foot a step has really moved is stepped home - else the hips would go
+    // from foot to foot after every shuffle, rocking.
+    if (swing < 0 && self.params.num("catching") < 0.5)
+        for (int f = 0; f < 2; ++f) {
+            const P2 home_foot{foot_of(f).params.num("tx"), foot_of(f).params.num("tz")};
+            if (f != going && len(plant(f) - home_foot) < 0.05)
+                self.params.set("plant" + std::to_string(f) + "x", home_foot.x).set("plant" + std::to_string(f) + "z", home_foot.z);
+        }
     // A step: to catch it, or, steady, home.
     const P2 mid = (plant(0) + plant(1)) * 0.5;
     const double reach = 0.6 * height;
@@ -1046,10 +1069,10 @@ void Ragdoll::balance(double dt) {
         self.params.set("steps", self.params.num("steps") + 1).set("catching", 1.0).set("going", -1.0);
     } else if (swing < 0 && off <= 0 && len(v) < 0.15) {
         // Steady: the foot furthest from home goes home, if one is - once the
-        // body is over the other one (it moves there first).
+        // body has leaned toward the other one (it leans first).
         int f = going;
         if (f < 0) {
-            double most = 0.015;
+            double most = 0.05;
             for (int g = 0; g < 2; ++g) {
                 const Element& foot = foot_of(g);
                 const double d = len(plant(g) - P2{foot.params.num("tx"), foot.params.num("tz")});
@@ -1057,12 +1080,8 @@ void Ragdoll::balance(double dt) {
             }
             self.params.set("going", double(f));
         }
-        if (f >= 0) {
-            std::vector<P2> stays;
-            soles(1 - f, stays);
-            double outside = 0;
-            within(hull2(stays), capture, &outside);
-            if (outside <= 0.0 && len(v) < 0.1) {
+        if (f >= 0 && len(capture - centre) < 0.02) {
+            {
                 const Element& foot = foot_of(f);
                 swing = f, t = 0;
                 self.params.set("from_x", plant(f).x).set("from_z", plant(f).z).set("to_x", foot.params.num("tx")).set("to_z", foot.params.num("tz"));
