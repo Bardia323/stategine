@@ -694,6 +694,7 @@ private:
     struct ChannelPieces {
         bool made = false;
         std::vector<char> passing;            // per seam, in seams() order
+        uint64_t ends = 0;                    // which states those seams join, in order
         std::unordered_map<Key, Key> root;    // a state joined to another -> its piece
     };
     mutable uint64_t channels_seen_ = ~uint64_t{0};

@@ -98,6 +98,25 @@ int main() {
     check(!has(sg::laws::overlaps(g), "admits no things"), "and admitting them, it is not");
     check(sg::laws::channels(g).empty(), "and every piece agrees with its seams to the end");
 
+    // A seam glued again under its name to another room (a corridor lent):
+    // which seams pass is as it was, what they join is not.
+    {
+        sg::StateGraph h;
+        auto& p = room(h, "p");
+        auto& q = room(h, "q");
+        auto& r = room(h, "r");
+        p.portal(Key{"door"}, {2, 1, 0}, 1, 2, 0.0);
+        q.portal(Key{"door"}, {-2, 1, 0}, 1, 2, 3.14159265358979);
+        r.portal(Key{"door"}, {-2, 1, 0}, 1, 2, 3.14159265358979);
+        h.set_initial(p.id());
+        sg::glue_doorway(h, Key{"lent"}, p.id(), Key{"door"}, q.id(), Key{"door"});
+        check(h.connected(Channel::View, p.id(), q.id()) && !h.connected(Channel::View, p.id(), r.id()), "glued to q, p sees q");
+        sg::glue_doorway(h, Key{"lent"}, p.id(), Key{"door"}, r.id(), Key{"door"});
+        check(h.connected(Channel::View, p.id(), r.id()) && !h.connected(Channel::View, p.id(), q.id()),
+              "glued again to r under the same name, p sees r and no longer q");
+        check(sg::laws::channels(h).empty(), "and the pieces agree with the seams as they are now");
+    }
+
     std::printf("%s\n", failures == 0 ? "all passed" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

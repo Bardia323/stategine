@@ -1,6 +1,7 @@
 // Stategine - what passes through a seam: view, light, sound, things
 // (Channel, StateGraph::admits / passes / fade / connected).
 #include <algorithm>
+#include <functional>
 #include <string>
 
 #include "sg/core/StateGraph.hpp"
@@ -108,14 +109,20 @@ void StateGraph::refresh_channels() const {
             seen = mix_stamp(seen, e ? e->params.stamp() : 0);
     if (seen == channels_seen_) return;
     channels_seen_ = seen;
+    // Which states each seam joins, in order: a seam glued again under its
+    // name to other rooms (a corridor lent) leaves which seams pass as they
+    // were, but not what they join.
+    uint64_t ends = 0x3c6ef372fe94f82bull;
+    for (const Seam& s : seams_) ends = mix_stamp(mix_stamp(ends, std::hash<Key>{}(s.a)), std::hash<Key>{}(s.b));
     for (int i = 0; i < kChannels; ++i) {
         const Channel c = static_cast<Channel>(i);
         ChannelPieces& pieces = channels_[static_cast<std::size_t>(i)];
         std::vector<char> passing;
         passing.reserve(seams_.size());
         for (const Seam& s : seams_) passing.push_back(passes(s, c) > 0.0 ? 1 : 0);
-        // Only a channel whose seams now pass otherwise is joined again.
-        if (pieces.made && passing == pieces.passing) continue;
+        // Only a channel whose seams now pass otherwise, or join other
+        // states, is joined again.
+        if (pieces.made && pieces.ends == ends && passing == pieces.passing) continue;
         std::unordered_map<Key, Key> parent;
         std::size_t n = 0;
         for (const Seam& s : seams_) {
@@ -128,6 +135,7 @@ void StateGraph::refresh_channels() const {
         pieces.root.clear();
         for (const auto& kv : parent) pieces.root[kv.first] = root_of(parent, kv.first);
         pieces.passing = std::move(passing);
+        pieces.ends = ends;
         pieces.made = true;
     }
 }
