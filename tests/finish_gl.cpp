@@ -120,14 +120,34 @@ int main() {
     std::printf("  plain: box %.1f, the empty corner %.1f\n", box_plain, empty_plain);
     check(box_plain > empty_plain + 10.0, "the box is seen on the empty round it");
 
-    // Debanded: the box as it was, the empty as bright as it was.
+    // Like with like. Nothing in these frames moves with time or frame: the
+    // world is driven by no clock (its time 0, so the dither's pattern is the
+    // same every frame), grain is 0, and the interval moves only fades and
+    // the smear. What differs between the plain picture and a finished one
+    // is the way it goes: written straight to the screen, or composited into
+    // the finish's RGBA16F picture and written from it. A half float keeps
+    // 11 bits, so a value near the middle between two 8-bit levels may land
+    // on the other: at most a level. So the finished picture is held to one
+    // through the same way with nothing to do - smear said, but a frame with
+    // no interval keeps none of the last (and the history is the same half
+    // floats, so a second trip through it changes nothing).
+    soft.setting(sg::passes::composite, "smear", 0.5);
+    view.set_fixed_step(0.0);
+    const Picture through = settle();
+    soft.setting(sg::passes::composite, "smear", 0.0);
+    view.set_fixed_step(1.0 / 30.0);
+    const double rounding = through.most_apart(plain);
+    std::printf("  through the finish with nothing to do: at most %.0f level apart\n", rounding);
+    check(rounding <= 1.0, "the finish's half floats round the picture by at most a level");
+
+    // Debanded: the box exactly as it was, the empty as bright as it was.
     soft.setting(sg::passes::composite, "deband", 1.0);
     const Picture debanded = settle();
     const double box_d = debanded.luma(0.46, 0.45, 0.54, 0.55), empty_d = debanded.luma(0.0, 0.0, 0.15, 0.25);
     std::printf("  debanded: box %.1f, the empty corner %.1f\n", box_d, empty_d);
-    const double box_apart = debanded.most_apart_in(plain, 0.46, 0.45, 0.54, 0.55);
-    std::printf("  debanded: the box's pixels differ by at most %.0f\n", box_apart);
-    check(std::fabs(box_d - box_plain) < 1.0 && box_apart <= 1.0, "debanded: what is drawn is as it was");
+    const double box_apart = debanded.most_apart_in(through, 0.46, 0.45, 0.54, 0.55);
+    std::printf("  debanded: the box's pixels differ by at most %.0f from the same way undebanded\n", box_apart);
+    check(box_apart == 0.0, "debanded: what is drawn is exactly as it was");
     check(std::fabs(empty_d - empty_plain) < 2.0, "debanded: the empty is as bright as it was");
     soft.setting(sg::passes::composite, "deband", 0.0);
 
