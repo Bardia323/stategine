@@ -374,6 +374,16 @@ if(SG_BUILD_TESTS)
   add_executable(sg_rope tests/test_rope.cpp)
   target_link_libraries(sg_rope PRIVATE stategine_dev)
   add_test(NAME sg_rope COMMAND sg_rope)
+  # The rigid world's laws: a step tried again from the same bodies and the
+  # same cache (contacts, joints, islands) is the same to the last bit; a
+  # stack asleep wakes whole; casts and rays through the index meet what
+  # every body tried in turn meets.
+  add_executable(sg_rigid_laws tests/test_rigid_laws.cpp)
+  target_link_libraries(sg_rigid_laws PRIVATE stategine_dev)
+  add_test(NAME sg_rigid_laws COMMAND sg_rigid_laws)
+  if(NOT EMSCRIPTEN)
+    set_target_properties(sg_rigid_laws PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+  endif()
 
   # The laws on live data, each one shown both holding and breaking.
   add_executable(sg_laws tests/test_laws.cpp)

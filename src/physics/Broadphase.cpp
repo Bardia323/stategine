@@ -2,11 +2,35 @@
 
 #include <algorithm>
 namespace sg::rigid {
-void World::indexed_pairs() {
+void World::refit_index() const {
+    // Refitted only if a box has moved since it was last fitted: by a step,
+    // or by whoever placed a body between steps.
+    bool fresh=indexed_.size()==bodies.size();
+    for(std::size_t i=0;fresh && i<bodies.size();++i) {
+        const Body& b=bodies[i]; const spatial::Aabb& k=indexed_[i];
+        fresh=b.lo.x==k.lo.x && b.lo.y==k.lo.y && b.lo.z==k.lo.z && b.hi.x==k.hi.x && b.hi.y==k.hi.y && b.hi.z==k.hi.z;
+    }
+    if(fresh) return;
     std::vector<spatial::Index::Entry> entries;
     entries.reserve(bodies.size());
-    for(std::size_t i=0;i<bodies.size();++i) entries.push_back({i,{bodies[i].lo,bodies[i].hi}});
+    indexed_.resize(bodies.size());
+    for(std::size_t i=0;i<bodies.size();++i) {
+        indexed_[i]=spatial::Aabb{bodies[i].lo,bodies[i].hi};
+        entries.push_back({i,indexed_[i]});
+    }
     broadphase_.refit(std::move(entries));
+}
+std::vector<std::size_t> World::bodies_near(const spatial::Aabb& box) const {
+    if(!sweep) {
+        std::vector<std::size_t> all(bodies.size());
+        for(std::size_t i=0;i<all.size();++i) all[i]=i;
+        return all;
+    }
+    refit_index();
+    return broadphase_.query(box);  // (sorted by number)
+}
+void World::indexed_pairs() {
+    refit_index();
     for(std::size_t i=0;i<bodies.size();++i) {
         if(!moving(bodies[i])) continue;
         const auto& b=bodies[i];

@@ -17,6 +17,21 @@ Source Source::plane(std::string channel,V3 point,V3 normal,double strength) {
 Source Source::box(std::string channel,spatial::Transform pose,V3 half,double strength) {
     Source s; s.channel=std::move(channel); s.shape=Box; s.pose=pose; s.half=half; s.strength=strength; return s;
 }
+namespace {
+bool same(V3 a,V3 b) { return a.x==b.x && a.y==b.y && a.z==b.z; }
+bool same(const spatial::Aabb& a,const spatial::Aabb& b) { return same(a.lo,b.lo) && same(a.hi,b.hi); }
+}
+bool Source::operator==(const Source& o) const {
+    if(channel!=o.channel || shape!=o.shape || pose.linear.a!=o.pose.linear.a || !same(pose.translation,o.pose.translation) ||
+       value.scalar!=o.value.scalar || !same(value.vector,o.value.vector) || !same(normal,o.normal) || !same(half,o.half) ||
+       faces!=o.faces || strength!=o.strength || exponent!=o.exponent || softening!=o.softening ||
+       bounds.has_value()!=o.bounds.has_value() || (bounds && !same(*bounds,*o.bounds)) ||
+       volume.planes.size()!=o.volume.planes.size() || backend!=o.backend || emitter!=o.emitter || enabled!=o.enabled)
+        return false;
+    for(std::size_t i=0;i<volume.planes.size();++i)
+        if(!same(volume.planes[i].normal,o.volume.planes[i].normal) || volume.planes[i].offset!=o.volume.planes[i].offset) return false;
+    return true;
+}
 Value Source::sample(V3 position,double time) const {
     if(!enabled) return {};
     if(shape==Directional && !bounds && volume.planes.empty()) {

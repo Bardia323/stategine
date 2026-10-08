@@ -97,7 +97,9 @@ void World::warm_joints() {
 
 void World::solve_joints(double hstep, bool springs) {
     double ms = 1, is = 0;
-    const double bias_rate = springs ? soft(joint_hertz, 5.0, hstep, ms, is) : 0.0;
+    // As stiff as `joint_hertz`, but no stiffer than a quarter of the
+    // substep rate: past that the substeps cannot follow the spring.
+    const double bias_rate = springs ? soft(std::min(joint_hertz, 0.25 / hstep), 5.0, hstep, ms, is) : 0.0;
     if (!springs) ms = 1, is = 0;
     for (std::size_t k = 0; k < joints.size(); ++k) {
         Joint& j = joints[k];
