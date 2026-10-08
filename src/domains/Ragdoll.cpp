@@ -18,15 +18,39 @@ using rigid::V3;
 
 const Key kBone{"bone"}, kCollider{"collider"};
 
-M3 turn_of(const Element& e, const char* p) {
+// The four names a turn is kept under (`<p>w <p>x <p>y <p>z`), named once
+// for each turn a ragdoll keeps: a step reads and writes them for every bone.
+struct Turn4 {
+    const char* p;
+    Key w, x, y, z;
+};
+Turn4 turn4(const char* p) {
     const std::string s = p;
-    return spatial::from_quat(e.params.num(Key{s + "w"}, 1.0), e.params.num(Key{s + "x"}), e.params.num(Key{s + "y"}), e.params.num(Key{s + "z"}));
+    return {p, Key{s + "w"}, Key{s + "x"}, Key{s + "y"}, Key{s + "z"}};
+}
+const Turn4& names_of(const char* p) {
+    static const Turn4 known[] = {turn4("q"), turn4("aim"), turn4("plan"), turn4("pq"), turn4("bq"), turn4("aq"), turn4("r"), turn4("lead_q")};
+    for (const Turn4& t : known)
+        if (std::strcmp(t.p, p) == 0) return t;
+    thread_local Turn4 other;
+    other = turn4(p);
+    return other;
+}
+// A bone that rides on nothing: the root (its `parent` empty, or not text).
+bool no_parent(const Element& b) {
+    static const Key parent{"parent"};
+    const std::string* t = b.params.text(parent);
+    return !t || t->empty();
+}
+M3 turn_of(const Element& e, const char* p) {
+    const Turn4& k = names_of(p);
+    return spatial::from_quat(e.params.num(k.w, 1.0), e.params.num(k.x), e.params.num(k.y), e.params.num(k.z));
 }
 void set_turn(Element& e, const M3& m, const char* p) {
-    const std::string s = p;
+    const Turn4& k = names_of(p);
     double w, x, y, z;
     spatial::to_quat(m, w, x, y, z);
-    e.params.set(Key{s + "w"}, w).set(Key{s + "x"}, x).set(Key{s + "y"}, y).set(Key{s + "z"}, z);
+    e.params.set(k.w, w).set(k.x, x).set(k.y, y).set(k.z, z);
 }
 V3 vec(const Element& e, const char* x, const char* y, const char* z) { return {e.params.num(Key{x}), e.params.num(Key{y}), e.params.num(Key{z})}; }
 void set_vec(Element& e, V3 v, const char* x, const char* y, const char* z) { e.params.set(Key{x}, v.x).set(Key{y}, v.y).set(Key{z}, v.z); }
@@ -522,7 +546,7 @@ Ragdoll::Ragdoll(Key id, const Being& body, double mass) : State(std::move(id)) 
         // them takes it, bends, and comes back up.)
         const bool firm = static_cast<const Ragdoll&>(s).firm();
         for (Element& n : s.elements())
-            if (n.kind == kBone && !(firm && (n.params.num("leg") > 0.5 || n.params.get_or<std::string>("parent", "").empty()))) set_vec(n, vec(n, "vx", "vy", "vz") + j * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
+            if (n.kind == kBone && !(firm && (n.params.num("leg") > 0.5 || no_parent(n)))) set_vec(n, vec(n, "vx", "vy", "vz") + j * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
         V3 kick = j * (0.35 / b->params.num("mass", 1.0));
         if (spatial::length(kick) > 3.0) kick = kick * (3.0 / spatial::length(kick));
         set_vec(*b, vec(*b, "vx", "vy", "vz") + kick, "vx", "vy", "vz");
@@ -639,7 +663,7 @@ bool Ragdoll::disturbed() const {
     for (const Element& c : elements())
         if (c.kind == kCollider && c.alive) solids.push_back(box_in(c, self));
     for (const Element& b : elements()) {
-        if (b.kind != kBone || b.params.num("rides") > 0.5 || (!full && b.params.get_or<std::string>("parent", "").empty())) continue;
+        if (b.kind != kBone || b.params.num("rides") > 0.5 || (!full && no_parent(b))) continue;
         const V3 at = vec(b, "tx", "ty", "tz");
         const M3 t = turn_of(b, "aim");
         const bool block = b.params.num("block") > 0.5;
@@ -757,7 +781,7 @@ void Ragdoll::step(double dt) {
         for (const Element& n : elements())
             if (n.kind == kBone) mass += n.params.num("mass", 1.0);
         for (Element& n : elements())
-            if (n.kind == kBone && !(firm() && (n.params.num("leg") > 0.5 || n.params.get_or<std::string>("parent", "").empty()))) set_vec(n, vec(n, "vx", "vy", "vz") + k * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
+            if (n.kind == kBone && !(firm() && (n.params.num("leg") > 0.5 || no_parent(n)))) set_vec(n, vec(n, "vx", "vy", "vz") + k * (1.0 / std::max(1.0, mass)), "vx", "vy", "vz");
         V3 kick = k * (0.35 / b.params.num("mass", 1.0));
         if (spatial::length(kick) > 3.0) kick = kick * (3.0 / spatial::length(kick));
         set_vec(b, vec(b, "vx", "vy", "vz") + kick, "vx", "vy", "vz");
@@ -836,7 +860,7 @@ void Ragdoll::step(double dt) {
         // out - not as a bone is jolted for a moment: a jolted neck still
         // holds its head.)
         body->receives = {{"gravity", field::Response::Acceleration, 1.0 - strong * 0.95}};
-        const bool hips = b.params.get_or<std::string>("parent", "").empty();
+        const bool hips = no_parent(b);
         if (!full && (hips || (stands && b.params.num("leg") > 0.5))) {
             // The hips: where the being means them, swayed by balance; and,
             // standing firm, the legs where the being means them too - and
@@ -1219,7 +1243,8 @@ Key ragdoll(StateGraph& g, Being& body, Temporal& clock, double mass) {
         leads.on_object(b, b, [](const Element& bone, Element& j) {
             set_turn(j, turn_of(bone, "q"), "lead_q");
             j.params.set("lead_at", 1.0);
-            const bool root = bone.params.get_or<std::string>("parent", "").empty();
+            const std::string* parent = bone.params.text(Key{"parent"});
+            const bool root = !parent || parent->empty();
             if (root) j.params.set("lead_tx", bone.params.num("x")).set("lead_ty", bone.params.num("y")).set("lead_tz", bone.params.num("z"));
             j.params.set("lead_moves", root ? 1.0 : 0.0);
         });

@@ -66,11 +66,15 @@ private:
     // comparison of the characters - a buffer reused for another name is
     // simply looked up again. A slot holds one pointer, read and written
     // whole, so any thread may use it with no lock: what it finds is always
-    // a name, and the comparison says whether it is this one.
+    // a name, and the comparison says whether it is this one. The address is
+    // mixed before it picks a slot: literals lie a page or so apart, and by
+    // their low bits alone the ones a frame meets most fell on the same few
+    // slots and put each other out, every time.
     // inline: every Key{"..."} in a frame is this.
     static const std::string* intern_literal(const char* s) {
-        static std::atomic<const std::string*> slots[4096];
-        std::atomic<const std::string*>& slot = slots[(reinterpret_cast<std::uintptr_t>(s) >> 2) & 4095];
+        static std::atomic<const std::string*> slots[16384];
+        const uint64_t mixed = uint64_t(reinterpret_cast<std::uintptr_t>(s)) * 0x9E3779B97F4A7C15ULL;
+        std::atomic<const std::string*>& slot = slots[mixed >> 50];
         const std::string* key = slot.load(std::memory_order_acquire);
         if (key && std::strcmp(key->c_str(), s) == 0) return key;
         key = intern_ref(std::string(s));

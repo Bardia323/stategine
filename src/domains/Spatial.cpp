@@ -234,10 +234,28 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
 
 std::vector<std::string> Spatial3D::faults() const { return probe_faults(*this); }
 
-void Spatial3D::model(Key name, std::vector<float> corners) {
-    // (One count for every state's models, from every thread that makes one.)
+namespace {
+// A making's number: one count for every state's models, from every thread
+// that makes one.
+uint64_t next_making() {
     static std::atomic<uint64_t> makings{0};
-    models_[name.str()] = {std::make_shared<const std::vector<float>>(std::move(corners)), ++makings};
+    return ++makings;
+}
+}  // namespace
+
+void Spatial3D::model(Key name, std::vector<float> corners) {
+    // (Made as a vector of its own, kept for reading: model_again may take
+    // its memory back once nothing else holds it.)
+    models_[name.str()] = {std::make_shared<std::vector<float>>(std::move(corners)), next_making()};
+}
+
+std::vector<float> Spatial3D::model_again(Key name, std::vector<float> corners) {
+    KeptModel& kept = models_[name.str()];
+    std::shared_ptr<const std::vector<float>> was = std::move(kept.corners);
+    kept = {std::make_shared<std::vector<float>>(std::move(corners)), next_making()};
+    std::vector<float> back;
+    if (was && was.use_count() == 1) back = std::move(*std::const_pointer_cast<std::vector<float>>(was));
+    return back;
 }
 
 const std::vector<float>* Spatial3D::model(Key name) const {

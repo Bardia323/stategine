@@ -138,6 +138,8 @@ public:
         Vec3d lo, hi, size;
     };
     std::vector<float> skinned(Key skin, Fitted* fitted = nullptr) const;
+    // The same, laid into `out` (emptied first; its memory used again).
+    void skinned(Key skin, Fitted* fitted, std::vector<float>& out) const;
     // The picture a skin wears by its uvs (its material's base colour), as
     // read with it; null if it wears none.
     const std::vector<unsigned char>* skin_picture(Key skin, int& w, int& h) const;

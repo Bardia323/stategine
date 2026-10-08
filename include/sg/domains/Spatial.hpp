@@ -119,6 +119,9 @@ public:
     // from a model (a renderer's mesh) keeps it by, never by where its
     // corners lie in memory, which a later making may be given.
     void model(Key name, std::vector<float> corners);
+    // The same, giving back the corners of the making before when nothing
+    // else holds them - their memory, for the next making (else empty).
+    std::vector<float> model_again(Key name, std::vector<float> corners);
     const std::vector<float>* model(Key name) const;
     uint64_t model_revision(Key name) const;
 

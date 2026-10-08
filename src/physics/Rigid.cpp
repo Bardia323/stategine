@@ -1,5 +1,7 @@
 #include "sg/physics/Rigid.hpp"
 
+#include <atomic>
+
 namespace sg::rigid {
 
 auto Hull::prism(V3 centre, V3 half, int sides, const M3& turn, double taper) -> Hull {
@@ -149,7 +151,16 @@ void across_of(V3 n, V3& p1, V3& p2) {
     p2 = cross(n, p1);
 }
 
+namespace {
+// One count for every world's lists, from any thread: no two lists share a number.
+uint64_t next_layout() {
+    static std::atomic<uint64_t> n{0};
+    return n.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+}  // namespace
+
 Body& World::add(Body b) {
+    layout_ = next_layout();
     b.place();
     index_[b.id] = bodies.size();
     bodies.push_back(std::move(b));
@@ -170,6 +181,7 @@ void World::remove(const std::string& id) {
     auto it = index_.find(id);
     if (it == index_.end()) return;
     const std::size_t i = it->second;
+    layout_ = next_layout();
     release(id);
     unjoin(id);
     bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(i));
@@ -203,6 +215,7 @@ void World::remove(const std::string& id) {
 }
 
 void World::clear() {
+    layout_ = next_layout();
     bodies.clear();
     index_.clear();
     manifolds_.clear();

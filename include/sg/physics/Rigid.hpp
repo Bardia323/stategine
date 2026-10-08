@@ -330,6 +330,10 @@ public:
     const Body* find(const std::string& id) const;
     void remove(const std::string& id);
     void clear();
+    // Which list of bodies this is: a new number whenever one comes or goes
+    // (or all do), never given twice - and carried by a copy, whose list it
+    // is too. While it holds, a body found once is at the same place.
+    uint64_t layout() const { return layout_; }
 
     // Put a body somewhere, as if it had always been there (not moved
     // through what is between), still.
@@ -464,6 +468,7 @@ private:
 
     // Per body scratch for a step (kept apart from Body's public face).
     std::unordered_map<std::string, std::size_t> index_;
+    uint64_t layout_ = 0;
     std::unordered_map<uint64_t, Manifold> manifolds_;
 
 public:

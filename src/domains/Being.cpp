@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <sstream>
+#include <string_view>
 
 #include "sg/core/StateGraph.hpp"
 #include "sg/spatial/Math.hpp"
@@ -74,17 +76,36 @@ Q between(Vec3d a, Vec3d b) {
     return norm({1 + c, k.x, k.y, k.z});
 }
 
-Q q_of(const Element& e, const char* p = "q") {
+// The four names a turn is kept under (`<p>w <p>x <p>y <p>z`), named once
+// for each turn a being keeps: a step reads and writes them for every joint.
+struct Turn4 {
+    const char* p;
+    Key w, x, y, z;
+};
+Turn4 turn4(const char* p) {
     const std::string s = p;
-    return {e.params.num(Key{s + "w"}, 1.0), e.params.num(Key{s + "x"}), e.params.num(Key{s + "y"}), e.params.num(Key{s + "z"})};
+    return {p, Key{s + "w"}, Key{s + "x"}, Key{s + "y"}, Key{s + "z"}};
+}
+const Turn4& names_of(const char* p) {
+    static const Turn4 known[] = {turn4("q"), turn4("rest_q"), turn4("h"), turn4("lead_q"), turn4("bq"), turn4("aq"), turn4("pq")};
+    for (const Turn4& t : known)
+        if (std::strcmp(t.p, p) == 0) return t;
+    thread_local Turn4 other;
+    other = turn4(p);
+    return other;
+}
+Q q_of(const Element& e, const char* p = "q") {
+    const Turn4& k = names_of(p);
+    return {e.params.num(k.w, 1.0), e.params.num(k.x), e.params.num(k.y), e.params.num(k.z)};
 }
 void set_q(Element& e, const Q& q, const char* p = "q") {
-    const std::string s = p;
-    e.params.set(Key{s + "w"}, q.w).set(Key{s + "x"}, q.x).set(Key{s + "y"}, q.y).set(Key{s + "z"}, q.z);
+    const Turn4& k = names_of(p);
+    e.params.set(k.w, q.w).set(k.x, q.x).set(k.y, q.y).set(k.z, q.z);
 }
 Q rest_of(const Element& j) {
     // At rest: its own turn, as a model gave it (`rest_q*`), or as degrees said.
-    if (j.params.has(Key{"rest_qw"})) return norm(q_of(j, "rest_q"));
+    static const Key rest_qw{"rest_qw"};
+    if (j.params.has(rest_qw)) return norm(q_of(j, "rest_q"));
     return from_euler(j.params.num("rest_yaw") , j.params.num("rest_pitch"), j.params.num("rest_roll"));
 }
 // Where it stands on its parent: as a clip moves it now (`t*`), else as made.
@@ -95,6 +116,24 @@ Vec3d offset_of(const Element& e) {
 double ease(double dt, double rate) { return rate <= 0 ? 1.0 : 1.0 - std::exp(-dt * rate); }
 
 const Key kJoint{"joint"}, kPart{"part"}, kClip{"clip"}, kLayer{"layer"}, kGoal{"goal"}, kBlend{"blend"};
+const Key kParentJoint{"parent_joint"}, kTip{"tip"};
+
+// The text under `k`, or none (as `get_or` would give "" for it), read where
+// it is.
+std::string_view text_or_none(const Params& p, Key k) {
+    const std::string* t = p.text(k);
+    return t ? std::string_view(*t) : std::string_view{};
+}
+
+// A layer's name (`layer<i>`), named once.
+Key layer_key(int i) {
+    static const std::vector<Key> names = [] {
+        std::vector<Key> n;
+        for (int k = 0; k < Being::kLayers; ++k) n.push_back(Key{"layer" + std::to_string(k)});
+        return n;
+    }();
+    return i >= 0 && i < int(names.size()) ? names[std::size_t(i)] : Key{"layer" + std::to_string(i)};
+}
 
 // Every joint in order, parents first, and where each is in the being's frame
 // for a set of local turns.
@@ -153,7 +192,7 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         .set("lead_fade", 0.3)
         .set("lived", 0.0);
     for (int i = 0; i < kLayers; ++i)
-        add_element(Key{"layer" + std::to_string(i)}, kLayer)
+        add_element(layer_key(i), kLayer)
             .params.set("clip", std::string{})
             .set("phase", 0.0)
             .set("weight", 0.0)
@@ -172,13 +211,13 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         const double fade = ev.args.num("fade", 0.3), weight = ev.args.num("weight", 1.0);
         Element* slot = nullptr;
         for (int i = 0; i < kLayers; ++i) {
-            Element& l = s.element(Key{"layer" + std::to_string(i)});
+            Element& l = s.element(layer_key(i));
             if (l.params.get_or<std::string>("clip", "") == clip) slot = &l;
         }
         if (!slot) {
             double least = 1e9;
             for (int i = 0; i < kLayers; ++i) {
-                Element& l = s.element(Key{"layer" + std::to_string(i)});
+                Element& l = s.element(layer_key(i));
                 const double w = l.params.get_or<std::string>("clip", "").empty() ? -1.0 : l.params.num("weight");
                 if (w < least) least = w, slot = &l;
             }
@@ -188,14 +227,14 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         slot->params.set("mask", ev.args.get_or<std::string>("mask", "")).set("additive", ev.args.get_or<std::string>("additive", ""));
         if (ev.args.num("alone", 1.0) > 0.5)
             for (int i = 0; i < kLayers; ++i) {
-                Element& l = s.element(Key{"layer" + std::to_string(i)});
+                Element& l = s.element(layer_key(i));
                 if (&l != slot) l.params.set("to", 0.0).set("fade", fade);
             }
     });
     loop(Key{"stop"}, self_id(), stop_event(), [](State& s, Element&, Element*, const Event& ev) {
         const std::string clip = ev.args.get_or<std::string>("clip", "");
         for (int i = 0; i < kLayers; ++i) {
-            Element& l = s.element(Key{"layer" + std::to_string(i)});
+            Element& l = s.element(layer_key(i));
             if (clip.empty() || l.params.get_or<std::string>("clip", "") == clip) l.params.set("to", 0.0).set("fade", ev.args.num("fade", 0.3));
         }
     });
@@ -421,11 +460,13 @@ void Being::live(double dt) {
     std::vector<Element*> js;
     for (Element& e : elements())
         if (e.kind == kJoint) js.push_back(&e);
-    std::unordered_map<Key, std::size_t> at;
-    for (std::size_t i = 0; i < js.size(); ++i) at[js[i]->id] = i;
+    // (By the names as written: a joint's parent is text, found here
+    // without being named again.)
+    std::unordered_map<std::string_view, std::size_t> at;
+    for (std::size_t i = 0; i < js.size(); ++i) at[js[i]->id.str()] = i;
     std::vector<int> parent(js.size(), -1);
     for (std::size_t i = 0; i < js.size(); ++i) {
-        auto it = at.find(Key{js[i]->params.get_or<std::string>("parent_joint", "")});
+        auto it = at.find(text_or_none(js[i]->params, kParentJoint));
         if (it != at.end() && it->second < i) parent[i] = int(it->second);
     }
 
@@ -465,7 +506,7 @@ void Being::live(double dt) {
     };
     std::vector<Sample> samples;
     for (int i = 0; i < kLayers; ++i) {
-        Element& l = element(Key{"layer" + std::to_string(i)});
+        Element& l = element(layer_key(i));
         const std::string c = l.params.get_or<std::string>("clip", "");
         if (c.empty()) continue;
         const double w = l.params.num("weight"), to = l.params.num("to");
@@ -645,7 +686,7 @@ void Being::live(double dt) {
         const double w = g.params.num("weight") + (g.params.num("to") - g.params.num("weight")) * ease(t, 1.0 / std::max(1e-3, g.params.num("fade", 0.25)));
         g.params.set("weight", w);
         if (w < 1e-4) continue;
-        auto tip_at = at.find(Key{g.params.get_or<std::string>("tip", "")});
+        auto tip_at = at.find(text_or_none(g.params, kTip));
         if (tip_at == at.end()) continue;
         const std::size_t tip = tip_at->second;
         std::vector<std::size_t> chain;  // from the tip's parent up
@@ -753,18 +794,19 @@ void Being::resolve() {
     // Every joint and part posed in the being's frame from the joints' turns;
     // and each joint as it is bound, at rest (`bq`): the frame a motion is
     // carried in from one body to another.
-    std::unordered_map<Key, Frame> f;
-    std::unordered_map<Key, Q> bind;
+    // (Found by the names as written, as live() finds them.)
+    std::unordered_map<std::string_view, Frame> f;
+    std::unordered_map<std::string_view, Q> bind;
     for (Element& e : elements()) {
         if (e.kind != kJoint) continue;
         const Vec3d off = offset_of(e);
-        const Key up{e.params.get_or<std::string>("parent_joint", "")};
+        const std::string_view up = text_or_none(e.params, kParentJoint);
         auto pit = f.find(up);
         Frame mine = pit == f.end() ? Frame{off, q_of(e)} : Frame{pit->second.p + rotate(pit->second.r, off), mul(pit->second.r, q_of(e))};
-        f[e.id] = mine;
+        f[e.id.str()] = mine;
         auto bit = bind.find(up);
         const Q b = norm(bit == bind.end() ? rest_of(e) : mul(bit->second, rest_of(e)));
-        bind[e.id] = b;
+        bind[e.id.str()] = b;
         set_q(e, b, "bq");
         double y, p, r;
         to_euler(mine.r, y, p, r);
@@ -777,7 +819,7 @@ void Being::resolve() {
     }
     for (Element& e : elements()) {
         if (e.kind != kPart) continue;
-        auto jt = f.find(Key{e.params.get_or<std::string>("joint", "")});
+        auto jt = f.find(text_or_none(e.params, kJoint));
         const Frame jf = jt == f.end() ? Frame{} : jt->second;
         const Vec3d at = jf.p + rotate(jf.r, {e.params.num("ox"), e.params.num("oy"), e.params.num("oz")});
         double y, p, r;

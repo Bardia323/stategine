@@ -265,7 +265,18 @@ struct SkinData {
     std::vector<int> joints;    // 4 a vertex: indices into `names`
     std::vector<float> weights;  // 4 a vertex
     std::vector<uint32_t> index;
+    std::vector<uint32_t> corners;   // each corner `index` names, once, in the order first named
+    // What moves each corner, in its order: the joints that weigh on it
+    // (by more than nothing, and named), `moves[i]` for the corner's
+    // `moved[c]` <= i < `moved[c + 1]`.
+    struct Move {
+        std::size_t joint;
+        double weight;
+    };
+    std::vector<Move> moves;
+    std::vector<uint32_t> moved;
     std::vector<std::string> names;  // the skin's joints, in its order
+    std::vector<Key> keys;           // the same, named once
     std::vector<M4> inverse_bind;
     // Its picture: the base colour its material wears, by its uvs (none: 0 x 0).
     int image_w = 0, image_h = 0;
@@ -586,8 +597,14 @@ std::vector<std::size_t> kept_keys(const std::vector<double>& times, const std::
 
 std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
     std::vector<float> out;
+    skinned(skin_id, fitted, out);
+    return out;
+}
+
+void Being::skinned(Key skin_id, Fitted* fitted, std::vector<float>& out) const {
+    out.clear();
     const Element* s = find(skin_id);
-    if (!s) return out;
+    if (!s) return;
     const std::string path = s->params.get_or<std::string>("file", "");
     auto& slot = skins()[path + "#" + std::to_string(int(s->params.num("node")))];
     if (!slot) {
@@ -600,6 +617,7 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
                 const J& node = d.j["nodes"][std::size_t(s->params.num("node"))];
                 const J& sk = d.j["skins"][std::size_t(node["skin"].i(0))];
                 for (const J& jn : sk["joints"].a) slot->names.push_back(s->params.get_or<std::string>("prefix", "") + node_name(d.j, jn.i()));
+                for (const std::string& n : slot->names) slot->keys.push_back(Key{n});
                 int c;
                 if (sk.has("inverseBindMatrices")) {
                     const std::vector<float> ib = d.floats(sk["inverseBindMatrices"].i(), c);
@@ -651,6 +669,21 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
                         for (uint32_t i = first; i < uint32_t(slot->pos.size()); ++i) slot->index.push_back(i);
                     }
                 }
+                std::vector<bool> named(slot->pos.size(), false);
+                for (uint32_t i : slot->index)
+                    if (i < slot->pos.size() && !named[i]) named[i] = true, slot->corners.push_back(i);
+                for (std::size_t v = 0; v < slot->pos.size(); ++v) {
+                    slot->moved.push_back(uint32_t(slot->moves.size()));
+                    for (int k = 0; k < 4; ++k) {
+                        const std::size_t at = v * 4 + std::size_t(k);
+                        if (at >= slot->weights.size()) break;
+                        const double w = slot->weights[at];
+                        const int ji = slot->joints[at];
+                        if (w <= 0 || ji < 0 || std::size_t(ji) >= slot->names.size()) continue;
+                        slot->moves.push_back({std::size_t(ji), w});
+                    }
+                }
+                slot->moved.push_back(uint32_t(slot->moves.size()));
             }
         }
     }
@@ -658,31 +691,45 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
     // Each joint's move from where it was bound to where it is now: its pose
     // (resolved) after its inverse bind.
     std::vector<M4> m(sd.names.size());
+    const double rig = s->params.num("rig", 1.0);
     for (std::size_t i = 0; i < sd.names.size(); ++i) {
-        const Element* j = find(Key{sd.names[i]});
+        const Element* j = find(sd.keys[i]);
         if (!j) continue;
         const M4 now = trs({j->params.num("px"), j->params.num("py"), j->params.num("pz")}, j->params.num("pqw", 1), j->params.num("pqx"),
                            j->params.num("pqy"), j->params.num("pqz"));
         // (The joint as glTF has it is sized by what holds the skeleton; ours
         // is not - its lengths already are - so the size goes back between.)
-        const M4 sized = scaled(now, s->params.num("rig", 1.0));
+        const M4 sized = scaled(now, rig);
         m[i] = i < sd.inverse_bind.size() ? mul(sized, sd.inverse_bind[i]) : sized;
     }
-    std::vector<Vec3d> P(sd.pos.size()), N(sd.pos.size());
+    // (Room to work in, kept by the thread from one making to the next: a
+    // body is made again every step it moves, and it is big.)
+    thread_local std::vector<Vec3d> P, N;
+    thread_local std::vector<float> corner;
+    P.resize(sd.pos.size()), N.resize(sd.pos.size());
+    // (A point or a direction moved by a joint's matrix: `apply`, written
+    // out here so that it is made inline in this, the body's every corner.)
+    const auto moved = [](const M4& a, const Vec3d& p, double w) -> Vec3d {
+        return {a.m[0] * p.x + a.m[4] * p.y + a.m[8] * p.z + a.m[12] * w, a.m[1] * p.x + a.m[5] * p.y + a.m[9] * p.z + a.m[13] * w,
+                a.m[2] * p.x + a.m[6] * p.y + a.m[10] * p.z + a.m[14] * w};
+    };
+    // (Each corner by the joints that weigh on it, found when the skin was
+    // read; one with none stays as it was bound.)
     for (std::size_t v = 0; v < sd.pos.size(); ++v) {
-        Vec3d p{}, nn{};
-        double wsum = 0;
-        for (int k = 0; k < 4; ++k) {
-            const std::size_t at = v * 4 + std::size_t(k);
-            if (at >= sd.weights.size()) break;
-            const double w = sd.weights[at];
-            const int ji = sd.joints[at];
-            if (w <= 0 || ji < 0 || std::size_t(ji) >= m.size()) continue;
-            p = p + apply(m[std::size_t(ji)], sd.pos[v], 1.0) * w;
-            nn = nn + apply(m[std::size_t(ji)], v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0}, 0.0) * w;
-            wsum += w;
+        const Vec3d& pos = sd.pos[v];
+        const Vec3d nrm = v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0};
+        const SkinData::Move* mv = sd.moves.data() + sd.moved[v];
+        const SkinData::Move* end = sd.moves.data() + sd.moved[v + 1];
+        if (mv == end) {
+            P[v] = pos, N[v] = nrm;
+            continue;
         }
-        if (wsum <= 0) p = sd.pos[v], nn = v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0};
+        Vec3d p{}, nn{};
+        for (; mv != end; ++mv) {
+            const M4& mj = m[mv->joint];
+            p = p + moved(mj, pos, 1.0) * mv->weight;
+            nn = nn + moved(mj, nrm, 0.0) * mv->weight;
+        }
         P[v] = p, N[v] = nn;
     }
     // Fitted (as shapes::fit fits a mesh into the box round it), each
@@ -690,8 +737,7 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
     if (fitted) {
         Vec3d lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
         bool any = false;
-        for (uint32_t i : sd.index) {
-            if (i >= P.size()) continue;
+        for (uint32_t i : sd.corners) {
             const Vec3d& p = P[i];
             lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
             hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
@@ -709,7 +755,7 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
         }
     }
     // Each corner made once, then laid down wherever a triangle names it.
-    std::vector<float> corner(P.size() * 8);
+    corner.resize(P.size() * 8);
     for (std::size_t i = 0; i < P.size(); ++i) {
         const Vec3d& n = N[i];
         const double l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z) + 1e-12;
@@ -718,15 +764,12 @@ std::vector<float> Being::skinned(Key skin_id, Fitted* fitted) const {
         c[3] = float(n.x / l), c[4] = float(n.y / l), c[5] = float(n.z / l);
         c[6] = i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2] : 0.f, c[7] = i * 2 + 1 < sd.uv.size() ? sd.uv[i * 2 + 1] : 0.f;
     }
-    out.resize(sd.index.size() * 8);
-    std::size_t at = 0;
+    out.reserve(sd.index.size() * 8);
     for (uint32_t i : sd.index) {
         if (i >= P.size()) continue;
-        std::copy_n(&corner[std::size_t(i) * 8], 8, &out[at]);
-        at += 8;
+        const float* c = &corner[std::size_t(i) * 8];
+        out.insert(out.end(), c, c + 8);
     }
-    out.resize(at);
-    return out;
 }
 
 const std::vector<unsigned char>* Being::skin_picture(Key skin_id, int& w, int& h) const {
@@ -749,11 +792,18 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
         // is in the model's own units - a Mixamo export's a box a centimetre
         // high at the feet, and the body vanished when they were out of view.)
         Being::Fitted box;
-        std::vector<float> tris = b.skinned(s.id, &box);
-        if (tris.empty()) continue;
+        // (Made in the memory of a making before: a skin is made again
+        // every step it moves, and it is big.)
+        thread_local std::vector<float> spare;
+        std::vector<float> tris = std::move(spare);
+        b.skinned(s.id, &box, tris);
+        if (tris.empty()) {
+            spare = std::move(tris);
+            continue;
+        }
         const Vec3d lo = box.lo, size = box.size, mid = (box.lo + box.hi) * 0.5;
         const Key model{b.id().str() + "." + s.id.str()};
-        host.model(model, std::move(tris));
+        spare = host.model_again(model, std::move(tris));
         const Key there{anchor.str() + "." + s.id.str()};
         Element* e = host.find(there);
         if (!e) e = &host.add_element(there, kinds::mesh);
