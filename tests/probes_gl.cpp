@@ -8,6 +8,8 @@
 // bake. And the laws: a probe out of its room, numbers that are not, a set
 // for a lamp that is not there, a bake of a room that has since changed -
 // each is named; baked as it is, the graph is sound.
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -135,5 +137,52 @@ int main() {
     check(says(sg::probe_faults(room), "not finite"), "numbers that are not are named");
     room.element(sg::Key{"near"}).params.set(sg::Key{"sh.lamp"}, kept);
     check(sg::probe_faults(room).empty(), "put back, nothing is wrong");
+
+    // Relit, the lamps out of what is baked: the surroundings drawn once,
+    // a lamp's set its light on them - the same sets as a bake makes, near
+    // enough; and a lamp moved costs only its own set.
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    const auto apart = [&](const std::vector<sg::ProbeBake>& baked, const std::vector<sg::ProbeBake>& relit) {
+        double worst = 0.0;
+        for (std::size_t i = 0; i < baked.size() && i < relit.size(); ++i) {
+            const sg::Sh9& b = baked[i].sets.at("lamp");
+            const sg::Sh9& r = relit[i].sets.at("lamp");
+            const sg::Vec3d ways[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+            double most = 0.0;
+            for (const auto& d : ways) most = std::max(most, luma(b.irradiance(d)));
+            for (const auto& d : ways) {
+                std::printf("    %-4s (%+.0f %+.0f %+.0f): baked %.4f relit %.4f\n", baked[i].probe.str().c_str(), d.x, d.y, d.z,
+                            luma(b.irradiance(d)), luma(r.irradiance(d)));
+                worst = std::max(worst, std::fabs(luma(r.irradiance(d)) - luma(b.irradiance(d))) / std::max(most, 1e-9));
+            }
+        }
+        return worst;
+    };
+    auto t0 = Clock::now();
+    const auto baked0 = view.bake_probes(room, 32, 2);
+    auto t1 = Clock::now();
+    const auto relit0 = view.relight_probes(room, 32, 2);
+    auto t2 = Clock::now();
+    const double e0 = apart(baked0, relit0);
+    std::printf("  as it stands: baked in %.1f ms, relit in %.1f ms (the surroundings drawn); apart by %.1f%% at most\n", ms(t0, t1),
+                ms(t1, t2), 100.0 * e0);
+    check(e0 < 0.15, "relit, the lamps out of the bake: the sets a bake makes, within 15%");
+    // The lamp carried to the far end, turned to the long wall.
+    lamp.params.set(sg::keys::x, 9.5).set(sg::keys::z, 1.0).set("dx", 0.3).set("dy", -0.6).set("dz", 0.7);
+    t0 = Clock::now();
+    const auto baked1 = view.bake_probes(room, 32, 2);
+    t1 = Clock::now();
+    const auto relit1 = view.relight_probes(room, 32, 2);
+    t2 = Clock::now();
+    const double e1 = apart(baked1, relit1);
+    std::printf("  moved: baked in %.1f ms, relit in %.1f ms (its own set alone); apart by %.1f%% at most\n", ms(t0, t1), ms(t1, t2),
+                100.0 * e1);
+    check(e1 < 0.15, "a lamp moved, relit with nothing drawn again from the probes: within 15% of a bake");
+    t0 = Clock::now();
+    view.relight_probes(room, 32, 2);
+    t1 = Clock::now();
+    std::printf("  nothing moved: relit in %.2f ms\n", ms(t0, t1));
+    check(ms(t0, t1) < 5.0, "nothing moved: nothing drawn, next to nothing done");
     return ok ? 0 : 1;
 }

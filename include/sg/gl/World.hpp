@@ -115,6 +115,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sg/core/Cache.hpp"
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Probe.hpp"
@@ -312,6 +313,16 @@ public:
     // an edit to write (sg::bake_into): nothing of the world is changed
     // here. Needs prepare() first.
     std::vector<ProbeBake> bake_probes(const Spatial3D& room, int size = 32, int bounces = 2);
+
+    // The same sets, with the lamps taken out of what is baked. What each
+    // probe sees every way - where each surface is, which way it faces, what
+    // of the light it scatters - is drawn once for the room's shell and
+    // kept, lamps or none; a lamp's set is then its light on those surfaces
+    // (shadowed by a cube of distances drawn from the lamp), sent back to
+    // the probe - and, `bounces` 2, the probes' light on them again. A lamp
+    // moved, turned or new costs its own set, and no drawing of the room
+    // from the probes; one that did not move costs nothing. Needs prepare().
+    std::vector<ProbeBake> relight_probes(const Spatial3D& room, int size = 32, int bounces = 2);
 
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
@@ -519,8 +530,40 @@ private:
     Key solo_;
     const std::vector<Sh9>* probe_override_ = nullptr;
     std::unique_ptr<GLWorldView> baker_;  // the view that bakes, kept
+    std::unique_ptr<GLWorldView> lamp_seer_;  // the view that draws lamps' cubes of distances (relight_probes), kept
     // The room seen every way from `at`, lit as baking says, as harmonics.
     Sh9 capture(const Spatial3D& room, const Vec3d& at, int size);
+
+    // Relighting (relight_probes). What the scene shader writes instead of
+    // light (uSurfaceOnly): 1 where, 2 facing, 3 scattering, 4 distance.
+    int surface_only_ = 0;
+    // The room seen every way from `at`, `size` a face, as the shader writes
+    // it in `mode`: six faces of RGBA floats, rows from the bottom; nothing
+    // nearer than `znear`.
+    std::vector<float> see_round(const Spatial3D& room, const Vec3d& at, int size, int mode, float znear = kNear);
+    // What a probe sees one way: a surface, the way to it, its solid angle.
+    struct ProbeTexel {
+        Vec3d at, n, dir;
+        Rgb albedo;
+        double w = 0;
+        std::array<float, kMaxProbes> held{};  // how much each probe holds it, as the scene shader blends them
+    };
+    // A room's probes' surroundings, drawn for its shell (`shell`, its
+    // digest: everything but its lamps), per probe.
+    struct ProbeSurroundings {
+        Digest shell;
+        int size = 0;
+        std::vector<std::vector<ProbeTexel>> of;
+    };
+    std::unordered_map<const Spatial3D*, ProbeSurroundings> surroundings_;
+    // A lamp's sets (per bounce, per probe), kept while the lamp stands
+    // where it was (`place`: what of it a set depends on) and the
+    // surroundings are the same.
+    struct LampSets {
+        Digest place;
+        std::vector<std::vector<Sh9>> by_bounce;
+    };
+    std::unordered_map<const Spatial3D*, std::map<std::string, LampSets>> lamp_sets_;
 
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the

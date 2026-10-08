@@ -1717,6 +1717,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uViewProj", view_proj);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
+        p.set("uSurfaceOnly", surface_only_);
         light_uniforms(p);
         gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
         for (std::size_t i = 0; i < lights.size(); ++i) {

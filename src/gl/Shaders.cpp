@@ -385,6 +385,10 @@ uniform float uAmbient;
 // harmonics.
 const int MAX_PROBES = 8;
 uniform int  uProbeCount;
+// What a surface is, not how it is lit (relight_probes): 1 where it is, 2
+// which way it faces, 3 what of the light it scatters, 4 how far it is
+// from the eye. 0: lit, as ever.
+uniform int  uSurfaceOnly;
 uniform vec4 uProbeAt[MAX_PROBES];
 uniform vec3 uProbeHalf[MAX_PROBES];
 uniform vec3 uProbeSoftLo[MAX_PROBES];
@@ -1151,6 +1155,13 @@ void main() {
     float metal = (mSurface > 4.5 && mSurface < 5.5) ? 0.35 : 0.0;
     vec3 f0 = mix(vec3(0.04), albedo, metal);
     vec3 diffuse = albedo * (1.0 - metal);
+    if (uSurfaceOnly > 0) {
+        if (uSurfaceOnly == 1) FragColor = vec4(vLit, 1.0);
+        else if (uSurfaceOnly == 2) FragColor = vec4(normalize(vNormal), 1.0);
+        else if (uSurfaceOnly == 3) FragColor = vec4(diffuse, 1.0);
+        else FragColor = vec4(length(vWorld - uViewPos), 0.0, 0.0, 1.0);
+        return;
+    }
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
