@@ -142,6 +142,11 @@ struct Body {
     double friction = 0.55, restitution = 0.2;
     bool awake = true;
     double idle = 0;          // how long it has been still
+    // Asleep: the island it fell asleep with, by the smallest index in it
+    // (-1 awake, or none known). Written by the world's own step as it
+    // sleeps; waking one of an island wakes all of it, so a stack is never
+    // left hovering over a part of it that was taken away.
+    int island = -1;
     double hit = 0;           // the hardest knock since it was last asked
     bool grabbed = false;
     double radius = -1;       // how far any of it is from its frame; worked out when first asked
@@ -268,6 +273,8 @@ struct Joint {
     V3 turn;            // the muscle's last impulse
     double bent = 0;    // the cone's
     // What it pushed with last substep, to start the next from (per substep).
+    // Solver carry-over: kept by the world's cache with the contacts
+    // (World::contacts, set_contacts), saved and put back together.
     V3 point;
     double tilt1 = 0, tilt2 = 0, drive = 0, pull = 0, low = 0, high = 0;
     int moving = -1;
@@ -306,8 +313,12 @@ public:
     double contact_hertz = 30; // how stiff the springs that push things apart are
     double max_push = 2.0;     // and how fast they may push, m/s
     double sleep_after = 0.5;  // s still before an island sleeps
+    // How slowly its farthest point may go, and its correction move it, to
+    // count as still (m/s): a bookcase toppling slowly is not still.
+    double sleep_speed = 0.05;
     // Spatial broadphase: sweep along x for small worlds, BVH for 64 or more
-    // bodies. False: exhaustive pairs, to verify identical behavior.
+    // bodies; casts and rays through the BVH. False: exhaustive pairs, and
+    // casts and rays against every body, to verify identical behavior.
     bool sweep = true;
 
     std::vector<Body> bodies;
@@ -455,10 +466,24 @@ private:
     std::unordered_map<uint64_t, Manifold> manifolds_;
 
 public:
-    // What each contact was pushed with last step: to start a step again
-    // from where it started once before.
-    using Contacts = std::unordered_map<uint64_t, Manifold>;
-    Contacts contacts() const { return manifolds_; }
+    // All a step carries over to the next, beyond the bodies themselves: what
+    // each contact was pushed with, what each joint pushed with, and the
+    // island each sleeping body fell asleep with. One cache, saved and put
+    // back whole: to start a step again from where it started once before,
+    // the same, to the last bit.
+    struct JointCarry {
+        std::string a, b;
+        Joint::Kind kind = Joint::Ball;
+        V3 point, turn;
+        double tilt1 = 0, tilt2 = 0, drive = 0, pull = 0, low = 0, high = 0, bent = 0;
+        int moving = -1;
+    };
+    struct Contacts {
+        std::unordered_map<uint64_t, Manifold> manifolds;
+        std::vector<JointCarry> joints;  // by the joint's place in `joints`
+        std::vector<int> islands;        // by the body's place in `bodies`
+    };
+    Contacts contacts() const;
     // The pairs of hulls touching now, by their keys, in order.
     std::vector<uint64_t> touching() const;
     // What body `i` took from each thing touching it over the last step: the
@@ -469,13 +494,18 @@ public:
         V3 impulse;
     };
     std::vector<Took> took(std::size_t i) const;
-    void set_contacts(Contacts c) { manifolds_ = std::move(c); }
+    // Put back what `contacts` saved. A joint or body the cache does not
+    // name (or names another) starts from nothing.
+    void set_contacts(Contacts c);
 
 private:
     std::vector<Manifold*> live_;
     std::vector<Grab> grabs_;
 
     static uint64_t pair_key(std::size_t a, std::size_t b, int ha, int hb);
+    // The contacts in the solver's one order (by pair, then hulls), from the
+    // table of them: after it is found again, put back or renumbered.
+    void relist();
 
     void collide();
 
@@ -550,7 +580,18 @@ private:
     // rest only the open ones that move.
     void sweep_pairs();
     void indexed_pairs();
-    spatial::Index broadphase_;
+    // The BVH over the bodies' boxes, and the boxes it was fitted to. A
+    // derived index: refitted only where a box has moved since (by a step,
+    // or by whoever moved a body between steps), so a query asked of a const
+    // world refits it - mutable for that, and never a thing a result depends
+    // on (what it finds is sorted by index). Not to be queried from two
+    // threads at once.
+    mutable spatial::Index broadphase_;
+    mutable std::vector<spatial::Aabb> indexed_;
+    void refit_index() const;
+    // The bodies whose boxes meet `box`, by index: through the BVH, or every
+    // body when `sweep` is false.
+    std::vector<std::size_t> bodies_near(const spatial::Aabb& box) const;
     std::vector<std::size_t> order_, open_moving_, open_still_;  // the sweep's scratch
     std::vector<double> span_lo_, span_hi_;
 
@@ -564,6 +605,10 @@ private:
 
     void integrate_velocities(double h, double time);
     void sample_fields(double time);
+    // The fields as they are now: the world's, and each body's where it is.
+    // The solver is remade only when these differ from what it was made of.
+    std::vector<field::Source> field_sources() const;
+    void fresh_fields();
     field::Solver field_solver_;
     std::vector<field::Result> responses_;
 
@@ -591,8 +636,11 @@ private:
     void restitution();
 
     // Islands: everything moving that touches, through anything else that
-    // moves. An island still for long enough sleeps whole.
+    // moves. An island still for long enough sleeps whole, and keeps who it
+    // slept with (`Body::island`).
     void sleep(double dt);
+    // How far any of it is from its frame (`Body::radius`), worked out once.
+    static double extent(Body& b);
 };
 
 }  // namespace sg::rigid

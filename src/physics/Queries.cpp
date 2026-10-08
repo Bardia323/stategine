@@ -18,7 +18,10 @@ const Body* World::cast(const Hull& shape, const M3& turn, V3 from, V3 to, doubl
     const double near = 1e-4;
     const Body* best = nullptr;
     double first = 1.0;
-    for (const Body& o : bodies) {
+    // What the way's box meets, through the index - by number, so what is
+    // met first is what every body tried in turn would find.
+    for (const std::size_t i : bodies_near(spatial::Aabb{lo, hi})) {
+        const Body& o = bodies[i];
         if (o.sensor || (!skip.empty() && o.id == skip)) continue;
         if (o.hi.x < lo.x || o.lo.x > hi.x || o.hi.y < lo.y || o.lo.y > hi.y || o.hi.z < lo.z || o.lo.z > hi.z) continue;
         const auto gap = [&] {
@@ -76,6 +79,7 @@ void World::walk(Walker& w, V3 move, double dt, double time) {
         const double into = dot(left, away);
         if (into < 0) left = left - away * into;
     }
+    V3 wall;  // the wall met before this one, levelled (none yet: zero)
     for (int k = 0; k < 4 && length(left) > 1e-7; ++k) {
         const V3 from = body_at(w.at);
         double t = 1;
@@ -101,17 +105,23 @@ void World::walk(Walker& w, V3 move, double dt, double time) {
         if (l < 1e-6) break;
         nh = nh * (1.0 / l);
         left = left - nh * dot(left, nh);
+        // Along this wall would go back into the one met before: then along
+        // the line where the two meet, not from one to the other and back
+        // (in a corner, walls standing upright, that is to stop).
+        if (length(wall) > 0.5 && dot(left, wall) < 0 && std::fabs(dot(wall, nh)) < 0.984) {
+            const V3 d = cross(wall, nh);
+            const double dl = length(d);
+            left = dl > 1e-9 ? d * (dot(left, d) / (dl * dl)) : V3{};
+        }
+        wall = nh;
     }
     // Down: the ground within a stride below, or a fall.
     if (w.grounded) w.vy = 0;
-    // The upright walker uses only the vertical component of its gravity response.
-    field::Solver fields_at;
-    std::vector<field::Source> sources=fields;
-    for(const Body& b:bodies) for(auto s:b.fields) {
-        s.pose=spatial::Transform{b.r,b.x}*s.pose; sources.push_back(std::move(s));
-    }
-    fields_at.rebuild(std::move(sources));
-    w.vy += fields_at.evaluate(w.at,time,{{"gravity",field::Response::Acceleration,1}}).acceleration.y * dt;
+    // The upright walker uses only the vertical component of its gravity
+    // response - from the world's field solver, remade only if the fields
+    // have moved since it was made.
+    fresh_fields();
+    w.vy += field_solver_.evaluate(w.at,time,{{"gravity",field::Response::Acceleration,1}}).acceleration.y * dt;
     const double fall = std::max(0.0, -w.vy * dt);
     const Hull sole = Hull::prism({}, {w.radius * 0.9, 0.01, w.radius * 0.9}, 8);
     const V3 top = w.at + V3{0, w.step, 0};

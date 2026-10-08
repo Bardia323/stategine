@@ -37,7 +37,7 @@ void World::prepare(double h) {
     for (Grab& g : grabs_) g.impulse = {}, g.spin = {};
 }
 
-void World::sample_fields(double time) {
+std::vector<field::Source> World::field_sources() const {
     std::vector<field::Source> sources=fields;
     for(std::size_t i=0;i<bodies.size();++i) {
         const Body& b=bodies[i];
@@ -46,7 +46,18 @@ void World::sample_fields(double time) {
             sources.push_back(std::move(s));
         }
     }
-    field_solver_.rebuild(std::move(sources));
+    return sources;
+}
+
+void World::fresh_fields() {
+    // A derived cache: remade only when what it is made of has changed, so
+    // what it answers is what one made afresh would.
+    std::vector<field::Source> sources=field_sources();
+    if(sources!=field_solver_.sources()) field_solver_.rebuild(std::move(sources));
+}
+
+void World::sample_fields(double time) {
+    fresh_fields();
     responses_.resize(bodies.size());
     const std::vector<field::Receiver>* previous=nullptr;
     std::size_t last=0;
@@ -115,10 +126,21 @@ double World::separation(const Manifold& m, const Point& p) const {
 }
 
 void World::solve(double h, bool springs) {
-    // Soft contact: a spring of `contact_hertz`, damped ten times over.
-    const double zeta = 10.0, omega = 2.0 * 3.14159265358979 * contact_hertz;
-    const double a1 = 2.0 * zeta + h * omega, a2 = h * omega * a1, a3 = 1.0 / (1.0 + a2);
-    const double bias_rate = omega / a1, mass_scale = a2 * a3, impulse_scale = a3;
+    // Soft contact: a spring of `contact_hertz`, damped ten times over - no
+    // stiffer than an eighth of the substep rate, or the substeps cannot
+    // follow it; twice as stiff against what does not move (a wall, the
+    // floor, something asleep or driven), where only one side gives - and
+    // that too no stiffer than the substeps follow.
+    struct Soft {
+        double bias_rate, mass_scale, impulse_scale;
+    };
+    const auto soft_at = [&](double hz) {
+        const double zeta = 10.0, omega = 2.0 * 3.14159265358979 * hz;
+        const double a1 = 2.0 * zeta + h * omega, a2 = h * omega * a1, a3 = 1.0 / (1.0 + a2);
+        return Soft{omega / a1, a2 * a3, a3};
+    };
+    const double most_hz = 0.125 / h;
+    const Soft both = soft_at(std::min(contact_hertz, most_hz)), one = soft_at(std::min(2.0 * contact_hertz, most_hz));
     for (int it = 0; it < iterations; ++it) {
         // The hand is a spring itself: pulled with it, not relaxed.
         if (springs) solve_grabs(h);
@@ -126,6 +148,8 @@ void World::solve(double h, bool springs) {
         for (Manifold* m : live_) {
             Body& a = bodies[m->a];
             Body& b = bodies[m->b];
+            const Soft& k = moves(a) && moves(b) ? both : one;
+            const double bias_rate = k.bias_rate, mass_scale = k.mass_scale, impulse_scale = k.impulse_scale;
             double total = 0;
             for (Point& p : m->pts) {
                 // (Nothing has moved since the first pass: the gap is the same.)
@@ -277,24 +301,52 @@ void World::sleep(double dt) {
         if (A->awake != B->awake) wake(A->awake ? *B : *A);
         parent[root(static_cast<std::size_t>(ia))] = root(static_cast<std::size_t>(ib));
     }
-    std::unordered_map<std::size_t, double> least;
-    for (std::size_t i = 0; i < bodies.size(); ++i) {
+    // Each island (by its root): how long its least still member has been
+    // still, whether anything in it moves at all, and its name - the least
+    // index in it, or the name of an island asleep in it already, if less.
+    const std::size_t n = bodies.size();
+    std::vector<double> least(n, 0.0);
+    std::vector<char> any(n, 0);
+    std::vector<int> name(n, -1);
+    for (std::size_t i = 0; i < n; ++i) {
         Body& b = bodies[i];
-        if (!moves(b)) continue;
-        const bool still = length(b.v) < 0.04 && length(b.w) < 0.12 && !b.grabbed;
-        b.idle = still ? b.idle + dt : 0.0;
         const std::size_t r = root(i);
-        auto it = least.find(r);
-        least[r] = it == least.end() ? b.idle : std::min(it->second, b.idle);
+        if (name[r] < 0) name[r] = static_cast<int>(i);  // (going up: the first is the least)
+        if (!moves(b)) {
+            if (b.dynamic() && !b.awake && b.island >= 0) name[r] = std::min(name[r], b.island);
+            continue;
+        }
+        // Still: its farthest point slow, and slow the way the step's
+        // corrections moved it - a bookcase toppling slowly, or pushed out
+        // of the floor a little every step, is not still.
+        const double e = extent(b);
+        const V3 c0 = i < from_x_.size() ? from_x_[i] + from_r_[i] * b.com_local : b.com();
+        const double dx = length(b.com() - c0);
+        const double turned = i < from_r_.size() ? length(log_map(b.r * transpose(from_r_[i]))) : 0.0;
+        const double speed = std::max(length(b.v) + length(b.w) * e, 0.5 * (dx + turned * e) / dt);
+        const bool still = speed <= sleep_speed && !b.grabbed;
+        b.idle = still ? b.idle + dt : 0.0;
+        least[r] = any[r] ? std::min(least[r], b.idle) : b.idle;
+        any[r] = 1;
     }
-    for (std::size_t i = 0; i < bodies.size(); ++i) {
+    // An island still for long enough sleeps whole, and every one of it
+    // keeps its name; one asleep in it already is now of it.
+    std::vector<int> renamed(n, -1);
+    for (std::size_t i = 0; i < n; ++i) {
         Body& b = bodies[i];
-        if (!moves(b)) continue;
-        if (least[root(i)] >= sleep_after) {
+        const std::size_t r = root(i);
+        if (!any[r] || least[r] < sleep_after) continue;
+        if (moves(b)) {
             b.awake = false;
             b.v = b.w = {};
+            b.island = name[r];
+        } else if (b.dynamic() && !b.awake && b.island >= 0 && static_cast<std::size_t>(b.island) < n && b.island != name[r]) {
+            renamed[static_cast<std::size_t>(b.island)] = name[r];
         }
     }
+    for (Body& b : bodies)
+        if (!b.awake && b.island >= 0 && static_cast<std::size_t>(b.island) < n && renamed[static_cast<std::size_t>(b.island)] >= 0)
+            b.island = renamed[static_cast<std::size_t>(b.island)];
 }
 
 } // namespace sg::rigid

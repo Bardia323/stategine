@@ -173,15 +173,40 @@ void World::remove(const std::string& id) {
     release(id);
     unjoin(id);
     bodies.erase(bodies.begin() + static_cast<std::ptrdiff_t>(i));
-    manifolds_.clear();
+    // Every other contact keeps what it was pushed with, renumbered past the
+    // one gone (a key is made of the bodies' numbers); the gone one's go.
+    std::unordered_map<uint64_t, Manifold> kept;
+    kept.reserve(manifolds_.size());
+    for (auto& [k, m] : manifolds_) {
+        if (m.a == i || m.b == i) continue;
+        if (m.a > i) --m.a;
+        if (m.b > i) --m.b;
+        kept.emplace(pair_key(m.a, m.b, m.ha, m.hb), std::move(m));
+    }
+    manifolds_ = std::move(kept);
+    // So do the islands: one named by the gone body is named by its next
+    // least member, which is where the gone one was or past it.
+    const int gone = static_cast<int>(i);
+    int next = -1;
+    for (std::size_t k = 0; k < bodies.size(); ++k) {
+        int& island = bodies[k].island;
+        if (island == gone) {
+            if (next < 0) next = static_cast<int>(k);
+            island = next;
+        } else if (island > gone) {
+            --island;
+        }
+    }
     index_.clear();
     for (std::size_t k = 0; k < bodies.size(); ++k) index_[bodies[k].id] = k;
+    relist();
 }
 
 void World::clear() {
     bodies.clear();
     index_.clear();
     manifolds_.clear();
+    live_.clear();
     grabs_.clear();
     joints.clear();
 }
@@ -205,8 +230,15 @@ void World::moved(Body& b, V3 x, const M3& r) {
 
 void World::wake(Body& b) {
     if (!b.dynamic()) return;
+    // Asleep, it wakes with all it fell asleep with: what lies on it, what
+    // it lies on, what is joined to it - never one of a stack alone.
+    const int island = b.awake ? -1 : b.island;
     b.awake = true;
     b.idle = 0;
+    b.island = -1;
+    if (island < 0) return;
+    for (Body& o : bodies)
+        if (o.island == island) o.awake = true, o.idle = 0, o.island = -1;
 }
 
 void World::wake_box(V3 lo, V3 hi) {
@@ -321,9 +353,22 @@ void World::step(double dt, double time) {
 }
 
 std::vector<World::Took> World::took(std::size_t i) const {
+    // In the solver's one order (by pair, then hulls), never the table's:
+    // every sum is made in the same order, so a step tried again says the
+    // same, to the last bit. (Found from the table itself, so a copy of the
+    // world answers as the world does.)
+    std::vector<const Manifold*> mine;
+    for (const auto& [key, m] : manifolds_)
+        if (m.live && (m.a == i || m.b == i)) mine.push_back(&m);
+    std::sort(mine.begin(), mine.end(), [](const Manifold* x, const Manifold* y) {
+        if (x->a != y->a) return x->a < y->a;
+        if (x->b != y->b) return x->b < y->b;
+        if (x->ha != y->ha) return x->ha < y->ha;
+        return x->hb < y->hb;
+    });
     std::vector<Took> out;
-    for (const auto& [key, m] : manifolds_) {
-        if (!m.live || (m.a != i && m.b != i)) continue;
+    for (const Manifold* mp : mine) {
+        const Manifold& m = *mp;
         double pn = 0;
         for (const Point& p : m.pts) pn += p.pn;
         // (Pushed along n onto b, and as much back onto a.)
@@ -333,7 +378,49 @@ std::vector<World::Took> World::took(std::size_t i) const {
         if (it == out.end()) out.push_back({from, j});
         else it->impulse = it->impulse + j;
     }
+    std::sort(out.begin(), out.end(), [](const Took& x, const Took& y) { return x.from < y.from; });
     return out;
+}
+
+auto World::contacts() const -> Contacts {
+    Contacts c;
+    c.manifolds = manifolds_;
+    c.joints.reserve(joints.size());
+    for (const Joint& j : joints)
+        c.joints.push_back(JointCarry{j.a, j.b, j.kind, j.point, j.turn, j.tilt1, j.tilt2, j.drive, j.pull, j.low, j.high, j.bent, j.moving});
+    c.islands.reserve(bodies.size());
+    for (const Body& b : bodies) c.islands.push_back(b.island);
+    return c;
+}
+
+void World::set_contacts(Contacts c) {
+    manifolds_ = std::move(c.manifolds);
+    relist();
+    const JointCarry none{};
+    for (std::size_t k = 0; k < joints.size(); ++k) {
+        Joint& j = joints[k];
+        const bool same = k < c.joints.size() && c.joints[k].a == j.a && c.joints[k].b == j.b && c.joints[k].kind == j.kind;
+        const JointCarry& from = same ? c.joints[k] : none;
+        j.point = from.point, j.turn = from.turn;
+        j.tilt1 = from.tilt1, j.tilt2 = from.tilt2, j.drive = from.drive, j.pull = from.pull;
+        j.low = from.low, j.high = from.high, j.bent = from.bent;
+        j.moving = from.moving;
+    }
+    const bool islands = c.islands.size() == bodies.size();
+    for (std::size_t i = 0; i < bodies.size(); ++i) bodies[i].island = islands ? c.islands[i] : -1;
+}
+
+void World::relist() {
+    live_.clear();
+    for (auto& [k, m] : manifolds_) live_.push_back(&m);
+    // The solver meets the contacts in one order, whatever found them
+    // and however the table of them grew: by the pair, then the hulls.
+    std::sort(live_.begin(), live_.end(), [](const Manifold* x, const Manifold* y) {
+        if (x->a != y->a) return x->a < y->a;
+        if (x->b != y->b) return x->b < y->b;
+        if (x->ha != y->ha) return x->ha < y->ha;
+        return x->hb < y->hb;
+    });
 }
 
 std::vector<uint64_t> World::touching() const {
@@ -371,30 +458,24 @@ void World::collide() {
         if (!inside_.count(i)) left_.push_back(i);
     for (auto it = manifolds_.begin(); it != manifolds_.end();)
         it = it->second.live ? std::next(it) : manifolds_.erase(it);
-    for (auto& [k, m] : manifolds_) {
-        live_.push_back(&m);
-        ++bodies[m.a].contacts, ++bodies[m.b].contacts;
+    relist();
+    for (const Manifold* m : live_) ++bodies[m->a].contacts, ++bodies[m->b].contacts;
+}
+
+double World::extent(Body& b) {
+    if (b.radius < 0) {
+        b.radius = 0;
+        for (const Hull& h : b.hulls)
+            for (const V3& v : h.v) b.radius = std::max(b.radius, length(v));
     }
-    // The solver meets the contacts in one order, whatever found them
-    // and however the table of them grew: by the pair, then the hulls.
-    std::sort(live_.begin(), live_.end(), [](const Manifold* x, const Manifold* y) {
-        if (x->a != y->a) return x->a < y->a;
-        if (x->b != y->b) return x->b < y->b;
-        if (x->ha != y->ha) return x->ha < y->ha;
-        return x->hb < y->hb;
-    });
+    return b.radius;
 }
 
 void World::sweep_fast() {
     for (std::size_t i = 0; i < bodies.size(); ++i) {
         Body& b = bodies[i];
         if (!moves(b) || b.sensor || i >= from_x_.size()) continue;
-        if (b.radius < 0) {
-            b.radius = 0;
-            for (const Hull& h : b.hulls)
-                for (const V3& v : h.v) b.radius = std::max(b.radius, length(v));
-        }
-        const double radius = b.radius;
+        const double radius = extent(b);
         const double narrow = std::min({b.hi.x - b.lo.x, b.hi.y - b.lo.y, b.hi.z - b.lo.z});
         const V3 x0 = from_x_[i], x1 = b.x;
         // Most things move a little: known at once, from where it went

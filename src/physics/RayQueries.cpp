@@ -3,7 +3,18 @@ namespace sg::rigid {
 const Body* World::ray(V3 o, V3 d, double reach, double* at, bool dynamic_only, const std::string& skip, V3* normal) const {
     const Body* best = nullptr;
     double bt = reach;
-    for (const Body& b : bodies) {
+    // What the ray's boxes say it may meet, through the index - by number,
+    // so what is met first is what every body tried in turn would find.
+    std::vector<std::size_t> met;
+    if (sweep) {
+        refit_index();
+        met = broadphase_.query(spatial::Ray{o, d, 0.0, reach});
+    } else {
+        met.resize(bodies.size());
+        for (std::size_t i = 0; i < met.size(); ++i) met[i] = i;
+    }
+    for (const std::size_t i : met) {
+        const Body& b = bodies[i];
         if ((dynamic_only && !b.dynamic()) || b.sensor) continue;
         if (!skip.empty() && b.id == skip) continue;
         for (const Body::Placed& p : b.world) {

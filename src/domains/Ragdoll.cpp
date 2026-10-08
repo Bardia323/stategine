@@ -785,10 +785,11 @@ void Ragdoll::step(double dt) {
     }
     self.params.set("lead", 1.0);
 
-    // The world, as it is now; begun from the contacts the last step left
-    // (resting contacts hold steady, they do not buzz), remembered by
-    // everything this step starts from - the same start, tried again in any
-    // order, begins from the same contacts.
+    // The world, as it is now; begun from all the solver carried over from
+    // the last step - its contacts and its joints' pushes, one cache
+    // (resting contacts hold steady, they do not buzz) - remembered by
+    // everything this step starts from: the same start, tried again in any
+    // order, begins from the same cache, joints and all.
     rigid::World w;
     build(w);
     uint64_t in = 1469598103934665603ull;

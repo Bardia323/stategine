@@ -49,6 +49,11 @@ struct Source {
     static Source plane(std::string channel, V3 point, V3 normal, double strength);
     static Source box(std::string channel, spatial::Transform pose, V3 half, double strength);
     Value sample(V3 position, double time) const;
+    // The same source: every number, the same backend. What a solver built
+    // from it is is then still what it is (a solver is remade only when its
+    // sources move).
+    bool operator==(const Source& o) const;
+    bool operator!=(const Source& o) const { return !(*this == o); }
 };
 
 enum class Response { Acceleration, Force, Torque, Scalar, Vector };
@@ -69,6 +74,8 @@ class Solver {
 public:
     void rebuild(std::vector<Source> sources);
     bool uniform() const { return uniform_result_; }
+    // What it was built from: to know whether it is still what they make.
+    const std::vector<Source>& sources() const { return sources_; }
     Result evaluate(V3 position, double time, const std::vector<Receiver>& receivers,
                     std::size_t self=std::numeric_limits<std::size_t>::max()) const;
 private:
