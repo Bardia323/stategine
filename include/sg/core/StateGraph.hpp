@@ -10,6 +10,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -27,8 +28,30 @@ enum class TransitionKind {
     Pop      // exit the current state, resume the one below (no target)
 };
 
+// Whether a transition may be taken: a function of the state it leaves and
+// the event that asks, and of nothing else. One said in the notation (`when
+// from.stock > 0`) keeps what it said - its `text`, the comparison it is - so
+// the graph's facts can say what it is and hold it to its source. One written
+// in C++ as a lambda says nothing of itself: its text is empty, and the facts
+// call it opaque, as they do an unnamed native.
+struct TransitionGuard {
+    using Fn = std::function<bool(const State& from, const Event&)>;
+    Fn fn;
+    std::string text;  // what it is, in the notation; empty: C++ that does not say
+
+    TransitionGuard() = default;
+    // A lambda (or nullptr) is a guard, as it always was.
+    template <typename F, typename = std::enable_if_t<!std::is_same<std::decay_t<F>, TransitionGuard>::value &&
+                                                      std::is_constructible<Fn, F&&>::value>>
+    TransitionGuard(F&& f) : fn(std::forward<F>(f)) {}  // NOLINT(google-explicit-constructor)
+    TransitionGuard(Fn f, std::string said) : fn(std::move(f)), text(std::move(said)) {}
+
+    explicit operator bool() const { return static_cast<bool>(fn); }
+    bool operator()(const State& from, const Event& e) const { return fn(from, e); }
+};
+
 struct Transition {
-    using Guard = std::function<bool(const State& from, const Event&)>;
+    using Guard = TransitionGuard;
     using Action = std::function<void(State& from, const Event&, Params& args)>;
 
     Key name;
@@ -259,6 +282,10 @@ public:
     // What a transition carries across, changed - a doorway rebuilt, a way
     // through unglued (empty: nothing carried). Counted like any rewiring.
     bool set_carry(Key transition, Key functor);
+
+    // Taken away, by name: a source reloaded without it (sg::dsl::reload).
+    // False if there is none. Counted like any rewiring.
+    bool disconnect(Key transition);
 
     const Transition& push(Key from, Key trigger, Key to) {
         return connect(from, trigger, to, TransitionKind::Push);

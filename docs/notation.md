@@ -32,7 +32,7 @@ Every construct, and the primitive it becomes (`sg/dsl/Plan.hpp`):
 | `extern functor f : A -> B` | nothing made: the graph must hold it |
 | `compose f = g ; h ; ...` | `graph.compose_functors` |
 | `lens get <-> put` | `graph.lens` |
-| `transition a -[e]-> b [carry f] [name n] [push] [with k = v]` | `graph.connect`; `* ` for any source; `-[e]-> pop`; `with` is `Transition::enter`, constants the entered state is told (data, not a lambda) |
+| `transition a -[e]-> b [carry f] [name n] [push] [with k = v] [when <comparison>]` | `graph.connect`; `* ` for any source; `-[e]-> pop`; `with` is `Transition::enter`, constants the entered state is told (data, not a lambda); `when` is `Transition::guard`: comparisons (`== != < <= > >=`, joined by `and`, `or`, `not`, brackets) of `from` (the state left's id), `from.<param>`, `from[<element>].<param>` and `arg.<name>` against numbers and words in quotes - a pure function of the state left and the event, which keeps its text (`sg/dsl/Guard.hpp`) |
 | `embed h.p -> g [in f] [out f] [subject s] [sync live/commit/view] [propagate ...] [focus b] [follows b] [name n]` | `graph.embed` |
 | `seam a.p <-> b.q [also x <-> y] [name n]` | `sg::glue_doorway` (the boundaries identified both ways; its `<name>.ab` / `.ba` travel functors are named for `carry`) |
 | `drive clock -> s.event` / `drive clock -> s event e [keeps ...] [additive]` | `sg::drive` on a `Temporal` |
@@ -114,6 +114,23 @@ that would not validate, leaves the graph as it was and the compiler says why.
 What this does not do: it does not run `sg::verify` (the laws are the tests'
 and the engine's watch), and out-of-memory in the middle is not made atomic.
 
+**Reloading a source is one edit that replaces only what changed.**
+`sg::dsl::reload(before, after, graph, natives)` (`compile_reload`, the
+compiler's edit, asked with `text` and `before`) holds each declaration of the
+source - a state with what it holds, a functor with its maps, a transition, an
+embedding, a seam, a drive, a port, an edit - by its facts to what the source
+said before and to what the graph has. What is the same is not touched; a
+source reloaded unchanged changes nothing, down to a param's stamp and a
+state's time (`sg_dsl_reload` holds it to that). A changed state is kept in
+place - the same object, so its line on the Temporal goes on, an embedding
+open on it stays open and focus stays where it is - its params carried (what
+it has stays; what the source newly says is added) and its elements and
+arrows made as the source says. A changed relation is taken away and declared
+again by its name. A state's kind never changes, and a state, port or lens
+is not taken from a running graph: such a reload is refused. All or nothing,
+as `apply`: what it took away is declared again, what it made is taken away,
+and the states it touched are as they were.
+
 ## Holding a declaration beside the C++ it replaces
 
 `sg::dsl::facts(graph)` is one line for each thing the graph is made of,
@@ -135,6 +152,9 @@ graph's unnamed one and reported by `unverified(plan, graph)` - not an error,
 because a lambda cannot be told more, but not proven either. What canonical
 lines cannot say, because a set has no order (the order embedded guests tick in,
 the order time is kept in), is tested separately: the lab's golden file carries
-`order drives`, `order embeddings` and `order transitions`. What a doorway's
+`order drives`, `order embeddings` and `order transitions`. A transition's
+guard is in its fact by the comparison it is (`guard=when(from.stock > 0)`);
+a lambda's is `guard=opaque`, which meets a source's comparison as an unnamed
+native meets a named one: `unverified`, not missing. What a doorway's
 glue bakes in from the portals' poses at declaration is in the portals' own
 params, which are facts too.

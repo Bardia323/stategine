@@ -1,0 +1,18 @@
+# A transition's guard, in the notation: a comparison of what the state it
+# leaves holds and what the event that asks says, and nothing else.
+#
+#   shop -[buy]-> till    only while there is stock, and as many as are on the shelf
+#   till -[back]-> shop   unless the way back is lost, or this is not the till
+
+state shop {
+    stock = 3
+    element shelf { count = 2 }
+}
+
+state till
+
+initial shop
+
+transition shop -[buy]-> till name buy when from.stock > 0 and arg.n <= from[shelf].count
+transition till -[back]-> shop name back
+    when not (arg.why == "lost" or from != "till")

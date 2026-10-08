@@ -649,6 +649,19 @@ if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   endforeach()
 endif()
 
+# A source reloaded into the world it made, replacing only what changed; a
+# transition's guard said in the notation; saves stamped with the facts they
+# were written against.
+if(SG_BUILD_TESTS AND SG_BUILD_DSL AND TARGET stategine_dsl)
+  add_executable(sg_dsl_reload tests/dsl/test_dsl_reload.cpp)
+  target_link_libraries(sg_dsl_reload PRIVATE stategine_dev stategine_dsl)
+  stategine_compile_dsl(sg_dsl_reload NAME guarded SOURCES tests/dsl/guarded.sg)
+  add_test(NAME sg_dsl_reload COMMAND sg_dsl_reload)
+  if(NOT EMSCRIPTEN)
+    set_target_properties(sg_dsl_reload PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+  endif()
+endif()
+
 # Two tiers of tests. `ctest` runs the fast one: the laws, the DSL and every
 # domain. `ctest -C full` runs everything - also the networking acceptance
 # runs across separate processes (pong, verified and plain peers), which

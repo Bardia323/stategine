@@ -79,6 +79,20 @@ bool StateGraph::set_carry(Key transition, Key functor) {
     return false;
 }
 
+bool StateGraph::disconnect(Key transition) {
+    auto it = transition_by_name_.find(transition);
+    if (it == transition_by_name_.end()) return false;
+    rev_.rewired("disconnect");
+    transitions_.erase(transitions_.begin() + static_cast<std::ptrdiff_t>(it->second));
+    by_trigger_.clear();
+    transition_by_name_.clear();
+    for (std::size_t i = 0; i < transitions_.size(); ++i) {
+        by_trigger_[transitions_[i].trigger].push_back(i);
+        transition_by_name_.emplace(transitions_[i].name, i);
+    }
+    return true;
+}
+
 std::vector<Key> StateGraph::sources(const Transition& t) const {
     if (t.from != any()) return {t.from};
     std::vector<Key> out;
