@@ -185,6 +185,8 @@ std::vector<std::string> Engine::check_graph() {
     // And every seam seamless: what its two sides say of their overlap agrees.
     for (const Violation& v : laws::overlaps(graph_))
         if (!v.refused) now.push_back(v.where + ": " + v.lhs + ": " + v.detail);
+    // And what passes through them holds together (Channel).
+    for (const Violation& v : laws::channels(graph_)) now.push_back(v.where + ": " + v.lhs + ": " + v.detail);
     for (const std::string& p : now) report(p);
     if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
     return now;
@@ -218,6 +220,7 @@ void Engine::watch_slice() {
         if (std::chrono::duration<double>(Clock::now() - began).count() >= budget) break;
     }
     if (sweep_seam_ < graph_.seams().size()) return;
+    for (const Violation& v : laws::channels(graph_)) sweep_found_.push_back(v.where + ": " + v.lhs + ": " + v.detail);
     sweeping_ = false;
     watched_ = sweep_revision_;
     last_watch_ = elapsed();
@@ -446,6 +449,8 @@ State* Engine::cross(State& here, const Params& before) {
     for (const Seam& sm : graph_.seams())
         for (const bool from_a : {true, false}) {
             if ((from_a ? sm.a : sm.b) != here.id()) continue;
+            // A seam that admits no things is not crossed: only looked through.
+            if (!graph_.admits(sm, Channel::Objects)) continue;
             const Key travel = from_a ? sm.a_to_b : sm.b_to_a;
             for (const Key& boundary : from_a ? sm.boundary_a : sm.boundary_b) {
                 if (!here.passed(before, boundary)) continue;

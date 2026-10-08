@@ -389,6 +389,12 @@ if(SG_BUILD_TESTS)
   add_executable(sg_rope tests/test_rope.cpp)
   target_link_libraries(sg_rope PRIVATE stategine_dev)
   add_test(NAME sg_rope COMMAND sg_rope)
+  # What passes through a seam: view, light, sound, things - as each doorway
+  # admits them, a door's opening letting light and sound through, and the
+  # pieces each channel joins held to their seams.
+  add_executable(sg_channels tests/test_channels.cpp)
+  target_link_libraries(sg_channels PRIVATE stategine_dev)
+  add_test(NAME sg_channels COMMAND sg_channels)
 
   # The laws on live data, each one shown both holding and breaking.
   add_executable(sg_laws tests/test_laws.cpp)

@@ -1774,6 +1774,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(3, part_at);
         flush_batches(*scene_, true);
+        draw_straddlers(placed, room);
         // The room's own floor, walls and ceiling after what stands in it:
         // they are behind everything, and where something hides them they
         // are refused by depth, not shaded.
