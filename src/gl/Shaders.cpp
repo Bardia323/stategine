@@ -45,7 +45,7 @@ uniform float uCosInner[MAX_LIGHTS];
 uniform float uCosOuter[MAX_LIGHTS];
 uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
 uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
-uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only
+uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only; 0.6: lit so, but the probes do not stand in for it
 uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
 uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
 uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
@@ -1270,7 +1270,8 @@ void main() {
 
         // (Light standing in for bounce is the probes' where they hold: their
         // bake saw the bounce itself, and it would count twice.)
-        if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - probe_cover);
+        if (uLightIndirect[i] > 0.5)
+            bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightIndirect[i] > 0.8 ? probe_cover : 0.0));
         else direct += lobe * ndl * uLightColor[i] * reach * shadow;
     }
 

@@ -49,6 +49,11 @@ struct DrawLight {
         spatial::projection::Vec3 focus{0, 0, 0};
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
+        // Whether it is a stand-in for the light that comes back off the
+        // room, which the room's probes hold instead where they hold it
+        // (`bounce`; unless it says, what `indirect` says). A lamp only lit
+        // as one (an uplight washing a ceiling, a screen's spill) says 0.
+        bool bounce = false;
         float falloff = 0.0f;  // 0: the soft falloff; 1: the inverse square, as real light
         // How much of it the air scatters, times what the look's air does
         // (its scene pass's `scatter`): the light's `scatter`, 1 unless it

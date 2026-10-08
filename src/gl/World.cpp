@@ -235,6 +235,9 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
     world_time_ = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
     aim_rays(*rooms.front().room);
+    // The light from all round of each room seen, relit before anything of
+    // this frame is drawn (relighting draws).
+    if (!root_ && !baking_) light_rooms(rooms);
     // Feeds the graph declares: an open embedding of a 3D state in a
     // `feed` portal. Those it no longer declares go. Only the view on
     // the screen keeps them; the views it draws feeds and far rooms with
@@ -1551,7 +1554,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 5), std::cos(l.outer));
             p.set(light_uniform(i, 6), l.sun ? 1.0f : 0.0f);
             p.set(light_uniform(i, 7), l.floor);
-            p.set(light_uniform(i, 8), l.indirect ? 1.0f : 0.0f);
+            // (1: lit as bounce and standing in for it; 0.6: lit as bounce only.)
+            p.set(light_uniform(i, 8), l.indirect ? (l.bounce ? 1.0f : 0.6f) : 0.0f);
             p.set(light_uniform(i, 9), l.falloff);
             p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(i, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
@@ -1702,6 +1706,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                      static_cast<float>(setting(first, passes::scene, "clear.y", 0.014)),
                      static_cast<float>(setting(first, passes::scene, "clear.z", 0.022)),
                      1.0f);
+    // (Asked what surfaces are, where there are none is nothing: 0.)
+    if (surface_only_) gl::glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glDepthFunc(gl::GL_LESS);
@@ -1853,6 +1859,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
             // own body, seen from inside it).
             if (e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+            if (hidden_ && hidden_->count(e.id.key())) continue;  // (moving: not what the probes see)
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);
             } else if (e.kind == kinds::mesh) {
@@ -1907,6 +1914,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (batch_frames_) flush_batches(*scene_, true);
         batch_frames_ = false;
+        // (Asked what surfaces are, glass is none: it is seen through.)
+        if (surface_only_) glass.clear();
         if (!glass.empty()) {
             const Vec3d eye{cam.eye.x, cam.eye.y, cam.eye.z};
             const auto far = [&](const Element* e) { return distance(world_position(room, *e), eye); };
@@ -2762,6 +2771,9 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
 void GLWorldView::draw_lamp(const Spatial3D& world, const Element& e) {
     // A sun hangs from nothing; nor does a lamp that says it is no fixture.
     if (e.params.num(Key{"fixture"}, 1.0) < 0.5 || e.params.num(Key{"sun"}, 0.0) > 0.5) return;
+    // (Seen from the lamp itself - its cube of distances - its own fitting
+    // is not in the way of its light.)
+    if (e.id == own_lamp_) return;
     const gl::Vec3 pos = to_vec3(pose_of(world, e).position);
     const gl::Vec3 color = color_of(e, {1.0f, 0.93f, 0.82f});
     const float room_h = static_cast<float>(world.params().num(Key{"room_h"}, 4.0));

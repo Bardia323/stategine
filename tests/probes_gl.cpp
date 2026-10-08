@@ -81,7 +81,11 @@ int main() {
                 s += 0.2126 * p[(y * W + x) * 3] + 0.7152 * p[(y * W + x) * 3 + 1] + 0.0722 * p[(y * W + x) * 3 + 2];
         return s / std::max(n, 1);
     };
+    // (Before: no light from all round but the look's - not even relit as
+    // the renderer relights a room's probes that hold no bake.)
+    room.params().set("gi", 0.0);
     const auto before = shot();
+    room.params().set("gi", 1.0);
 
     const auto bakes = view.bake_probes(room, 32, 2);
     check(bakes.size() == 2 && bakes[0].sets.count("lamp") == 1, "a bake: a set for the lamp, for each probe");

@@ -113,6 +113,7 @@
 #include <future>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "sg/core/Cache.hpp"
@@ -322,7 +323,23 @@ public:
     // the probe - and, `bounces` 2, the probes' light on them again. A lamp
     // moved, turned or new costs its own set, and no drawing of the room
     // from the probes; one that did not move costs nothing. Needs prepare().
-    std::vector<ProbeBake> relight_probes(const Spatial3D& room, int size = 32, int bounces = 2);
+    // `changed`, if asked, says whether anything was worked out again.
+    std::vector<ProbeBake> relight_probes(const Spatial3D& room, int size = 32, int bounces = 2, bool* changed = nullptr);
+
+    // Light from all round, by default. A room that declares no probes (and
+    // says how big it is, closed round, and not `gi` 0) has boxes of its own
+    // (grid_of), relit before each frame as relight_probes relights - its
+    // lamps placed are its light come back off it, with nothing declared;
+    // a room's declared probes that hold no bake are relit so too. Nothing
+    // of the world is written: what is shown is the renderer's, as its
+    // shadows are. A box: in the room's frame, its middle, half its size,
+    // how far it fades beyond each side, its turn.
+    struct ProbeBox {
+        Key id;
+        Vec3d mid, half, soft_lo, soft_hi;
+        double yaw = 0;
+    };
+    static std::vector<ProbeBox> grid_of(const Spatial3D& room);
 
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
@@ -537,10 +554,16 @@ private:
     // Relighting (relight_probes). What the scene shader writes instead of
     // light (uSurfaceOnly): 1 where, 2 facing, 3 scattering, 4 distance.
     int surface_only_ = 0;
+    // The lamp a view is drawn from (its cube of distances): its own
+    // fitting is not drawn.
+    Key own_lamp_;
     // The room seen every way from `at`, `size` a face, as the shader writes
     // it in `mode`: six faces of RGBA floats, rows from the bottom; nothing
     // nearer than `znear`.
     std::vector<float> see_round(const Spatial3D& room, const Vec3d& at, int size, int mode, float znear = kNear);
+    // One view of it, `fov` high and wide, as see_round draws each face.
+    std::vector<float> see_from(const Spatial3D& room, const Vec3d& at, const Vec3d& forward, const Vec3d& up, float fov, int size,
+                                int mode, float znear = kNear);
     // What a probe sees one way: a surface, the way to it, its solid angle.
     struct ProbeTexel {
         Vec3d at, n, dir;
@@ -548,22 +571,52 @@ private:
         double w = 0;
         std::array<float, kMaxProbes> held{};  // how much each probe holds it, as the scene shader blends them
     };
-    // A room's probes' surroundings, drawn for its shell (`shell`, its
-    // digest: everything but its lamps), per probe.
-    struct ProbeSurroundings {
-        Digest shell;
-        int size = 0;
-        std::vector<std::vector<ProbeTexel>> of;
-    };
-    std::unordered_map<const Spatial3D*, ProbeSurroundings> surroundings_;
-    // A lamp's sets (per bounce, per probe), kept while the lamp stands
-    // where it was (`place`: what of it a set depends on) and the
-    // surroundings are the same.
-    struct LampSets {
-        Digest place;
+    // A lamp's light on a room's surroundings (per bounce, per box), kept
+    // while it stands where it was and the shell is the same (`place`).
+    struct LampLight {
+        Digest place, shell;
         std::vector<std::vector<Sh9>> by_bounce;
+        // Its cube of distances while it is being drawn, a face a frame, for `drawing`.
+        Digest drawing;
+        int faces = 0;
+        std::vector<float> far;
     };
-    std::unordered_map<const Spatial3D*, std::map<std::string, LampSets>> lamp_sets_;
+    // All a room's relighting keeps (relight_room): what moves in it and
+    // what stands still, its shell (a digest of all that stands still), what
+    // each box sees of it, each lamp's light on that - and what is shown:
+    // each box's sets, by lamp.
+    struct RoomLight {
+        uint64_t structure = ~uint64_t{0};
+        std::vector<uint64_t> stamps;   // each thing's params, as last seen
+        std::vector<uint32_t> still;    // for how many relights it has not moved
+        std::unordered_map<Key, std::size_t> index;
+        std::unordered_set<Key> hidden;  // what moves, and what hangs from it: not seen by the probes
+        bool restless = false;           // which things move is not yet what `hidden` says
+        uint32_t quiet = 0;              // relights since anything started moving or came to rest
+        Digest shell;
+        bool shell_known = false;
+        int size = 0, bounces = 0;
+        std::vector<ProbeBox> boxes;
+        std::vector<std::vector<ProbeTexel>> of;  // per box and face (6 a box): what it sees
+        std::vector<Digest> drawn;               // per box and face: the shell that was drawn for
+        std::map<std::string, LampLight> lamps;
+        std::vector<std::map<std::string, Sh9>> sets;  // per box, per lamp
+        uint64_t revision = 0;                         // moves whenever the sets do
+    };
+    std::unordered_map<const Spatial3D*, RoomLight> room_light_;
+    // What the views that relight do not draw (relight_room: what moves).
+    const std::unordered_set<Key>* hidden_ = nullptr;
+    // A room relit: its boxes' surroundings drawn for the shell as it is,
+    // and each lamp's light on them worked out where it moved - all of it
+    // now (`all_now`, or the first time), else a frame's share: one box
+    // drawn, or one lamp worked out.
+    RoomLight& relight_room(const Spatial3D& room, const std::vector<ProbeBox>& boxes, int size, int bounces, bool all_now);
+    // Before a frame is drawn, each room seen relit (light_rooms), and what
+    // it holds for the scene shader (live_light: the view on the screen's).
+    void light_rooms(const std::vector<PlacedRoom>& rooms);
+    const RoomLight* live_light(const Spatial3D& room) const;
+    // The boxes of a room's declared probes, as relighting takes them.
+    std::vector<ProbeBox> declared_boxes(const Spatial3D& room) const;
 
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the

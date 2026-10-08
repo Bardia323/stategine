@@ -810,7 +810,27 @@ surface facing that way takes it, and seen in the mirror direction, its finer
 bands fading as the surface roughens. Where they hold, a lamp that stands in
 for bounce (`indirect`) is not counted again. Through a doorway, the light
 from all round beyond is the far look's and the far room's nearest probe's.
-A room with no probes is drawn as before.
+A room needs no probes declared to have this light. Any room that says how
+big it is (`room_w`, `room_d`, `room_h`), is closed round and has no sky gets
+boxes of its own from the renderer (`GLWorldView::grid_of`: about 2.5 m
+across, eight at most), relit before each frame (`light_rooms`) - and so do
+a room's declared probes that hold no bake. Relit, not baked: what each box
+sees every way - where each surface is, which way it faces, its diffuse
+colour, the scene shader drawing `uSurfaceOnly` - is drawn once for the
+room's shell, lamps or none; a lamp's light on that, shadowed by a cube of
+distances drawn from the lamp (a sun's: one view down its way), is projected
+back to the boxes, and their light on it again for the second bounce. A lamp
+moved or turned costs its own cube and a little arithmetic; one that did not,
+nothing. What moves (its params' stamp) is left out of what the boxes see
+until it has stood still a moment, the room quiet a moment more: a chair put
+down is seen again, a body breathing never. A frame does a share of the
+work - a face of a box, or of a lamp's cube - except the first time a room
+is seen, which is lit whole. Nothing of the world is written: what is shown
+is the renderer's, as its shadows are. A room that says `gi` 0 has none. A
+lamp that stands in for bounce (`bounce`, unless it says, what `indirect`
+says) gives way to the boxes where they hold; one lit as bounce but not
+standing in for it (an uplight washing a ceiling, a screen's spill) says
+`bounce` 0, and the boxes take its light on the room as any lamp's.
 
 The laws (`probe_faults`, a Spatial3D's `faults`): a probe's box lies in its
 room, its sets are 27 numbers each, every lamp it holds a set for is there,
