@@ -23,4 +23,13 @@ struct Parsed {
 // `file` is only a name for the messages.
 Parsed parse(const std::string& text, const std::string& file = "<source>");
 
+// A transition's guard alone, as written after `when` (Ast.hpp: GuardAst):
+// what a guard's text in generated code and in the facts is read back by.
+struct ParsedGuard {
+    GuardAst guard;
+    std::vector<Diagnostic> errors;
+    bool ok() const { return errors.empty(); }
+};
+ParsedGuard parse_guard(const std::string& text, const std::string& file = "<guard>");
+
 }  // namespace sg::dsl

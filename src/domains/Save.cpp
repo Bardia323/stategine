@@ -2,9 +2,11 @@
 #include "sg/domains/Save.hpp"
 
 #include <algorithm>
+#include <map>
 #include <sstream>
 #include <unordered_set>
 
+#include "sg/core/Cache.hpp"
 #include "sg/core/Engine.hpp"
 #include "sg/core/Kan.hpp"
 #include "sg/core/Text.hpp"
@@ -14,7 +16,8 @@ namespace sg {
 namespace {
 
 const Key kSave{"save"}, kSlot{"slot"}, kName{"name"}, kWithout{"without"}, kOk{"ok"}, kWhy{"why"},
-    kAt{"at"}, kKept{"kept"}, kDerived{"derived"}, kReplayed{"replayed"}, kHoles{"holes"}, kText{"text"};
+    kAt{"at"}, kKept{"kept"}, kDerived{"derived"}, kReplayed{"replayed"}, kHoles{"holes"}, kText{"text"},
+    kStamped{"stamped"}, kDiffers{"differs"};
 
 // What a kept element leaves out: names, separated by spaces.
 std::unordered_set<Key> without_of(const Element& e) {
@@ -206,11 +209,87 @@ Save::Extension Save::extension(const StateGraph& g) const {
     return x;
 }
 
+// --- what the kept states are declared as -----------------------------------------------
+
+namespace {
+
+// What an arrow is declared to do: its ends and trigger, what it is made of,
+// the native it names, and the steps it says - every number by its bits.
+void arrow_into(Hasher& h, const Morphism& m) {
+    h.text(m.from.str()).text(m.to.str()).text(m.trigger.str()).text(m.native.str()).integer(m.handler ? 1 : 0);
+    h.integer(static_cast<int64_t>(m.parts.size()));
+    for (Key part : m.parts) h.text(part.str());
+    h.integer(m.declared ? static_cast<int64_t>(m.declared->size()) : -1);
+    if (!m.declared) return;
+    for (const DeclaredStep& st : *m.declared) {
+        h.text(st.from.str()).text(st.to.str()).integer(st.does.copy_all ? 1 : 0).integer(static_cast<int64_t>(st.does.rows.size()));
+        for (const Affine::Row& r : st.does.rows) {
+            h.text(r.param.str()).number(r.bias).integer(static_cast<int64_t>(r.terms.size()));
+            for (const Affine::Term& t : r.terms) h.text(t.param.str()).number(t.k).text(t.arg.str()).integer(t.of_target ? 1 : 0);
+        }
+    }
+}
+
+}  // namespace
+
+std::vector<Save::Stamp> Save::declarations(const State& s) {
+    std::vector<Stamp> out;
+    out.push_back({s.id(), "kind", Hasher{}.text(s.kind().str()).digest().hex()});
+    for (const Element& e : s.elements()) out.push_back({s.id(), "element " + e.id.str(), Hasher{}.text(e.kind.str()).digest().hex()});
+    for (const Morphism& m : s.morphisms()) {
+        Hasher h;
+        arrow_into(h, m);
+        out.push_back({s.id(), "arrow " + m.name.str(), h.digest().hex()});
+    }
+    for (Key say : s.said()) out.push_back({s.id(), "says " + say.str(), Hasher{}.digest().hex()});
+    return out;
+}
+
+std::string Save::digest_of(const std::vector<Stamp>& stamps) {
+    Hasher h;
+    for (const Stamp& st : stamps) h.text(st.state.str()).text(st.declaration).text(st.digest);
+    return h.digest().hex();
+}
+
+std::vector<std::string> Save::differences(const Text& t, const StateGraph& g) {
+    std::vector<std::string> out;
+    if (t.facts.empty()) return out;  // written before saves were stamped
+    // The states the save was stamped with, in its order, as they are declared now.
+    std::vector<Key> states;
+    for (const Stamp& st : t.stamps)
+        if (states.empty() || states.back() != st.state) states.push_back(st.state);
+    std::vector<Stamp> now;
+    for (Key id : states)
+        if (const State* s = g.find(id))
+            for (Stamp& st : declarations(*s)) now.push_back(std::move(st));
+    if (digest_of(now) == t.facts) return out;  // as they were: nothing to look at one by one
+    std::map<std::pair<std::string, std::string>, std::string> then, here;
+    for (const Stamp& st : t.stamps) then[{st.state.str(), st.declaration}] = st.digest;
+    for (const Stamp& st : now) here[{st.state.str(), st.declaration}] = st.digest;
+    for (Key id : states)
+        if (!g.contains(id)) out.push_back(id.str() + ": no longer a state");
+    for (const auto& [at, digest] : then) {
+        if (!g.contains(Key{at.first})) continue;
+        auto it = here.find(at);
+        if (it == here.end()) out.push_back(at.first + ": " + at.second + " is no longer declared");
+        else if (it->second != digest) out.push_back(at.first + ": " + at.second + " is declared otherwise");
+    }
+    for (const auto& [at, digest] : here)
+        if (!then.count(at)) out.push_back(at.first + ": " + at.second + " is declared since");
+    return out;
+}
+
 // --- the file ------------------------------------------------------------------------
 
 std::string Save::write_text(const Text& t) {
     std::string out = "# a save (sg::Save): the kept states, as each is written (sg::to_text)\n";
     if (!t.at.empty()) out += "at " + text_detail::escape(t.at.str()) + "\n";
+    if (!t.facts.empty()) {
+        // What the kept states were declared as: one digest of it all, and each declaration's.
+        out += "facts " + t.facts + "\n";
+        for (const Stamp& st : t.stamps)
+            out += "fact " + text_detail::escape(st.state.str()) + " " + text_detail::escape(st.declaration) + " " + st.digest + "\n";
+    }
     for (const auto& [id, text] : t.states) out += text;
     return out;
 }
@@ -233,6 +312,16 @@ bool Save::read_text(const std::string& src, Text& out, std::string* why) {
             out.states.back().second += line + "\n";
         } else if (line.rfind("at ", 0) == 0) {
             out.at = Key{text_detail::unescape(line.substr(3))};
+        } else if (line.rfind("facts ", 0) == 0) {
+            out.facts = line.substr(6);
+        } else if (line.rfind("fact ", 0) == 0) {
+            std::istringstream words(line.substr(5));
+            std::string state, declaration, digest;
+            if (!(words >> state >> declaration >> digest)) {
+                if (why) *why = "line " + std::to_string(n) + ": a fact is a state, a declaration and a digest: " + line;
+                return false;
+            }
+            out.stamps.push_back({Key{text_detail::unescape(state)}, text_detail::unescape(declaration), digest});
         } else if (!line.empty() && line[0] != '#') {
             if (why) *why = "line " + std::to_string(n) + ": not a line of a save: " + line;
             return false;
@@ -261,7 +350,9 @@ Params Save::restrict_kept(StateGraph& g, const Event& asked) {
         const std::unordered_set<Key> without = without_of(e);
         t.states.emplace_back(e.id, to_text(*s, [&](const Element& x) { return !without.count(x.id); },
                                             [&](Key k) { return !without.count(k); }));
+        for (Stamp& st : declarations(*s)) t.stamps.push_back(std::move(st));
     }
+    t.facts = digest_of(t.stamps);
     return Params{}
         .set(kSlot, slot)
         .set(kOk, true)
@@ -280,6 +371,8 @@ Params Save::extend_kept(StateGraph& g, const Event& asked) {
     Text t;
     std::string why;
     if (!read_text(*src, t, &why)) return refused(slot, why);
+    // What the save was written against, beside what the world is now.
+    const std::vector<std::string> differs = differences(t, g);
     std::unordered_map<Key, const std::string*> texts;
     for (const auto& [id, text] : t.states) texts.emplace(id, &text);
 
@@ -367,7 +460,9 @@ Params Save::extend_kept(StateGraph& g, const Event& asked) {
         .set(kDerived, static_cast<int64_t>(x.derived.size()))
         .set(kReplayed, static_cast<int64_t>(x.replayed.size()))
         .set(kHoles, static_cast<int64_t>(x.holes.size()))
-        .set(kWhy, joined(problems));
+        .set(kWhy, joined(problems))
+        .set(kStamped, !t.facts.empty())
+        .set(kDiffers, joined(differs));
 }
 
 }  // namespace sg

@@ -32,7 +32,9 @@
 namespace sg::dsl {
 
 // Registers source_set_text, source_request, compile_begin, compile_valid,
-// compile_invalid, compile_settled (arrows) and compile_apply (the edit) into
+// compile_invalid, compile_settled (arrows), compile_apply (the edit) and
+// compile_reload (the edit that makes an edited source again, `text` over
+// `before`, replacing only what changed: Apply.hpp, reload) into
 // `into`. `available` are the natives a compiled program may name; `bindings`
 // (may be null) receives the input tables of programs that bind. Both must
 // outlive the world.
