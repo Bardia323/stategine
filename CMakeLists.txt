@@ -103,8 +103,13 @@ if(NOT EMSCRIPTEN)
   # A room's light probes baked are kept on disk by the room and by this - the
   # code that bakes them and draws what they are baked from.
   stategine_code_digest(stategine_gl SG_PROBE_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Probes.cpp
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/World.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Shaders.cpp
-                        ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Probe.cpp)
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/World.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldBatches.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldDraw.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldHash.hpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldLights.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldLooks.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldPost.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldShadows.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldShapes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldTargets.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldThings.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldViews.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Shaders.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Probe.cpp)
 endif()
 
 # Sound (sg/audio): a library of its own on top, as drawing is. A mixer that
