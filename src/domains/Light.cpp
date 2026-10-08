@@ -80,17 +80,33 @@ Rgb average_colour(const Surface2D& s) {
     return sum;
 }
 
-void spill(Element& lamp, const Surface2D& screen, double most, double ease) {
+Spill spill_of(const Surface2D& screen, double most) {
     const Rgb c = average_colour(screen);
     const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
     const double m = std::max({c.r, c.g, c.b, 1e-4});
-    const auto toward = [&](Key key, double to) {
-        lamp.params.set(key, lamp.params.num(key) + (to - lamp.params.num(key)) * ease);
+    const auto step = [](double v) { return std::round(v * 512.0) / 512.0; };
+    Spill s;
+    s.r = step(0.35 + 0.65 * c.r / m);
+    s.g = step(0.35 + 0.65 * c.g / m);
+    s.b = step(0.35 + 0.65 * c.b / m);
+    s.level = step(most * std::min(1.0, 0.12 + 1.5 * lum));
+    return s;
+}
+
+void spill(Element& lamp, const Spill& to, double dt, bool on, double tau) {
+    if (!(dt > 0.0)) return;  // no time: the identity
+    const double k = 1.0 - std::exp(-dt / std::max(tau, 1e-9));
+    const auto toward = [&](Key key, double goal) {
+        const double v = lamp.params.num(key);
+        lamp.params.set(key, std::fabs(goal - v) < 1.0 / 1024.0 ? goal : v + (goal - v) * k);
     };
-    toward(keys::r, 0.35 + 0.65 * c.r / m);
-    toward(keys::g, 0.35 + 0.65 * c.g / m);
-    toward(keys::b, 0.35 + 0.65 * c.b / m);
-    toward(keys::intensity, most * std::min(1.0, 0.12 + 1.5 * lum));
+    toward(keys::r, to.r);
+    toward(keys::g, to.g);
+    toward(keys::b, to.b);
+    if (on)
+        toward(keys::intensity, to.level);
+    else
+        lamp.params.set(keys::intensity, 0.0);
 }
 
 }  // namespace sg
