@@ -210,6 +210,7 @@ struct EmbedAst {
     std::string propagate;  // onchange | continuous | onevent | manual
     int focus = -1;         // -1: the engine's default
     int follows = -1;
+    bool recurses = false;  // a ring of embeddings through it is meant (Embedding::recurses)
 };
 
 struct DriveAst {

@@ -743,6 +743,7 @@ private:
             }
             if (e.focus >= 0) em.focus = e.focus == 1;
             if (e.follows >= 0) em.follows = e.follows == 1;
+            em.recurses = e.recurses;
             em.name = Key{e.name.empty() ? host + "/" + portal + ":" + e.guest : e.name};
             if (!embed_names_.insert(em.name.str()).second) {
                 err(e.at, "embedding " + em.name.str() + " is declared twice");

@@ -769,6 +769,7 @@ struct Parser {
             else if (accept_word("propagate")) e.propagate = name("onchange, continuous, onevent or manual");
             else if (accept_word("focus")) e.focus = boolean();
             else if (accept_word("follows")) e.follows = boolean();
+            else if (accept_word("recurses")) e.recurses = true;
             else break;
         }
         prog.embeds.push_back(std::move(e));
