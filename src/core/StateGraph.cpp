@@ -549,6 +549,8 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
         check_portal_functor(errors, e, e.in, subject, e.guest);
         check_portal_functor(errors, e, e.out, e.guest, subject);
     }
+    check_nesting(errors);
+    check_references(errors);
 
     for (const Seam& sm : seams_) {
         const State* a = find(sm.a);
@@ -699,6 +701,148 @@ std::vector<std::string> StateGraph::validate(bool reuse) const {
     return errors;
 }
 
+// Embeddings nest: a host holds a guest, which may host another. Where they
+// go round - a guest that comes back to hold what holds it - the world is seen
+// inside itself, and that is meant only when one embedding of the ring says
+// it recurses. The rings are the strongly connected components of host ->
+// guest (Tarjan's, each embedding once); one of a single state is a state
+// embedding itself, which is named above. And a portal shows one guest at a
+// time - unless it says it is shared.
+void StateGraph::check_nesting(std::vector<std::string>& errors) const {
+    std::unordered_map<Key, std::size_t> number, low;
+    std::unordered_set<Key> on_stack;
+    std::vector<Key> stack;
+    std::vector<std::vector<Key>> rings;
+    std::size_t next = 0;
+    // Depth first, by hand: no recursion as deep as a chain of embeddings.
+    struct Frame {
+        Key state;
+        std::size_t at = 0;  // the next of its hosted embeddings to follow
+    };
+    std::vector<Key> order;
+    for (const Embedding& e : embeddings_) {
+        order.push_back(e.host);
+        order.push_back(e.guest);
+    }
+    for (Key root : order) {
+        if (number.count(root)) continue;
+        std::vector<Frame> walk{{root, 0}};
+        number[root] = low[root] = next++;
+        stack.push_back(root);
+        on_stack.insert(root);
+        while (!walk.empty()) {
+            Frame& f = walk.back();
+            const std::vector<std::size_t>& out = embeddings_hosted_by(f.state);
+            if (f.at < out.size()) {
+                const Key to = embeddings_[out[f.at++]].guest;
+                if (!number.count(to)) {
+                    number[to] = low[to] = next++;
+                    stack.push_back(to);
+                    on_stack.insert(to);
+                    walk.push_back({to, 0});
+                } else if (on_stack.count(to)) {
+                    low[f.state] = std::min(low[f.state], number[to]);
+                }
+                continue;
+            }
+            const Key done = f.state;
+            walk.pop_back();
+            if (!walk.empty()) low[walk.back().state] = std::min(low[walk.back().state], low[done]);
+            if (low[done] != number[done]) continue;
+            std::vector<Key> ring;
+            for (Key k = Key{}; k != done;) {
+                k = stack.back();
+                stack.pop_back();
+                on_stack.erase(k);
+                ring.push_back(k);
+            }
+            if (ring.size() > 1) rings.push_back(std::move(ring));
+        }
+    }
+    for (std::vector<Key>& ring : rings) {
+        const std::unordered_set<Key> in(ring.begin(), ring.end());
+        bool said = false;
+        for (const Embedding& e : embeddings_) said = said || (e.recurses && in.count(e.host) && in.count(e.guest));
+        if (said) continue;
+        std::sort(ring.begin(), ring.end(), [](Key a, Key b) { return a.str() < b.str(); });
+        std::string names;
+        for (Key k : ring) names += (names.empty() ? "" : ", ") + k.str();
+        errors.push_back("embeddings nest round through " + std::to_string(ring.size()) + " states (" + names +
+                         "): a world seen inside itself - say one of them recurses (Embedding::recurses)");
+    }
+    for (const auto& kv : indexes().embeddings_at) {
+        if (kv.second.size() < 2) continue;
+        std::size_t open = 0;
+        for (std::size_t i : kv.second) open += embeddings_[i].open ? 1 : 0;
+        if (open < 2) continue;
+        const State* h = find(kv.first.a);
+        const Element* portal = h ? h->find(kv.first.b) : nullptr;
+        if (portal && portal->params.num(shared_key(), 0.0) > 0.5) continue;
+        errors.push_back("portal " + kv.first.a.str() + "." + kv.first.b.str() + " has " + std::to_string(open) +
+                         " guests open at once: one at a time, unless it says it is shared (`shared` = 1)");
+    }
+}
+
+// What a key that names another thing says, held to its traits: what it
+// names is there, it names one thing, and followed from element to element
+// it never comes back (three colours: unseen, on the way, done - and as each
+// element names one other at most, the way from it is a single path).
+void StateGraph::check_references(std::vector<std::string>& errors) const {
+    for (const auto& kv : states_) {
+        const State& st = *kv.second;
+        for (const auto& ref : st.references()) {
+            const Key key = ref.first;
+            const Reference& r = ref.second;
+            const auto target = [&](const Element& e) -> const std::string* {
+                if (!e.alive) return nullptr;  // what is not there names nothing
+                const std::string* t = e.params.text(key);
+                return t && !t->empty() ? t : nullptr;
+            };
+            for (const Element& e : st.elements()) {
+                if (!e.alive || !e.params.has(key)) continue;
+                const std::string where = "state " + kv.first.str() + ": " + e.id.str() + "." + key.str();
+                const std::string* t = e.params.text(key);
+                if (!t) {
+                    errors.push_back(where + " names nothing it can - it is not a name");
+                    continue;
+                }
+                if (t->empty()) continue;
+                if (t->find_first_of(" \t\n,;") != std::string::npos) {
+                    errors.push_back(where + " names more than one thing (" + *t + "): it names one");
+                    continue;
+                }
+                if (!r.required) continue;
+                const bool there = r.to_state ? contains(Key{*t}) : st.find(Key{*t}) != nullptr;
+                if (!there) errors.push_back(where + " names " + *t + ", which is not there");
+            }
+            if (r.to_state || !r.acyclic) continue;
+            enum Colour : char { Unseen, OnTheWay, Done };
+            std::unordered_map<Key, Colour> colour;
+            for (const Element& start : st.elements()) {
+                if (colour[start.id] != Unseen) continue;
+                std::vector<Key> path;
+                const Element* at = &start;
+                while (at && colour[at->id] == Unseen) {
+                    colour[at->id] = OnTheWay;
+                    path.push_back(at->id);
+                    const std::string* t = target(*at);
+                    at = t ? st.find(Key{*t}) : nullptr;
+                }
+                if (at && colour[at->id] == OnTheWay) {
+                    std::string ring;
+                    bool in_ring = false;
+                    for (Key k : path) {
+                        in_ring = in_ring || k == at->id;
+                        if (in_ring) ring += k.str() + " -> ";
+                    }
+                    errors.push_back("state " + kv.first.str() + ": " + key.str() + " goes round: " + ring + at->id.str());
+                }
+                for (Key k : path) colour[k] = Done;
+            }
+        }
+    }
+}
+
 std::set<Key> StateGraph::reachable() const {
     const std::unordered_set<Key> seen = reach();
     return std::set<Key>(seen.begin(), seen.end());
@@ -839,4 +983,250 @@ void StateGraph::check_portal_functor(std::vector<std::string>& errors, const Em
                          want_from.str() + " -> " + want_to.str());
 }
 
+
+// --- the lookups --------------------------------------------------------------------
+
+auto StateGraph::indexes() const -> const Indexes& {
+    const uint64_t now = rev_.topology;
+    if (indexes_.topology == now) return indexes_;
+    Indexes ix;
+    for (std::size_t i = 0; i < edits_.size(); ++i) {
+        ix.edits_for[KeyPair{edits_[i].state, edits_[i].event}].push_back(i);
+        ix.edit_named[edits_[i].name] = i;
+    }
+    for (std::size_t i = 0; i < embeddings_.size(); ++i) ix.embeddings_at[KeyPair{embeddings_[i].host, embeddings_[i].portal}].push_back(i);
+    for (std::size_t i = 0; i < seams_.size(); ++i) {
+        ix.seams_of[seams_[i].a].push_back(i);
+        if (seams_[i].b != seams_[i].a) ix.seams_of[seams_[i].b].push_back(i);
+    }
+    for (std::size_t i = 0; i < transitions_.size(); ++i) ix.carrying[transitions_[i].functor].push_back(i);
+    for (const auto& kv : functors_) {
+        ix.functors_from[kv.second.from()].push_back(&kv.second);
+        ix.functors_between[KeyPair{kv.second.from(), kv.second.to()}].push_back(&kv.second);
+    }
+    ix.topology = now;
+    indexes_ = std::move(ix);
+    return indexes_;
+}
+
+const std::vector<std::size_t>& StateGraph::transitions_carrying(Key functor) const {
+    const auto& m = indexes().carrying;
+    auto it = m.find(functor);
+    return it == m.end() ? none() : it->second;
+}
+
+const std::vector<const Functor*>& StateGraph::functors_from(Key state) const {
+    static const std::vector<const Functor*> nothing;
+    const auto& m = indexes().functors_from;
+    auto it = m.find(state);
+    return it == m.end() ? nothing : it->second;
+}
+
+const std::vector<const Functor*>& StateGraph::functors_between(Key from, Key to) const {
+    static const std::vector<const Functor*> nothing;
+    const auto& m = indexes().functors_between;
+    auto it = m.find(KeyPair{from, to});
+    return it == m.end() ? nothing : it->second;
+}
+
+const std::vector<std::size_t>& StateGraph::embeddings_at(Key host_id, Key portal) const {
+    const auto& m = indexes().embeddings_at;
+    auto it = m.find(KeyPair{host_id, portal});
+    return it == m.end() ? none() : it->second;
+}
+
+const std::vector<std::size_t>& StateGraph::edits_for(Key state, Key event) const {
+    const auto& m = indexes().edits_for;
+    auto it = m.find(KeyPair{state, event});
+    return it == m.end() ? none() : it->second;
+}
+
+const Edit* StateGraph::edit_named(Key name) const {
+    const auto& m = indexes().edit_named;
+    auto it = m.find(name);
+    return it == m.end() ? nullptr : &edits_[it->second];
+}
+
+const std::vector<std::size_t>& StateGraph::seams_of(Key state) const {
+    const auto& m = indexes().seams_of;
+    auto it = m.find(state);
+    return it == m.end() ? none() : it->second;
+}
+
+// --- taking things away -------------------------------------------------------------
+
+// What a removal has gathered so far, each relation once: the kind ('e'
+// embedding, 's' seam, 't' transition, 'f' functor) and its name.
+struct StateGraph::Removing {
+    Removal out;
+    std::set<std::pair<char, Key>> seen;
+};
+
+// A relation reached: by something it touches going (`reached`), when its
+// own word decides - refused, dropped, or dropped with what it owns - or
+// named outright, when it goes and its word says only whether what it owns
+// goes too.
+void StateGraph::take_relation(Removing& r, char kind, Key name, bool reached) const {
+    if (!r.seen.insert({kind, name}).second) return;
+    Cleanup how = Cleanup::Drop;
+    std::vector<Key> owns;
+    std::string what;
+    if (kind == 'e') {
+        const Embedding* e = embedding(name);
+        if (!e) return;
+        how = e->cleanup;
+        what = "embedding " + name.str();
+        for (Key f : {e->in, e->out})
+            if (!f.empty()) owns.push_back(f);
+    } else if (kind == 's') {
+        const Seam* sm = seam(name);
+        if (!sm) return;
+        how = sm->cleanup;
+        what = "seam " + name.str();
+        for (Key f : {sm->a_to_b, sm->b_to_a, sm->glue_ab, sm->glue_ba})
+            if (!f.empty()) owns.push_back(f);
+    } else if (kind == 't') {
+        const Transition* t = transition(name);
+        if (!t) return;
+        how = t->cleanup;
+        what = "transition " + name.str();
+        if (!t->functor.empty()) owns.push_back(t->functor);
+    } else {
+        const Functor* f = functor(name);
+        if (!f) return;
+        how = f->cleanup();
+        what = "functor " + name.str();
+    }
+    if (reached && how == Cleanup::Refuse) {
+        r.out.refused.push_back(what + " refuses to go with it (Cleanup::Refuse)");
+        return;
+    }
+    switch (kind) {
+        case 'e': r.out.embeddings.push_back(name); break;
+        case 's': r.out.seams.push_back(name); break;
+        case 't': r.out.transitions.push_back(name); break;
+        default: r.out.functors.push_back(name); break;
+    }
+    // A functor that goes takes with it whatever cannot be without it.
+    if (kind == 'f') take_functor_users(r, name);
+    if (how != Cleanup::Cascade) return;
+    for (Key f : owns) take_relation(r, 'f', f, true);
+}
+
+void StateGraph::take_functor_users(Removing& r, Key f) const {
+    for (const Embedding& e : embeddings_)
+        if (e.in == f || e.out == f) take_relation(r, 'e', e.name, true);
+    for (const Transition& t : transitions_)
+        if (t.functor == f) take_relation(r, 't', t.name, true);
+    for (const Seam& sm : seams_)
+        if (sm.a_to_b == f || sm.b_to_a == f || sm.glue_ab == f || sm.glue_ba == f) take_relation(r, 's', sm.name, true);
+    // A composite made of it is a claim about it: it goes too.
+    for (const auto& kv : composites_)
+        if (std::find(kv.second.begin(), kv.second.end(), f) != kv.second.end()) take_relation(r, 'f', kv.first, true);
+}
+
+Removal StateGraph::removal(Key state, Key element) const {
+    Removing r;
+    r.out.state = state;
+    r.out.element = element;
+    if (!contains(state)) {
+        r.out.refused.push_back("there is no state " + state.str());
+        return r.out;
+    }
+    if (!element.empty()) {
+        // An element: the embeddings in it as a portal, and the seams with
+        // it on a boundary.
+        if (!state_index_.at(state)->find(element)) {
+            r.out.refused.push_back(state.str() + " has no element " + element.str());
+            return r.out;
+        }
+        for (std::size_t i : embeddings_at(state, element)) take_relation(r, 'e', embeddings_[i].name, true);
+        for (std::size_t i : seams_of(state)) {
+            const Seam& sm = seams_[i];
+            const bool on_a = sm.a == state && std::find(sm.boundary_a.begin(), sm.boundary_a.end(), element) != sm.boundary_a.end();
+            const bool on_b = sm.b == state && std::find(sm.boundary_b.begin(), sm.boundary_b.end(), element) != sm.boundary_b.end();
+            if (on_a || on_b) take_relation(r, 's', sm.name, true);
+        }
+        return r.out;
+    }
+    if (state == initial_) r.out.refused.push_back(state.str() + " is the initial state, which everything is reached from");
+    for (const Embedding& e : embeddings_)
+        if (e.host == state || e.guest == state || e.subject == state) take_relation(r, 'e', e.name, true);
+    for (std::size_t i : seams_of(state)) take_relation(r, 's', seams_[i].name, true);
+    for (const Transition& t : transitions_)
+        if (t.from == state || t.to == state) take_relation(r, 't', t.name, true);
+    for (const auto& kv : functors_)
+        if (kv.second.from() == state || kv.second.to() == state) take_relation(r, 'f', kv.first, true);
+    for (const Drive& d : drives_)
+        if (d.state == state || d.clock == state) r.out.drives.push_back(d.name);
+    for (const Edit& e : edits_)
+        if (e.state == state) r.out.edits.push_back(e.name);
+    return r.out;
+}
+
+Removal StateGraph::removal_of_embedding(Key name) const {
+    Removing r;
+    if (!embedding(name)) r.out.refused.push_back("there is no embedding " + name.str());
+    else take_relation(r, 'e', name, false);
+    return r.out;
+}
+
+Removal StateGraph::removal_of_seam(Key name) const {
+    Removing r;
+    if (!seam(name)) r.out.refused.push_back("there is no seam " + name.str());
+    else take_relation(r, 's', name, false);
+    return r.out;
+}
+
+void StateGraph::remove(const Removal& r) {
+    if (!r.ok()) throw std::runtime_error("removal refused: " + r.refused.front());
+    for (Key n : r.embeddings)
+        if (const Embedding* e = embedding(n); e && e->open)
+            throw std::runtime_error("embedding " + n.str() + " is open: close it before it is taken away (Engine::remove)");
+    rev_.rewired("remove");  // one change, refused while sealed, before anything is touched
+    const auto in = [](const std::vector<Key>& v, Key k) { return std::find(v.begin(), v.end(), k) != v.end(); };
+    if (!r.embeddings.empty()) {
+        embeddings_.erase(std::remove_if(embeddings_.begin(), embeddings_.end(), [&](const Embedding& e) { return in(r.embeddings, e.name); }),
+                          embeddings_.end());
+        by_host_.clear();
+        by_guest_.clear();
+        by_name_.clear();
+        for (std::size_t i = 0; i < embeddings_.size(); ++i) index_embedding(i);
+    }
+    if (!r.transitions.empty()) {
+        transitions_.erase(std::remove_if(transitions_.begin(), transitions_.end(), [&](const Transition& t) { return in(r.transitions, t.name); }),
+                           transitions_.end());
+        by_trigger_.clear();
+        transition_by_name_.clear();
+        for (std::size_t i = 0; i < transitions_.size(); ++i) {
+            by_trigger_[transitions_[i].trigger].push_back(i);
+            transition_by_name_.emplace(transitions_[i].name, i);
+        }
+    }
+    seams_.erase(std::remove_if(seams_.begin(), seams_.end(), [&](const Seam& sm) { return in(r.seams, sm.name); }), seams_.end());
+    drives_.erase(std::remove_if(drives_.begin(), drives_.end(), [&](const Drive& d) { return in(r.drives, d.name); }), drives_.end());
+    edits_.erase(std::remove_if(edits_.begin(), edits_.end(), [&](const Edit& e) { return in(r.edits, e.name); }), edits_.end());
+    for (Key f : r.functors) {
+        auto it = functors_.find(f);
+        if (it == functors_.end()) continue;
+        functor_checks_.erase(&it->second);
+        functors_.erase(it);
+        composites_.erase(f);
+        lenses_.erase(std::remove_if(lenses_.begin(), lenses_.end(), [&](const LensPair& l) { return l.get == f || l.put == f; }), lenses_.end());
+        kept_.erase(std::remove(kept_.begin(), kept_.end(), f), kept_.end());
+    }
+    if (r.state.empty()) return;
+    State* s = find(r.state);
+    if (!s) return;
+    if (!r.element.empty()) {
+        s->remove_with_arrows(r.element);
+        return;
+    }
+    // The state itself: its ports, its start, what was found of it, and it.
+    ports_.erase(std::remove_if(ports_.begin(), ports_.end(), [&](const std::pair<Key, Key>& p) { return p.first == r.state; }), ports_.end());
+    defaults_.erase(r.state);
+    state_checks_.erase(s);
+    state_index_.erase(r.state);
+    states_.erase(r.state);
+}
 }  // namespace sg

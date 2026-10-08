@@ -81,6 +81,7 @@ auto Functor::operator=(Functor&& o) -> Functor& {
     from_ = o.from_;
     to_ = o.to_;
     identity_ = o.identity_;
+    cleanup_ = o.cleanup_;
     stamp_ = o.stamp_;
     obj_ = std::move(o.obj_);
     mor_ = std::move(o.mor_);
@@ -116,6 +117,33 @@ auto Functor::on_object(Key src_element, Key dst_element, Transport t, Key nativ
     obj_[src_element] = ObjMap{dst_element, std::move(t), nullptr, native};
     remapped("on_object");
     return *this;
+}
+
+auto Functor::footprint(Key src_element, Footprint fp) -> Functor& {
+    auto it = obj_.find(src_element);
+    if (it == obj_.end())
+        throw std::runtime_error("functor " + name_.str() + ": " + src_element.str() + " is not mapped, so it has no footprint to say");
+    it->second.footprint = std::make_shared<const Footprint>(std::move(fp));
+    remapped("footprint");
+    return *this;
+}
+
+const Footprint* Functor::footprint_of(Key src) const {
+    auto it = obj_.find(src);
+    return it == obj_.end() ? nullptr : it->second.footprint.get();
+}
+
+bool Functor::footprinted() const {
+    if (identity_ || obj_.empty()) return false;
+    for (const auto& kv : obj_)
+        if (!kv.second.footprint) return false;
+    return true;
+}
+
+uint64_t Functor::reads_stamp(const Memo::Pair& p) {
+    uint64_t h = p.state_params ? p.state_params->stamp() : 0;
+    for (const Element* e : p.reads) h = mix_stamp(h, e->params.stamp());
+    return h;
 }
 
 Key Functor::native_of(Key src) const {
@@ -188,7 +216,9 @@ std::size_t Functor::apply(const State& src, State& dst, Memo& m) const {
     if (m.seen == last_stamp()) return 0;
     std::size_t carried = 0;
     for (Memo::Pair& p : m.pairs) {
-        if (p.src->params.stamp() == p.src_stamp && p.dst->params.stamp() == p.dst_stamp) continue;
+        // Unchanged: its two elements, and whatever else its footprint says it reads.
+        const uint64_t reads = p.state_params || !p.reads.empty() ? reads_stamp(p) : 0;
+        if (p.src->params.stamp() == p.src_stamp && p.dst->params.stamp() == p.dst_stamp && reads == p.reads_stamp) continue;
         if (p.transport && *p.transport) {
             (*p.transport)(*p.src, *p.dst);
         } else {
@@ -196,6 +226,7 @@ std::size_t Functor::apply(const State& src, State& dst, Memo& m) const {
         }
         p.src_stamp = p.src->params.stamp();
         p.dst_stamp = p.dst->params.stamp();
+        p.reads_stamp = p.state_params || !p.reads.empty() ? reads_stamp(p) : 0;
         ++carried;
     }
     // A transport that wrote a target another pair reads makes that pair
@@ -337,15 +368,26 @@ std::vector<std::string> Functor::check_laws(const State& src, const State& dst)
 
 void Functor::build(const State& src, State& dst, Memo& m) const {
     m.pairs.clear();
-    const auto pair = [&](const Element& s, Key to, const Transport* t) {
-        if (Element* d = dst.find(to)) m.pairs.push_back({&s, d, t, s.params.stamp(), d->params.stamp()});
+    const auto pair = [&](const Element& s, Key to, const Transport* t, const Footprint* fp) {
+        Element* d = dst.find(to);
+        if (!d) return;
+        Memo::Pair p{&s, d, t, s.params.stamp(), d->params.stamp()};
+        // What else it says it reads: looked at, with its two elements,
+        // to know whether it must run again.
+        if (fp) {
+            if (!fp->params.empty()) p.state_params = &src.params();
+            for (Key k : fp->elements)
+                if (const Element* r = src.find(k)) p.reads.push_back(r);
+            p.reads_stamp = p.state_params || !p.reads.empty() ? reads_stamp(p) : 0;
+        }
+        m.pairs.push_back(std::move(p));
     };
     if (identity_) {
         if (&src != &dst)
-            for (const auto& s : src.elements()) pair(s, s.id, nullptr);
+            for (const auto& s : src.elements()) pair(s, s.id, nullptr, nullptr);
     } else {
         for (const auto& kv : obj_)
-            if (const Element* s = src.find(kv.first)) pair(*s, kv.second.dst, &kv.second.transport);
+            if (const Element* s = src.find(kv.first)) pair(*s, kv.second.dst, &kv.second.transport, kv.second.footprint.get());
     }
     m.functor = this;
     m.src = &src;

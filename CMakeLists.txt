@@ -646,3 +646,17 @@ if(SG_BUILD_TESTS)
     endif()
   endforeach()
 endif()
+
+# The laws of the graph itself: footprints on transports and arrows, what a
+# carry sees a frame late, what goes when something is taken away, keys that
+# name another thing, embeddings that nest round or crowd a portal, and the
+# lookups the engine runs by.
+if(SG_BUILD_TESTS)
+  add_executable(sg_graph_laws tests/test_graph_laws.cpp)
+  target_link_libraries(sg_graph_laws PRIVATE stategine_dev)
+  add_test(NAME sg_graph_laws COMMAND sg_graph_laws)
+  set_tests_properties(sg_graph_laws PROPERTIES LABELS fast)
+  if(NOT EMSCRIPTEN)
+    set_target_properties(sg_graph_laws PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+  endif()
+endif()

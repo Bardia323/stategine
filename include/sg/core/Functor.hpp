@@ -112,10 +112,10 @@ public:
     // A copy is the same maps, belonging to no graph until one takes it; one
     // put in place of another keeps the place's graph.
     Functor(const Functor& o)
-        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), stamp_(o.stamp_),
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), stamp_(o.stamp_),
           obj_(o.obj_), mor_(o.mor_), evt_(o.evt_) {}
     Functor(Functor&& o) noexcept
-        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), stamp_(o.stamp_),
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), stamp_(o.stamp_),
           obj_(std::move(o.obj_)), mor_(std::move(o.mor_)), evt_(std::move(o.evt_)) {}
     Functor& operator=(const Functor& o);
     // One put in place of a functor a graph holds keeps its name - the graph
@@ -138,6 +138,26 @@ public:
     Functor& on_object(Key src_element, Key dst_element, transport::Declared t);
     // A native transport, and the name a source bound it by (`native_of`).
     Functor& on_object(Key src_element, Key dst_element, Transport t, Key native);
+
+    // What the transport carrying `src_element` reads and writes beyond its
+    // two elements (Footprint, Core.hpp): the source state's own params and
+    // other elements it reads, and the keys it writes. Said, the laws hold
+    // it to that (laws::footprints), and a carry that runs every frame runs
+    // only when something it reads has moved. The object must be mapped.
+    Functor& footprint(Key src_element, Footprint fp);
+    const Footprint* footprint_of(Key src) const;
+    // Every object it maps says its footprint: what it reads is known, so it
+    // can be carried on change even where it reads more than its two
+    // elements (Engine, Propagation::Continuous).
+    bool footprinted() const;
+
+    // What becomes of it when a state it joins is taken away (Cleanup).
+    Functor& on_removal(Cleanup c) {
+        cleanup_ = c;
+        remapped("on_removal");
+        return *this;
+    }
+    Cleanup cleanup() const { return cleanup_; }
 
     // --- arrow map ----------------------------------------------------------
     Functor& on_morphism(Key src_morphism, Key dst_morphism);
@@ -226,6 +246,11 @@ public:
             Element* dst;
             const Transport* transport;
             uint64_t src_stamp, dst_stamp;
+            // What else it reads, by its footprint: the source state's own
+            // params and other elements, and their stamps folded into one.
+            const Params* state_params = nullptr;
+            std::vector<const Element*> reads;
+            uint64_t reads_stamp = 0;
         };
         const Functor* functor = nullptr;
         const State* src = nullptr;
@@ -274,7 +299,11 @@ private:
         Transport transport;
         std::shared_ptr<const Stages> declared;  // what it says it does; null: nothing said
         Key native;                              // the native computation a source bound it to
+        std::shared_ptr<const Footprint> footprint;  // what it reads and writes besides; null: unsaid
     };
+
+    // The stamps of what a pair reads besides its two elements, folded.
+    static uint64_t reads_stamp(const Memo::Pair& p);
 
     void build(const State& src, State& dst, Memo& m) const;
 
@@ -293,6 +322,7 @@ private:
     Key from_;
     Key to_;
     bool identity_ = false;
+    Cleanup cleanup_ = Cleanup::Drop;
     uint64_t stamp_ = next_stamp();
     std::unordered_map<Key, ObjMap> obj_;
     std::unordered_map<Key, Key> mor_;

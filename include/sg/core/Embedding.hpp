@@ -75,6 +75,15 @@ struct Embedding {
     bool follows = false;
     // Whether the engine has it open: derived, following the portal.
     bool open = false;
+    // Embeddings that nest round - a computer in a game in the computer, a
+    // set showing the room the camera filming it stands in - are a world
+    // seen inside itself. A ring of them is meant only when one of them says
+    // so, as a seam that joins a state to itself says it wraps; any other is
+    // a fault (StateGraph::validate).
+    bool recurses = false;
+    // What becomes of it when its host, guest, subject or portal is taken
+    // away (Cleanup, StateGraph::removal). Cascade takes its functors too.
+    Cleanup cleanup = Cleanup::Drop;
 };
 
 // The key of its portal an embedding is open by: a following one the
@@ -84,5 +93,8 @@ struct Embedding {
 Key open_key(const Embedding& e);
 // The key of its portal that says whether it takes input when open.
 Key focus_key(const Embedding& e);
+// The key of a portal that says more than one guest may be open in it at
+// once (= 1). Unsaid, one at a time (StateGraph::validate).
+inline Key shared_key() { return Key{"shared"}; }
 
 }  // namespace sg

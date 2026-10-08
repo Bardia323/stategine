@@ -37,11 +37,25 @@ private:
     std::deque<Element>* list_;
 };
 
-// Per-tick context handed to every state.
+// Per-tick context handed to every state: how long the frame was, and which
+// it is. There is no time in it: a state's time is its own line on a clock
+// (Temporal.hpp), handed to its arrows by its drive as {dt, time, frame} -
+// never one time every state shares.
 struct Tick {
-    double dt = 0.0;    // seconds since the previous frame
-    double time = 0.0;  // simulated seconds: the sum of every dt so far, this one included
+    double dt = 0.0;  // seconds since the previous frame
     uint64_t frame = 0;
+};
+
+// A key of an element's params that names another thing: a part's `parent`
+// (an element of the same state), a thing's `wears` (a state of the graph).
+// Declared on the state (State::refers), so that what it names is held to
+// being there, following it never comes back round, and it names one thing
+// (StateGraph::validate); and so that who names a thing is found by an
+// index, not a scan (State::referrers). An empty value names nothing.
+struct Reference {
+    bool to_state = false;  // it names a state of the graph, not an element of this one
+    bool acyclic = true;    // followed from element to element, it never comes back
+    bool required = true;   // what it names is there
 };
 
 class State {
@@ -139,6 +153,10 @@ public:
         throw std::out_of_range("no element " + id.str() + " in state " + id_.str());
     }
 
+    // Where an element is kept in `elements()` - what comes first there -
+    // or the number of elements if it is not there. Looked up, not scanned.
+    std::size_t place_of(Key id) const { auto it = index_.find(id); return it == index_.end() ? elements_.size() : it->second; }
+
     void remove_element(Key id);
 
     // Take an element away together with its arrows: an arrow from or to
@@ -170,6 +188,23 @@ public:
     const std::deque<Morphism>& morphisms() const { return morphisms_; }
 
     const Morphism* morphism(Key name) const;
+
+    // What an arrow reads and writes beyond its own elements, said (see
+    // Footprint in Core.hpp): the laws hold it to that. Saying it is a change
+    // to what the arrow is, counted like one.
+    const Morphism& with_footprint(Key arrow, Footprint fp);
+
+    // --- references -----------------------------------------------------------
+    // `key`, in any of its elements' params, names another thing (Reference).
+    // Declared again, the traits are replaced. A change of structure.
+    void refers(Key key, Reference r = {});
+    const std::vector<std::pair<Key, Reference>>& references() const { return references_; }
+    // The elements whose `key` names `target`, in the order they are kept:
+    // the parts of a thing, what wears a texture. Found by an index kept
+    // inside the state, made again only when its elements or what one of
+    // them says has changed - a lookup, not a scan. Any key may be asked
+    // after, declared or not.
+    const std::vector<Key>& referrers(Key key, Key target) const;
 
     // Composition: g . f as one arrow, valid only when cod(f) == dom(g).
     const Morphism& compose(Key name, Key f_name, Key g_name, Key trigger);
@@ -325,6 +360,17 @@ private:
     std::vector<Event> inbox_;
     EventBus bus_;
     std::vector<Key> said_;
+    std::vector<std::pair<Key, Reference>> references_;
+    // Who names whom, by key: derived from the elements, and made again when
+    // they are not what it was made from (their structure, or any element's
+    // params stamp). Disposable.
+    struct RefIndex {
+        bool built = false;
+        uint64_t structure = 0, seen = 0;
+        std::vector<uint64_t> stamps;
+        std::unordered_map<Key, std::vector<Key>> by_target;
+    };
+    mutable std::unordered_map<Key, RefIndex> ref_index_;
     Engine* engine_ = nullptr;
     uint64_t structure_ = next_stamp();
     uint64_t removals_ = 0;  // how often anything was taken out of the lists

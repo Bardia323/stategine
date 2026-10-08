@@ -89,6 +89,20 @@ public:
     // (the innermost focused one) or back to whoever had it before.
     void focus_embed(Key name, bool on);
 
+    // --- taking things away ------------------------------------------------------
+    // Something taken out of the world, with what goes with it as each
+    // relation touching it says (StateGraph::removal, Cleanup). Asked for now,
+    // done at the start of the next frame, before the edits asked for: what
+    // it takes that is open is closed through the engine first (discarding),
+    // then everything goes as one change. One refused - a relation refuses,
+    // or it would take a state the engine is in - takes nothing, and is
+    // reported (on_problem).
+    void remove(Removal r);
+    // The same, done now, by whoever may rewrite the graph - an edit's own
+    // apply, the code that builds the world: empty if done, else why not,
+    // and nothing was done.
+    std::string remove_now(const Removal& r);
+
     // --- the graph, watched ---------------------------------------------------------
     // States are distinct, and meet only through what the graph declares:
     // transitions, embeddings, functors and seams. After any tick in which
@@ -141,12 +155,12 @@ public:
     void run_fixed(double dt, uint64_t frames);
 
     // Seconds of wall clock since the engine started: for pacing and for
-    // watching, never for what the world means - a Tick's time is the sum of
-    // the steps taken (simulated_time), so a fixed run is the same every run.
+    // watching, never for what the world means. The engine keeps no time of
+    // its own: each state's time is its line on a clock, the sum of its own
+    // steps (Temporal.hpp), so a fixed run is the same every run.
     double elapsed() const;
 
     uint64_t frame() const { return frame_; }
-    double simulated_time() const { return time_; }
     void set_trace(bool on) { trace_ = on; }
 
 private:
@@ -304,6 +318,10 @@ private:
     // What came in through the ports since the last frame.
     void take_inputs();
 
+    // The removals asked for since the last frame (remove), in the order asked.
+    void apply_removals();
+    std::vector<Removal> removals_;
+
     void process_transitions();
 
     // A host's word about its own portal (State::says): `portal.open`,
@@ -345,7 +363,6 @@ private:
     Clock::time_point clock_start_{};
     Clock::time_point last_{};
     uint64_t frame_ = 0;
-    double time_ = 0.0;  // simulated: the sum of every dt ticked
     bool running_ = false;
     bool watch_updates_ = false;
     // Which drives move which state, found again when the interfaces change.
