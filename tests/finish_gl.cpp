@@ -39,6 +39,17 @@ struct Picture {
         n = std::max(n, 1);
         return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / n;
     }
+    // The most any channel of a box of it (0..1 each way) differs from another's.
+    double most_apart_in(const Picture& o, float x0, float y0, float x1, float y1) const {
+        double d = 0;
+        for (int y = static_cast<int>(y0 * h); y < static_cast<int>(y1 * h); ++y)
+            for (int x = static_cast<int>(x0 * w); x < static_cast<int>(x1 * w); ++x)
+                for (int c = 0; c < 3; ++c) {
+                    const std::size_t i = (static_cast<std::size_t>(y) * w + x) * 3 + c;
+                    d = std::max(d, std::fabs(double(px[i]) - double(o.px[i])));
+                }
+        return d;
+    }
     double most_apart(const Picture& o) const {
         double d = 0;
         for (std::size_t i = 0; i < px.size(); ++i) d = std::max(d, std::fabs(double(px[i]) - double(o.px[i])));
@@ -114,7 +125,9 @@ int main() {
     const Picture debanded = settle();
     const double box_d = debanded.luma(0.46, 0.45, 0.54, 0.55), empty_d = debanded.luma(0.0, 0.0, 0.15, 0.25);
     std::printf("  debanded: box %.1f, the empty corner %.1f\n", box_d, empty_d);
-    check(std::fabs(box_d - box_plain) < 1.0, "debanded: what is drawn is as it was");
+    const double box_apart = debanded.most_apart_in(plain, 0.46, 0.45, 0.54, 0.55);
+    std::printf("  debanded: the box's pixels differ by at most %.0f\n", box_apart);
+    check(std::fabs(box_d - box_plain) < 1.0 && box_apart <= 1.0, "debanded: what is drawn is as it was");
     check(std::fabs(empty_d - empty_plain) < 2.0, "debanded: the empty is as bright as it was");
     soft.setting(sg::passes::composite, "deband", 0.0);
 
