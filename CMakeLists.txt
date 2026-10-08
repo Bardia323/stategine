@@ -299,6 +299,15 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_air_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_air_gl COMMAND sg_air_gl)
+
+    # What a look lays over its finished picture: debanded where nothing was
+    # drawn, smeared over the last frame shown - and with neither said, as it was.
+    add_executable(sg_finish_gl tests/finish_gl.cpp)
+    target_link_libraries(sg_finish_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_finish_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_finish_gl COMMAND sg_finish_gl)
   endif()
 endif()
 
@@ -609,7 +618,7 @@ if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
       sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
-      sg_browser_render stategine_shape)
+      sg_browser_render stategine_shape sg_finish_gl)
     if(TARGET ${_check})
       set_target_properties(${_check} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
