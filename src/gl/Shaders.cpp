@@ -57,6 +57,7 @@ uniform vec4  uLightGateAxis[MAX_LIGHTS];
 uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
 uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
 uniform vec4  uLightFrame[MAX_LIGHTS];    // a projector's: the tangents of its half-angles across and up, how soft its edge; 1 if framed
+uniform float uLightRange[MAX_LIGHTS];    // how far a lamp's light goes, ending smoothly there (range_window); 0: for ever
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 // The first `uShadowCount` lights each have a depth map, a layer each of one
@@ -130,7 +131,19 @@ float light_reach(int i, vec3 p, out vec3 l) {
     // lamp itself.
     float soft = 1.0 / (1.0 + 0.22 * dist + 0.14 * dist * dist);
     float square = 1.0 / (1.0 + 2.0 * dist * dist);
-    return uLightPower[i] * mix(soft, square, uLightFalloff[i]) * through_gate(i, p, toLight, false) * (cone * cone);
+    // And ended at its range, smoothly - (1 - (d/R)^4)^2, all but 1 where
+    // it lights and 0 at the range - so that a lamp that says how far it
+    // goes lights nothing past it, and can be left out where it reaches
+    // nothing (render::range_window, the same).
+    float window = 1.0;
+    if (uLightRange[i] > 0.0) {
+        float q = dist / uLightRange[i];
+        q *= q;
+        window = clamp(1.0 - q * q, 0.0, 1.0);
+        window *= window;
+        if (window <= 0.0) return 0.0;
+    }
+    return uLightPower[i] * mix(soft, square, uLightFalloff[i]) * window * through_gate(i, p, toLight, false) * (cone * cone);
 }
 )";
     return source;
@@ -282,6 +295,10 @@ in vec3 vWorld;
 // that wraps, where its original is (uLatticeShift), lit and shadowed as that is.
 uniform vec3 uLatticeShift;
 vec3 vLit;
+// How `vLit` changes from this pixel to the next across and up: taken once,
+// before the lamps are gone through (derivatives are not to be had where
+// some pixels of a quad have left the loop), for the shadow's receiver plane.
+vec3 vLitDx, vLitDy;
 in vec3 vRoom;
 in vec3 vNormal;
 in vec2 vUV;
@@ -656,10 +673,34 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     float texel = uShadowBias[layer] * max(here.w, 1e-5);
     float ndl = clamp(dot(n, l), 0.0, 1.0);
     float slope = sqrt(max(1.0 - ndl * ndl, 0.0));
-    vec4 light_space = uShadowVP[layer] * vec4(vLit + n * texel * (0.6 + 1.6 * slope) * spread, 1.0);
+    // (Less than it was: each tap now follows the surface's own slope in
+    // the map - the receiver plane, below - so the push need only cover
+    // the filter's own error, not the slope's.)
+    vec4 light_space = uShadowVP[layer] * vec4(vLit + n * texel * (0.3 + 0.8 * slope) * spread, 1.0);
     vec3 proj = light_space.xyz / max(light_space.w, 1e-5);
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 1.0;
+    // The receiver plane: how the surface's depth in the map changes across
+    // the map, so that a tap off to one side is compared with the surface
+    // as it is there, not as it is here - a wide filter on a slanted floor
+    // otherwise shadows the floor with itself. Found from how this pixel
+    // and its neighbours land in the map: J takes a step on the screen to
+    // a step in the map, g to a step in depth; a step in the map is then
+    // inverse(J)^T g in depth. Where J is all but singular (the surface seen
+    // edge on from the light) nothing is said, and the push does it.
+    vec3 base = here.xyz / max(here.w, 1e-5) * 0.5 + 0.5;
+    vec4 hx = uShadowVP[layer] * vec4(vLit + vLitDx, 1.0);
+    vec4 hy = uShadowVP[layer] * vec4(vLit + vLitDy, 1.0);
+    vec3 sx = hx.xyz / max(hx.w, 1e-5) * 0.5 + 0.5 - base;
+    vec3 sy = hy.xyz / max(hy.w, 1e-5) * 0.5 + 0.5 - base;
+    float det = sx.x * sy.y - sy.x * sx.y;
+    vec2 dz_duv = vec2(0.0);
+    if (abs(det) > 1e-14) dz_duv = vec2(sy.y * sx.z - sx.y * sy.z, sx.x * sy.z - sy.x * sx.z) / det;
+    // (No steeper than a few depth steps a texel: across an edge, where
+    // the neighbour is another surface, it means nothing.)
+    float most = 0.002 / max(max(uShadowTexel.x, uShadowTexel.y), 1e-6);
+    float steep = length(dz_duv);
+    if (steep > most) dz_duv *= most / steep;
     // Towards the edge of the map, the shadow fades out rather than stopping
     // on a line: a sun's box round the viewer has an edge a lamp's cone does
     // not, and far off is where it would show.
@@ -677,13 +718,19 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     // it is so all through - only an edge between (a penumbra) takes all
     // sixteen.
     float sum = 0.0;
-    for (int i = 3; i < 16; i += 4) sum += texture(uShadowMaps, vec4(proj.xy + spin * kSpiral[i] * texel2, float(layer), proj.z - bias));
+    for (int i = 3; i < 16; i += 4) {
+        vec2 off = spin * kSpiral[i] * texel2;
+        sum += texture(uShadowMaps, vec4(proj.xy + off, float(layer), proj.z + dot(dz_duv, off) - bias));
+    }
     float k;
     if (sum < 0.001 || sum > 3.999) {
         k = sum * 0.25;
     } else {
         for (int i = 0; i < 16; ++i)
-            if ((i & 3) != 3) sum += texture(uShadowMaps, vec4(proj.xy + spin * kSpiral[i] * texel2, float(layer), proj.z - bias));
+            if ((i & 3) != 3) {
+                vec2 off = spin * kSpiral[i] * texel2;
+                sum += texture(uShadowMaps, vec4(proj.xy + off, float(layer), proj.z + dot(dz_duv, off) - bias));
+            }
         k = sum / 16.0;
     }
     return mix(mix(floor_, 1.0, k), 1.0, edge);
@@ -968,6 +1015,7 @@ vec3 surface_albedo(out float rough_mod) {
 
 void main() {
     vLit = vWorld + uLatticeShift;
+    vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
     if (vInstanced > 0.5) {
         mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
         mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w;
@@ -1039,6 +1087,7 @@ void main() {
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
+    bool bent = false;  // whether relief or waves turned the normal from the surface's own
     if (relief_h >= 0.0) {
         // Bent by the paint's relief, from how its height changes across the
         // screen (Mikkelsen's surface gradient): no tangents, any projection.
@@ -1047,6 +1096,7 @@ void main() {
         float det = dot(dpx, r1);
         vec3 grad = sign(det) * (dFdx(relief_h) * r1 + dFdy(relief_h) * r2);
         n = normalize(abs(det) * n - grad);
+        bent = true;
     }
     if (mSurface > 17.5 && mSurface < 18.5 && n.y > 0.5) {
         // Waves: the slope of a few long swells and shorter chop, each a
@@ -1067,6 +1117,7 @@ void main() {
         }
         slope *= 1.0 - uCalm;
         n = normalize(n - vec3(slope.x, 0.0, slope.y));
+        bent = true;
     }
     float ndv = clamp(dot(n, v), 1e-3, 1.0);
     float a2 = roughness * roughness * roughness * roughness;
@@ -1076,6 +1127,24 @@ void main() {
     vec3 dndx = dFdx(n), dndy = dFdy(n);
     float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
+
+    // How much a surface reflects of light from all round, by angle and
+    // roughness (env_brdf) - wanted before the lamps as well as after: one
+    // bounce of the microfacets is all the GGX lobe counts, and a rough
+    // surface loses the rest, so a rough metal goes darker than it is. What
+    // is lost is given back in the reflection's own colour (Fdez-Aguera's
+    // multiple scattering): 1 + f0 (1 / (a + b) - 1).
+    vec2 ab = env_brdf(ndv, roughness);
+    vec3 multi = 1.0 + f0 * (1.0 / max(ab.x + ab.y, 1e-3) - 1.0);
+    // And a normal bent by relief or waves can face a reflection into the
+    // surface itself, below its horizon: none of that is seen.
+    vec3 r = reflect(-v, n);
+    float horizon = 1.0;
+    if (bent) {
+        horizon = clamp(1.0 + dot(r, normalize(vNormal)), 0.0, 1.0);
+        horizon *= horizon;
+    }
+    vec3 spec_k = multi * horizon;
 
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
@@ -1114,7 +1183,7 @@ void main() {
         float d = a2 / (denom * denom + 1e-7);
         float vis = 0.5 / mix(2.0 * ndl * ndv, ndl + ndv, sqrt(a2));
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
-        vec3 lobe = diffuse * (1.0 - f) + d * vis * f;
+        vec3 lobe = diffuse * (1.0 - f) + d * vis * f * spec_k;
 
         if (uLightIndirect[i] > 0.5) bounced += diffuse * ndl * uLightColor[i] * reach * shadow;
         else direct += lobe * ndl * uLightColor[i] * reach * shadow;
@@ -1124,9 +1193,7 @@ void main() {
     // from below. Scattered by the diffuse, and seen in the mirror direction
     // by the reflection - blurred towards the normal as the surface roughens,
     // and weighted by how much it reflects at this angle.
-    vec2 ab = env_brdf(ndv, roughness);
-    vec3 reflected = f0 * ab.x + ab.y;
-    vec3 r = reflect(-v, n);
+    vec3 reflected = (f0 * ab.x + ab.y) * multi;
     float up = mix(r.y, n.y, roughness * roughness);
     vec3 sky_here, ground_here;
     around_at(vLit, sky_here, ground_here);
@@ -1153,7 +1220,7 @@ void main() {
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
     if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
-    vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected + bounced;
+    vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced;
 
     vec3 color = ambient + direct + albedo * (mEmissive + uGlow);
     // How much of what is seen here is light from all round - the only part

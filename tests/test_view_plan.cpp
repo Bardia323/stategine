@@ -4,6 +4,8 @@
 #include "sg/dsl/Natives.hpp"
 #include "sg/dsl/Runtime.hpp"
 #include "sg/render/ViewPlan.hpp"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -60,6 +62,76 @@ std::string fingerprint(const sg::render::ViewPlan &plan) {
         instance(d);
     return out.str();
 }
+// A lamp's range: its light ends there, smoothly, and a lamp left out for
+// reaching nothing lit nothing. The law: a gated lamp kept is one whose sphere
+// meets its gate - some point of the opening is lit by it - and one left out
+// lights no point of the opening at all. Likewise a box.
+void lamp_ranges() {
+    using sg::render::DrawLight;
+    using sg::render::range_window;
+    using V = sg::spatial::projection::Vec3;
+    require(range_window(0.0f, 0.0f) == 1.0f && range_window(1e6f, 0.0f) == 1.0f, "no range: for ever");
+    require(range_window(0.0f, 10.0f) == 1.0f && range_window(10.0f, 10.0f) == 0.0f && range_window(12.0f, 10.0f) == 0.0f,
+            "a range: whole at the lamp, nothing from the range on");
+    require(range_window(2.0f, 10.0f) > 0.99f, "all but whole where it lights");
+    for (float d = 0.0f; d < 10.0f; d += 0.25f)
+        require(range_window(d + 0.25f, 10.0f) <= range_window(d, 10.0f), "it only falls");
+    // A doorway 2 m wide and 2.2 high, its middle at (5, 1.1, 0), across x.
+    DrawLight gated;
+    gated.gated = true;
+    gated.gate_at = {5.0f, 1.1f, 0.0f};
+    gated.gate_across = {1.0f, 0.0f, 0.0f};
+    gated.gate_in = {0.0f, 0.0f, 1.0f};
+    gated.gate_w = 1.0f;
+    gated.gate_h = 1.1f;
+    const auto lit_somewhere = [](const DrawLight &l) {
+        for (int i = 0; i <= 40; ++i)
+            for (int j = 0; j <= 44; ++j) {
+                const V q{l.gate_at.x + l.gate_across.x * (-l.gate_w + 2.0f * l.gate_w * static_cast<float>(i) / 40.0f),
+                          l.gate_at.y - l.gate_h + 2.0f * l.gate_h * static_cast<float>(j) / 44.0f,
+                          l.gate_at.z + l.gate_across.z * (-l.gate_w + 2.0f * l.gate_w * static_cast<float>(i) / 40.0f)};
+                const V d{q.x - l.pos.x, q.y - l.pos.y, q.z - l.pos.z};
+                if (range_window(std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), l.range) > 0.0f) return true;
+            }
+        return false;
+    };
+    for (float x = -4.0f; x <= 14.0f; x += 1.5f)
+        for (float y = -2.0f; y <= 5.0f; y += 1.75f)
+            for (float z = -9.0f; z <= -0.5f; z += 1.25f)
+                for (float range : {0.0f, 0.5f, 2.0f, 4.0f, 7.5f}) {
+                    DrawLight l = gated;
+                    l.pos = {x, y, z};
+                    l.range = range;
+                    const bool kept = sg::render::light_meets_gate(l);
+                    const bool lit = lit_somewhere(l);
+                    // Left out, it lit nothing there; kept, it lights some of it
+                    // (but for a sphere that only grazes the opening, between
+                    // the points looked at).
+                    require(kept || !lit, "a gated lamp left out lights none of its opening");
+                    if (kept && !lit) {
+                        // The nearest point of the opening is just within reach.
+                        const float u = std::clamp(x - 5.0f, -1.0f, 1.0f), v = std::clamp(y - 1.1f, -1.1f, 1.1f);
+                        const float dx = 5.0f + u - x, dy = 1.1f + v - y, dz = -z;
+                        require(range - std::sqrt(dx * dx + dy * dy + dz * dz) < 0.1f, "a gated lamp kept meets its gate");
+                    }
+                }
+    DrawLight loose = gated;
+    loose.gated = false;
+    loose.pos = {100.0f, 0.0f, 0.0f};
+    loose.range = 1.0f;
+    require(sg::render::light_meets_gate(loose), "a light not gated has no gate to meet");
+    DrawLight lamp;
+    lamp.pos = {20.0f, 2.0f, 5.0f};
+    lamp.range = 5.0f;
+    require(!sg::render::light_meets_box(lamp, {0, 0, 0}, {14, 4, 12}), "a lamp out of reach of a room lights none of it");
+    lamp.range = 6.5f;
+    require(sg::render::light_meets_box(lamp, {0, 0, 0}, {14, 4, 12}), "a lamp within reach of a room may light it");
+    lamp.range = 0.0f;
+    require(sg::render::light_meets_box(lamp, {0, 0, 0}, {1, 1, 1}), "a lamp with no range reaches everywhere");
+    lamp.sun = true;
+    lamp.range = 1.0f;
+    require(sg::render::light_meets_box(lamp, {0, 0, 0}, {1, 1, 1}), "a sun reaches everywhere");
+}
 } // namespace
 int main() {
     try {
@@ -104,6 +176,7 @@ int main() {
         if (!laws.holds())
             std::cerr << laws.str();
         require(g.validate().empty() && laws.holds(), "strict laws");
+        lamp_ranges();
         std::cout << "reconstruction, graph supremacy and one time ontology pass\n";
         return 0;
     } catch (const std::exception &ex) {

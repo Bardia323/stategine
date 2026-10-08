@@ -72,12 +72,29 @@ struct DrawLight {
         // bounce of the far room's, or any of its light while the door is shut.
         // What is half in that room is lit by its light, whatever else is not.
         bool hung_only = false;
+        // How far a lamp's light goes (`range`, metres): it ends there,
+        // smoothly (range_window), and lights nothing past it; its shadow map
+        // reaches as far. 0: it goes on for ever, as lamps did before they
+        // said - a sun's never ends.
+        float range = 0.0f;
     };
 
 
 DrawLight light_of(const State& room,const Element& element,const Pose& placement = {});
 spatial::projection::Mat4 shadow_projection(const DrawLight& light,const ViewCamera& camera,int size,float& bias);
 
+// The window that ends a lamp's light at its range: 1 near it, falling
+// smoothly to 0 at the range and nothing past it - (1 - (d/R)^4)^2, clamped,
+// the same as the scene shader's (light_reach). A range of 0 never ends.
+float range_window(float distance, float range);
+// Whether any of a lamp's light can reach a box (lo..hi, in the frame the
+// light is placed in): a sun, or a lamp with no range, reaches everything.
+// Not the view's to say, so a lamp left out never pops in as one walks.
+bool light_meets_box(const DrawLight& light, const spatial::projection::Vec3& lo, const spatial::projection::Vec3& hi);
+// Whether a gated lamp's light can reach its doorway's opening: one whose
+// range ends before the opening lets nothing through it. A light that is not
+// gated, a sun, or a lamp with no range: yes.
+bool light_meets_gate(const DrawLight& light);
 float portal_occlusion(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut);
 struct RoomDraw {
     const Spatial3D* room = nullptr;

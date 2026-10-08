@@ -1,6 +1,7 @@
 #include "sg/render/ViewPlan.hpp"
 #include "sg/core/Temporal.hpp"
 #include "sg/domains/Atlas.hpp"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -167,7 +168,35 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.frame_w = static_cast<float>(std::max(e.params.num("frame_w", 0), 0.0));
     l.frame_h = static_cast<float>(std::max(e.params.num("frame_h", 0), 0.0));
     l.frame_soft = static_cast<float>(std::clamp(e.params.num("frame_soft", 0.08), 0.001, 1.0));
+    l.range = l.sun ? 0.0f : static_cast<float>(std::max(e.params.num("range", 0), 0.0));
     return l;
+}
+float range_window(float distance, float range) {
+    if (range <= 0.0f) return 1.0f;
+    const float q = distance / range, q2 = q * q;
+    const float w = std::clamp(1.0f - q2 * q2, 0.0f, 1.0f);
+    return w * w;
+}
+bool light_meets_box(const DrawLight &l, const spatial::projection::Vec3 &lo, const spatial::projection::Vec3 &hi) {
+    if (l.sun || l.range <= 0.0f) return true;
+    // The nearest point of the box to the lamp, and whether it is within reach.
+    const float dx = std::max({lo.x - l.pos.x, 0.0f, l.pos.x - hi.x});
+    const float dy = std::max({lo.y - l.pos.y, 0.0f, l.pos.y - hi.y});
+    const float dz = std::max({lo.z - l.pos.z, 0.0f, l.pos.z - hi.z});
+    return dx * dx + dy * dy + dz * dz < l.range * l.range;
+}
+bool light_meets_gate(const DrawLight &l) {
+    if (!l.gated || l.sun || l.range <= 0.0f) return true;
+    // The opening is a rectangle standing upright in the doorway: its middle,
+    // half its width across, half its height up. The nearest point of it to
+    // the lamp, and whether that is within reach.
+    using spatial::projection::Vec3;
+    const Vec3 a = spatial::projection::normalize(Vec3{l.gate_across.x, 0.0f, l.gate_across.z});
+    const Vec3 to{l.pos.x - l.gate_at.x, l.pos.y - l.gate_at.y, l.pos.z - l.gate_at.z};
+    const float u = to.x * a.x + to.z * a.z;
+    const float cu = std::clamp(u, -l.gate_w, l.gate_w), cv = std::clamp(to.y, -l.gate_h, l.gate_h);
+    const Vec3 q{a.x * cu - to.x, cv - to.y, a.z * cu - to.z};
+    return q.x * q.x + q.y * q.y + q.z * q.z < l.range * l.range;
 }
 std::vector<DrawInstance> portal_body(const State &host, const Element &e, bool window) {
     using namespace spatial::projection;
@@ -247,9 +276,17 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         const float texel = 2.0f * e / static_cast<float>(size);
         spatial::projection::Vec3 c =
             l.pinned ? l.focus : eye + spatial::projection::normalize({forward.x, 0.0f, forward.z}) * (e * 0.4f);
-        c = {std::floor(c.x / texel) * texel, std::floor(c.y / texel) * texel, std::floor(c.z / texel) * texel};
         const spatial::projection::Vec3 up =
             std::fabs(d.y) > 0.99f ? spatial::projection::Vec3{0, 0, 1} : spatial::projection::Vec3{0, 1, 0};
+        // Whole texels of the map itself - across it and up it, as the sun
+        // sees - not of the world's axes, which run slantwise over a map the
+        // sun looks down on at a slant: snapped on those, the box moved by
+        // parts of a texel and the edges crawled. Along the sun's way the box
+        // may go where it likes: depth moves no edge.
+        const spatial::projection::Vec3 right = spatial::projection::normalize(spatial::projection::cross(d, up));
+        const spatial::projection::Vec3 upward = spatial::projection::cross(right, d);
+        const float cr = spatial::projection::dot(c, right), cu = spatial::projection::dot(c, upward);
+        c = c + right * (std::floor(cr / texel) * texel - cr) + upward * (std::floor(cu / texel) * texel - cu);
         result = spatial::projection::Mat4::ortho(-e, e, -e, e, 1.0f, reach * 2.0f) *
                  spatial::projection::Mat4::look_at(c - d * reach, c, up);
         bias = 45.0f / (reach * 2.0f);
@@ -258,7 +295,9 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         // of a wall at a slant: its bias grows with the width, or the
         // walls stripe with acne.
         const float fov = std::min(l.outer * 2.05f, 2.7f);
-        result = spatial::projection::Mat4::perspective(fov, 1.0f, 0.1f, 40.0f) *
+        // Its map goes as far as its light does; with no range, 40 m.
+        const float depth_end = l.range > 0.0f ? std::max(l.range, 0.5f) : 40.0f;
+        result = spatial::projection::Mat4::perspective(fov, 1.0f, 0.1f, depth_end) *
                  spatial::projection::Mat4::look_at(l.pos, l.pos + l.dir,
                                                     std::fabs(l.dir.y) > 0.99f ? spatial::projection::Vec3{0, 0, 1}
                                                                                : spatial::projection::Vec3{0, 1, 0});

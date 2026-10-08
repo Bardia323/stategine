@@ -824,7 +824,18 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
         // Its lamps, the strongest few. A bounce standing in for light from
         // all round belongs to its own room, and stays there - but for the
         // door's leaf, half in it.
+        // Each where this room has it, let in by the opening - and only
+        // those whose light reaches the opening at all (light_meets_gate):
+        // one that ends before it lets nothing through, and takes no place
+        // from one that does.
         std::vector<Light> lamps = own_lights(far, Pose{});
+        for (Light& l : lamps) {
+            l.pos = here(l.pos);
+            l.dir = gl::normalize(turned(l.dir));
+            gate(l);
+        }
+        lamps.erase(std::remove_if(lamps.begin(), lamps.end(), [](const Light& l) { return !light_meets_gate(l); }),
+                    lamps.end());
         std::sort(lamps.begin(), lamps.end(), [](const Light& a, const Light& b) {
             if (a.indirect != b.indirect) return b.indirect;
             if (a.sun != b.sun) return a.sun;
@@ -836,8 +847,6 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
             else ++real;
         if (real > 6) lamps.erase(lamps.begin() + 6, lamps.begin() + static_cast<std::ptrdiff_t>(real));
         for (Light l : lamps) {
-            l.pos = here(l.pos);
-            l.dir = gl::normalize(turned(l.dir));
             if (l.sun) {
                 // Its shadow lies in this room, near the opening.
                 constexpr float kReach = 8.0f;
@@ -845,7 +854,6 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
                 l.pinned = true;
                 l.focus = at + into * (kReach * 0.4f);
             }
-            gate(l);
             out.push_back(l);
         }
         // Its sky, or whatever light fills it from all round, seen
@@ -986,6 +994,44 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
     for (const PlacedRoom& placed : rooms)
         if (placed.room && !placed.image)
             for (const Light& l : own_lights(*placed.room, placed.pose)) out.push_back(l);
+    // A lamp whose light ends (its `range`) before it reaches any room drawn
+    // lights nothing here: it is left out before the strongest are chosen,
+    // so it takes no place from one that does. Which rooms are drawn, not
+    // where the eye is in them, says so: nothing pops as one walks. A room
+    // whose bounds are not known (no `room_w`, `room_d`, `room_h`; a space
+    // not enclosed; a copy of one that wraps) may be reached by anything.
+    {
+        struct Box { Pose pose; spatial::projection::Vec3 hi; };
+        std::vector<Box> boxes;
+        bool bounded = true;
+        for (const PlacedRoom& placed : rooms) {
+            if (!placed.room) continue;
+            const auto& p = placed.room->params();
+            if (placed.image || p.num(Key{"enclosed"}, 1.0) < 0.5 || !p.has(Key{"room_w"}) || !p.has(Key{"room_d"}) ||
+                !p.has(Key{"room_h"})) {
+                bounded = false;
+                break;
+            }
+            boxes.push_back({placed.pose, {static_cast<float>(p.num(Key{"room_w"})), static_cast<float>(p.num(Key{"room_h"})),
+                                           static_cast<float>(p.num(Key{"room_d"}))}});
+        }
+        if (bounded && !boxes.empty()) {
+            // (Half a metre to spare: a lamp in the wall's thickness, a
+            // fitting proud of the ceiling.)
+            constexpr float kSpare = 0.5f;
+            const auto reaches = [&](const Light& l) {
+                if (l.sun || l.range <= 0.0f) return true;
+                for (const Box& b : boxes) {
+                    Light local = l;
+                    local.pos = to_vec3(local_of(b.pose, Vec3d{l.pos.x, l.pos.y, l.pos.z}));
+                    if (light_meets_box(local, {-kSpare, -kSpare, -kSpare}, {b.hi.x + kSpare, b.hi.y + kSpare, b.hi.z + kSpare}))
+                        return true;
+                }
+                return false;
+            };
+            out.erase(std::remove_if(out.begin(), out.end(), [&](const Light& l) { return !reaches(l); }), out.end());
+        }
+    }
     // A sun first - it lights everything, so it has the first shadow -
     // then lamps, brightest first. Not nearest: which lamps cast shadows
     // must not change as the viewer walks about, or shadows pop in and out.
@@ -1473,6 +1519,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 13), l.open);
             p.set(light_uniform(i, 14), l.scatter);
             p.set(light_uniform(i, 15), l.frame_w, l.frame_h, l.frame_soft, l.frame_w > 0.0f && l.frame_h > 0.0f ? 1.0f : 0.0f);
+            p.set(light_uniform(i, 16), l.range);
         }
         p.set("uShadowMaps", 1);
     };
@@ -3505,10 +3552,10 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
         static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame"};
-        std::array<std::array<std::string, 16>, kMaxLights> n;
+                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame", "uLightRange"};
+        std::array<std::array<std::string, 17>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 16; ++f)
+            for (int f = 0; f < 17; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;
