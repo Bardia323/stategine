@@ -615,7 +615,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_crossings_gl
-      sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_pack_gl sg_culling_gl sg_air_gl sg_exposure_gl sg_shadow_lag_gl sg_coplanar_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape)
