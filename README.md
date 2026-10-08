@@ -765,6 +765,41 @@ doorway is seen with the eye's. The first frame the eye adjusts, and the next
 after `settle_exposure()`, take the measure at once: a shot asks for it on its
 first frame, so it is the same picture however it was come to.
 
+### Light probes
+
+A room lit only by its look's sky and ground colours is lit alike from end to
+end. A probe (`sg/domains/Probe.hpp`, an element of kind `probe`: a box posed
+as a thing is, `soft` metres of fade beyond each side, or `soft.px`, `soft.nx`
+... for one) holds what the room's lamps give it from every way after lighting
+the room - their light come back off the walls, the floor and what stands
+there - as spherical harmonics (nine coefficients a colour), lamp by lamp:
+`sh.<lamp>`, each lit alone at unit strength in white. Light adds, so what a
+probe gives now is each set times its lamp's `intensity` and colour now: a
+lamp switched, dimmed or recoloured needs no bake.
+
+`GLWorldView::bake_probes(room)` makes the sets: for each probe and each of
+the room's own lamps (not a sun, not one standing in for bounce), the room
+seen every way from the probe's middle (a cube, 32 pixels a face) lit by
+that lamp alone - nothing glowing of itself, no light from all round, no air,
+nothing through its doorways - taken to harmonics; then again with the probes
+lit by what the first pass saw, for light that comes back twice. It hands the
+sets back as data (`ProbeBake`), for an edit to write (`sg::bake_into`), and
+keeps them on disk by everything the room is and the code that bakes them
+(`sg::cache`, kind `probes`).
+
+The scene shader (up to eight probes a room) weighs each by its box, and adds
+what they hold to the look's light from all round - given to the diffuse as a
+surface facing that way takes it, and seen in the mirror direction, its finer
+bands fading as the surface roughens. Where they hold, a lamp that stands in
+for bounce (`indirect`) is not counted again. Through a doorway, the light
+from all round beyond is the far look's and the far room's nearest probe's.
+A room with no probes is drawn as before.
+
+The laws (`probe_faults`, a Spatial3D's `faults`): a probe's box lies in its
+room, its sets are 27 numbers each, every lamp it holds a set for is there,
+and it was baked from the room as it is - its shell, its lamps' places and
+cones (`probe_digest`); moving a chair does not make it stale.
+
 ## The notation
 
 What this page has written in C++ - a state and its arrows, a functor, an

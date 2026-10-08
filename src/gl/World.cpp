@@ -767,6 +767,14 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
         const Element& e = *ep;
         if (!e.alive) continue;
         Light l=light_of(room,e,pose);
+        if (baking_) {
+            // Baking a probe: the one lamp, at 1, in white - whatever it is now.
+            if (e.id != solo_ || l.sun || l.indirect) continue;
+            l.color = {1.0f, 1.0f, 1.0f};
+            l.power = 26.0f;
+            out.push_back(l);
+            continue;
+        }
         if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
             l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
             l.power = static_cast<float>(sp->second.intensity) * 26.0f;
@@ -779,7 +787,7 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
 
 auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Light> {
     std::vector<Light> out;
-    if (!placed.room) return out;
+    if (!placed.room || baking_) return out;
     const Spatial3D& room = *placed.room;
     for (const auto& e : room.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.num(Key{"light"}, 1.0) < 0.5) continue;
@@ -916,8 +924,29 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
             scene_->set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
                         static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), 0.0f);
             scene_->set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), shut ? 1.0f : 0.0f, 0.0f);
-            scene_->set(name("uDoorSky", count), v3("uSky", 0.10, 0.13, 0.20));
-            scene_->set(name("uDoorGround", count), v3("uGround", 0.14, 0.10, 0.07));
+            gl::Vec3 sky = v3("uSky", 0.10, 0.13, 0.20), ground = v3("uGround", 0.14, 0.10, 0.07);
+            // And what the far room's probe nearest the doorway holds of its
+            // lamps' light come back, from above and from below.
+            const Spatial3D& far = *it->second.world;
+            if (!index_of(far).probes.empty()) {
+                const Element* back = !it->second.back.empty() ? far.find(it->second.back) : back_portal(far, *placed.room);
+                const Vec3d there = back ? world_pose(far, *back).position : Vec3d{};
+                const Element* nearest = nullptr;
+                double best = 1e300;
+                for (const Element* p : index_of(far).probes) {
+                    if (!p->alive) continue;
+                    const Vec3d d = world_pose(far, *p).position - there;
+                    if (dot(d, d) < best) best = dot(d, d), nearest = p;
+                }
+                if (nearest) {
+                    const Sh9 sh = probe_light(far, sets_of(*nearest));
+                    const Rgb up = sh.irradiance({0, 1, 0}), down = sh.irradiance({0, -1, 0});
+                    sky = sky + gl::Vec3{static_cast<float>(up.r), static_cast<float>(up.g), static_cast<float>(up.b)};
+                    ground = ground + gl::Vec3{static_cast<float>(down.r), static_cast<float>(down.g), static_cast<float>(down.b)};
+                }
+            }
+            scene_->set(name("uDoorSky", count), sky);
+            scene_->set(name("uDoorGround", count), ground);
             ++count;
         }
     scene_->set("uDoorCount", count);
@@ -1513,7 +1542,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // its air scatters, and only in a view of the eye's own or one doorway
     // on: a view deeper in is too small to see it in.
     const Air* air = nullptr;
-    const float scatter = static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
+    const float scatter = baking_ ? 0.0f : static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
     if (scatter > 0.0f && depth <= 1) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
@@ -1727,6 +1756,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         scene_->set("uClipCount", n);
         clip_count_ = n;
         doors_to_program(placed);
+        probes_to_program(placed);
+        if (baking_) {
+            // A probe's bake: only its lamp's light, nothing of its own.
+            scene_->set("uAmbient", 0.0f);
+            scene_->set("uDark", 1.0f);
+            scene_->set("uFogDensity", 0.0f);
+            scene_->set("uDoorCount", 0);
+        }
         return n;
     };
     std::vector<const Element*> sprites;
@@ -1775,7 +1812,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
 
         lap(2, part_at);
-        if (room.params().num(Key{"sky"}, 0.0) > 0.5) {
+        if (room.params().num(Key{"sky"}, 0.0) > 0.5 && !baking_) {
             // The sky is at no distance a plane can cut: it is the room's
             // ceiling, whatever bounds its ground.
             scene_->set("uClipCount", 0);
@@ -3758,11 +3795,12 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
     KindIndex& ix = kind_index_[&s];
     if (ix.structure == s.structure()) return ix;
     ix.structure = s.structure();
-    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear();
+    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear();
     for (const Element& e : s.elements()) {
         if (e.kind == kinds::light) ix.lights.push_back(&e);
         else if (e.kind == kinds::portal) ix.portals.push_back(&e);
         else if (e.kind == terrain_kind()) ix.terrains.push_back(&e);
+        else if (e.kind == kinds::probe) ix.probes.push_back(&e);
     }
     return ix;
 }

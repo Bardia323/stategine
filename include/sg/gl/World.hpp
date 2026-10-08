@@ -113,6 +113,7 @@
 
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
+#include "sg/domains/Probe.hpp"
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Surface.hpp"
 #include "sg/gl/Renderer.hpp"
@@ -304,6 +305,18 @@ public:
     // whole, before the first frame.
     void warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h);
 
+    // The light probes of `room` baked (sg/domains/Probe.hpp): for each probe
+    // and each of the room's lamps alone - lit at unit strength, in white,
+    // nothing else glowing, no light from all round, no air - the room seen
+    // every way from the probe's middle (a cube, `size` pixels a face) and
+    // taken to spherical harmonics; then, `bounces` 2, again, the room lit
+    // by that lamp and by what the probes saw of it, for the light that
+    // comes back twice. Only the room's own lamps (not a sun, not one that
+    // stands in for bounce). The renderer's work, handed back as data for
+    // an edit to write (sg::bake_into): nothing of the world is changed
+    // here. Needs prepare() first.
+    std::vector<ProbeBake> bake_probes(const Spatial3D& room, int size = 32, int bounces = 2);
+
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
 
@@ -472,8 +485,32 @@ private:
     std::vector<Light> through_doorways(const PlacedRoom& placed);
 
     // The doorways of a room, and the light from all round beyond each, for
-    // the scene shader (around_at): a thing through a doorway is lit as one.
+    // the scene shader (around_at): a thing through a doorway is lit as one -
+    // with what the far room's probe nearest the doorway holds, if it has any.
     void doors_to_program(const PlacedRoom& placed);
+
+    // A room's light probes on the scene program (up to kMaxProbes): each
+    // box placed as the room is, and what its lamps give it now (or, baking
+    // its second bounce, what the first saw: probe_override_).
+    static constexpr int kMaxProbes = 8;  // matches the scene shader
+    void probes_to_program(const PlacedRoom& placed);
+    // A probe's sets, read from its params once while they stand.
+    struct ProbeSets {
+        uint64_t stamp = ~uint64_t{0};
+        std::map<std::string, Sh9> sets;
+    };
+    mutable std::unordered_map<const Element*, ProbeSets> probe_sets_;
+    const std::map<std::string, Sh9>& sets_of(const Element& probe) const;
+    // Baking (bake_probes): this view draws its room lit by the lamp `solo_`
+    // alone, at 1 in white, nothing glowing, no light from all round, none
+    // through its doorways - the probes, if it says, lit as the first
+    // bounce saw them.
+    bool baking_ = false;
+    Key solo_;
+    const std::vector<Sh9>* probe_override_ = nullptr;
+    std::unique_ptr<GLWorldView> baker_;  // the view that bakes, kept
+    // The room seen every way from `at`, lit as baking says, as harmonics.
+    Sh9 capture(const Spatial3D& room, const Vec3d& at, int size);
 
     // How much of a doorway's opening (half `half_w` across, `half_h` high)
     // the things of its room standing in it cover, 0 to 1: each box near the
@@ -1041,7 +1078,7 @@ private:
     // (lamps, doorways, terrain), found again only when its structure moves.
     struct KindIndex {
         uint64_t structure = ~uint64_t{0};
-        std::vector<const Element*> lights, portals, terrains;
+        std::vector<const Element*> lights, portals, terrains, probes;
     };
     mutable std::unordered_map<const State*, KindIndex> kind_index_;
     const KindIndex& index_of(const State& s) const;

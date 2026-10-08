@@ -101,6 +101,11 @@ public:
     // A portal: the element an embedded state is displayed on.
     Element& portal(Key id, Vec3d pos, double width, double height, double yaw = 0.0);
 
+    // What is wrong with its data: its light probes' (sg/domains/Probe.hpp) -
+    // a box out of the room, numbers that are not, a set for a lamp not here,
+    // a bake of a room it no longer is.
+    std::vector<std::string> faults() const override;
+
     // --- models ------------------------------------------------------------------
     // What its things may be drawn as beyond boxes, cylinders and spheres
     // (sg/domains/Shapes.hpp): triangles in the unit box a mesh is sized
