@@ -62,10 +62,17 @@ std::string enter_text(const Params& p) {
 // says nothing of what it is, and is not pretended to).
 std::string native_text(Key id) { return id.empty() ? "native" : "native:" + id.str(); }
 
+// A guard: the comparison it is, when a source said it (`when(...)`), or opaque
+// C++, which says nothing of itself.
+std::string guard_fact(const Transition::Guard& g) {
+    if (!g) return "none";
+    return g.text.empty() ? "opaque" : "when(" + g.text + ")";
+}
+
 std::string transition_fact(const Transition& t, Key name) {
     const char* kind = t.kind == TransitionKind::Push ? "push" : t.kind == TransitionKind::Pop ? "pop" : "switch";
     return "transition " + name.str() + " " + t.from.str() + " -[" + t.trigger.str() + "]-> " + dash(t.to) + " kind=" + kind +
-           " carry=" + dash(t.functor) + " enter=" + enter_text(t.enter) + " guard=" + (t.guard ? "opaque" : "none") +
+           " carry=" + dash(t.functor) + " enter=" + enter_text(t.enter) + " guard=" + guard_fact(t.guard) +
            " action=" + (t.action ? "opaque" : "none");
 }
 
@@ -75,7 +82,7 @@ std::string embed_fact(const Embedding& e) {
                        : e.propagate == Propagation::Manual ? "manual" : "onchange";
     return "embed " + e.name.str() + " host=" + e.host.str() + " portal=" + e.portal.str() + " guest=" + e.guest.str() +
            " subject=" + dash(e.subject) + " in=" + dash(e.in) + " out=" + dash(e.out) + " sync=" + sync + " propagate=" + prop +
-           " focus=" + (e.focus ? "1" : "0") + " follows=" + (e.follows ? "1" : "0");
+           " focus=" + (e.focus ? "1" : "0") + " follows=" + (e.follows ? "1" : "0") + (e.recurses ? " recurses=1" : "");
 }
 
 std::string list_text(const std::vector<Key>& ks) {
@@ -280,6 +287,11 @@ namespace {
 // A fact with the name of its native computation left out: what a graph built
 // by hand can be held to, since its C++ says nothing of what it is.
 std::string opaque(std::string line) {
+    // a guard's comparison, likewise: a lambda that may be it, or may not
+    if (line.rfind("transition ", 0) == 0) {
+        const std::size_t at = line.find(" guard=when("), end = line.rfind(" action=");
+        if (at != std::string::npos && end != std::string::npos && end > at) line.replace(at, end - at, " guard=opaque");
+    }
     for (std::size_t at = line.find("native:"); at != std::string::npos; at = line.find("native:", at + 1)) {
         std::size_t end = line.find_first_of(" ,]", at);
         if (end == std::string::npos) end = line.size();

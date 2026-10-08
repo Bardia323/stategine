@@ -187,8 +187,14 @@ std::vector<std::string> Engine::check_graph() {
         if (!v.refused) now.push_back(v.where + ": " + v.lhs + ": " + v.detail);
     // And what passes through them holds together (Channel).
     for (const Violation& v : laws::channels(graph_)) now.push_back(v.where + ": " + v.lhs + ": " + v.detail);
+    // And what is carried a frame late without saying so: only said - the
+    // frame's order is never changed for it, and it breaks nothing.
+    std::vector<std::string> late;
+    for (const Violation& v : laws::lags(graph_)) late.push_back("lag: " + v.where + ": " + v.lhs + ": " + v.detail);
     for (const std::string& p : now) report(p);
+    for (const std::string& p : late) report(p);
     if (strict_ && !now.empty()) throw std::runtime_error("stategine: the graph broke: " + now.front());
+    now.insert(now.end(), late.begin(), late.end());
     return now;
 }
 
@@ -209,6 +215,7 @@ void Engine::watch_slice() {
     }
     if (!swept_structure_) {
         sweep_found_ = graph_.validate();
+        for (const Violation& v : laws::lags(graph_)) sweep_found_.push_back("lag: " + v.where + ": " + v.lhs + ": " + v.detail);
         swept_structure_ = true;
         return;
     }
@@ -252,8 +259,8 @@ int Engine::depth(Key id) const {
 
 void Engine::tick(double dt) {
     if (!running_) return;
-    time_ += dt;
-    const Tick t{dt, time_, frame_++};
+    const Tick t{dt, frame_++};
+    apply_removals();
     apply_edits();
     carry_kept();  // after the edits: what a target asked for is done before it follows again
     take_inputs();
@@ -433,9 +440,9 @@ void Engine::follow_portals() {
 
 void Engine::look_across(const State& here) {
     looked_.clear();
-    for (const Seam& sm : graph_.seams()) {
+    for (std::size_t i : graph_.seams_of(here.id())) {
+        const Seam& sm = graph_.seams()[i];
         const bool from_a = sm.a == here.id();
-        if (!from_a && sm.b != here.id()) continue;
         const Key other = from_a ? sm.b : sm.a;
         if (other == here.id() || std::find(looked_.begin(), looked_.end(), other) != looked_.end()) continue;
         looked_.push_back(other);
@@ -446,7 +453,8 @@ void Engine::look_across(const State& here) {
 
 State* Engine::cross(State& here, const Params& before) {
     if (before.empty()) return &here;
-    for (const Seam& sm : graph_.seams())
+    for (std::size_t i : graph_.seams_of(here.id())) {
+        const Seam& sm = graph_.seams()[i];
         for (const bool from_a : {true, false}) {
             if ((from_a ? sm.a : sm.b) != here.id()) continue;
             // A seam that admits no things is not crossed: only looked through.
@@ -454,13 +462,16 @@ State* Engine::cross(State& here, const Params& before) {
             const Key travel = from_a ? sm.a_to_b : sm.b_to_a;
             for (const Key& boundary : from_a ? sm.boundary_a : sm.boundary_b) {
                 if (!here.passed(before, boundary)) continue;
-                for (const Transition& t : graph_.transitions())
-                    if (t.functor == travel && (t.from == here.id() || t.from == Key{"*"}) && (!t.guard || t.guard(here, Event{t.trigger}))) {
+                for (std::size_t j : graph_.transitions_carrying(travel)) {
+                    const Transition& t = graph_.transitions()[j];
+                    if ((t.from == here.id() || t.from == Key{"*"}) && (!t.guard || t.guard(here, Event{t.trigger}))) {
                         take(t, here, Event{t.trigger});
                         return top();
                     }
+                }
             }
         }
+    }
     return &here;
 }
 
@@ -518,8 +529,7 @@ void Engine::heard_from(State& s, int depth) {
     if (said.empty()) return;
     if (!graph_.edits().empty())
         for (const Event& e : said)
-            for (const Edit& ed : graph_.edits())
-                if (ed.state == s.id() && ed.event == e.name) asked_.push_back({ed.name, e});
+            for (std::size_t i : graph_.edits_for(s.id(), e.name)) asked_.push_back({graph_.edits()[i].name, e});
     if (carriers_revision_ != graph_.topology()) index_carriers();
     auto it = carriers_.find(s.id());
     if (it != carriers_.end() && depth < 16) {
@@ -617,7 +627,11 @@ void Engine::carry(const Functor& f, const State& src, State& dst, Functor::Memo
             f.apply(src, dst, memo);
             break;
         case Propagation::Continuous:
-            f.apply(src, dst);
+            // What it reads besides its two elements is said (a footprint
+            // on every object): carried when any of that has moved - the
+            // same result, without running every frame. Unsaid, every frame.
+            if (f.footprinted()) f.apply(src, dst, memo);
+            else f.apply(src, dst);
             break;
         case Propagation::OnEvent:
             if (std::find(due_.begin(), due_.end(), e.name) != due_.end()) f.apply(src, dst);
@@ -684,9 +698,7 @@ void Engine::apply_edits() {
     std::vector<Asked> asked;
     asked.swap(asked_);
     for (const Asked& a : asked) {
-        const Edit* ed = nullptr;
-        for (const Edit& e : graph_.edits())
-            if (e.name == a.edit) ed = &e;
+        const Edit* ed = graph_.edit_named(a.edit);
         if (!ed || !ed->apply) continue;  // dropped since it was asked
         const Key who = ed->state, reply = ed->reply;
         Params answer = ed->apply(graph_, a.event);  // may rewrite the graph, and `ed` with it
@@ -697,6 +709,34 @@ void Engine::apply_edits() {
             s->dispatch_pending();
             heard_from(*s);
         }
+    }
+}
+
+void Engine::remove(Removal r) {
+    if (detail::observing() > 0) detail::refused_to_observer(std::string("took something out of the world: ") + (r.state.empty() ? std::string("relations") : r.state.str()));
+    removals_.push_back(std::move(r));
+}
+
+std::string Engine::remove_now(const Removal& r) {
+    if (detail::observing() > 0) detail::refused_to_observer(std::string("took something out of the world: ") + (r.state.empty() ? std::string("relations") : r.state.str()));
+    if (!r.ok()) return r.refused.front();
+    if (!r.state.empty() && r.element.empty())
+        for (const State* s : stack_)
+            if (s->id() == r.state) return r.state.str() + " is a state the engine is in: leave it before it is taken away";
+    // Closed through the engine, as their hosts would close them: their
+    // guests hear it, focus goes back, the portals say so.
+    for (Key n : r.embeddings) close_embed(n, false);
+    graph_.remove(r);
+    return {};
+}
+
+void Engine::apply_removals() {
+    if (removals_.empty()) return;
+    std::vector<Removal> asked;
+    asked.swap(removals_);
+    for (const Removal& r : asked) {
+        const std::string why = remove_now(r);
+        if (!why.empty()) report("removal refused: " + why);
     }
 }
 
@@ -763,8 +803,7 @@ bool Engine::portal(const Event& ev) {
     if (ev.name != open && ev.name != close && ev.name != focus) return false;
     const Key at{ev.args.get_or<std::string>("portal", "")};
     std::vector<Key> names;
-    for (std::size_t j : graph_.embeddings_hosted_by(ev.source))
-        if (graph_.embeddings()[j].portal == at) names.push_back(graph_.embeddings()[j].name);
+    for (std::size_t j : graph_.embeddings_at(ev.source, at)) names.push_back(graph_.embeddings()[j].name);
     for (Key n : names) {
         if (ev.name == open) open_embed(n);
         else if (ev.name == close) close_embed(n, ev.args.get_or<bool>(keys::commit, false));

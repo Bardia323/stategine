@@ -81,7 +81,9 @@ public:
         for (const std::string& f : plan_.sources) o << ' ' << f;
         o << ". Do not edit: the source is the source of truth.\n"
              "// Each line below is one call of the engine's own API, in the order the source declares them.\n"
-             "#include \"sg/sg.hpp\"\n#include \"sg/domains/Atlas.hpp\"\n#include \"sg/dsl/Natives.hpp\"\n#include \"sg/dsl/Runtime.hpp\"\n\n"
+             "#include \"sg/sg.hpp\"\n#include \"sg/domains/Atlas.hpp\"\n"
+          << (guarded() ? "#include \"sg/dsl/Guard.hpp\"\n" : "")
+          << "#include \"sg/dsl/Natives.hpp\"\n#include \"sg/dsl/Runtime.hpp\"\n\n"
              "namespace "
           << ns << " {\n\nvoid build_" << name
           << "(sg::StateGraph& graph, const sg::dsl::Natives& natives, sg::dsl::Bindings& bindings) {\n"
@@ -96,6 +98,14 @@ private:
     const Kinds& kinds_;
     std::map<std::string, std::string> vars_;
     std::map<std::string, std::string> fvars_;
+
+    // Whether a transition of the plan is guarded: its guard is read back from its text.
+    bool guarded() const {
+        for (const Step& s : plan_.steps)
+            if (const auto* c = std::get_if<plan::Connect>(&s))
+                if (c->t.guard && !c->t.guard.text.empty()) return true;
+        return false;
+    }
 
     std::string& var(Key state) {
         auto it = vars_.find(state.str());
@@ -223,6 +233,7 @@ private:
         if (!t.functor.empty()) o << "        t.functor = " << lit(t.functor) << ";\n";
         if (!t.name.empty()) o << "        t.name = " << lit(t.name) << ";\n";
         for (const auto& kv : t.enter) o << "        t.enter.set(" << lit(kv.first) << ", " << value(kv.second) << ");\n";
+        if (t.guard && !t.guard.text.empty()) o << "        t.guard = sg::dsl::guard(" << lit(t.guard.text) << ");\n";
         o << "        graph.connect(std::move(t));\n" << I() << "}\n";
     }
     void step(std::ostream& o, const plan::Embed& em) {
@@ -240,6 +251,7 @@ private:
         }
         if (!e.focus) o << "        e.focus = false;\n";
         if (e.follows) o << "        e.follows = true;\n";
+        if (e.recurses) o << "        e.recurses = true;\n";
         o << "        graph.embed(std::move(e));\n" << I() << "}\n";
     }
     void step(std::ostream& o, const plan::Glue& g) {

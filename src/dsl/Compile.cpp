@@ -9,6 +9,7 @@
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Camera.hpp"
 #include "sg/domains/Look.hpp"
+#include "sg/dsl/Guard.hpp"
 #include "sg/dsl/Parse.hpp"
 
 namespace sg::dsl {
@@ -662,8 +663,29 @@ private:
                 if (values(w.value, w.key, vs, file))
                     for (auto& kv : vs) step.t.enter.set(Key{kv.first}, std::move(kv.second));
             }
+            if (t.guard.kind != GuardAst::Kind::None) {
+                if (!guard_reads(t, t.guard)) continue;
+                step.t.guard = make_guard(t.guard);
+            }
             relation_steps_.push_back(std::move(step));
         }
+    }
+
+    // What a guard reads is the state it leaves and the event: an element it
+    // names is one that state has (unless it is any state, or built elsewhere).
+    bool guard_reads(const TransitionAst& t, const GuardAst& g) {
+        bool ok = true;
+        for (const GuardAst& part : g.parts) ok = guard_reads(t, part) && ok;
+        if (g.kind != GuardAst::Kind::Compare) return ok;
+        for (const GuardAst::Operand* o : {&g.lhs, &g.rhs}) {
+            if (o->kind != GuardAst::Operand::Kind::ElementParam || t.from == "*") continue;
+            if (!has_element(t.from, o->element)) {
+                err(g.at, "state " + t.from + " has no element " + o->element + " (the guard of a transition on " + t.trigger + ")",
+                    "a guard reads the state the transition leaves, and the event that asks: nothing else");
+                ok = false;
+            }
+        }
+        return ok;
     }
 
     void embeds_of(const Program& p) {
@@ -721,6 +743,7 @@ private:
             }
             if (e.focus >= 0) em.focus = e.focus == 1;
             if (e.follows >= 0) em.follows = e.follows == 1;
+            em.recurses = e.recurses;
             em.name = Key{e.name.empty() ? host + "/" + portal + ":" + e.guest : e.name};
             if (!embed_names_.insert(em.name.str()).second) {
                 err(e.at, "embedding " + em.name.str() + " is declared twice");

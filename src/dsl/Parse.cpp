@@ -116,14 +116,14 @@ struct Lexer {
             } else {
                 const int c0 = col();
                 const auto starts = [&](const char* p) { return src.compare(i, std::strlen(p), p) == 0; };
-                for (const char* p : {"<->", "->", "<-", "-[", "]->", "+=", "-="}) {
+                for (const char* p : {"<->", "->", "<-", "-[", "]->", "+=", "-=", "==", "!=", "<=", ">="}) {
                     if (starts(p)) {
                         push(T::Punct, p, c0);
                         i += std::strlen(p);
                         goto next;
                     }
                 }
-                if (std::strchr("{}()[],;=:*+-", c)) {
+                if (std::strchr("{}()[],;=:*+-<>.", c)) {
                     push(T::Punct, std::string(1, c), c0);
                     ++i;
                 } else {
@@ -606,10 +606,130 @@ struct Parser {
                     pa.value = value();
                     t.with.push_back(std::move(pa));
                 } while (cur().t == T::Ident && is_punct("=", 1));
+            } else if (is_word("when") && guard_follows()) {
+                if (t.guard.kind != GuardAst::Kind::None) fail("a transition has one guard: join its comparisons with `and` or `or`");
+                ++p;
+                t.guard = guard_or();
             } else break;
         }
         if (t.push && t.pop) fail_at(t.at, "a transition is a push or a pop, not both");
         prog.transitions.push_back(std::move(t));
+    }
+
+    // --- a transition's guard ------------------------------------------------------------------
+    // Comparisons of what the state left holds and what the event says, joined
+    // by `and`, `or`, `not` and brackets; `and` binds before `or`.
+    static bool comparison(const Tok& t) {
+        return t.t == T::Punct && (t.s == "==" || t.s == "!=" || t.s == "<" || t.s == "<=" || t.s == ">" || t.s == ">=");
+    }
+
+    // Whether the `when` here is the guard of the transition just read, and not
+    // a `when` of its own (an event's mapping, which names two events and
+    // compares nothing): on the same line, or plainly a comparison.
+    bool guard_follows() const {
+        if (p > 0 && cur().line == toks[p - 1].line) return true;
+        return is_word("not", 1) || is_punct("(", 1) || is_punct("[", 2) || comparison(peek(2));
+    }
+
+    GuardAst guard_or() {
+        GuardAst first = guard_and();
+        if (!is_word("or")) return first;
+        GuardAst g;
+        g.kind = GuardAst::Kind::Or;
+        g.at = first.at;
+        g.parts.push_back(std::move(first));
+        while (accept_word("or")) g.parts.push_back(guard_and());
+        return g;
+    }
+
+    GuardAst guard_and() {
+        GuardAst first = guard_unary();
+        if (!is_word("and")) return first;
+        GuardAst g;
+        g.kind = GuardAst::Kind::And;
+        g.at = first.at;
+        g.parts.push_back(std::move(first));
+        while (accept_word("and")) g.parts.push_back(guard_unary());
+        return g;
+    }
+
+    GuardAst guard_unary() {
+        GuardAst g;
+        g.at = loc();
+        if (accept_word("not")) {
+            g.kind = GuardAst::Kind::Not;
+            g.parts.push_back(guard_unary());
+            return g;
+        }
+        if (accept("(")) {
+            g = guard_or();
+            expect(")");
+            return g;
+        }
+        g.kind = GuardAst::Kind::Compare;
+        g.lhs = guard_operand();
+        if (!comparison(cur()))
+            fail("expected a comparison: ==, !=, <, <=, > or >=",
+                 "a guard compares what the state it leaves holds, or what the event says, with something");
+        g.op = toks[p++].s;
+        g.rhs = guard_operand();
+        return g;
+    }
+
+    GuardAst::Operand guard_operand() {
+        using K = GuardAst::Operand::Kind;
+        GuardAst::Operand o;
+        if (accept("-")) {
+            if (cur().t != T::Num) fail("expected a number after '-'");
+            o.number = -cur().num;
+            ++p;
+            return o;
+        }
+        if (cur().t == T::Num) {
+            o.number = cur().num;
+            ++p;
+            return o;
+        }
+        if (cur().t == T::Str) {
+            o.kind = K::Text;
+            o.text = toks[p++].s;
+            return o;
+        }
+        if (cur().t != T::Ident)
+            fail("expected what a guard reads: from, from.<param>, from[<element>].<param>, arg.<name>, a number or words in quotes");
+        const std::string w = cur().s;
+        if (w == "true" || w == "false") {
+            o.number = w == "true" ? 1.0 : 0.0;
+            ++p;
+            return o;
+        }
+        if (w == "from") {
+            ++p;
+            if (accept("[")) {
+                o.kind = K::ElementParam;
+                o.element = name("an element of the state left");
+                expect("]");
+                expect(".", "and a parameter of the element: from[<element>].<param>");
+                o.key = name("a parameter of the element");
+                return o;
+            }
+            o.kind = K::Id;
+            return o;
+        }
+        if (w.rfind("from.", 0) == 0) {
+            o.kind = K::Param;
+            o.key = w.substr(5);
+            ++p;
+            return o;
+        }
+        if (w.rfind("arg.", 0) == 0) {
+            o.kind = K::Arg;
+            o.key = w.substr(4);
+            ++p;
+            return o;
+        }
+        fail("a guard reads only the state it leaves and the event that asks: `" + w + "` is neither",
+             "write from, from.<param>, from[<element>].<param> or arg.<name>; put words in quotes");
     }
 
     void seam_item() {
@@ -649,6 +769,7 @@ struct Parser {
             else if (accept_word("propagate")) e.propagate = name("onchange, continuous, onevent or manual");
             else if (accept_word("focus")) e.focus = boolean();
             else if (accept_word("follows")) e.follows = boolean();
+            else if (accept_word("recurses")) e.recurses = true;
             else break;
         }
         prog.embeds.push_back(std::move(e));
@@ -860,6 +981,22 @@ struct Parser {
 };
 
 }  // namespace
+
+ParsedGuard parse_guard(const std::string& text, const std::string& file) {
+    ParsedGuard out;
+    Program none;
+    Lexer lex{text, file, {}, out.errors};
+    lex.run();
+    if (!out.errors.empty()) return out;
+    Parser ps{std::move(lex.out), out.errors, none, file};
+    try {
+        out.guard = ps.guard_or();
+        if (!ps.end()) ps.fail("a guard ends before this");
+    } catch (const Fail&) {
+        // noted in errors
+    }
+    return out;
+}
 
 Parsed parse(const std::string& text, const std::string& file) {
     Parsed out;

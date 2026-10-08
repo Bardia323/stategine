@@ -10,7 +10,7 @@
 //   functor, compose, lens, transition, embed, seam, drive, port, keep, edit
 //          -> the graph declaration of the same name
 //   wear, film -> sg::wear, sg::film
-//   when   -> an event mapping of a functor
+//   when   -> an event mapping of a functor; after a transition, its guard
 //   bind   -> a table an input adapter turns into Engine::fire
 #pragma once
 
@@ -153,6 +153,33 @@ struct LensAst {
     std::string get, put;
 };
 
+// A transition's guard: a comparison of what the state it leaves holds and
+// what the event that asks says - `when from.stock > 0 and arg.n == 2` - and
+// nothing else, so that it is a plain, pure function of the two. It reads
+//   from                  the id of the state left (a word)
+//   from.<param>          one of its params
+//   from[<element>].<p>   a param of one of its elements
+//   arg.<name>            an argument of the event
+// against numbers, words in quotes, true and false; `and`, `or`, `not` and
+// brackets join comparisons. What is not there compares as nothing: equal to
+// nothing, unequal to everything (Guard.hpp).
+struct GuardAst {
+    struct Operand {
+        enum class Kind { Number, Text, Id, Param, ElementParam, Arg };
+        Kind kind = Kind::Number;
+        double number = 0.0;
+        std::string text;     // Text: the words
+        std::string element;  // ElementParam: whose
+        std::string key;      // Param, ElementParam: the param; Arg: the argument
+    };
+    enum class Kind { None, Compare, And, Or, Not };
+    Kind kind = Kind::None;
+    Operand lhs, rhs;              // Compare
+    std::string op;                // Compare: == != < <= > >=
+    std::vector<GuardAst> parts;   // And, Or: two or more; Not: one
+    Loc at;
+};
+
 struct TransitionAst {
     Loc at;
     std::string from;  // a state, or "*"
@@ -163,6 +190,7 @@ struct TransitionAst {
     std::string carry;
     std::string name;
     std::vector<ParamAst> with;  // what the state entered is told (Transition::enter)
+    GuardAst guard;              // `when ...`: whether it may be taken (Kind::None: always)
 };
 
 struct SeamAst {
@@ -182,6 +210,7 @@ struct EmbedAst {
     std::string propagate;  // onchange | continuous | onevent | manual
     int focus = -1;         // -1: the engine's default
     int follows = -1;
+    bool recurses = false;  // a ring of embeddings through it is meant (Embedding::recurses)
 };
 
 struct DriveAst {

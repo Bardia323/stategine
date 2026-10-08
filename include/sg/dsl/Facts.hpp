@@ -41,7 +41,9 @@ std::vector<std::string> facts(const Plan& plan);
 // there by the name the source bound it to (`native:exit_won`), so `native foo`
 // against `native bar` differs. C++ built by hand names none: a fact of the plan
 // with a native name is met by the graph's unnamed native (see `unverified`),
-// and by nothing else.
+// and by nothing else. A transition's guard is there by the comparison it is
+// (`guard=when(from.stock > 0)`); a lambda's says nothing, and meets it the same
+// way an unnamed native does.
 std::vector<std::string> missing(const Plan& plan, const StateGraph& g);
 
 // The facts of `plan` that the graph has only as an unnamed native: the graph's

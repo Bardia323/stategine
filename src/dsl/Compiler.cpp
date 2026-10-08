@@ -62,6 +62,23 @@ void register_compiler(Natives& into, const Natives& available, Bindings* bindin
         const Applied a = apply(c.plan, g, available, bindings, kinds);
         return answer.set(Key{"ok"}, a.ok).set(Key{"why"}, a.why);
     });
+
+    // The same source edited, made again: asked with what it says now
+    // (`text`) and what it said when it was last made (`before`), it replaces
+    // only what changed (Apply.hpp: reload), and answers which declarations.
+    into.edit("compile_reload", [&available, bindings, &kinds](StateGraph& g, const Event& asked) {
+        Params answer;
+        Options o = options_for(g, kinds);
+        o.conform = true;  // what the source declared is in the graph: it is what is replaced
+        const Compiled was = compile_source(asked.args.get_or<std::string>(Key{"before"}, ""), "<before>", o);
+        const Compiled now = compile_source(asked.args.get_or<std::string>(kText, ""), "<source>", o);
+        if (!now.ok()) return answer.set(Key{"ok"}, false).set(Key{"why"}, now.report());
+        if (!was.ok()) return answer.set(Key{"ok"}, false).set(Key{"why"}, "what it said before does not compile now: " + was.report());
+        const Reloaded r = reload(was.plan, now.plan, g, available, bindings, kinds);
+        std::string changed;
+        for (const std::string& c : r.changed) changed += (changed.empty() ? "" : "\n") + c;
+        return answer.set(Key{"ok"}, r.ok).set(Key{"why"}, r.why).set(Key{"changed"}, changed);
+    });
 }
 
 }  // namespace sg::dsl

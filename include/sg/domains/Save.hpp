@@ -60,9 +60,19 @@
 //       -> says <save>.fetch {slot}                 for the device
 //   <save>.restore {slot, text}                    from the device, at its port
 //       -> says <save>.extend    -> edit `extend.kept`   -> <save>.extend.done
-//       -> says <save>.loaded {slot, ok, at, kept, derived, replayed, holes, why}
+//       -> says <save>.loaded {slot, ok, at, kept, derived, replayed, holes, why,
+//                              stamped, differs}
 //       -> and <save>.at.<state>: where the game was saved, for a declared
 //          transition to take whoever plays back there (say it to use it)
+//
+// A save is stamped with what the states it keeps were declared as when it
+// was written - their facts: a state's kind, its elements, its arrows and
+// what they do, what it says; not its params, which are what it keeps. One
+// digest of them all heads the file, and one for each declaration follows,
+// so a save loaded into a world whose sources have moved on names what
+// differs (`differs`: a declaration a line - changed, gone, or new since)
+// and loads as well as it can. A save written before saves were stamped has
+// none, loads as it always did, and says it is not stamped (`stamped` false).
 //
 // What a kept element names in its `without` (state params or elements, by
 // name, separated by spaces) is not written - who is looking, what time it is
@@ -164,11 +174,31 @@ public:
     // Lan_K: the world from a save's text (`text` in what was asked).
     static Params extend_kept(StateGraph& g, const Event& asked);
 
-    // The text of one save: the kept states' texts, and where the game was.
+    // One declaration of a kept state, as it was when a save was written:
+    // `kind`, `element <id>`, `arrow <name>`, `says <event>`, and a digest of
+    // what it was declared to be.
+    struct Stamp {
+        Key state;
+        std::string declaration;
+        std::string digest;
+    };
+    // What a state is declared as, a declaration a stamp, in its own order.
+    static std::vector<Stamp> declarations(const State& s);
+    // One digest of many stamps, in their order: what heads a save.
+    static std::string digest_of(const std::vector<Stamp>& stamps);
+
+    // The text of one save: the kept states' texts, and where the game was;
+    // and the facts it was written against (empty in a save from before).
     struct Text {
         Key at;
+        std::string facts;
+        std::vector<Stamp> stamps;
         std::vector<std::pair<Key, std::string>> states;  // in the order written
     };
+    // What differs between the stamps of a save and what the states are
+    // declared as in `g` now, a declaration a line. Empty when they agree, or
+    // when the save is not stamped.
+    static std::vector<std::string> differences(const Text& t, const StateGraph& g);
     static std::string write_text(const Text& t);
     static bool read_text(const std::string& src, Text& out, std::string* why = nullptr);
 
