@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "sg/core/Cache.hpp"
+
 namespace sg::render {
 
 struct Packed {
@@ -46,6 +48,9 @@ Packed pack(const unsigned char* rgba, int w, int h, bool srgb);
 // The same, kept on disk (sg::cache, kind "packed") by a digest of the pixels,
 // the size, whether they are sRGB, and this code.
 Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb);
+// Or by `made_of`, a digest that names those pixels exactly
+// (Surface2D::pixels_digest): the pixels themselves not read to be known.
+Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb, const Digest& made_of);
 
 // One block of four by four pixels (RGBA, rows top first) as BC7, and back.
 // What packing a block leaves comes back: its sixteen pixels' four channels'

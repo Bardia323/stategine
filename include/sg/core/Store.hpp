@@ -30,11 +30,21 @@
 
 namespace sg {
 
+// When a file was last written, as a number that moves when it is written
+// again - asked of the file system once, without opening the file - or 0 if
+// it is not there. Only for comparing with itself.
+long long file_stamp(const std::filesystem::path& file);
+
 class TextStore {
 public:
     // Keep `key` in `file`: what is there if there is one (the file wins -
     // it may have been written by hand), else `initial`, written there.
     const std::string& bind(const std::string& key, const std::filesystem::path& file, const std::string& initial = {});
+
+    // Keep `key` in `file`, whose bytes the caller has just read whole
+    // (`text`, as the file has them): what `bind` would keep for a file that
+    // is there, without reading it a second time.
+    const std::string& bind_read(const std::string& key, const std::filesystem::path& file, std::string text);
 
     // The same, in the folder `owner` keeps its files in (sg::Assets).
     const std::string& bind(const std::string& key, const Assets& assets, const std::string& owner,

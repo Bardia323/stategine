@@ -694,6 +694,17 @@ Packed pack(const unsigned char* rgba, int w, int h, bool srgb) {
     return p;
 }
 
+namespace {
+Packed kept_by(const Digest& key, const unsigned char* rgba, int w, int h, bool srgb) {
+    std::string kept;
+    Packed p;
+    if (cache::load("packed", key, kept) && unflat(kept, p) && p.w == w && p.h == h && p.srgb == srgb) return p;
+    p = pack(rgba, w, h, srgb);
+    cache::store("packed", key, flat(p));
+    return p;
+}
+}  // namespace
+
 Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb) {
     const Digest key = Hasher{}
                            .text("packed")
@@ -703,12 +714,20 @@ Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb) {
                            .integer(srgb ? 1 : 0)
                            .bytes(rgba, static_cast<std::size_t>(w) * h * 4)
                            .digest();
-    std::string kept;
-    Packed p;
-    if (cache::load("packed", key, kept) && unflat(kept, p) && p.w == w && p.h == h && p.srgb == srgb) return p;
-    p = pack(rgba, w, h, srgb);
-    cache::store("packed", key, flat(p));
-    return p;
+    return kept_by(key, rgba, w, h, srgb);
+}
+
+Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb, const Digest& made_of) {
+    const Digest key = Hasher{}
+                           .text("packed.of")
+                           .text(SG_PACK_CODE)
+                           .integer(w)
+                           .integer(h)
+                           .integer(srgb ? 1 : 0)
+                           .integer(static_cast<int64_t>(made_of.hi))
+                           .integer(static_cast<int64_t>(made_of.lo))
+                           .digest();
+    return kept_by(key, rgba, w, h, srgb);
 }
 
 }  // namespace sg::render

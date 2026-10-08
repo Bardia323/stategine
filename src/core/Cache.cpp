@@ -1,5 +1,6 @@
 #include "sg/core/Cache.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -157,28 +158,69 @@ void background_priority() {
 #endif
 }
 
+namespace {
+// A kept file: its head, then its bytes, each read whole in one go. False if
+// it is not there, or not as long as its head says.
+bool read_kept(const std::filesystem::path& p, char (&head)[kHead], std::string& bytes, bool& there) {
+    there = false;
+#ifdef _WIN32
+    const HANDLE f = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    there = true;
+    const auto take = [&](char* to, std::size_t n) {
+        for (std::size_t at = 0; at < n;) {
+            DWORD got = 0;
+            const DWORD want = static_cast<DWORD>(std::min<std::size_t>(n - at, std::size_t(1) << 30));
+            if (!ReadFile(f, to + at, want, &got, nullptr) || got == 0) return false;
+            at += got;
+        }
+        return true;
+    };
+    LARGE_INTEGER size{};
+    bool ok = GetFileSizeEx(f, &size) && uint64_t(size.QuadPart) >= kHead && take(head, kHead);
+    const uint64_t n = ok ? get64(head + 24) : 0;
+    ok = ok && n <= (uint64_t(1) << 34) && n == uint64_t(size.QuadPart) - kHead;
+    if (ok) {
+        bytes.resize(static_cast<std::size_t>(n));
+        ok = take(bytes.data(), bytes.size());
+    }
+    CloseHandle(f);
+    return ok;
+#else
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    there = true;
+    const std::streamoff size = in.tellg();
+    in.seekg(0);
+    if (size < std::streamoff(kHead) || !in.read(head, kHead)) return false;
+    const uint64_t n = get64(head + 24);
+    if (n > (uint64_t(1) << 34) || n != uint64_t(size) - kHead) return false;
+    bytes.resize(static_cast<std::size_t>(n));
+    in.read(bytes.data(), std::streamsize(n));
+    return in.gcount() == std::streamsize(n);
+#endif
+}
+}  // namespace
+
 bool load(const std::string& kind, const Digest& key, std::string& out) {
     const std::string dir = folder();
     if (dir.empty()) return false;
-    std::ifstream in(path_of(dir, kind, key), std::ios::binary);
-    if (!in) {
+    char head[kHead];
+    std::string bytes;
+    bool there = false;
+    const bool read = read_kept(path_of(dir, kind, key), head, bytes, there);
+    if (!there) {
         count(&Stats::misses);
         return false;
     }
-    char head[kHead];
-    in.read(head, kHead);
-    const bool headed = in.gcount() == std::streamsize(kHead) && std::memcmp(head, kMagic, 8) == 0 &&
-                        get64(head + 8) == key.hi && get64(head + 16) == key.lo;
-    const uint64_t n = headed ? get64(head + 24) : 0;
-    if (!headed || n > (uint64_t(1) << 34)) {
+    const bool headed = read && std::memcmp(head, kMagic, 8) == 0 && get64(head + 8) == key.hi && get64(head + 16) == key.lo;
+    if (!headed) {
         count(&Stats::rejected);
         return false;
     }
-    std::string bytes(static_cast<std::size_t>(n), '\0');
-    in.read(bytes.data(), std::streamsize(n));
     const Digest own = Hasher{}.text(bytes).digest();
-    if (in.gcount() != std::streamsize(n) || in.peek() != std::char_traits<char>::eof() || own.hi != get64(head + 32) ||
-        own.lo != get64(head + 40)) {
+    if (own.hi != get64(head + 32) || own.lo != get64(head + 40)) {
         count(&Stats::rejected);
         return false;
     }

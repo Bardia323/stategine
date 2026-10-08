@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "sg/core/Cache.hpp"
 #include "sg/domains/Spatial.hpp"
 
 namespace sg {
@@ -61,6 +62,14 @@ public:
     // Bumped on every redraw, so a texture upload can be skipped when nothing
     // about the surface changed this frame.
     uint64_t revision() const { return revision_; }
+
+    // A digest naming the pixels of the last raster exactly - the same
+    // digest, the same pixels, on any run - when the surface knows one
+    // cheaply (a picture kept on disk by what it was painted from): what is
+    // derived from the pixels can be kept by it instead of by the pixels
+    // themselves. False when it knows none, and they are known only by
+    // themselves.
+    virtual bool pixels_digest(Digest&) const { return false; }
 
 protected:
     // What the surface looks like. The default is a board: tiles, a grid, and

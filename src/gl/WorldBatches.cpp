@@ -152,8 +152,13 @@ void GLWorldView::pack_skins() {
     const auto hand = [&] {
         for (std::size_t k; (k = next.fetch_add(1)) < order.size();) {
             Job& j = jobs[order[k]];
+            // (By what its pixels were made from, if it says: they are then
+            // not read through to be known.)
+            Digest made;
             j.packed = std::make_shared<const render::Packed>(
-                render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb()));
+                j.surface->pixels_digest(made)
+                    ? render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb(), made)
+                    : render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb()));
         }
     };
     std::vector<std::thread> hands;

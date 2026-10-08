@@ -1,6 +1,30 @@
 #include "sg/core/Store.hpp"
 
+#include <cstdint>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace sg {
+
+long long file_stamp(const std::filesystem::path& file) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &d)) return 0;
+    return static_cast<long long>((uint64_t(d.ftLastWriteTime.dwHighDateTime) << 32) | d.ftLastWriteTime.dwLowDateTime);
+#else
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(file, ec);
+    return ec ? 0 : static_cast<long long>(t.time_since_epoch().count());
+#endif
+}
 
 const std::string& TextStore::bind(const std::string& key, const std::filesystem::path& file, const std::string& initial) {
     Entry& e = entries_[key];
@@ -21,6 +45,17 @@ const std::string& TextStore::bind(const std::string& key, const std::filesystem
         e.text = initial;
         write(e);
     }
+    return e.text;
+}
+
+const std::string& TextStore::bind_read(const std::string& key, const std::filesystem::path& file, std::string text) {
+    Entry& e = entries_[key];
+    if (e.file != file) order_.push_back(key);
+    e.file = file;
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    e.text = std::move(text);
+    std::error_code ec;
+    e.stamp = std::filesystem::last_write_time(file, ec);
     return e.text;
 }
 
@@ -77,10 +112,21 @@ std::vector<std::string> TextStore::poll(double now, double interval, int budget
 }
 
 std::string TextStore::read(const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    std::ostringstream s;
-    s << in.rdbuf();
-    std::string text = s.str();
+    // (Whole, by its size, in one go.)
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
+    std::string text;
+    if (!in) return text;
+    const std::streamoff n = in.tellg();
+    in.seekg(0);
+    if (n > 0) {
+        text.resize(static_cast<std::size_t>(n));
+        in.read(text.data(), n);
+        text.resize(static_cast<std::size_t>(in.gcount()));
+    } else {
+        std::ostringstream s;
+        s << in.rdbuf();
+        text = s.str();
+    }
     text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
     return text;
 }
