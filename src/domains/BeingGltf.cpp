@@ -9,7 +9,10 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
 
+#include "SG_BEING_CLIP_CODE.hpp"
+#include "sg/core/Cache.hpp"
 #include "sg/domains/Being.hpp"
 #include "sg/domains/Shapes.hpp"
 
@@ -384,38 +387,113 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
             if (Element* j = find(Key{prefix + node_name(d.j, sk["joints"][k].i())})) j->params.set("bound", used[k] ? 1.0 : 0.0);
     }
     // Its motions: each animation a clip, its channels the joints' rotations
-    // (`q` keys) and translations (`p` keys).
+    // (`q` keys) and translations (`p` keys) - cubic ones (`qc`, `pc`) with
+    // their tangents, as made. A linear channel keeps only the keys its
+    // motion needs: one goes when its neighbours, joined, still put the
+    // joint's furthest descendant (or, for a travel, the joint) within half
+    // a millimetre of where it was. What is kept is the clip, and is itself
+    // kept on disk by what made it (sg::cache): the channels' numbers and
+    // this code.
+    std::unordered_map<std::string, double> reach;  // each joint: how far its furthest descendant is
+    {
+        std::vector<const Element*> js;
+        for (const Element& e : elements())
+            if (e.kind == Key{"joint"}) js.push_back(&e);
+        for (auto it = js.rbegin(); it != js.rend(); ++it) {
+            const Element& e = **it;
+            const double bone = std::sqrt(e.params.num(keys::x) * e.params.num(keys::x) + e.params.num(keys::y) * e.params.num(keys::y) +
+                                          e.params.num(keys::z) * e.params.num(keys::z));
+            const std::string up = e.params.get_or<std::string>("parent_joint", "");
+            if (!up.empty()) reach[up] = std::max(reach[up], reach[e.id.str()] + bone);
+        }
+    }
+    constexpr double kTolerance = 0.0005;  // metres: under what a body shows
     int a = 0;
     for (const J& an : d.j["animations"].a) {
-        std::string keys_text;
+        struct Channel {
+            std::string joint, what;
+            bool cubic = false;
+            std::vector<float> in, out;
+            int comps = 0;
+            const Above* root = nullptr;
+        };
+        std::vector<Channel> channels;
+        Hasher key;
+        key.text("sg.being.clip").text(SG_BEING_CLIP_CODE).number(kTolerance).text(prefix).number(rig);
         for (const J& ch : an["channels"].a) {
             const int node = ch["target"]["node"].i();
             const std::string what = ch["target"]["path"].s;
             if (!is_joint(node) || (what != "rotation" && what != "translation")) continue;
             const J& sm = an["samplers"][std::size_t(ch["sampler"].i(0))];
-            int ci, co;
-            const std::vector<float> in = d.floats(sm["input"].i(), ci), out = d.floats(sm["output"].i(), co);
-            const bool cubic = sm["interpolation"].s == "CUBICSPLINE";
-            const std::size_t stride = std::size_t(co) * (cubic ? 3 : 1), off = cubic ? std::size_t(co) : 0;
-            const auto root = roots.find(node);
-            for (std::size_t k = 0; k < in.size() && (k * stride + off + std::size_t(co)) <= out.size(); ++k) {
-                const float* v = out.data() + k * stride + off;
-                // (As the joints were made: a root's keys through what holds
-                // it, every travel as long as the holder makes it.)
-                if (what == "rotation") {
-                    double q[4] = {v[3], v[0], v[1], v[2]};
-                    if (root != roots.end()) {
-                        double r[4];
-                        qmul(root->second.q, q, r);
-                        for (int i = 0; i < 4; ++i) q[i] = r[i];
+            Channel c;
+            c.joint = prefix + node_name(d.j, node), c.what = what, c.cubic = sm["interpolation"].s == "CUBICSPLINE";
+            int ci;
+            c.in = d.floats(sm["input"].i(), ci), c.out = d.floats(sm["output"].i(), c.comps);
+            if (const auto root = roots.find(node); root != roots.end()) c.root = &root->second;
+            key.text(c.joint).text(c.what).integer(c.cubic ? 1 : 0).integer(c.comps).bytes(c.in.data(), c.in.size() * sizeof(float));
+            key.bytes(c.out.data(), c.out.size() * sizeof(float)).number(reach.count(c.joint) ? reach[c.joint] : 0.0);
+            if (c.root) key.bytes(c.root->m.m, sizeof c.root->m.m).bytes(c.root->q, sizeof c.root->q);
+            channels.push_back(std::move(c));
+        }
+        std::string keys_text;
+        const Digest digest = key.digest();
+        if (!cache::load("clips", digest, keys_text)) {
+            keys_text.clear();
+            for (const Channel& c : channels) {
+                const std::size_t co = std::size_t(c.comps), stride = co * (c.cubic ? 3 : 1), off = c.cubic ? co : 0;
+                const bool turn = c.what == "rotation";
+                // A turn or travel as the joints were made: a root's through
+                // what holds it, every travel as long as the holder makes it.
+                // (Tangents alike: each is linear in what it turns or moves.)
+                const auto as_made = [&](const float* v, double out[4]) {
+                    if (turn) {
+                        double q[4] = {v[3], v[0], v[1], v[2]};
+                        if (c.root) qmul(c.root->q, q, out);
+                        else
+                            for (int i = 0; i < 4; ++i) out[i] = q[i];
+                    } else {
+                        const Vec3d t{v[0], v[1], v[2]};
+                        const Vec3d at = c.root ? apply(c.root->m, t, 1.0) : t * rig;
+                        out[0] = at.x, out[1] = at.y, out[2] = at.z, out[3] = 0;
                     }
-                    keys_text += n6(in[k]) + " " + prefix + node_name(d.j, node) + " q " + n6(q[0]) + " " + n6(q[1]) + " " + n6(q[2]) + " " + n6(q[3]) + "\n";
-                } else {
+                };
+                const auto tangent = [&](const float* v, double out[4]) {
+                    if (turn) return as_made(v, out);
                     const Vec3d t{v[0], v[1], v[2]};
-                    const Vec3d at = root != roots.end() ? apply(root->second.m, t, 1.0) : t * rig;
-                    keys_text += n6(in[k]) + " " + prefix + node_name(d.j, node) + " p " + n6(at.x) + " " + n6(at.y) + " " + n6(at.z) + "\n";
+                    const Vec3d at = c.root ? apply(c.root->m, t, 0.0) : t * rig;
+                    out[0] = at.x, out[1] = at.y, out[2] = at.z, out[3] = 0;
+                };
+                const int width = turn ? 4 : 3;
+                std::vector<double> times, values, ins, outs;
+                for (std::size_t k = 0; k < c.in.size() && (k + 1) * stride <= c.out.size(); ++k) {
+                    double v[4], ti[4], to[4];
+                    as_made(c.out.data() + k * stride + off, v);
+                    times.push_back(c.in[k]);
+                    values.insert(values.end(), v, v + width);
+                    if (c.cubic) {
+                        tangent(c.out.data() + k * stride, ti), tangent(c.out.data() + k * stride + 2 * co, to);
+                        ins.insert(ins.end(), ti, ti + width), outs.insert(outs.end(), to, to + width);
+                    }
+                }
+                std::vector<std::size_t> kept;
+                if (c.cubic) {
+                    // (A cubic channel's keys are its curve's: kept, every one.)
+                    for (std::size_t k = 0; k < times.size(); ++k) kept.push_back(k);
+                } else {
+                    const double far = turn ? std::max(reach.count(c.joint) ? reach[c.joint] : 0.0, 0.1) : 1.0;
+                    kept = kept_keys(times, values, width, far, kTolerance);
+                }
+                for (std::size_t k : kept) {
+                    keys_text += n6(times[k]) + " " + c.joint + (turn ? " q" : " p") + (c.cubic ? "c" : "");
+                    for (int i = 0; i < width; ++i) keys_text += " " + n6(values[k * std::size_t(width) + std::size_t(i)]);
+                    if (c.cubic) {
+                        for (int i = 0; i < width; ++i) keys_text += " " + n6(ins[k * std::size_t(width) + std::size_t(i)]);
+                        for (int i = 0; i < width; ++i) keys_text += " " + n6(outs[k * std::size_t(width) + std::size_t(i)]);
+                    }
+                    keys_text += "\n";
                 }
             }
+            cache::store("clips", digest, keys_text);
         }
         const std::string clip_name = an["name"].s.empty() ? "anim" + std::to_string(a) : an["name"].s;
         clip(clip_name, keys_text, true);
@@ -423,6 +501,83 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
     }
     resolve();
     return true;
+}
+
+namespace {
+// `a` to `b` (w x y z), `t` of the way round the shorter arc - as a being
+// plays a clip between two keys.
+void slerp4(const double a[4], const double b0[4], double t, double out[4]) {
+    double b[4] = {b0[0], b0[1], b0[2], b0[3]};
+    double c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    if (c < 0) {
+        for (double& v : b) v = -v;
+        c = -c;
+    }
+    double ka = 1 - t, kb = t;
+    if (c <= 0.9995) {
+        const double th = std::acos(std::min(1.0, c)), s = std::sin(th);
+        ka = std::sin((1 - t) * th) / s, kb = std::sin(t * th) / s;
+    }
+    for (int i = 0; i < 4; ++i) out[i] = a[i] * ka + b[i] * kb;
+}
+void unit4(double q[4]) {
+    const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (n < 1e-12) {
+        q[0] = 1, q[1] = q[2] = q[3] = 0;
+        return;
+    }
+    for (int i = 0; i < 4; ++i) q[i] /= n;
+}
+}  // namespace
+
+std::vector<std::size_t> kept_keys(const std::vector<double>& times, const std::vector<double>& values, int width, double reach, double tolerance) {
+    const std::size_t n = times.size(), w = std::size_t(std::max(1, width));
+    std::vector<std::size_t> out;
+    if (n < 3 || (width != 3 && width != 4) || values.size() < n * w) {
+        for (std::size_t k = 0; k < n; ++k) out.push_back(k);
+        return out;
+    }
+    // How far key `m` is from where keys `a` and `b`, joined, put it at its
+    // time: for a turn, the chord its furthest descendant sweeps between the
+    // two turns (2 reach sin(half the angle)); for a place, the distance.
+    const auto off = [&](std::size_t a, std::size_t b, std::size_t m) {
+        const double span = times[b] - times[a];
+        const double s = span > 0 ? std::clamp((times[m] - times[a]) / span, 0.0, 1.0) : 0.0;
+        if (w == 4) {
+            double qa[4], qb[4], qm[4], q[4];
+            for (std::size_t i = 0; i < 4; ++i) qa[i] = values[a * 4 + i], qb[i] = values[b * 4 + i], qm[i] = values[m * 4 + i];
+            unit4(qa), unit4(qb), unit4(qm);
+            slerp4(qa, qb, s, q);
+            unit4(q);
+            const double c = std::min(1.0, std::fabs(q[0] * qm[0] + q[1] * qm[1] + q[2] * qm[2] + q[3] * qm[3]));
+            return 2 * reach * std::sqrt(std::max(0.0, 1 - c * c));
+        }
+        double d2 = 0;
+        for (std::size_t i = 0; i < w; ++i) {
+            const double v = values[a * w + i] + (values[b * w + i] - values[a * w + i]) * s - values[m * w + i];
+            d2 += v * v;
+        }
+        return std::sqrt(d2);
+    };
+    // A key goes if every key between its kept neighbours - itself, and those
+    // already gone - is still within the tolerance; again until none goes.
+    std::vector<bool> keep(n, true);
+    for (bool gone = true; gone;) {
+        gone = false;
+        std::size_t prev = 0;
+        for (std::size_t k = 1; k + 1 < n; ++k) {
+            if (!keep[k]) continue;
+            std::size_t next = k + 1;
+            while (!keep[next]) ++next;  // (the last is always kept)
+            bool fits = true;
+            for (std::size_t m = prev + 1; m < next && fits; ++m) fits = off(prev, next, m) < tolerance;
+            if (fits) keep[k] = false, gone = true;
+            else prev = k;
+        }
+    }
+    for (std::size_t k = 0; k < n; ++k)
+        if (keep[k]) out.push_back(k);
+    return out;
 }
 
 std::vector<float> Being::skinned(Key skin_id) const {

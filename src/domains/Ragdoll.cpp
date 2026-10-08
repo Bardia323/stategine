@@ -857,6 +857,9 @@ void Ragdoll::step(double dt) {
         // (Where balance has it put a foot, its leg is aimed there instead.)
         const auto aimed = [&](const Element& e) { return e.params.num("planned") > 0.5 ? turn_of(e, "plan") : turn_of(e, "aim"); };
         j.aim = spatial::transpose(aimed(a)) * aimed(b);
+        // (How fast the being's motion turns b against a; none where balance has planned a leg.)
+        const auto spin = [](const Element& e) { return e.params.num("planned") > 0.5 ? V3{} : vec(e, "awx", "awy", "awz"); };
+        j.aim_spin = spin(b) - spin(a);
         j.rest_turn = turn_of(b, "r");
         j.cone = b.params.num("cone", 1.9);
         const double gain = b.params.num("gain", 1.0);
@@ -1205,6 +1208,7 @@ Key ragdoll(StateGraph& g, Being& body, Temporal& clock, double mass) {
         means.on_object(b, b, [](const Element& j, Element& bone) {
             set_vec(bone, vec(j, "ax", "ay", "az"), "tx", "ty", "tz");
             set_turn(bone, turn_of(j, "aq"), "aim");
+            set_vec(bone, vec(j, "awx", "awy", "awz"), "awx", "awy", "awz");  // and how fast it turns there
         });
     g.set_functor(std::move(means));
     g.keep(Key{body.id().str() + ".means"});

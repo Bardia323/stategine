@@ -70,6 +70,8 @@ file(GLOB _sg_terrain_code CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Terrain.hpp)
 list(SORT _sg_terrain_code)
 stategine_code_digest(stategine SG_TERRAIN_CODE ${_sg_terrain_code})
+# And a being's clips read from glTF, their keys reduced, by the code that reads them.
+stategine_code_digest(stategine SG_BEING_CLIP_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/BeingGltf.cpp)
 
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.
@@ -362,6 +364,11 @@ if(SG_BUILD_TESTS)
   add_executable(sg_being tests/test_being.cpp)
   target_link_libraries(sg_being PRIVATE stategine_dev)
   add_test(NAME sg_being COMMAND sg_being)
+  # A being's motion exactly: two-bone reach, cubic clips, keys thinned within tolerance.
+  add_executable(sg_being_motion tests/test_being_motion.cpp)
+  target_link_libraries(sg_being_motion PRIVATE stategine_dev)
+  set_target_properties(sg_being_motion PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/laws")
+  add_test(NAME sg_being_motion COMMAND sg_being_motion)
   add_executable(sg_ragdoll tests/test_ragdoll.cpp)
   target_link_libraries(sg_ragdoll PRIVATE stategine_dev)
   add_test(NAME sg_ragdoll COMMAND sg_ragdoll)

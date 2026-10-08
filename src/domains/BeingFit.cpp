@@ -121,6 +121,16 @@ void Being::resize(double k) {
         std::istringstream r(rest);
         std::string word;
         r >> word;
+        if (word == "pc") {
+            // (A cubic travel: its place and both its tangents, as long again.)
+            std::string out = num(t) + " " + j + " pc";
+            for (int i = 0; i < 9; ++i) {
+                double v = 0;
+                r >> v;
+                out += " " + num(v * k);
+            }
+            return out;
+        }
         if (word != "p") return num(t) + " " + j + rest;
         double x = 0, y = 0, z = 0;
         r >> x >> y >> z;
@@ -172,6 +182,28 @@ void Being::face(double yaw) {
             const spatial::V3 at = r * spatial::V3{x, y, z};
             return num(t) + " " + j + " p " + num(at.x) + " " + num(at.y) + " " + num(at.z);
         }
+        // (A cubic key: its value and both tangents turned alike - a turn of
+        // them all is linear in each.)
+        if (word == "pc") {
+            std::string out = num(t) + " " + j + " pc";
+            for (int i = 0; i < 3; ++i) {
+                double x = 0, y = 0, z = 0;
+                r2 >> x >> y >> z;
+                const spatial::V3 at = r * spatial::V3{x, y, z};
+                out += " " + num(at.x) + " " + num(at.y) + " " + num(at.z);
+            }
+            return out;
+        }
+        if (word == "qc") {
+            std::string out = num(t) + " " + j + " qc";
+            for (int i = 0; i < 3; ++i) {
+                double w = 0, x = 0, y = 0, z = 0, q[4];
+                r2 >> w >> x >> y >> z;
+                turned(w, x, y, z, q);
+                out += " " + num(q[0]) + " " + num(q[1]) + " " + num(q[2]) + " " + num(q[3]);
+            }
+            return out;
+        }
         double w = 1, x = 0, y = 0, z = 0;
         if (word == "q") {
             r2 >> w >> x >> y >> z;
@@ -197,10 +229,13 @@ void Being::lift(double dy) {
         std::istringstream r(rest);
         std::string word;
         r >> word;
-        if (word != "p" || std::find(roots.begin(), roots.end(), j) == roots.end()) return num(t) + " " + j + rest;
+        if ((word != "p" && word != "pc") || std::find(roots.begin(), roots.end(), j) == roots.end()) return num(t) + " " + j + rest;
         double x = 0, y = 0, z = 0;
         r >> x >> y >> z;
-        return num(t) + " " + j + " p " + num(x) + " " + num(y + dy) + " " + num(z);
+        std::string out = num(t) + " " + j + " " + word + " " + num(x) + " " + num(y + dy) + " " + num(z);
+        // (A cubic travel's tangents are of its change: raised, they stay.)
+        for (double v; word == "pc" && r >> v;) out += " " + num(v);
+        return out;
     });
     resolve();
 }
@@ -227,7 +262,7 @@ void fit(Being& model, const Being& reference) {
                 std::istringstream ls(line);
                 double t, x, y, z;
                 std::string name, word;
-                if (ls >> t >> name >> word && name == j.id.str() && word == "p" && (ls >> x >> y >> z) && t < first) first = t, dy = y - j.params.num(keys::y);
+                if (ls >> t >> name >> word && name == j.id.str() && (word == "p" || word == "pc") && (ls >> x >> y >> z) && t < first) first = t, dy = y - j.params.num(keys::y);
             }
             if (first < 1e18) break;  // (the first clip that carries it)
         }

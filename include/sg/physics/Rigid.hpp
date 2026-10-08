@@ -261,6 +261,7 @@ struct Joint {
     // `rest_turn` on `a` by more than `cone` (radians) is stopped there.
     bool muscle = false;
     M3 aim;
+    V3 aim_spin;  // how fast b is meant to turn against a (radians a second, in the room): 0, held still
     double aim_hertz = 2, aim_damping = 0.9, aim_torque = 200;
     bool limit_cone = false;
     M3 rest_turn;

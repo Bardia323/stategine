@@ -160,7 +160,9 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
             .set("to", 0.0)
             .set("fade", 0.3)
             .set("speed", 1.0)
-            .set("loop", 1.0);
+            .set("loop", 1.0)
+            .set("mask", std::string{})
+            .set("additive", std::string{});
     //   self --live--> self: the spirit's step, on its line of time.
     loop(Key{"live"}, self_id(), live_event(), [](State& s, Element&, Element*, const Event& ev) { static_cast<Being&>(s).live(ev.args.num(keys::dt)); });
     //   self --play--> self: a clip, faded in (and the others out, unless not alone).
@@ -183,6 +185,7 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
             slot->params.set("clip", clip).set("phase", 0.0).set("weight", 0.0);
         }
         slot->params.set("to", weight).set("fade", fade).set("speed", ev.args.num("speed", 1.0)).set("loop", ev.args.num("loop", 1.0));
+        slot->params.set("mask", ev.args.get_or<std::string>("mask", "")).set("additive", ev.args.get_or<std::string>("additive", ""));
         if (ev.args.num("alone", 1.0) > 0.5)
             for (int i = 0; i < kLayers; ++i) {
                 Element& l = s.element(Key{"layer" + std::to_string(i)});
@@ -196,12 +199,20 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
             if (clip.empty() || l.params.get_or<std::string>("clip", "") == clip) l.params.set("to", 0.0).set("fade", ev.args.num("fade", 0.3));
         }
     });
-    loop(Key{"reach"}, self_id(), reach_event(), [](State& s, Element&, Element*, const Event& ev) {
+    //   self --reach--> self, self --look--> self: a goal's point, and how
+    //   its chain is to meet it - its tip brought there, or turned to it.
+    const auto aim_goal = [](State& s, const Event& ev, double look) {
         Element* g = s.find(Key{"goal." + ev.args.get_or<std::string>("goal", "")});
         if (!g) return;
         g->params.set(keys::x, ev.args.num(keys::x)).set(keys::y, ev.args.num(keys::y)).set(keys::z, ev.args.num(keys::z));
-        g->params.set("to", 1.0).set("fade", ev.args.num("fade", 0.25));
-    });
+        g->params.set("to", 1.0).set("fade", ev.args.num("fade", 0.25)).set("aim", look);
+        g->params.set("soften", std::clamp(ev.args.num("soften", 0.0), 0.0, 1.0)).set("twist", ev.args.num("twist", 0.0));
+        const bool pole = ev.args.has(Key{"pole_x"}) || ev.args.has(Key{"pole_y"}) || ev.args.has(Key{"pole_z"});
+        g->params.set("pole", pole ? 1.0 : 0.0);
+        if (pole) g->params.set("pole_x", ev.args.num("pole_x")).set("pole_y", ev.args.num("pole_y")).set("pole_z", ev.args.num("pole_z"));
+    };
+    loop(Key{"reach"}, self_id(), reach_event(), [aim_goal](State& s, Element&, Element*, const Event& ev) { aim_goal(s, ev, 0.0); });
+    loop(Key{"look"}, self_id(), look_event(), [aim_goal](State& s, Element&, Element*, const Event& ev) { aim_goal(s, ev, 1.0); });
     loop(Key{"release"}, self_id(), release_event(), [](State& s, Element&, Element*, const Event& ev) {
         if (Element* g = s.find(Key{"goal." + ev.args.get_or<std::string>("goal", "")})) g->params.set("to", 0.0).set("fade", ev.args.num("fade", 0.25));
     });
@@ -270,6 +281,8 @@ Element& Being::goal(const std::string& name, const std::string& tip, int links)
     Element& g = add_element(Key{"goal." + name}, kGoal);
     g.params.set("tip", tip).set("links", double(links)).set("weight", 0.0).set("to", 0.0).set("fade", 0.25);
     g.params.set(keys::x, 0.0).set(keys::y, 0.0).set(keys::z, 0.0);
+    g.params.set("aim", 0.0).set("pole", 0.0).set("pole_x", 0.0).set("pole_y", 0.0).set("pole_z", 0.0).set("soften", 0.0).set("twist", 0.0);
+    g.params.set("fwd_x", 1.0).set("fwd_y", 0.0).set("fwd_z", 0.0).set("up_x", 0.0).set("up_y", 1.0).set("up_z", 0.0).set("shares", std::string{});
     return g;
 }
 
@@ -285,6 +298,21 @@ const Being::Parsed& Being::parsed(const Element& c) const {
         std::string j, word;
         if (!(ls >> t >> j >> word)) continue;
         Q q;
+        if (word == "pc" || word == "qc") {
+            // `t joint pc x y z  ix iy iz  ox oy oz`, `t joint qc w x y z  iw ix iy iz  ow ox oy oz`:
+            // a cubic key - its value, and its tangents in and out (glTF's
+            // CUBICSPLINE, kept as it was made).
+            const int n = word == "pc" ? 3 : 4;
+            Key3 k{t, {0, 0, 0, 0}};
+            k.cubic = true;
+            for (int i = 0; i < n; ++i) ls >> k.q[i];
+            for (int i = 0; i < n; ++i) ls >> k.in[i];
+            for (int i = 0; i < n; ++i) ls >> k.out[i];
+            if (n == 3) p.tracks[Key{j}].moves.push_back(k);
+            else p.tracks[Key{j}].keys.push_back(k);
+            p.length = std::max(p.length, t);
+            continue;
+        }
         if (word == "p") {
             // `t joint p x y z`: where it stands on its parent then (a hip's travel).
             double x = 0, yy = 0, z = 0;
@@ -317,6 +345,71 @@ double Being::tempo() const {
     return std::pow(std::max(1e-3, s.params.num("scale", 1.0)), -s.params.num("tempo_exp", 1.0));
 }
 
+// The last key at or before `ph` (the first, before them all): found by
+// halving, as keys are in order of time.
+namespace {
+template <class Keys>
+std::size_t key_at(const Keys& ks, double ph) {
+    auto it = std::upper_bound(ks.begin(), ks.end(), ph, [](double v, const auto& k) { return v < k.t; });
+    return it == ks.begin() ? 0 : std::size_t(it - ks.begin()) - 1;
+}
+// Hermite's cubic between two keys `span` apart, `s` of the way (0..1):
+// the values and the tangents, each `n` numbers (glTF's CUBICSPLINE).
+void hermite(const double* v0, const double* out0, const double* v1, const double* in1, double span, double s, int n, double* r) {
+    const double s2 = s * s, s3 = s2 * s;
+    const double h00 = 2 * s3 - 3 * s2 + 1, h10 = s3 - 2 * s2 + s, h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+    for (int i = 0; i < n; ++i) r[i] = h00 * v0[i] + h10 * span * out0[i] + h01 * v1[i] + h11 * span * in1[i];
+}
+}  // namespace
+
+void Being::turn_at(const Track& tr, double ph, bool loop, double length, double out[4]) {
+    const auto& ks = tr.keys;
+    const std::size_t k = key_at(ks, ph);
+    const Q a{ks[k].q[0], ks[k].q[1], ks[k].q[2], ks[k].q[3]};
+    Q q = a;
+    if (k + 1 < ks.size()) {
+        const Key3& n = ks[k + 1];
+        const Q b{n.q[0], n.q[1], n.q[2], n.q[3]};
+        const double span = n.t - ks[k].t;
+        const double s = span > 0 ? std::clamp((ph - ks[k].t) / span, 0.0, 1.0) : 0.0;
+        if (ks[k].cubic && n.cubic) {
+            double r[4];
+            hermite(ks[k].q, ks[k].out, n.q, n.in, span, s, 4, r);
+            q = norm({r[0], r[1], r[2], r[3]});
+        } else {
+            q = slerp(a, b, s);
+        }
+    } else if (loop && ks.size() > 1 && length > ks[k].t) {
+        // Round the loop, back to its first key.
+        const Q b{ks[0].q[0], ks[0].q[1], ks[0].q[2], ks[0].q[3]};
+        q = slerp(a, b, (ph - ks[k].t) / (length - ks[k].t + ks[0].t + 1e-9));
+    }
+    out[0] = q.w, out[1] = q.x, out[2] = q.y, out[3] = q.z;
+}
+
+void Being::move_at(const Track& tr, double ph, double out[3]) {
+    const auto& ms = tr.moves;
+    const std::size_t k = key_at(ms, ph);
+    for (int i = 0; i < 3; ++i) out[i] = ms[k].q[i];
+    if (k + 1 < ms.size() && ms[k + 1].t > ms[k].t) {
+        const Key3& n = ms[k + 1];
+        const double span = n.t - ms[k].t, s = std::clamp((ph - ms[k].t) / span, 0.0, 1.0);
+        if (ms[k].cubic && n.cubic) hermite(ms[k].q, ms[k].out, n.q, n.in, span, s, 3, out);
+        else
+            for (int i = 0; i < 3; ++i) out[i] = ms[k].q[i] + (n.q[i] - ms[k].q[i]) * s;
+    }
+}
+
+bool Being::sample(const std::string& clip, Key joint, double t, double out[4]) const {
+    const Element* c = find(Key{"clip." + clip});
+    if (!c) return false;
+    const Parsed& p = parsed(*c);
+    auto tr = p.tracks.find(joint);
+    if (tr == p.tracks.end() || tr->second.keys.empty()) return false;
+    turn_at(tr->second, t, c->params.num("loop", 1.0) > 0.5, p.length, out);
+    return true;
+}
+
 void Being::live(double dt) {
     if (dt <= 0) return;  // no time, no change
     Element& self = element(self_id());
@@ -324,15 +417,51 @@ void Being::live(double dt) {
     const double t = dt * tempo();
     self.params.set("age", self.params.num("age") + t);
 
+    // The joints in order, parents first.
+    std::vector<Element*> js;
+    for (Element& e : elements())
+        if (e.kind == kJoint) js.push_back(&e);
+    std::unordered_map<Key, std::size_t> at;
+    for (std::size_t i = 0; i < js.size(); ++i) at[js[i]->id] = i;
+    std::vector<int> parent(js.size(), -1);
+    for (std::size_t i = 0; i < js.size(); ++i) {
+        auto it = at.find(Key{js[i]->params.get_or<std::string>("parent_joint", "")});
+        if (it != at.end() && it->second < i) parent[i] = int(it->second);
+    }
+
+    // A layer's mask, joint by joint: as it names a joint (`spine 1, hips 0`),
+    // else as its parent is, a root wholly. None: every joint wholly.
+    const auto mask_of = [&](const std::string& text) {
+        std::vector<double> m;
+        if (text.find_first_not_of(" \t\r\n,") == std::string::npos) return m;
+        std::string words = text;
+        std::replace(words.begin(), words.end(), ',', ' ');
+        std::unordered_map<std::string, double> named;
+        std::istringstream in(words);
+        std::string name;
+        double w;
+        while (in >> name >> w) named[name] = std::clamp(w, 0.0, 1.0);
+        m.assign(js.size(), 1.0);
+        for (std::size_t i = 0; i < js.size(); ++i) {
+            auto it = named.find(js[i]->id.str());
+            m[i] = it != named.end() ? it->second : parent[i] >= 0 ? m[std::size_t(parent[i])] : 1.0;
+        }
+        return m;
+    };
+
     // What it intends, clip by clip: each layer fades toward its weight, and
     // plays on. A layer that plays a blend plays its clips together, each by
     // its weight at the blend's point, in step: one phase (0..1) for them
     // all, gone round in the time their lengths, so weighted, take - a walk
-    // and a run blended put their feet down together.
+    // and a run blended put their feet down together. Each sample is also
+    // where it was at the step's start (`back`), so how fast the clips turn
+    // the body is read from the clips themselves.
     struct Sample {
         const Parsed* clip;
-        double phase, weight;
+        double phase, back, weight;
         bool loop;
+        int additive;  // 0: blended; 1: added, against rest; 2: added, against its first key
+        std::vector<double> mask;
     };
     std::vector<Sample> samples;
     for (int i = 0; i < kLayers; ++i) {
@@ -343,12 +472,16 @@ void Being::live(double dt) {
         const double nw = w + (to - w) * ease(t, 1.0 / std::max(1e-3, l.params.num("fade", 0.3)));
         l.params.set("weight", nw);
         const bool loops = l.params.num("loop", 1.0) > 0.5;
+        const std::string add = l.params.get_or<std::string>("additive", "");
+        const int additive = add == "rest" ? 1 : add == "first" ? 2 : 0;
+        const std::vector<double> mask = mask_of(l.params.get_or<std::string>("mask", ""));
+        const double before = l.params.num("phase");
         if (const Element* ce = find(Key{"clip." + c})) {
             const double len = parsed(*ce).length;
-            double ph = l.params.num("phase") + t * l.params.num("speed", 1.0);
+            double ph = before + t * l.params.num("speed", 1.0);
             if (len > 0) ph = loops ? std::fmod(ph, len) : std::min(ph, len);
             l.params.set("phase", ph);
-            samples.push_back({&parsed(*ce), ph, nw, loops});
+            samples.push_back({&parsed(*ce), ph, before, nw, loops, additive, mask});
         } else if (Element* be = find(Key{"blend." + c})) {
             // Where in it: eased toward where it was steered, at its rate.
             const double k = ease(t, be->params.num("rate", 6.0));
@@ -363,81 +496,74 @@ void Being::live(double dt) {
                 parts.emplace_back(&parsed(*ce), bw);
                 length += bw * parts.back().first->length;
             }
-            double ph = l.params.num("phase") + (length > 1e-6 ? t * l.params.num("speed", 1.0) / length : 0.0);
+            double ph = before + (length > 1e-6 ? t * l.params.num("speed", 1.0) / length : 0.0);
             ph = loops ? ph - std::floor(ph) : std::min(ph, 1.0);
             l.params.set("phase", ph);
-            for (const auto& [p, bw] : parts) samples.push_back({p, ph * p->length, nw * bw, true});
+            for (const auto& [p, bw] : parts) samples.push_back({p, ph * p->length, before * p->length, nw * bw, true, additive, mask});
         }
         if (to <= 0 && nw < 1e-3) l.params.set("clip", std::string{}).set("weight", 0.0);
     }
 
-    // The joints in order, parents first.
-    std::vector<Element*> js;
-    for (Element& e : elements())
-        if (e.kind == kJoint) js.push_back(&e);
-    std::unordered_map<Key, std::size_t> at;
-    for (std::size_t i = 0; i < js.size(); ++i) at[js[i]->id] = i;
-    std::vector<int> parent(js.size(), -1);
-    for (std::size_t i = 0; i < js.size(); ++i) {
-        auto it = at.find(Key{js[i]->params.get_or<std::string>("parent_joint", "")});
-        if (it != at.end() && it->second < i) parent[i] = int(it->second);
-    }
-
-    // Each joint's target: rest, the clips blended over it, what is held.
-    std::vector<Q> target(js.size());
+    // Each joint's target: rest, the clips blended over it, what is added to
+    // that, what is held - now, and as the clips had it at the step's start.
+    std::vector<Q> target(js.size()), back(js.size());
     for (std::size_t i = 0; i < js.size(); ++i) {
         Element& j = *js[i];
         const Q rest = rest_of(j);
-        Q sum = scaled(rest, 0.0);
+        Q sum = scaled(rest, 0.0), sum_b = sum, add{}, add_b{};
         double total = 0;
         // Where it stands on its parent, as the clips that move it say.
         const Vec3d made{j.params.num(keys::x), j.params.num(keys::y), j.params.num(keys::z)};
-        Vec3d moved{};
+        Vec3d moved{}, added{};
         double moved_w = 0;
+        bool adds_move = false;
         for (const Sample& sm : samples) {
-            if (sm.weight <= 1e-6) continue;
+            const double w = sm.weight * (sm.mask.empty() ? 1.0 : sm.mask[i]);
+            if (w <= 1e-6) continue;
             const Parsed& p = *sm.clip;
             auto tr = p.tracks.find(j.id);
             if (tr == p.tracks.end()) continue;
-            const double ph = sm.phase, w = sm.weight;
             if (const auto& ms = tr->second.moves; !ms.empty()) {
-                std::size_t k = 0;
-                while (k + 1 < ms.size() && ms[k + 1].t <= ph) ++k;
-                Vec3d v{ms[k].q[0], ms[k].q[1], ms[k].q[2]};
-                if (k + 1 < ms.size() && ms[k + 1].t > ms[k].t) {
-                    const double f = (ph - ms[k].t) / (ms[k + 1].t - ms[k].t);
-                    v = v + (Vec3d{ms[k + 1].q[0], ms[k + 1].q[1], ms[k + 1].q[2]} - v) * f;
+                double v[3];
+                move_at(tr->second, sm.phase, v);
+                if (sm.additive) {
+                    const Vec3d ref = sm.additive == 1 ? made : Vec3d{ms[0].q[0], ms[0].q[1], ms[0].q[2]};
+                    added = added + (Vec3d{v[0], v[1], v[2]} - ref) * w, adds_move = true;
+                } else {
+                    moved = moved + Vec3d{v[0], v[1], v[2]} * w, moved_w += w;
                 }
-                moved = moved + v * w, moved_w += w;
             }
             if (tr->second.keys.empty()) continue;
-            const auto& ks = tr->second.keys;
-            std::size_t k = 0;
-            while (k + 1 < ks.size() && ks[k + 1].t <= ph) ++k;
-            Q a{ks[k].q[0], ks[k].q[1], ks[k].q[2], ks[k].q[3]}, q = a;
-            if (k + 1 < ks.size()) {
-                const Q b{ks[k + 1].q[0], ks[k + 1].q[1], ks[k + 1].q[2], ks[k + 1].q[3]};
-                const double span = ks[k + 1].t - ks[k].t;
-                q = slerp(a, b, span > 0 ? (ph - ks[k].t) / span : 0.0);
-            } else if (sm.loop && ks.size() > 1 && p.length > ks[k].t) {
-                // Round the loop, back to its first key.
-                const Q b{ks[0].q[0], ks[0].q[1], ks[0].q[2], ks[0].q[3]};
-                q = slerp(a, b, (ph - ks[k].t) / (p.length - ks[k].t + ks[0].t + 1e-9));
+            double a[4], b[4];
+            turn_at(tr->second, sm.phase, sm.loop, p.length, a);
+            turn_at(tr->second, sm.back, sm.loop, p.length, b);
+            Q q{a[0], a[1], a[2], a[3]}, qb{b[0], b[1], b[2], b[3]};
+            if (sm.additive) {
+                // Added: its turn away from the pose it is measured against,
+                // as far as its weight, after what the others play.
+                const auto& k0 = tr->second.keys[0];
+                const Q ref = sm.additive == 1 ? rest : norm(Q{k0.q[0], k0.q[1], k0.q[2], k0.q[3]});
+                add = mul(add, slerp(Q{}, norm(mul(conj(ref), q)), w));
+                add_b = mul(add_b, slerp(Q{}, norm(mul(conj(ref), qb)), w));
+                continue;
             }
             if (dot(q, rest) < 0) q = scaled(q, -1);
-            sum = plus(sum, scaled(q, w));
+            if (dot(qb, rest) < 0) qb = scaled(qb, -1);
+            sum = plus(sum, scaled(q, w)), sum_b = plus(sum_b, scaled(qb, w));
             total += w;
         }
         target[i] = total > 1e-6 ? norm(plus(sum, scaled(rest, std::max(0.0, 1.0 - total)))) : rest;
-        if (moved_w > 1e-6) {
-            const Vec3d to = moved + made * std::max(0.0, 1.0 - moved_w);
+        back[i] = total > 1e-6 ? norm(plus(sum_b, scaled(rest, std::max(0.0, 1.0 - total)))) : rest;
+        target[i] = norm(mul(target[i], add)), back[i] = norm(mul(back[i], add_b));
+        if (moved_w > 1e-6 || adds_move) {
+            const Vec3d to = (moved_w > 1e-6 ? moved + made * std::max(0.0, 1.0 - moved_w) : made) + added;
             j.params.set("tx", to.x).set("ty", to.y).set("tz", to.z);
         } else if (j.params.has(Key{"tx"})) {
             j.params.erase(Key{"tx"}), j.params.erase(Key{"ty"}), j.params.erase(Key{"tz"});
         }
         const double hold = j.params.num("hold") + (j.params.num("hold_to") - j.params.num("hold")) * ease(t, 8.0);
         j.params.set("hold", hold);
-        if (hold > 1e-4) target[i] = slerp(target[i], q_of(j, "h"), hold);
+        if (hold > 1e-4) target[i] = slerp(target[i], q_of(j, "h"), hold), back[i] = slerp(back[i], q_of(j, "h"), hold);
     }
 
     // Where every joint is, for a set of turns.
@@ -455,13 +581,25 @@ void Being::live(double dt) {
 
     // What it means to do, in its own frame - each joint's turn and place as
     // its clips and holds say, before anything leads it: what whoever moves
-    // it from outside (a ragdoll's muscles) aims for.
+    // it from outside (a ragdoll's muscles) aims for. And how fast that turn
+    // goes (`aw`, radians a second of its line, in its own frame): the turn
+    // from the clips at the step's start to its end - both read from the
+    // clips, so a muscle follows the motion and not only the pose.
     {
-        std::vector<Frame> meant;
+        std::vector<Frame> meant, before;
         fk(target, meant);
+        fk(back, before);
         for (std::size_t i = 0; i < js.size(); ++i) {
             set_q(*js[i], meant[i].r, "aq");
             js[i]->params.set("ax", meant[i].p.x).set("ay", meant[i].p.y).set("az", meant[i].p.z);
+            Q d = norm(mul(meant[i].r, conj(before[i].r)));
+            if (d.w < 0) d = scaled(d, -1);
+            const double s = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            // (No faster than a body turns: a clip that jumps is a jump in
+            // the pose, not a spin to chase.)
+            const double spin = s > 1e-12 ? std::min(2.0 * std::atan2(s, d.w) / dt, 20.0) : 0.0;
+            const Vec3d aw = s > 1e-12 ? Vec3d{d.x, d.y, d.z} * (spin / s) : Vec3d{};
+            js[i]->params.set("awx", aw.x).set("awy", aw.y).set("awz", aw.z);
         }
     }
 
@@ -497,31 +635,110 @@ void Being::live(double dt) {
         }
     }
 
-    // Reaching: each goal's chain turned, joint by joint from the tip up, to
-    // bring the tip to the point (cyclic coordinate descent), and the target
-    // turned that far toward it by the goal's weight.
+    // Reaching and looking: each goal's chain turned toward its point, and
+    // the target turned that far toward it by the goal's weight. A chain of
+    // two is solved exactly (two bones and the line to the point are a
+    // triangle); a longer one by cyclic coordinate descent; a look turns the
+    // tip's forward to the point, shared down its chain.
     for (Element& g : elements()) {
         if (g.kind != kGoal) continue;
         const double w = g.params.num("weight") + (g.params.num("to") - g.params.num("weight")) * ease(t, 1.0 / std::max(1e-3, g.params.num("fade", 0.25)));
         g.params.set("weight", w);
         if (w < 1e-4) continue;
-        auto tip = at.find(Key{g.params.get_or<std::string>("tip", "")});
-        if (tip == at.end()) continue;
-        std::vector<std::size_t> chain;
-        for (int c = parent[tip->second], n = int(g.params.num("links", 2)); c >= 0 && n > 0; c = parent[std::size_t(c)], --n) chain.push_back(std::size_t(c));
+        auto tip_at = at.find(Key{g.params.get_or<std::string>("tip", "")});
+        if (tip_at == at.end()) continue;
+        const std::size_t tip = tip_at->second;
+        std::vector<std::size_t> chain;  // from the tip's parent up
+        for (int c = parent[tip], n = int(g.params.num("links", 2)); c >= 0 && n > 0; c = parent[std::size_t(c)], --n) chain.push_back(std::size_t(c));
         const Vec3d aim{g.params.num(keys::x), g.params.num(keys::y), g.params.num(keys::z)};
+        const bool has_pole = g.params.num("pole") > 0.5;
+        const Vec3d pole{g.params.num("pole_x"), g.params.num("pole_y"), g.params.num("pole_z")};
         std::vector<Q> work = target;
         std::vector<Frame> f;
-        for (int it = 0; it < 12; ++it) {
-            for (std::size_t c : chain) {
+        fk(work, f);
+        // Joint `c` turned by `d`, a turn in the being's frame (and all it carries).
+        const auto turn_by = [&](std::size_t c, const Q& d) {
+            const Q pr = parent[c] >= 0 ? f[std::size_t(parent[c])].r : Q{};
+            work[c] = norm(mul(mul(conj(pr), mul(d, pr)), work[c]));
+        };
+        std::vector<std::size_t> moved = chain;
+        if (g.params.num("aim") > 0.5) {
+            // Looking: from the top of the chain down to the tip, each joint
+            // turns the tip's forward its share of the way to the point (the
+            // tip all the rest), and then about that forward to bring its up
+            // toward the pole.
+            moved.insert(moved.begin(), tip);
+            std::reverse(moved.begin(), moved.end());
+            std::vector<double> shares;
+            {
+                std::istringstream in(g.params.get_or<std::string>("shares", ""));
+                for (double v; in >> v;) shares.push_back(v);
+            }
+            const Q unbind = conj(norm(q_of(*js[tip], "bq")));
+            const Vec3d fwd{g.params.num("fwd_x", 1.0), g.params.num("fwd_y"), g.params.num("fwd_z")};
+            const Vec3d up{g.params.num("up_x"), g.params.num("up_y", 1.0), g.params.num("up_z")};
+            for (std::size_t k = 0; k < moved.size(); ++k) {
+                const double share = k + 1 == moved.size() ? 1.0 : k < shares.size() ? std::clamp(shares[k], 0.0, 1.0) : std::min(0.6, 0.2 + 0.1 * double(k));
+                if (k > 0) fk(work, f);
+                const Q held = mul(f[tip].r, unbind);  // the tip's turn from how it is bound
+                const Vec3d F = rotate(held, fwd), U = rotate(held, up);
+                Q d = slerp(Q{}, between(F, aim - f[tip].p), share);
+                if (has_pole) {
+                    const Vec3d F2 = rotate(d, F), U2 = rotate(d, U);
+                    const double lf = length(F2);
+                    if (lf > 1e-9) {
+                        const Vec3d n = F2 * (1.0 / lf), want = pole - f[tip].p;
+                        const Vec3d u = U2 - n * dot(U2, n), p = want - n * dot(want, n);
+                        if (length(u) > 1e-9 && length(p) > 1e-9) d = mul(slerp(Q{}, between(u, p), share), d);
+                    }
+                }
+                turn_by(moved[k], d);
+            }
+        } else if (chain.size() == 2) {
+            // Two bones, exactly: the middle where both bones' lengths put it
+            // on the side the pole is (or the side it bends now), the root
+            // turned to put it there, then the middle to put the tip on the point.
+            const std::size_t mid = chain[0], root = chain[1];
+            const Vec3d R = f[root].p, M = f[mid].p, T = f[tip].p;
+            const double a = length(M - R), b = length(T - M), dist = length(aim - R);
+            if (a > 1e-9 && b > 1e-9 && dist > 1e-9) {
+                const Vec3d dir = (aim - R) * (1.0 / dist);
+                const double full = a + b, soft = g.params.num("soften");
+                double c = dist;
+                // Softened: past `soften` of its whole length it straightens
+                // ever more slowly toward it, never quite (no snap at full stretch).
+                if (soft > 0 && soft < 1 && c > soft * full) {
+                    const double s0 = soft * full, room = full - s0;
+                    c = s0 + room * (1.0 - std::exp(-(c - s0) / room));
+                }
+                c = std::clamp(c, std::max(std::fabs(a - b), 1e-9), full);
+                const double cr = std::clamp((a * a + c * c - b * b) / (2 * a * c), -1.0, 1.0);
+                Vec3d side = (has_pole ? pole : M) - R;
+                side = side - dir * dot(side, dir);
+                if (length(side) < 1e-6 * a) {
+                    // (Straight, with no pole: toward where it faces (+x, as
+                    // a knee bends), else across the way it points.)
+                    const Vec3d ahead{1, 0, 0};
+                    side = ahead - dir * dot(ahead, dir);
+                    if (length(side) < 1e-3) side = cross(dir, Vec3d{0, 0, 1});
+                }
+                side = side * (1.0 / length(side));
+                if (const double tw = g.params.num("twist"); tw != 0.0) side = rotate(axis_angle(dir, tw * kDeg), side);
+                const Vec3d M2 = R + dir * (a * cr) + side * (a * std::sqrt(std::max(0.0, 1.0 - cr * cr)));
+                const Vec3d T2 = R + dir * c;
+                turn_by(root, between(M - R, M2 - R));
                 fk(work, f);
-                const Vec3d to_tip = f[tip->second].p - f[c].p, to_aim = aim - f[c].p;
-                const Q d = between(to_tip, to_aim);
-                const Q pr = parent[c] >= 0 ? f[std::size_t(parent[c])].r : Q{};
-                work[c] = norm(mul(mul(conj(pr), mul(d, pr)), work[c]));
+                turn_by(mid, between(f[tip].p - f[mid].p, T2 - f[mid].p));
+            }
+        } else {
+            for (int it = 0; it < 12; ++it) {
+                for (std::size_t c : chain) {
+                    fk(work, f);
+                    turn_by(c, between(f[tip].p - f[c].p, aim - f[c].p));
+                }
             }
         }
-        for (std::size_t c : chain) target[c] = slerp(target[c], work[c], w);
+        for (std::size_t c : moved) target[c] = slerp(target[c], work[c], w);
     }
 
     // The body goes where it is meant to, each joint at its own stiffness -
