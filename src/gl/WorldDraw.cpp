@@ -770,10 +770,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lap(3, part_at);
         flush_batches(*scene_, true);
         draw_straddlers(placed, room);
-        // The room's own floor, walls and ceiling after what stands in it:
-        // they are behind everything, and where something hides them they
-        // are refused by depth, not shaded.
-        if (room.params().num(Key{"sky"}, 0.0) <= 0.5) draw_room(room);
         // Pictures cut out of their cards, together, with the program that
         // may cut (cutout_of), set up for this room as the other is.
         if (!sprites.empty()) {
@@ -804,6 +800,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (batch_frames_) flush_batches(*scene_, true);
         batch_frames_ = false;
+        // The room's own floor, walls and ceiling after all that stands in
+        // it and all that hangs on them (its pictures, its doorways' frames
+        // and views): they are behind everything, and where something hides
+        // them they are refused by depth, not shaded.
+        if (room.params().num(Key{"sky"}, 0.0) <= 0.5) draw_room(room);
         // (Asked what surfaces are, glass is none: it is seen through.)
         if (surface_only_) glass.clear();
         if (!glass.empty()) {
