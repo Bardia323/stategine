@@ -419,6 +419,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         if (!in_view(world, e, eye_cam) || !opens_from(e, position_of(eye_of(world)))) continue;
+        // (A door shut in it: nothing beyond is seen, nor what is seen from there.)
+        if (shut_to(e, position_of(eye_of(world)))) continue;
         Element eye = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye_of(world), eye);
         const Element* back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
@@ -432,6 +434,13 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         WorldPortal& wp = it->second;
         wp.shared = nullptr;
         if (!in_view(world, e, eye_cam) || !opens_from(e, position_of(eye_of(world)))) continue;
+        // A door shut in the doorway stops the view: none is drawn, and none
+        // of the shadows the room beyond would keep for it. (In the door's
+        // own thickness - walking through the leaf - it is drawn as ever.)
+        if (shut_to(e, position_of(eye_of(world)))) {
+            wp.own_drawn = false;
+            continue;
+        }
         // The virtual camera stands behind the far side's doorway - that is
         // what a portal is. What lies between it and the doorway is cut
         // away by a plane: this portal's own plane, carried to the far
@@ -514,8 +523,15 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             const float mx = 0.04f + 0.1f * (r.x1 - r.x0), my = 0.04f + 0.1f * (r.y1 - r.y0);
             cut_ = Rect{std::max(r.x0 - mx, -1.0f), std::max(r.y0 - my, -1.0f), std::min(r.x1 + mx, 1.0f), std::min(r.y1 + my, 1.0f)};
         }
+        // Only what is past the doorway is drawn: the near plane just short
+        // of it, and what is outside the pyramid through it, or this side of
+        // its plane, culled before it is sent (through).
+        const Through way = !screen && !e.params.has(Key{"ball"}) && back && !wp.back.empty() ? through(e, *wp.world, *back, guest_cam) : Through{};
+        cull_ = way.sides;
+        for (const HalfSpace& h : clips) cull_.push_back(spatial::HalfSpace{{h.normal.x, h.normal.y, h.normal.z}, h.offset});
         draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
-                   /*depth=*/1, kNear, back ? back->id.key() : Key{}, clips);
+                   /*depth=*/1, way.znear, back ? back->id.key() : Key{}, clips);
+        cull_.clear();
         wp.fx = vp_w_ / static_cast<float>(view.ms.width()), wp.fy = vp_h_ / static_cast<float>(view.ms.height());
         sub_ = Rect{-1, -1, 1, 1};
         host_air_.on = false;
@@ -2721,6 +2737,8 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         if (!in_view(world, e, cam, aspect) || !opens_from(e, position_of(eye))) continue;
+        // A door shut in it: no view, and none on from it.
+        if (shut_to(e, position_of(eye))) continue;
         if (distance(position_of(eye), pose_of(world, e).position) - 0.5 * std::hypot(e.params.num(keys::w, 3.0), e.params.num(keys::h, 2.0)) > reach) continue;
         const Rect r = screen_rect(world, e, cam, aspect).cut(seen);
         const float area = (r.x1 - r.x0) * (r.y1 - r.y0);
@@ -2829,8 +2847,16 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
         n.fx = (px1 - px0) / static_cast<float>(n.target.width()), n.fy = (py1 - py0) / static_cast<float>(n.target.height());
         sub_ = n.rect;
         host_air_ = air_of(*j.host);
-        draw_world(seen(*j.wp->world), camera_of(j.there), aspect, n.target, j.depth + 1, kNear,
-                   back ? back->id.key() : Key{}, {portal_clip(*j.host, *j.portal, j.from, j.there)});
+        // As a view on the screen is: the near plane just short of the
+        // doorway, and culled by the pyramid through it and its plane.
+        const Camera there = camera_of(j.there);
+        const HalfSpace cut = portal_clip(*j.host, *j.portal, j.from, j.there);
+        const Through way = back && !j.wp->back.empty() ? through(*j.portal, *j.wp->world, *back, there) : Through{};
+        cull_ = way.sides;
+        cull_.push_back(spatial::HalfSpace{{cut.normal.x, cut.normal.y, cut.normal.z}, cut.offset});
+        draw_world(seen(*j.wp->world), there, aspect, n.target, j.depth + 1, way.znear,
+                   back ? back->id.key() : Key{}, {cut});
+        cull_.clear();
         host_air_.on = false;
         sub_ = Rect{-1, -1, 1, 1};
         n.frame = frame_count_;
