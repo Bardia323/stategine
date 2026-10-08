@@ -122,15 +122,15 @@ int main() {
     const Route open = paths.to(Key{"b"}, {-3.0, 1.0, 0.0});
     const double want = dist(ear, sg::position_of(a.element(Key{"door"}))) + dist({-3.0, 1.0, 0.0}, sg::position_of(b.element(Key{"door"})));
     check(open.heard && std::fabs(open.length - want) < 1e-9, "the next room is heard through the door, as far as the way there");
-    a.element(Key{"door"}).params.set(audio::keys::aperture, 0.0);
+    a.element(Key{"door"}).params.set(Key{"opening"}, 0.0);
     paths.build(g, Key{"a"}, ear);
     const Route shut = paths.to(Key{"b"}, {-3.0, 1.0, 0.0});
-    check(shut.heard && shut.bands.high < 0.05 && shut.bands.low > shut.bands.high * 5,
+    check(shut.heard && shut.bands.high < 0.1 && shut.bands.low > shut.bands.high * 5,
           "through the shut door, a little of the low and almost none of the top");
-    a.element(Key{"door"}).params.set(audio::keys::admits, std::string("view light"));
+    a.element(Key{"door"}).params.set(Key{"admits"}, std::string("view light"));
     paths.build(g, Key{"a"}, ear);
     check(!paths.to(Key{"b"}, {-3.0, 1.0, 0.0}).heard, "a doorway that does not let sound through carries none");
-    a.element(Key{"door"}).params.set(audio::keys::admits, std::string("view light sound objects")).set(audio::keys::aperture, 1.0);
+    a.element(Key{"door"}).params.set(Key{"admits"}, std::string("view light sound objects")).set(Key{"opening"}, 1.0);
 
     // --- the laws -----------------------------------------------------------------------
     const auto known = [](const std::string& n) { return n == "hum" || n == "ding" || n.rfind("stream:", 0) == 0; };

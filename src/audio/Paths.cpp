@@ -17,17 +17,10 @@ namespace {
 
 constexpr double kFar = std::numeric_limits<double>::infinity();
 
-double len(const Vec3d& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
-
-Vec3d unit(const Vec3d& v) {
-    const double l = len(v);
-    return l > 1e-9 ? v * (1.0 / l) : Vec3d{1, 0, 0};
-}
-
 // How far a way is from going straight through an opening facing `n`: 0
 // head on, pi/2 along its face.
 double off_straight(const Vec3d& way, const Vec3d& n) {
-    const double l = len(way), ln = len(n);
+    const double l = length(way), ln = length(n);
     if (l < 1e-9 || ln < 1e-9) return 0.0;
     const double c = std::fabs(way.x * n.x + way.y * n.y + way.z * n.z) / (l * ln);
     return std::acos(std::clamp(c, 0.0, 1.0));
@@ -130,9 +123,9 @@ bool reverberation_of(const State& place, const std::string& floor, const std::s
     return true;
 }
 
-Bands through(double aperture) {
-    const double a = std::clamp(aperture, 0.0, 1.0);
-    return {0.25 + 0.75 * a, 0.08 + 0.92 * a, 0.02 + 0.98 * a * a};
+Bands through(double passes) {
+    const double p = std::clamp(passes, 0.0, 1.0);
+    return {std::sqrt(p), p, p * p};
 }
 
 Bands bend(double angle) {
@@ -167,13 +160,13 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
     // Where each is now, and how open: a doorway moves with what it hangs on,
     // and a door swings.
     for (Opening& o : openings_) {
-        // What a seam lets through is its doorways' to say, and may change as they do.
+        // What a seam lets through, and how much of it, is the graph's to say
+        // (its doorways' `admits`, `opening`, `muffle`), and may change as they do.
         const Seam& seam = g.seams()[o.seam_index];
-        o.live = admits(g, seam, "sound");
+        o.aperture = g.passes(seam, Channel::Sound);
+        o.live = o.aperture > 0.0;
         if (!o.live) continue;
-        o.fade = seam_fade(g, seam);
-        double open = 1.0;
-        bool said = false, walked = true;
+        o.fade = g.fade(seam);
         for (int k = 0; k < 2 && o.live; ++k) {
             const State* s = g.find(o.place[k]);
             const Element* e = s ? s->find(o.portal[k]) : nullptr;
@@ -184,16 +177,7 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
             const Pose p = world_pose(*s, *e);
             o.pos[k] = p.position;
             o.normal[k] = turn(p, Vec3d{1, 0, 0});
-            if (e->params.has(keys::aperture)) {
-                const double a = e->params.num(keys::aperture, 1.0);
-                open = said ? std::min(open, a) : a;
-                said = true;
-            }
-            walked = walked && e->params.num(Key{"walk"}, 1.0) > 0.5;
         }
-        // Said by neither: a doorway walked through is open; one only looked
-        // through is a pane.
-        o.aperture = std::clamp(said ? open : walked ? 1.0 : 0.25, 0.0, 1.0);
     }
 
     ear_place_ = ear_place;
@@ -213,7 +197,7 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
             if (!o.live) continue;
             const int k = sd % 2, land = 2 * (sd / 2) + (1 - k);
             const Vec3d way = o.pos[k] - ear;
-            const double d = len(way);
+            const double d = length(way);
             if (d >= dist[static_cast<std::size_t>(land)]) continue;
             Landing l;
             l.opening = sd / 2;
@@ -244,7 +228,7 @@ void Paths::build(const StateGraph& g, Key ear_place, const Vec3d& ear) {
             if (!o2.live) continue;
             const int k2 = sd % 2, land = 2 * (sd / 2) + (1 - k2);
             const Vec3d way = o2.pos[k2] - o.pos[here.side];
-            const double d = here.dist + len(way);
+            const double d = here.dist + length(way);
             if (d >= dist[static_cast<std::size_t>(land)]) continue;
             Landing l = here;
             l.opening = sd / 2;
@@ -272,7 +256,7 @@ Route Paths::to(Key place, const Vec3d& at) const {
     for (const Landing& l : it->second) {
         const Opening& o = openings_[static_cast<std::size_t>(l.opening)];
         const Vec3d way = at - o.pos[l.side];
-        const double d = l.dist + len(way);
+        const double d = l.dist + length(way);
         if (d >= best) continue;
         best = d;
         r.heard = true;
@@ -308,7 +292,7 @@ double Paths::fade_between(Key a, Key b) const {
 Bands occlusion(const State& place, const Vec3d& from, const Vec3d& to) {
     Bands out;
     const Vec3d d = to - from;
-    const double whole = len(d);
+    const double whole = length(d);
     if (whole < 0.05) return out;
     const Vec3d dir = d * (1.0 / whole);
     Vec3d at = from;

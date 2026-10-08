@@ -1,10 +1,11 @@
 // Stategine - the ways a sound takes to the ear, and what it loses on them.
 //
-// A place is heard from another only through its openings: the seams whose
-// `admits` let sound through. Whatever is in another place is heard from the
-// last opening on its way, as far off as the whole way is long; each opening
-// on it, by how open it is (its doorway's `aperture`, carried to it by a
-// functor) and how sharply the way turns there, takes off the top first.
+// A place is heard from another only through its openings: the seams the
+// graph says pass sound (`StateGraph::passes(seam, Channel::Sound)`: what
+// their doorways admit, how open, how muffled shut). Whatever is in another
+// place is heard from the last opening on its way, as far off as the whole
+// way is long; each opening on it, by how much it passes and how sharply the
+// way turns there, takes off the top first.
 // Air takes a little more, the higher the more (`air`). Inside a place, a
 // wall between the sound and the ear lets through what its material does
 // (`occlusion`). And a room answers by its own shape and what it is made of
@@ -61,9 +62,9 @@ Reverberation eyring(double volume, const std::vector<std::pair<double, Acoustic
 bool reverberation_of(const State& place, const std::string& floor, const std::string& walls,
                       const std::string& ceiling, Reverberation& out);
 
-// What an opening `aperture` open (0 shut, 1 wide) lets through: a shut door
-// still lets some low through, almost none of the top.
-Bands through(double aperture);
+// What an opening that passes `passes` of a sound (0..1, the graph's) lets
+// through of each band: the low most, the top least.
+Bands through(double passes);
 
 // What a way turning `angle` (radians, from straight through) at an opening
 // keeps: the top bends round a corner worst.
@@ -100,7 +101,7 @@ private:
         std::size_t seam_index = 0;
         Key place[2], portal[2];
         Vec3d pos[2], normal[2];
-        double aperture = 1.0, fade = 1.0;
+        double aperture = 1.0, fade = 1.0;  // what it passes, and its fade
         bool live = false;
     };
     // Arrived at one side of an opening (in that side's place), from the ear.
