@@ -67,11 +67,11 @@ uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std
         const KindIndex& ix = index_of(room);
         // (A lamp lit by a picture is a lamp like any other: its room eases
         // it, and its stamp says when it moved.)
-        for (const Element* e : ix.lights) h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+        for (const Element* e : ix.lights) h = fnv(h, (chain_stamp(room, *e, slot_of(*e).chain) << 1) | (e->alive ? 1u : 0u));
         const RoomCasters& rc = *casters[r];
         h = fnv(h, rc.flip_count);
         for (const Element* e : ix.portals) {
-            h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
+            h = fnv(h, (chain_stamp(room, *e, slot_of(*e).chain) << 1) | (e->alive ? 1u : 0u));
             // What stands in a doorway lets less through (covered): what
             // moves near one is part of its light.
             if (!e->alive || is_screen(*e) || e->params.num(Key{"light"}, 1.0) <= 0.0) continue;
@@ -101,7 +101,7 @@ uint64_t GLWorldView::worlds_stamp() const {
         h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
         // Its lights, not all it holds: snow falling in it lets in no more
         // light than it did.
-        for (const Element* e : index_of(*wp.world).lights) h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
+        for (const Element* e : index_of(*wp.world).lights) h = (h ^ chain_stamp(*wp.world, *e, slot_of(*e).chain) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
         // And the sky it lets in (through_doorways), not the look as a whole:
         // grain and clouds move every frame, and light nothing again.
         static const Key sky[] = {Key{"uAmbient"}, Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}};
@@ -160,7 +160,7 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
         for (const Element& e : room.elements()) {
             if (e.kind != kinds::mesh && e.kind != kinds::wall) continue;
             Caster c;
-            c.room = rc.room, c.element = &e, c.hold = kMoverFrames;
+            c.room = rc.room, c.element = &e, c.hold = kMoverFrames, c.slot = &slot_of(e);
             c.stamp = ~uint64_t{0};  // (never read: read below)
             rc.list.push_back(c);
         }
@@ -173,14 +173,14 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
         const Element& e = *c.element;
         // (What hangs off nothing is its own stamp: asked every frame of every
         // thing, so cheap.)
-        const uint64_t stamp = c.chained ? chain_stamp(room, e) : e.params.stamp();
+        const uint64_t stamp = c.chained ? chain_stamp(room, e, c.slot->chain) : e.params.stamp();
         if (stamp != c.stamp || e.alive != c.alive) {
             const bool was_on = c.on, was_at_rest = !c.mover;
             const gl::Vec3 was_at = c.centre;
             const float was_r = c.radius;
             const uint64_t was_where = c.where;
             c.chained = e.params.has(keys::parent);
-            c.stamp = c.chained ? chain_stamp(room, e) : e.params.stamp();
+            c.stamp = c.chained ? chain_stamp(room, e, c.slot->chain) : e.params.stamp();
             c.alive = e.alive, c.on = false;
             // A lamp's own shade does not shadow its lamp; a sprite, a
             // picture turned to the eye, has no shape to cast.
@@ -188,7 +188,7 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
                 // Where it is and what shape: worked out once each time
                 // its parameters (or its anchor's) change - a change of
                 // colour or glow is no change to a shadow.
-                Placed& p = placed_of(room, e);
+                Placed& p = placed_in(*c.slot, room, e);
                 if (!p.hashed) {
                     // To the tenth of a millimetre: a cord settling by less
                     // than that draws no shadow again.

@@ -10,16 +10,16 @@
 namespace sg::render {
 
 bool GLWorldView::instanceable(const Element& e) const {
-    static const Key worn{"skin"}, hung{"straddle"};
-    if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(Key{"splat"}) ||
-        e.params.num(Key{"lines"}, 0.0) > 0.5)
+    static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"};
+    if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(splat) ||
+        e.params.num(lines, 0.0) > 0.5)
         return false;
     const auto skin = surfaces_.find(e.id);
     if (skin != surfaces_.end() && skin->second.surface) return false;
     // Hung from a thing that wears a texture, it wears it too: drawn on its
     // own (skin_holder says in whose frame).
-    const std::string parent = e.params.get_or<std::string>(keys::parent, "");
-    const auto worn_by = parent.empty() ? surfaces_.end() : surfaces_.find(Key{parent});
+    const std::string* parent = e.params.text(keys::parent);
+    const auto worn_by = !parent || parent->empty() ? surfaces_.end() : surfaces_.find(Key{*parent});
     return worn_by == surfaces_.end() || !worn_by->second.surface;
 }
 
@@ -31,8 +31,8 @@ const Element* GLWorldView::skin_holder(const State& st, const Element& e) const
         if (s != surfaces_.end() && s->second.surface && (at == &e || dynamic_cast<const Texture*>(s->second.surface)) &&
             declared_surface(*at, *s->second.surface))
             return at;
-        const std::string parent = at->params.get_or<std::string>(keys::parent, "");
-        at = parent.empty() ? nullptr : st.find(Key{parent});
+        const std::string* parent = at->params.text(keys::parent);
+        at = !parent || parent->empty() ? nullptr : st.find(Key{*parent});
     }
     return nullptr;
 }
@@ -170,7 +170,8 @@ void GLWorldView::pack_skins() {
 }
 
 bool GLWorldView::batch_skinned(const State& st, const Element& e) {
-    if (!q_.instancing || e.id == highlight_ || e.params.num(Key{"straddle"}, 0.0) > 0.5 || e.params.has(Key{"skin"})) return false;
+    static const Key hung{"straddle"}, worn{"skin"};
+    if (!q_.instancing || e.id == highlight_ || e.params.num(hung, 0.0) > 0.5 || e.params.has(worn)) return false;
     if (skin_holder(st, e) != &e) return false;
     const auto it = surfaces_.find(e.id);
     if (it == surfaces_.end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;
@@ -199,8 +200,8 @@ void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
 }
 
 auto GLWorldView::batch_for(const gl::Mesh& mesh, BoundSurface* skin) -> Batch& {
-    for (Batch& x : batches_)
-        if (x.mesh == &mesh && x.skin == skin) return x;
+    const auto [at, made] = batch_index_.try_emplace({&mesh, skin}, batches_.size());
+    if (!made) return batches_[at->second];
     return batches_.emplace_back(Batch{&mesh, {}, skin});
 }
 
@@ -212,6 +213,17 @@ void GLWorldView::batch(const gl::Mesh& mesh, const gl::Mat4& local, const gl::V
 
 void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
     bool any = false;
+    // Every batch's things, each batch nearest first, sent to the card in
+    // one upload; each batch is drawn from where its own begin in it.
+    constexpr std::size_t k = gl::Mesh::kInstanceFloats;
+    instance_stream_.clear();
+    for (Batch& b : batches_) {
+        if (b.data.empty()) continue;
+        if (scene && b.data.size() > k) nearest_first(b.data);
+        instance_stream_.insert(instance_stream_.end(), b.data.begin(), b.data.end());
+    }
+    const gl::GLuint stream = instance_stream_.empty() ? 0 : instances_.upload(instance_stream_);
+    std::size_t first = 0;
     // A box's far side is never seen from outside it: in the scene it is not
     // drawn, or far off - where depth is coarser than a wall is thick - the
     // two sides fight for every pixel. (Only the box: its faces are wound
@@ -235,8 +247,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             }
             any = true;
         }
-        const auto n = static_cast<gl::GLsizei>(b.data.size() / gl::Mesh::kInstanceFloats);
-        if (scene && n > 1) nearest_first(b.data);
+        const auto n = static_cast<gl::GLsizei>(b.data.size() / k);
         const auto* tex = scene && b.skin ? dynamic_cast<const Texture*>(b.skin->surface) : nullptr;
         if (tex) {
             const Element& m = tex->map();
@@ -246,7 +257,8 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
         }
-        b.mesh->draw_instanced(instances_.upload(b.data), n);
+        b.mesh->draw_instanced(stream, n, first);
+        first += static_cast<std::size_t>(n);
         if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();

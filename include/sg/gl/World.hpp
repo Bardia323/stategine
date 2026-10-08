@@ -105,6 +105,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -690,19 +691,54 @@ private:
         Pose pose;
         RoomMatrix box;
         std::array<float, gl::Mesh::kInstanceFloats> record{};  // as a batch carries it
+        // A lamp's light, read with its room placed as `lit_at` says.
+        bool lit = false;
+        Pose lit_at;
+        DrawLight light;
     };
     static uint64_t chain_stamp(const State& st, const Element& e);
     Placed& placed_of(const State& st, const Element& e) const;
     Pose pose_of(const State& st, const Element& e) const;
     const RoomMatrix& box_matrix(const State& st, const Element& e) const;
-    mutable std::unordered_map<const Element*, Placed> placed_;
+    // What a thing hangs off, as last found: the thing and each anchor up
+    // from it, with the stamp each had, in the room's structure as it was.
+    // While the structure and every one of those stamps hold, the anchors
+    // are the same anchors (no name in the chain was changed) and their
+    // stamps together, chain_stamp's, are the same - so asking again is a
+    // comparison of stamps, not a search by name.
+    struct Chain {
+        uint64_t structure = ~uint64_t{0};
+        uint64_t stamp = 0;
+        std::size_t links = 0;
+        std::array<const Element*, 9> link{};
+        std::array<uint64_t, 9> seen{};
+    };
     // Each thing's mesh, by its stamp - and, drawn as a model, by the
-    // model's making (made again, the thing's params need not change).
+    // model's making (made again, the thing's params need not change), the
+    // model's name read once for the stamp.
     struct ShapeMemo {
         uint64_t stamp = 0, made = 0;
         const gl::Mesh* mesh = nullptr;
+        bool modelled = false;
+        Key model;
+        // What the mesh was found from (find_shape reads these and nothing
+        // else of the thing): a thing whose stamp moved but not these - one
+        // carried, one recoloured - has the same mesh.
+        std::string shape_name, model_name;
+        double taper = 1.0, bevel = 0.0, sx = 1.0, sy = 1.0, sz = 1.0;
     };
-    mutable std::unordered_map<const Element*, ShapeMemo> shape_memo_;
+    struct PlacedSlot {
+        Placed placed;
+        Chain chain;
+        ShapeMemo shape;
+    };
+    uint64_t chain_stamp(const State& st, const Element& e, Chain& memo) const;
+    Placed& placed_in(PlacedSlot& slot, const State& st, const Element& e) const;
+    // Each thing's slot, by where the thing is: an open table of addresses
+    // to slots that never move once made (asked thousands of times a frame).
+    PlacedSlot& slot_of(const Element& e) const;
+    mutable std::vector<std::pair<const Element*, uint32_t>> placed_index_;
+    mutable std::deque<PlacedSlot> placed_;
 
     static Key terrain_kind() {
         static const Key k{"terrain"};
@@ -804,6 +840,9 @@ private:
         // snow falling, a thing carried, does not make the index again.
         std::vector<char> mover;
         std::vector<std::size_t> movers;
+        // Each thing's slot, by its place in the room, while it is the thing
+        // there (bounds[i].element): no search by address for each, each view.
+        std::vector<PlacedSlot*> slots;
     };
     std::unordered_map<const Spatial3D*, DrawPlan> draw_plans_;
     // What of a room the view sees. A copy of a space that wraps (`shift`,
@@ -1093,8 +1132,11 @@ private:
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.
     std::vector<Batch> batches_;  // kept from frame to frame, emptied as drawn
+    // Which batch is whose (its mesh and its skin), by place in batches_.
+    std::map<std::pair<const void*, const void*>, std::size_t> batch_index_;
     bool batch_frames_ = false;   // a doorway's frame goes with the others of its shape (a copy of a space that wraps)
     gl::InstanceBuffer instances_;
+    std::vector<float> instance_stream_;  // every batch of a flush, one after another: sent at once
 
     struct ShadowSet {
         gl::ShadowArray array;  // a layer for each light that casts, made as wanted
@@ -1174,6 +1216,7 @@ private:
         bool chained = false;  // it hangs off another (its stamp is the chain's)
         bool alive = false, on = false;  // on: it casts (a shape, not a sprite, not shaded off)
         bool mover = false;
+        PlacedSlot* slot = nullptr;  // its slot, found once with it
     };
     // A thing at rest that has changed, or come to rest: where it was, or is,
     // for the maps that laid it (`at` is the flip clock then).

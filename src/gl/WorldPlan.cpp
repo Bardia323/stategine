@@ -197,6 +197,7 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
     for(int i=0;i<16 && same_frame;++i) same_frame=plan.frame.m[i]==frame_matrix_.m[i];
     plan.bounds.resize(elements.size());
     plan.mover.resize(elements.size(),0);
+    plan.slots.resize(elements.size(),nullptr);
     const auto lists=draw_lists(room);
     plan.unbounded=lists.unbounded;plan.portals=lists.portals;
     bool remake=!same_frame;
@@ -204,9 +205,11 @@ std::vector<std::size_t> GLWorldView::plan_draws(const Spatial3D& room,const Fru
     std::vector<spatial::Index::Entry> bounds;
     for(const auto i:lists.solids) {
         const auto& e=elements[i];
-        auto& placement=placed_of(room,e);
-        if(!placement.boxed) placement.box=box_model(room,e),placement.boxed=true;
         auto& bound=plan.bounds[i];
+        PlacedSlot*& slot=plan.slots[i];
+        if(!slot || bound.element!=&e) slot=&slot_of(e);
+        auto& placement=placed_in(*slot,room,e);
+        if(!placement.boxed) placement.box=box_model(room,e),placement.boxed=true;
         if(!same_frame || bound.element!=&e || bound.stamp!=placement.stamp) {
             // Moved (not made, nor seen from a moved frame): culled on its
             // own from now on. Its entry in the index is left where it was

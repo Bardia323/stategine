@@ -8,7 +8,7 @@ namespace sg::render {
 
 bool GLWorldView::is_sprite(const Element& e) {
     static const Key shape{"shape"};
-    return e.params.has(shape) && e.params.get_or<std::string>(shape, "") == "sprite";
+    return e.params.is(shape, "sprite");
 }
 
 bool GLWorldView::bind_picture(const State& st, const std::string& name, bool data) {

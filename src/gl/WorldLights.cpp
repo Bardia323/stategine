@@ -38,12 +38,23 @@ void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l) {
     p.set(light_uniform(i, 16), l.range);
 }
 
+namespace {
+bool same_pose(const Pose& a, const Pose& b) {
+    return a.position.x == b.position.x && a.position.y == b.position.y && a.position.z == b.position.z && a.yaw == b.yaw &&
+           a.pitch == b.pitch && a.roll == b.roll;
+}
+}  // namespace
+
 auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> std::vector<Light> {
     std::vector<Light> out;
     for (const Element* ep : index_of(room).lights) {
         const Element& e = *ep;
         if (!e.alive) continue;
-        Light l=light_of(room,e,pose);
+        // (Read again only when the lamp, what it hangs from, or where its
+        // room stands has changed.)
+        Placed& placed = placed_of(room, e);
+        if (!placed.lit || !same_pose(placed.lit_at, pose)) placed.light = light_of(room, e, pose), placed.lit_at = pose, placed.lit = true;
+        Light l = placed.light;
         if (baking_) {
             // Baking a probe: the one lamp, at 1, in white - whatever it is now.
             if (e.id != solo_ || l.sun || l.indirect) continue;
@@ -62,11 +73,14 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
     std::vector<Light> out;
     if (!placed.room || baking_) return out;
     const Spatial3D& room = *placed.room;
-    for (const auto& e : room.elements()) {
+    for (const Element* ep : index_of(room).portals) {
+        const Element& e = *ep;
         // (`light`: how much of what is beyond it an opening lets in, 0 to 1 -
         // a curtain half drawn, a window's day turned down; 0, none.)
-        const float pass = static_cast<float>(std::clamp(e.params.num(Key{"light"}, 1.0), 0.0, 1.0));
-        if (e.kind != kinds::portal || !e.alive || is_screen(e) || pass <= 0.0f) continue;
+        if (!e.alive) continue;
+        static const Key light_key{"light"};
+        const float pass = static_cast<float>(std::clamp(e.params.num(light_key, 1.0), 0.0, 1.0));
+        if (is_screen(e) || pass <= 0.0f) continue;
         const auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !it->second.carry || !declared_world(room,e,*it->second.world)) continue;
         const Spatial3D& far = *it->second.world;
@@ -249,7 +263,7 @@ float GLWorldView::covered(const Spatial3D& room,const Element& portal,const Pos
     for (const auto& entry : room_casters_)
         if (entry.second->state == &room && entry.second->refreshed == frame_count_) rc = entry.second.get();
     if (!rc) return portal_occlusion(room,portal,door,half_w,half_h,shut);
-    uint64_t key = fnv(fnv(chain_stamp(room, portal), rc->flip_count), reinterpret_cast<std::uintptr_t>(rc));
+    uint64_t key = fnv(fnv(chain_stamp(room, portal, slot_of(portal).chain), rc->flip_count), reinterpret_cast<std::uintptr_t>(rc));
     key = fnv(key, rc->structure);
     // (Only what stands within reach of the doorway is looked at by
     // portal_occlusion, in the room's own frame.)
@@ -362,8 +376,9 @@ bool GLWorldView::same_eye(const Element& a, const Element& b) {
 }
 
 const Element* GLWorldView::back_portal(const Spatial3D& guest, const Spatial3D& host) const {
-    for (const auto& e : guest.elements()) {
-        if (e.kind != kinds::portal || !e.alive) continue;
+    for (const Element* ep : index_of(guest).portals) {
+        const Element& e = *ep;
+        if (!e.alive) continue;
         auto it = worlds_.find(e.id);
         if (it != worlds_.end() && it->second.world == &host && declared_world(guest,e,host)) return &e;
     }

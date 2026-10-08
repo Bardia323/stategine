@@ -35,8 +35,14 @@ Program::Program(const char* vs, const char* fs, const char* tag) {
 }
 
 GLint Program::uniform(const char* name) const {
+    const uint64_t h = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(name)) * 0x9E3779B97F4A7C15ULL;
+    Recent& recent = recent_[static_cast<std::size_t>(h >> 55)];
+    if (recent.at == name && std::strcmp(recent.name, name) == 0) return recent.location;
     auto hit = by_address_.find(name);
-    if (hit != by_address_.end() && std::strcmp(hit->second.first, name) == 0) return hit->second.second;
+    if (hit != by_address_.end() && std::strcmp(hit->second.first, name) == 0) {
+        recent = {name, hit->second.first, hit->second.second};
+        return hit->second.second;
+    }
     auto it = locations_.find(name);
     GLint loc;
     if (it != locations_.end()) {
@@ -46,6 +52,7 @@ GLint Program::uniform(const char* name) const {
         it = locations_.emplace(name, loc).first;
     }
     by_address_[name] = {it->first.c_str(), loc};
+    recent = {name, it->first.c_str(), loc};
     return loc;
 }
 
@@ -189,14 +196,18 @@ void Mesh::update(const std::vector<float>& verts) {
                  verts.data(), GL_DYNAMIC_DRAW);
 }
 
-void Mesh::draw_instanced(GLuint buffer, GLsizei instances) const {
+void Mesh::draw_instanced(GLuint buffer, GLsizei instances, std::size_t first) const {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
     const GLsizei stride = kInstanceFloats * sizeof(float);
+    const std::size_t base = first * static_cast<std::size_t>(stride);
+    if (divided_ != vao_) {
+        for (GLuint i = 0; i < 7; ++i) glVertexAttribDivisor(3 + i, 1);
+        divided_ = vao_;
+    }
     for (GLuint i = 0; i < 7; ++i) {
-        glVertexAttribPointer(3 + i, 4, GL_FLOAT, 0, stride, reinterpret_cast<void*>(i * 4 * sizeof(float)));
+        glVertexAttribPointer(3 + i, 4, GL_FLOAT, 0, stride, reinterpret_cast<void*>(base + i * 4 * sizeof(float)));
         glEnableVertexAttribArray(3 + i);
-        glVertexAttribDivisor(3 + i, 1);
     }
     glDrawArraysInstanced(GL_TRIANGLES, 0, count_, instances);
     for (GLuint i = 0; i < 7; ++i) glDisableVertexAttribArray(3 + i);

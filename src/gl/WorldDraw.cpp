@@ -743,23 +743,24 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             scene_->set("uClipCount", bounds);
         }
         const gl::Vec3 moved = shift * -1.0f;
+        static const Key unseen_key{"unseen"}, glass_key{"glass"}, surface_key{"surface"};
         for (const auto i : plan_draws(room, view, placed.image ? &moved : nullptr)) {
             const auto& e=room.elements()[i];
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
             // own body, seen from inside it).
-            if (e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+            if (e.params.num(unseen_key, 0.0) > 0.5) continue;
             if (hidden_ && hidden_->count(e.id.key())) continue;  // (moving: not what the probes see)
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);
             } else if (e.kind == kinds::mesh) {
                 if (is_sprite(e)) sprites.push_back(&e);
-                else if (e.params.num(Key{"glass"}, 0.0) > 0.0) glass.push_back(&e);
+                else if (e.params.num(glass_key, 0.0) > 0.0) glass.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
                 if (q_.instancing && e.id != highlight_)
                     batch(cube_, box_matrix(room, e).m, color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f,
-                          static_cast<float>(e.params.num(Key{"surface"}, 2.0)), 0, 0, 0);
+                          static_cast<float>(e.params.num(surface_key, 2.0)), 0, 0, 0);
                 else
                     draw_wall_element(room, e);
             } else if (e.kind == kinds::light) {

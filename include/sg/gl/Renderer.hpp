@@ -53,6 +53,14 @@ private:
     GLuint id_ = 0;
     mutable std::unordered_map<std::string, GLint> locations_;
     mutable std::unordered_map<const char*, std::pair<const char*, GLint>> by_address_;
+    // The names met most recently, each in a slot by its address: one look
+    // and one comparison of the characters, before either map.
+    struct Recent {
+        const char* at = nullptr;
+        const char* name = nullptr;
+        GLint location = -1;
+    };
+    mutable std::array<Recent, 512> recent_{};
     // What each location holds (as floats; an int as its bits), by location.
     mutable std::vector<std::array<float, 16>> held_;
     mutable std::vector<signed char> held_n_;
@@ -111,7 +119,10 @@ public:
     // attributes 3-6), two vec4s of material (7, 8) and one whose x is its
     // depth layer (9).
     static constexpr int kInstanceFloats = 28;
-    void draw_instanced(GLuint buffer, GLsizei instances) const;
+    void draw_instanced(GLuint buffer, GLsizei instances) const { draw_instanced(buffer, instances, 0); }
+    // The same, from the `first` instance in the buffer on: many batches
+    // sent in one upload, each drawn from where its own begin.
+    void draw_instanced(GLuint buffer, GLsizei instances, std::size_t first) const;
 
     bool valid() const { return vao_ != 0; }
 
@@ -119,6 +130,9 @@ private:
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
     GLsizei count_ = 0;
+    // The vertex array whose instance attributes step once an instance
+    // (their divisors are its own state, set once, kept while it stands).
+    mutable GLuint divided_ = 0;
 };
 
 using render::cube_vertices;

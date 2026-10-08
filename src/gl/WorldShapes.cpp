@@ -22,11 +22,67 @@ uint64_t GLWorldView::chain_stamp(const State& st, const Element& e) {
     return h;
 }
 
-auto GLWorldView::placed_of(const State& st, const Element& e) const -> Placed& {
-    Placed& p = placed_[&e];
-    const uint64_t stamp = chain_stamp(st, e);
-    if (p.stamp != stamp) p = Placed{stamp};
-    return p;
+uint64_t GLWorldView::chain_stamp(const State& st, const Element& e, Chain& memo) const {
+    if (memo.structure == st.structure() && memo.links > 0 && memo.link[0] == &e) {
+        bool same = true;
+        for (std::size_t i = 0; i < memo.links && same; ++i) same = memo.link[i]->params.stamp() == memo.seen[i];
+        if (same) return memo.stamp;
+    }
+    // Found again, as chain_stamp finds it, keeping what it passed.
+    memo.structure = st.structure();
+    memo.links = 1;
+    memo.link[0] = &e, memo.seen[0] = e.params.stamp();
+    uint64_t h = e.params.stamp();
+    const Element* cur = &e;
+    for (int i = 0; i < 8; ++i) {
+        if (!cur->params.has(keys::parent)) break;
+        const std::string* parent_id = std::get_if<std::string>(&cur->params.get(keys::parent));
+        if (!parent_id || parent_id->empty()) break;
+        const Element* parent = st.find(Key{*parent_id});
+        if (!parent) break;
+        h = (h * 1099511628211ULL) ^ parent->params.stamp();
+        cur = parent;
+        memo.link[memo.links] = parent, memo.seen[memo.links] = parent->params.stamp(), ++memo.links;
+    }
+    memo.stamp = h;
+    return h;
+}
+
+auto GLWorldView::slot_of(const Element& e) const -> PlacedSlot& {
+    const auto home = [this](const Element* p) {
+        uint64_t h = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(p) >> 4) * 0x9E3779B97F4A7C15ULL;
+        return static_cast<std::size_t>(h ^ (h >> 31)) & (placed_index_.size() - 1);
+    };
+    if (placed_index_.empty()) placed_index_.assign(4096, {nullptr, 0});
+    std::size_t i = home(&e);
+    for (;; i = (i + 1) & (placed_index_.size() - 1)) {
+        const auto& s = placed_index_[i];
+        if (s.first == &e) return placed_[s.second];
+        if (!s.first) break;
+    }
+    if ((placed_.size() + 1) * 2 > placed_index_.size()) {
+        // Half full: twice the room, each where it falls now.
+        std::vector<std::pair<const Element*, uint32_t>> old(placed_index_.size() * 2, {nullptr, 0});
+        old.swap(placed_index_);
+        for (const auto& s : old)
+            if (s.first) {
+                std::size_t j = home(s.first);
+                while (placed_index_[j].first) j = (j + 1) & (placed_index_.size() - 1);
+                placed_index_[j] = s;
+            }
+        i = home(&e);
+        while (placed_index_[i].first) i = (i + 1) & (placed_index_.size() - 1);
+    }
+    placed_index_[i] = {&e, static_cast<uint32_t>(placed_.size())};
+    return placed_.emplace_back();
+}
+
+auto GLWorldView::placed_of(const State& st, const Element& e) const -> Placed& { return placed_in(slot_of(e), st, e); }
+
+auto GLWorldView::placed_in(PlacedSlot& slot, const State& st, const Element& e) const -> Placed& {
+    const uint64_t stamp = chain_stamp(st, e, slot.chain);
+    if (slot.placed.stamp != stamp) slot.placed = Placed{stamp};
+    return slot.placed;
 }
 
 Pose GLWorldView::pose_of(const State& st, const Element& e) const {
@@ -199,17 +255,32 @@ bool GLWorldView::is_doorway(const State& host,const Element& e) const {
 
 const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
     if (e.kind != kinds::mesh) return cube_;
-    // Asked every frame, in every pass, of every thing: remembered until
-    // the thing's parameters change.
-    auto& memo = shape_memo_[&e];
-    const auto made = [&] {
-        static const Key shape{"shape"}, model{"model"};
-        const auto* space = dynamic_cast<const Spatial3D*>(&st);
-        return space && e.params.is(shape, "model") ? space->model_revision(Key{e.params.get_or<std::string>(model, "")}) : 0;
-    };
+    // Asked every frame, in every pass, of every thing: remembered while
+    // the thing's parameters, or what its mesh is made of, hold.
+    ShapeMemo& memo = slot_of(e).shape;
+    const auto* space = dynamic_cast<const Spatial3D*>(&st);
+    const auto made = [&] { return space && memo.modelled ? space->model_revision(memo.model) : 0; };
     if (memo.mesh && memo.stamp == e.params.stamp() && (memo.made == 0 || memo.made == made())) return *memo.mesh;
+    static const Key shape{"shape"}, model{"model"}, bevel{"bevel"}, taper{"taper"};
+    static const std::string none;
+    const std::string* shape_name = e.params.text(shape);
+    const std::string* model_name = e.params.text(model);
+    if (!shape_name) shape_name = &none;
+    if (!model_name) model_name = &none;
+    const double tp = e.params.num(taper, 1.0), r = e.params.num(bevel, 0.0);
+    const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
+    if (memo.mesh && *shape_name == memo.shape_name && *model_name == memo.model_name && tp == memo.taper && r == memo.bevel &&
+        sx == memo.sx && sy == memo.sy && sz == memo.sz && (memo.made == 0 || memo.made == made())) {
+        memo.stamp = e.params.stamp();
+        return *memo.mesh;
+    }
     const gl::Mesh& m = find_shape(st, e);
-    memo = {e.params.stamp(), made(), &m};
+    memo.stamp = e.params.stamp(), memo.mesh = &m;
+    memo.modelled = *shape_name == "model";
+    memo.model = memo.modelled ? Key{*model_name} : Key{};
+    memo.shape_name = *shape_name, memo.model_name = *model_name;
+    memo.taper = tp, memo.bevel = r, memo.sx = sx, memo.sy = sy, memo.sz = sz;
+    memo.made = made();
     return m;
 }
 

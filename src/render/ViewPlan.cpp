@@ -369,7 +369,28 @@ float portal_occlusion(const Spatial3D &room, const Element &portal, const Pose 
 }
 
 namespace {
+// Whether a state is one of the graph's. Asked of every feed and doorway in
+// every frame, so the graph's states are gathered once for each change of
+// what joins them (a state added or taken away moves the topology). What the
+// gathering finds is checked against the graph by the state's own name, and
+// what it does not find is looked for the long way: it only saves the walk,
+// and a graph made again where an old one stood cannot fool it.
 bool registered(const StateGraph &graph, const State *state) {
+    struct States {
+        const StateGraph *graph = nullptr;
+        uint64_t topology = ~uint64_t{0};
+        std::unordered_set<const State *> all;
+    };
+    thread_local States ix;
+    if (ix.graph != &graph || ix.topology != graph.topology()) {
+        ix.graph = &graph, ix.topology = graph.topology();
+        ix.all.clear();
+        for (Key id : graph.ids())
+            if (const State *s = graph.find(id))
+                ix.all.insert(s);
+    }
+    if (ix.all.count(state))
+        return graph.find(state->id()) == state;
     for (Key id : graph.ids())
         if (graph.find(id) == state)
             return true;
