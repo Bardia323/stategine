@@ -1650,9 +1650,13 @@ std::vector<Violation> channels(const StateGraph& g) {
             const Key ra = find(sm.a), rb = find(sm.b);
             if (ra != rb) parent[rb] = ra;
         }
+        // The graph's pieces, looked at once (component would look at every
+        // seam again for each state).
+        const std::unordered_map<Key, Key>& theirs = g.pieces(c);
         std::unordered_map<Key, Key> ours_to_its, its_to_ours;
         for (const Key& k : g.ids()) {
-            const Key ours = find(k), its = g.component(c, k);
+            const auto it = theirs.find(k);
+            const Key ours = find(k), its = it == theirs.end() ? k : it->second;
             const auto a = ours_to_its.emplace(ours, its), b = its_to_ours.emplace(its, ours);
             if (a.first->second != its || b.first->second != ours)
                 report(out, std::string("channel ") + channel_name(c), k.str(), "its seams",

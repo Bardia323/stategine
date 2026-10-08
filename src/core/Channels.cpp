@@ -140,9 +140,13 @@ void StateGraph::refresh_channels() const {
     }
 }
 
-Key StateGraph::component(Channel c, Key state) const {
+const std::unordered_map<Key, Key>& StateGraph::pieces(Channel c) const {
     refresh_channels();
-    const auto& root = channels_[static_cast<std::size_t>(c)].root;
+    return channels_[static_cast<std::size_t>(c)].root;
+}
+
+Key StateGraph::component(Channel c, Key state) const {
+    const auto& root = pieces(c);
     const auto it = root.find(state);
     return it == root.end() ? state : it->second;
 }

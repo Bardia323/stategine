@@ -1265,12 +1265,24 @@ private:
     bool timing_ = false;
     const State* attend_ = nullptr;
     mutable FrameTimes times_;  // (counted from const questions too)
-    // Per room beyond a doorway, and per its doorway there: which of its
-    // things cross that doorway (draw_straddlers). Made again only when the
-    // room's data moved; usually empty.
+    // Per room: which of its things move, and so may stand half through a
+    // doorway (draw_straddlers). Made again only when what says so changed -
+    // the room's structure, or what a thing says of it (`says`, looked at
+    // again only when its params' stamp moved) - asked once a frame
+    // (`checked`); usually empty.
     struct Straddlers {
-        uint64_t version = ~uint64_t{0};
-        std::unordered_map<Key, std::vector<std::size_t>> by_doorway;
+        struct Ball {
+            std::size_t index;
+            Vec3d centre;
+            double radius;
+            bool shown;
+        };
+        uint64_t structure = ~uint64_t{0};
+        uint64_t checked = ~uint64_t{0};
+        std::vector<uint64_t> stamps, says;
+        std::vector<char> moved;                      // whose params moved this frame
+        std::vector<Ball> balls;                      // each that moves, where it is
+        std::vector<std::vector<std::size_t>> chains;  // it and what it hangs from
     };
     std::unordered_map<const Spatial3D*, Straddlers> straddlers_;
 };

@@ -504,6 +504,9 @@ public:
     // The piece a state is in, as one state of it - the same for every state
     // the channel joins it to (the state itself, when no seam passes it).
     Key component(Channel c, Key state) const;
+    // Every state a seam joins to another, to its piece (as `component`):
+    // looked at once for many states, the seams are looked at once.
+    const std::unordered_map<Key, Key>& pieces(Channel c) const;
 
     void set_initial(Key id) {
         rev_.rewired("set_initial");
