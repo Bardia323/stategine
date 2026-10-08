@@ -594,7 +594,9 @@ anything speaking the shared vocabulary (`x/y/z`, `sx/sy/sz`, `r/g/b`,
 terminal sketch and a texture on a wall at once.
 
 `sg::render::GLWorldView` draws any `Spatial3D`: portal passes, lights and
-PCF shadows (four own shadow casters plus doorway light), procedural materials,
+PCF shadows (six own shadow casters plus doorway light; a lamp with no cone,
+`outer` past `kCubeCone`, shadows all round it from six maps, a face of a
+cube each), procedural materials,
 fog, air lit by its lamps (optional) and optional ambient occlusion, then
 bloom, a grade, tonemapping and FXAA (see [Air, grade and glow](#air-grade-and-glow)).
 Walls are data - a state with `wall` elements gets them drawn, one without gets a

@@ -57,15 +57,29 @@ uniform vec4  uLightGateAxis[MAX_LIGHTS];
 uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
 uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
 uniform vec4  uLightFrame[MAX_LIGHTS];    // a projector's: the tangents of its half-angles across and up, how soft its edge; 1 if framed
+uniform float uLightLayer[MAX_LIGHTS];    // the first layer of its shadow maps, or < 0 for none
+uniform float uLightCube[MAX_LIGHTS];     // 1: a lamp with no cone, its maps six, a face of a cube round it each
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
-// The first `uShadowCount` lights each have a depth map, a layer each of one
-// array: where it sees from (`uShadowVP`), and how much its depth is let slip
-// (`uShadowBias` - a sun's range is far longer than a lamp's).
-const int MAX_SHADOWS = 10;
+// The first `uShadowCount` lights each have depth maps, layers of one array
+// (from `uLightLayer`: one, or six for a lamp with no cone): where each sees
+// from (`uShadowVP`), and how much its depth is let slip (`uShadowBias` - a
+// sun's range is far longer than a lamp's).
+const int MAX_SHADOWS = 24;
 uniform sampler2DArrayShadow uShadowMaps;
 uniform mat4 uShadowVP[MAX_SHADOWS];
 uniform float uShadowBias[MAX_SHADOWS];
+
+// Which of light `i`'s maps sees `p`: its one, or - a lamp with no cone -
+// the face of its cube the way from the lamp to `p` goes out through (the
+// greatest of the three coordinates of that way: +x, -x, +y, -y, +z, -z).
+int shadow_layer(int i, vec3 p) {
+    int first = int(uLightLayer[i] + 0.5);
+    if (uLightCube[i] < 0.5) return first;
+    vec3 d = p - uLightPos[i], a = abs(d);
+    int face = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1) : a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5);
+    return first + face;
+}
 
 // How much of light `i` comes through its doorway to `p`: the way to it
 // (towards a lamp, the whole way; towards a sun, a direction) must pass
@@ -218,7 +232,7 @@ vec3 slice_light(vec3 dir, float k, float down) {
         vec3 l;
         float reach = light_reach(i, p, l);
         if (reach <= 1e-5) continue;
-        if (i < uShadowCount) reach *= air_shadow(i, p);
+        if (i < uShadowCount && uLightLayer[i] > -0.5) reach *= air_shadow(shadow_layer(i, p), p);
         // Mostly on ahead, some back: two lobes, as haze has.
         float c = dot(dir, l);
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
@@ -695,7 +709,7 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
 // door, the leaf's edge, a chair's legs), the two blended before the near
 // one's own edge begins to fade.
 float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
-    float wide = shadow_factor(i, n, l, floor_);
+    float wide = shadow_factor(shadow_layer(i, vLit), n, l, floor_);
     if (uLightNear[i] < -0.5) return wide;
     int near = int(uLightNear[i] + 0.5);
     vec4 light_space = uShadowVP[near] * vec4(vLit, 1.0);
@@ -1098,7 +1112,7 @@ void main() {
         float shadow = 1.0;
         // (Only where the lamp reaches: outside its cone it adds nothing,
         // and its shadow there is nothing.)
-        if (ndl > 0.0 && i < uShadowCount && !let_in) {
+        if (ndl > 0.0 && i < uShadowCount && uLightLayer[i] > -0.5 && !let_in) {
             float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }

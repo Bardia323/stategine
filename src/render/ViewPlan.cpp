@@ -267,6 +267,22 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
     return result;
 }
 
+int shadow_faces(const DrawLight &l) {
+    const bool framed = l.frame_w > 0.0f && l.frame_h > 0.0f;
+    return !l.sun && !l.gated && !framed && l.outer > kCubeCone ? 6 : 1;
+}
+
+spatial::projection::Mat4 shadow_face(const DrawLight &l, int face) {
+    using spatial::projection::Vec3;
+    // The faces as the scene shader picks them, by the greatest of the
+    // three coordinates of the way from the lamp (lights_glsl, shadow_layer).
+    static const Vec3 axis[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    static const Vec3 up[6] = {{0, 1, 0}, {0, 1, 0}, {0, 0, 1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}};
+    const int f = std::clamp(face, 0, 5);
+    return spatial::projection::Mat4::perspective(2.0f * std::atan(kCubeFaceSpread), 1.0f, 0.1f, 40.0f) *
+           spatial::projection::Mat4::look_at(l.pos, l.pos + axis[f], up[f]);
+}
+
 float portal_occlusion(const Spatial3D &room, const Element &portal, const Pose &door, float half_w, float half_h,
                        bool &shut) {
     const Vec3d a = across(door.yaw), n = heading(door.yaw);

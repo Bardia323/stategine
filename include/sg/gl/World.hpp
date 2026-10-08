@@ -143,7 +143,8 @@ using GLQuality = Quality;
 class GLWorldView {
 public:
     static constexpr std::size_t kMaxLights = 24;   // matches the scene shader
-    static constexpr std::size_t kShadowMaps = 10;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
+    static constexpr std::size_t kShadowLights = 10;  // lights with maps, and suns' close-up maps: a lamp with no cone counts once for its six layers
     static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
@@ -482,10 +483,11 @@ private:
     // a sliver. `shut`: something lying flat in the opening fills it.
     float covered(const Spatial3D& room, const Element& portal, const Pose& door, float half_w, float half_h, bool& shut) const;
 
-    // Every lamp that lights these rooms, strongest first: the first four of
-    // their own get shadow maps (`shadowed` of them), the rest light without
-    // casting. What comes in through their doorways goes after the shadowed,
-    // before their fainter own.
+    // Every lamp that lights these rooms, strongest first: the first six of
+    // their own get shadow maps (`shadowed` of them; one each, or six - a
+    // face of a cube each - for a lamp with no cone, while the array holds
+    // them), the rest light without casting. What comes in through their
+    // doorways goes after the shadowed, before their fainter own.
     std::vector<Light> read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed);
 
     // The doorway in `guest` that leads back to `host` - the one being looked

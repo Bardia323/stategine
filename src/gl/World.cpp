@@ -1004,7 +1004,11 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
         if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
         return a.pos.y < b.pos.y;
     });
-    const std::size_t own = std::min(out.size(), kOwnShadows);
+    // (Lamps, not layers: a lamp with no cone takes six layers of the maps,
+    // one a face of a cube round it - while the array holds them.)
+    std::size_t own = 0, faces = 0;
+    while (own < std::min(out.size(), kOwnShadows) && faces + shadow_faces(out[own]) <= kShadowMaps)
+        faces += static_cast<std::size_t>(shadow_faces(out[own])), ++own;
     // What comes through a doorway, shut or not - the same lights in the
     // same places, only what they reach told by the door (hung_only) - gets
     // a shadow map of its own while there are maps: then what stands in the
@@ -1014,7 +1018,7 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
     for (const PlacedRoom& placed : rooms)
         if (!placed.image)
             for (const Light& l : through_doorways(placed)) in.push_back(l);
-    shadowed = std::min(own + in.size(), kShadowMaps);
+    shadowed = std::min({own + in.size(), std::max(kShadowLights, own), own + (kShadowMaps - faces)});
     for (std::size_t k = 0; k < shadowed - own && k < in.size(); ++k) in[k].open = 1.0f;
     out.insert(out.begin() + static_cast<std::ptrdiff_t>(own), in.begin(), in.end());
     shadowed = std::min(shadowed, out.size());
@@ -1137,23 +1141,45 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         return 2.0f * std::tan(std::min(l.outer * 2.05f, 2.7f) * 0.5f) / size;
     };
     gl::Mat4 light_vp[kShadowMaps];
-    float bias[kShadowMaps] = {1.0f, 1.0f, 1.0f, 1.0f};
-    for (std::size_t i = 0; i < kShadowMaps; ++i) {
-        const Light& l = lights[std::min(i, lights.size() - 1)];
+    float bias[kShadowMaps];
+    std::fill(bias, bias + kShadowMaps, 1.0f);
+    // Each light with maps takes its layers in turn: one, or - a lamp with no
+    // cone - six, a face of a cube round it each (shadow_faces). Which light
+    // a layer is of, and which face of its cube (-1: the light's one map).
+    std::array<std::size_t, kShadowMaps> layer_light{};
+    std::array<int, kShadowMaps> layer_face{};
+    std::vector<float> first_layer(lights.size(), -1.0f), cube_of(lights.size(), 0.0f);
+    std::size_t layers = 0, cube_extra = 0;
+    {
         const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
-        light_vp[i]=shadow_projection(l,eye,shadow_px,bias[i]);
-        bias[i] = texel_of(l);
+        const float face_texel = 2.0f * kCubeFaceSpread / static_cast<float>(std::max(shadow_px, 1));
+        for (std::size_t i = 0; i < shadowed && layers < kShadowMaps; ++i) {
+            const Light& l = lights[i];
+            const int faces = shadow_faces(l);
+            first_layer[i] = static_cast<float>(layers);
+            cube_of[i] = faces > 1 ? 1.0f : 0.0f;
+            for (int f = 0; f < faces && layers < kShadowMaps; ++f, ++layers) {
+                layer_light[layers] = i;
+                layer_face[layers] = faces > 1 ? f : -1;
+                if (faces > 1) {
+                    light_vp[layers] = shadow_face(l, f);
+                    bias[layers] = face_texel;
+                } else {
+                    light_vp[layers] = shadow_projection(l, eye, shadow_px, bias[layers]);
+                    bias[layers] = texel_of(l);
+                }
+            }
+            cube_extra += static_cast<std::size_t>(faces - 1);
+        }
     }
     // A sun whose map reaches far gets a second, small one round the viewer
     // (in the layers after the lamps'): close up, a texel is a centimetre,
     // not a hand's breadth - a door's edge, a chair's legs, a leaf half in
-    // each room would otherwise show the steps of the wide one.
+    // each room would otherwise show the steps of the wide one. (As many as
+    // there would be with no cube: a cube's six count as its lamp's one.)
     constexpr float kNearReach = 6.0f;
     std::vector<float> near_of(lights.size(), -1.0f);
-    std::array<std::size_t, kShadowMaps> layer_light{};
-    std::size_t layers = shadowed;
-    for (std::size_t i = 0; i < shadowed; ++i) layer_light[i] = i;
-    for (std::size_t i = 0; i < shadowed && layers < kShadowMaps; ++i) {
+    for (std::size_t i = 0; i < shadowed && layers < kShadowMaps && layers - cube_extra < kShadowLights; ++i) {
         const Light& l = lights[i];
         if (!l.sun || l.indirect || l.extent <= 2.0f * kNearReach) continue;
         Light close = l;
@@ -1164,6 +1190,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         bias[layers] = texel_of(close);
         near_of[i] = static_cast<float>(layers);
         layer_light[layers] = i;
+        layer_face[layers] = -1;
         ++layers;
     }
     // Narrowed to the part of the screen drawn (sub_): that part fills the
@@ -1309,7 +1336,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // another order) is laid now, never left standing as some other
         // lamp's shadow. (Colour and power are not in a depth map: a sun's go
         // with the hour.)
-        const uint64_t ident = fnv(fnv(fnv(li.sun ? 1 : 2, li.gate), near_of[layer_light[i]] == static_cast<float>(i) ? 1 : 0), li.sun ? 0 : 1);
+        // (And which face of a lamp's cube: a face's map is never another's.)
+        uint64_t ident = fnv(fnv(fnv(li.sun ? 1 : 2, li.gate), near_of[layer_light[i]] == static_cast<float>(i) ? 1 : 0), li.sun ? 0 : 1);
+        if (layer_face[i] >= 0) ident = fnv(ident, static_cast<uint64_t>(layer_face[i]) + 7);
         const Frustum volume = frustum_of(light_vp[i]);
         // What moves in the volume, and the terrain and panels in it.
         movers_in.clear(), extras_in.clear();
@@ -1470,6 +1499,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(i, 8), l.indirect ? 1.0f : 0.0f);
             p.set(light_uniform(i, 9), l.falloff);
             p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
+            p.set(light_uniform(i, 16), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
+            p.set(light_uniform(i, 17), cube_of[i]);
             p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
             p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
             p.set(light_uniform(i, 13), l.open);
@@ -3604,10 +3635,11 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
         static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame"};
-        std::array<std::array<std::string, 16>, kMaxLights> n;
+                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame",
+                                       "uLightLayer", "uLightCube"};
+        std::array<std::array<std::string, 18>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 16; ++f)
+            for (int f = 0; f < 18; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;
