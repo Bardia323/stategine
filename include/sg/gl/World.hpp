@@ -1075,6 +1075,9 @@ private:
     // its time there, the eye it is seen from, its size, and the worlds its
     // own doorways open onto. A still world on a wall is drawn once.
     uint64_t feed_key(const Feed& f) const;
+    // Draw a feed's picture through its own view, unless nothing it is made
+    // from moved since it was last drawn (feed_key). Whether it was drawn.
+    bool draw_feed(Feed& f);
     // Everything the scene pass of a picture is drawn from: what it draws
     // (things, walls, lamps, doorways, their anchors, the ground, the eye),
     // its world's params, the look's scene and shadow passes, its time, its

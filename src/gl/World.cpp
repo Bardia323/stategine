@@ -186,6 +186,15 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     pack_skins();
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
+    // And every screen's picture, through the screen's own view, whether or
+    // not it was in sight from any of those eyes: a painting or a set first
+    // turned to is not where its view is made (a world's first picture in a
+    // view of its own costs tens of milliseconds - its shaders, its targets).
+    for (auto& [id, f] : feeds_)
+        if (f.world && f.view && declared_feed(id, *f.world)) {
+            f.drawn = true;
+            draw_feed(f);
+        }
     // And every picture a thing wears, made on the card now: one first seen
     // through a doorway, or round a corner, is not made in the frame it is
     // seen (a painted floor's maps take tens of milliseconds to upload).
@@ -337,20 +346,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
                         if (!f.out()[i].valid()) f.out()[i].create(f.rw, f.rh, gl::GL_SRGB8_ALPHA8, 0, false);
                 }
             }
-            // Nothing it is made from has changed: the picture it has is the one.
-            const uint64_t key = feed_key(f);
-            if (f.drawn_of == key && f.drawn_of != 0) continue;
-            f.drawn_of = key;
-            f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
-            f.view->root_ = this;
-            f.view->output_ = &f.out()[1 - f.front];
-            f.view->eye_override_ = f.eye;
-            f.view->render(*f.world, f.rw, f.rh);
-            f.view->output_ = nullptr;
-            f.view->eye_override_ = nullptr;
-            f.out()[1 - f.front].mipmap();
-            f.front = 1 - f.front;
-            ++feed_views;
+            if (draw_feed(f)) ++feed_views;
         }
     }
     const double feeds_ms =
@@ -3577,6 +3573,23 @@ uint64_t GLWorldView::scene_key(const std::vector<PlacedRoom>& rooms, int w, int
         }
     }
     return k | 1;
+}
+
+bool GLWorldView::draw_feed(Feed& f) {
+    // Nothing it is made from has changed: the picture it has is the one.
+    const uint64_t key = feed_key(f);
+    if (f.drawn_of == key && f.drawn_of != 0) return false;
+    f.drawn_of = key;
+    f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
+    f.view->root_ = this;
+    f.view->output_ = &f.out()[1 - f.front];
+    f.view->eye_override_ = f.eye;
+    f.view->render(*f.world, f.rw, f.rh);
+    f.view->output_ = nullptr;
+    f.view->eye_override_ = nullptr;
+    f.out()[1 - f.front].mipmap();
+    f.front = 1 - f.front;
+    return true;
 }
 
 uint64_t GLWorldView::feed_key(const Feed& f) const {
