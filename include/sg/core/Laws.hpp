@@ -548,6 +548,14 @@ std::vector<Violation> overlaps(const StateGraph& g);
 // the engine's watch takes a few at a frame.
 std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::size_t count);
 
+// What passes through the seams (Channel) holds together. A doorway names
+// only channels there are (`admits`: view light sound objects); a seam
+// walked through admits things (`objects`) - or whoever walks into it is
+// carried nowhere; and every piece the graph says a channel joins
+// (StateGraph::connected) is what its seams join, made again from them here:
+// a piece that disagrees with its seams is a defect.
+std::vector<Violation> channels(const StateGraph& g);
+
 }  // namespace laws
 
 // ---------------------------------------------------------------------------

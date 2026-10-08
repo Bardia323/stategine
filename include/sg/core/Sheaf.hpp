@@ -51,6 +51,10 @@ struct Overlap {
     Key v_to_u;
     // Its rings are the space's own shape (Seam::wraps): not held to closing.
     bool wraps = false;
+    // What passes through it, as a seam's doorway says it (Channel: view
+    // light sound objects); empty, all of them. An overlap that is not a
+    // seam - a painting gone into by a transition - says what it is: `view`.
+    std::string admits;
 };
 
 // How far a composite may stray from the identity before it counts as a seam.

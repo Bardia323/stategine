@@ -730,6 +730,14 @@ private:
 
     void draw_crate(const State& st, const Element& e);
 
+    // What stands half through a doorway is half in each room, and seen
+    // whole from either: drawing a room, the things of the room beyond each
+    // seam that admits things (Channel::Objects) whose bounds cross the
+    // doorway are drawn too, carried by the seam's own transform and cut to
+    // this room's side of it - as a door's leaf hangs in both (`straddle`).
+    // Read from the room beyond, through the declared seam; nothing copied.
+    void draw_straddlers(const PlacedRoom& placed, const Spatial3D& room);
+
     // A lamp hangs from the ceiling in a housing, unless `fixture` is 0: then
     // it is only light, for a lamp whose body is modelled elsewhere.
     void draw_lamp(const Spatial3D& world, const Element& e);
@@ -1257,6 +1265,14 @@ private:
     bool timing_ = false;
     const State* attend_ = nullptr;
     mutable FrameTimes times_;  // (counted from const questions too)
+    // Per room beyond a doorway, and per its doorway there: which of its
+    // things cross that doorway (draw_straddlers). Made again only when the
+    // room's data moved; usually empty.
+    struct Straddlers {
+        uint64_t version = ~uint64_t{0};
+        std::unordered_map<Key, std::vector<std::size_t>> by_doorway;
+    };
+    std::unordered_map<const Spatial3D*, Straddlers> straddlers_;
 };
 
 }  // namespace sg::render

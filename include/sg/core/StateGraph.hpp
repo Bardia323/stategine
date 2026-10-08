@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <functional>
 #include <map>
@@ -75,6 +76,29 @@ struct Seam {
     // pass through one must still close.
     bool wraps = false;
 };
+
+// What may pass through a seam, each a channel of its own: what is seen
+// through it, the light that falls through it, what is heard through it, and
+// the things - walkers, loose bodies, beings - walked or carried across it
+// (Engine::cross), each by the seam's own travel. A transition that is not a
+// seam's crossing (a painting gone into) is not a seam's to admit.
+//
+// A seam says which it admits on its doorways (either boundary, as it says
+// `differs`): `admits` = the names, space separated, of
+//   view light sound objects
+// - what one side does not admit, the seam does not. A doorway that says
+// nothing admits by what it is: a screen or a painting (`feed`) only view; a
+// ball flown out of (`ball_out`: the sky of a world in a glass) view, light
+// and objects; any other all four - so a seam that says nothing is as it
+// always was. How far it is open (`opening`, 0 shut to 1; 1 if it does not
+// say - a door's leaf says it through a functor from its doorway's state)
+// scales the light through it, and the sound, which a shut door muffles
+// (`muffle`, the share heard through it shut: 0.25 unless it says). A
+// crossfade across it takes `fade` seconds (1 unless it says).
+enum class Channel : int { View = 0, Light = 1, Sound = 2, Objects = 3 };
+constexpr int kChannels = 4;
+// The channel's name, as `admits` says it.
+const char* channel_name(Channel c);
 
 // In how many dimensions a state is walked: its `walk_dims` if it says (a
 // world of three held to a plane says 2), else 3 for a space3d, 2 for a
@@ -376,6 +400,25 @@ public:
     const std::deque<Seam>& seams() const { return seams_; }
     const Seam* seam(Key name) const;
 
+    // --- what passes through the seams (Channel) ---------------------------------
+    // Whether the seam lets the channel through at all, as its doorways say.
+    bool admits(const Seam& s, Channel c) const;
+    // How much of it passes, 0 to 1: nothing it does not admit; light as far
+    // as it is open; sound muffled as it shuts; what is seen and what crosses,
+    // all of it.
+    double passes(const Seam& s, Channel c) const;
+    // How long a crossfade across it takes, in seconds.
+    double fade(const Seam& s) const;
+    // Whether the channel reaches from one state to another through seams
+    // that pass it - a light in one room falling in another, a sound heard
+    // there. The pieces are derived from the seams, and made again only when
+    // a seam, or what one of its doorways says, changes - and then only the
+    // channels whose seams now pass otherwise. A state is joined to itself.
+    bool connected(Channel c, Key a, Key b) const;
+    // The piece a state is in, as one state of it - the same for every state
+    // the channel joins it to (the state itself, when no seam passes it).
+    Key component(Channel c, Key state) const;
+
     void set_initial(Key id) {
         rev_.rewired("set_initial");
         initial_ = id;
@@ -521,6 +564,19 @@ private:
     mutable std::unordered_set<Key> reach_;
     mutable uint64_t reach_revision_ = ~uint64_t{0};
     mutable std::unordered_map<const Functor*, FunctorCheck> functor_checks_;
+
+    // The pieces each channel joins (connected): derived from the seams and
+    // what their doorways say, and disposable. Looked at again when the
+    // graph's revision or a doorway's params move (`seen`); a channel's
+    // pieces are made again only when which seams pass it changed.
+    struct ChannelPieces {
+        bool made = false;
+        std::vector<char> passing;            // per seam, in seams() order
+        std::unordered_map<Key, Key> root;    // a state joined to another -> its piece
+    };
+    mutable uint64_t channels_seen_ = ~uint64_t{0};
+    mutable std::array<ChannelPieces, kChannels> channels_;
+    void refresh_channels() const;
 };
 
 }  // namespace sg
