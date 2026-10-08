@@ -299,6 +299,15 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_air_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_air_gl COMMAND sg_air_gl)
+
+    # The eye's exposure: as before when a look says nothing; adjusting to
+    # the light, eased at its rate, and settled the same however come to.
+    add_executable(sg_exposure_gl tests/exposure_gl.cpp)
+    target_link_libraries(sg_exposure_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_exposure_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_exposure_gl COMMAND sg_exposure_gl)
   endif()
 endif()
 

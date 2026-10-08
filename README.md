@@ -741,6 +741,28 @@ shows - a lamp deep in fog is haloed more than one near - and `uFogBloomCap`,
 the optical depth past which it spreads no more (3 unless it says). The
 renderer hands it the view's depth only while a look asks for it.
 
+**The eye's exposure** (scene pass settings). A look may have the eye adjust
+to what it sees, so a dark corridor and a lit room need no exposure of their
+own: the scene's light is measured each frame - the log of its brightness, in
+a 128 x 64 picture taken down to one pixel, the middle of the view counting
+most - and read back a frame late, and the eye eases toward bringing it to
+mid grey. The look's `uExposure` stays, on top, as a bias.
+
+| Setting | Means | Unless it says |
+| --- | --- | --- |
+| `exposure.auto` | 1: the eye adjusts (it fades in and out with the look) | 0: the look's `uExposure` alone, exactly as before |
+| `exposure.key` | the brightness the scene is brought to | 0.18 |
+| `exposure.min`, `exposure.max` | the most the eye closes and opens, in stops | -8, 8 |
+| `exposure.rate` | how fast it adjusts, in stops a second of the interval handed in | 1.5 |
+
+It is how the eye is, not how the world is - nothing of it is written into
+a state or its time - and eased by the transient interval as fades are
+(`set_frame_delta`). Only the eye's view adjusts: a screen's picture keeps its
+look's own exposure (a painting's match holds), and a room seen through a
+doorway is seen with the eye's. The first frame the eye adjusts, and the next
+after `settle_exposure()`, take the measure at once: a shot asks for it on its
+first frame, so it is the same picture however it was come to.
+
 ## The notation
 
 What this page has written in C++ - a state and its arrows, a functor, an

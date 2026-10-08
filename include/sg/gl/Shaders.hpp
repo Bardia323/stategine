@@ -152,6 +152,12 @@ const char* air_sum_fs();
 // uViewport is declared).
 const char* air_glsl();
 
+// What the eye adjusts to: a small picture of the scene's light, each pixel
+// the log (base 2) of how bright the scene is about there, weighted towards
+// the middle of the view, and that weight - so its mipmaps, taken down to one
+// pixel, are the weighted mean of the log (the eye's own auto-exposure).
+const char* exposure_meter_fs();
+
 const char* scene_fs();
 
 // Depth-only pass for the shadow map.

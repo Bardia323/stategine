@@ -192,6 +192,26 @@ public:
     void set_fixed_step(double seconds) { fixed_step_ = seconds; }
     void set_frame_delta(double seconds) { fixed_step_ = seconds; }
 
+    // The eye's exposure. A look whose scene pass says `exposure.auto` = 1
+    // has the eye adjust to what it sees: the scene's light, measured each
+    // frame (the log of its brightness, the middle of the view counting
+    // most), is brought to `exposure.key` (0.18, mid-grey), opened or closed
+    // by no more than `exposure.min` .. `exposure.max` stops (-8 .. 8), at
+    // `exposure.rate` stops a second (1.5) of the interval handed in - the
+    // look's own `uExposure` laid on top, as a bias. A look that says none
+    // of it is drawn exactly as before. It is how the eye is, not how the
+    // world is: nothing of it is written into a state or its time. Only the
+    // eye's view adjusts; a screen's picture keeps its look's own exposure,
+    // and a room seen through a doorway is seen with the eye's.
+    //
+    // Settled: the next frame takes the measured exposure at once, not eased
+    // there - as the first frame the eye adjusts at all does, and as a look
+    // first seen is shown as it is. A shot's first frame asks for it, so a
+    // shot is the same picture however it was come to.
+    void settle_exposure() { exposure_.settle = true; }
+    // How many stops the eye is opened by now (0 when no look asks it to adjust).
+    double exposure_stops() const { return exposure_.weight > 0.0f ? exposure_.ev : 0.0; }
+
     // Compile every look the graph can show - those worn by the states
     // reachable from its initial one - and check each against what this
     // renderer feeds it. Call once there is a GL context, before the first
@@ -732,6 +752,32 @@ private:
     void run_ao(float strength, float radius);
 
     void run_bloom();
+
+    // The eye's adjustment (settle_exposure): measured from the scene's
+    // light into a small picture whose mipmaps average it, read back a frame
+    // late (or at once, settling), and eased to by the interval handed in.
+    struct Exposure {
+        gl::RenderTarget meter;
+        gl::GLuint pbo[2] = {0, 0};
+        bool asked[2] = {};
+        int next = 0;
+        double ev = 0.0, target = 0.0;  // stops opened by now, and as the last measure says
+        bool known = false, settle = false;
+        float weight = 0.0f;  // how much the look on screen says auto (it fades as looks do)
+    };
+    static constexpr int kMeterW = 128, kMeterH = 64, kMeterLevels = 8;  // 128 x 64 down to 1 x 1
+    Exposure exposure_;
+    std::unique_ptr<gl::Program> meter_prog_;
+    // At the start of the eye's frame: what was measured last frame, eased to.
+    void adapt_exposure();
+    // After the scene is drawn: measured, to be read the next frame - or at
+    // once, when settling.
+    void meter_exposure();
+    // Where a measure (the meter's last level: the weighted log, the weight) puts the eye.
+    double exposure_target(const float rg[2]) const;
+    // What the eye's adjustment multiplies a look's `uExposure` by in this
+    // view: its own, the eye's (a doorway drawn in its own look), or none (a screen).
+    float exposure_gain() const;
 
     // The wide glow (bloom_down_fs): the tight bloom taken down the chain and
     // back up, each level adding its own, then mixed into the tight bloom by

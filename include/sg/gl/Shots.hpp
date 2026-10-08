@@ -45,6 +45,9 @@ public:
 
     bool done() const { return at_ >= shots_.size(); }
     const Shot* current() const { return done() ? nullptr : &shots_[at_]; }
+    // The coming frame is a shot's first: what eases (an eye's exposure) is
+    // to be settled there, so the shot does not depend on what came before it.
+    bool starting() const { return !done() && frame_ == 0; }
     // Before a frame: a shot's setup, on its first frame. `run` answers in words.
     void before(const std::function<std::string(const std::string&)>& run);
     // After a frame is drawn: its picture, if it is a shot's last; and the

@@ -1225,6 +1225,29 @@ float fog_bloom(vec2 uv) {
 )";
 }
 
+const char* exposure_meter_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uScene;
+uniform vec2 uCell;  // one pixel of the meter, in the scene's 0..1
+void main() {
+    // Four looks about the cell, so a lamp or a dark seam between two
+    // samples is not missed - each as bright as its light, not its colour.
+    float sum = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec2 o = (vec2(i & 1, i >> 1) - 0.5) * 0.5 * uCell;
+        vec3 c = texture(uScene, vUV + o).rgb;
+        sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1.0 / 16384.0));
+    }
+    // The middle of the view counts most, as the eye looks at it; the edges
+    // still a quarter as much, so a lamp at the edge is not all ignored.
+    vec2 d = vUV - 0.5;
+    float w = 0.25 + exp(-dot(d, d) / (2.0 * 0.2 * 0.2));
+    FragColor = vec4(w * sum * 0.25, w, 0.0, 1.0);
+})";
+}
+
 const char* composite_fs() {
     static const std::string source = std::string(R"(#version 330 core
 in vec2 vUV;

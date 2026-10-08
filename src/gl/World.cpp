@@ -183,6 +183,10 @@ void GLWorldView::release_feed(Feed& f) {
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
     const LookFader fader = fader_;
     const Mix post = post_;
+    // (And the eye as it was adjusted: what warming measures is of other worlds.)
+    const double ev = exposure_.ev, ev_target = exposure_.target;
+    const bool ev_known = exposure_.known, ev_settle = exposure_.settle;
+    const float ev_weight = exposure_.weight;
     pack_skins();
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
@@ -203,6 +207,9 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     gl::glFinish();
     fader_ = fader;
     post_ = post;
+    exposure_.ev = ev, exposure_.target = ev_target, exposure_.known = ev_known, exposure_.settle = ev_settle;
+    exposure_.weight = ev_weight;
+    exposure_.asked[0] = exposure_.asked[1] = false;
 }
 
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
@@ -364,6 +371,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     own_shown_ = own_shown_now_;
     own_shown_now_.clear();
     post_ = mix(view_key(), look_of(world));
+    adapt_exposure();
     const Camera eye_cam = eye_override_ ? camera_of(*eye_override_) : camera_of(world);
     const float aspect = static_cast<float>(fb_w) / static_cast<float>(fb_h);
 
@@ -552,6 +560,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl).
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0;
     if (fog_depth_ && ao <= 0.0) scene_target_.blit_depth_to(depth_);
+    meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);
     if (timing_) gl::glFinish();
@@ -3216,6 +3225,88 @@ void GLWorldView::run_wide_bloom(float wide) {
     gl::glDisable(gl::GL_BLEND);
 }
 
+void GLWorldView::adapt_exposure() {
+    if (root_) return;  // a screen's picture, or a doorway's: the eye is the view on the screen's
+    Exposure& x = exposure_;
+    x.weight = static_cast<float>(std::clamp(setting(post_, passes::scene, "exposure.auto", 0.0), 0.0, 1.0));
+    if (x.weight <= 0.0f) {
+        // Not adjusting: the next time it does, it starts where it measures.
+        x.known = false, x.ev = 0.0;
+        x.asked[0] = x.asked[1] = false;
+        return;
+    }
+    // What was asked for last frame is on the card's side by now: read
+    // without waiting for this frame's drawing.
+    const int last = x.next ^ 1;
+    if (x.asked[last]) {
+        float rg[2] = {0, 0};
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, x.pbo[last]);
+        gl::glGetBufferSubData(gl::GL_PIXEL_PACK_BUFFER, 0, sizeof rg, rg);
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+        x.asked[last] = false;
+        if (rg[1] > 0.0f && std::isfinite(rg[0])) x.target = exposure_target(rg);
+    }
+    if (!x.known || x.settle) return;  // measured at once this frame (meter_exposure)
+    const double rate = std::max(0.0, setting(post_, passes::scene, "exposure.rate", 1.5));
+    const double step = rate * dt_;
+    x.ev += std::clamp(x.target - x.ev, -step, step);
+}
+
+void GLWorldView::meter_exposure() {
+    if (root_ || exposure_.weight <= 0.0f || !scene_src_->valid()) return;
+    Exposure& x = exposure_;
+    if (!meter_prog_) {
+        meter_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::exposure_meter_fs(), "exposure meter");
+        x.meter.create(kMeterW, kMeterH, gl::GL_RG16F, 0, false);
+        gl::glGenBuffers(2, x.pbo);
+        for (gl::GLuint b : x.pbo) {
+            gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, b);
+            gl::glBufferData(gl::GL_PIXEL_PACK_BUFFER, 2 * sizeof(float), nullptr, gl::GL_STREAM_READ);
+        }
+        gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+    }
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    x.meter.bind();
+    meter_prog_->use();
+    meter_prog_->set("uScene", 0);
+    meter_prog_->set("uCell", 1.0f / kMeterW, 1.0f / kMeterH);
+    scene_src_->bind_color(0);
+    screen_.draw();
+    x.meter.mipmap();  // (leaves the meter's picture bound to unit 0)
+    if (!x.known || x.settle) {
+        // Settling: read now, and the eye is where it measures this frame.
+        float rg[2] = {0, 0};
+        gl::glGetTexImage(gl::GL_TEXTURE_2D, kMeterLevels - 1, gl::GL_RG, gl::GL_FLOAT, rg);
+        x.target = rg[1] > 0.0f && std::isfinite(rg[0]) ? exposure_target(rg) : 0.0;
+        x.ev = x.target;
+        x.known = true, x.settle = false;
+        x.asked[0] = x.asked[1] = false;
+        return;
+    }
+    gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, x.pbo[x.next]);
+    gl::glGetTexImage(gl::GL_TEXTURE_2D, kMeterLevels - 1, gl::GL_RG, gl::GL_FLOAT, nullptr);
+    gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
+    x.asked[x.next] = true;
+    x.next ^= 1;
+}
+
+double GLWorldView::exposure_target(const float rg[2]) const {
+    const double mean_log = static_cast<double>(rg[0]) / static_cast<double>(rg[1]);
+    const double key = std::max(1e-4, setting(post_, passes::scene, "exposure.key", 0.18));
+    const double lo = setting(post_, passes::scene, "exposure.min", -8.0);
+    const double hi = setting(post_, passes::scene, "exposure.max", 8.0);
+    return std::clamp(std::log2(key) - mean_log, std::min(lo, hi), std::max(lo, hi));
+}
+
+float GLWorldView::exposure_gain() const {
+    // A doorway drawn in its own look is seen by the eye on the screen: with
+    // its adjustment. A screen's picture is a picture: its look's own.
+    const Exposure& x = root_ ? (film_of_viewer_ ? root_->exposure_ : exposure_) : exposure_;
+    if (root_ && !film_of_viewer_) return 1.0f;
+    if (x.weight <= 0.0f || !x.known) return 1.0f;
+    return static_cast<float>(std::exp2(static_cast<double>(x.weight) * x.ev));
+}
+
 void GLWorldView::composite(int fb_w, int fb_h) {
     if (output_) {
         output_->bind();
@@ -3229,11 +3320,26 @@ void GLWorldView::composite(int fb_w, int fb_h) {
     if (fog_depth_) depth_.bind_depth(2);
     const float air_density = static_cast<float>(setting(post_, passes::scene, "uFogDensity", 0.0));
     const float air_start = static_cast<float>(setting(post_, passes::scene, "uFogStart", 0.0));
+    // The eye's adjustment, on whatever exposure the looks set: the room's,
+    // or the attended state's over it.
+    const float gain = exposure_gain();
+    float exposure = 1.0f;
+    if (gain != 1.0f) {
+        exposure = static_cast<float>(setting(post_, passes::composite, "uExposure", 1.0));
+        if (attend_) {
+            const Mix& am = mix(Key{"attend:" + attend_->id().str()}, look_of(*attend_));
+            for (const Mix::Part& part : am.parts)
+                if (const Element* e = part.look->find(passes::composite); e && e->params.has(Key{"uExposure"}))
+                    exposure = static_cast<float>(fader_.value(am, passes::composite, Key{"uExposure"}, 0.0));
+        }
+        exposure *= gain;
+    }
 
     const auto draw = [&](const gl::Program& p) {
         p.use();
         apply_uniforms(p, post_, passes::composite);
         apply_attended(p, passes::composite);
+        if (gain != 1.0f) p.set("uExposure", exposure);
         if (film_of_viewer_) p.set("uGrain", 0.0f);
         if (rays_on_) {
             p.set("uRayDir", to_vec3(rays_dir_));
