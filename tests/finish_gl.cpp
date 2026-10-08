@@ -39,15 +39,18 @@ struct Picture {
         n = std::max(n, 1);
         return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / n;
     }
-    // The most any channel of a box of it (0..1 each way) differs from another's.
-    double most_apart_in(const Picture& o, float x0, float y0, float x1, float y1) const {
+    // The most any channel differs from another's, over the pixels of `o` at
+    // least `least` bright: what is drawn, picked by what it shows rather
+    // than by a box guessed round it. (And how many there were.)
+    double most_apart_where(const Picture& o, double least, int& count) const {
         double d = 0;
-        for (int y = static_cast<int>(y0 * h); y < static_cast<int>(y1 * h); ++y)
-            for (int x = static_cast<int>(x0 * w); x < static_cast<int>(x1 * w); ++x)
-                for (int c = 0; c < 3; ++c) {
-                    const std::size_t i = (static_cast<std::size_t>(y) * w + x) * 3 + c;
-                    d = std::max(d, std::fabs(double(px[i]) - double(o.px[i])));
-                }
+        count = 0;
+        for (std::size_t p = 0; p < static_cast<std::size_t>(w) * h; ++p) {
+            const unsigned char* c = &o.px[p * 3];
+            if (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] < least) continue;
+            ++count;
+            for (int k = 0; k < 3; ++k) d = std::max(d, std::fabs(double(px[p * 3 + k]) - double(c[k])));
+        }
         return d;
     }
     double most_apart(const Picture& o) const {
@@ -145,9 +148,14 @@ int main() {
     const Picture debanded = settle();
     const double box_d = debanded.luma(0.46, 0.45, 0.54, 0.55), empty_d = debanded.luma(0.0, 0.0, 0.15, 0.25);
     std::printf("  debanded: box %.1f, the empty corner %.1f\n", box_d, empty_d);
-    const double box_apart = debanded.most_apart_in(through, 0.46, 0.45, 0.54, 0.55);
-    std::printf("  debanded: the box's pixels differ by at most %.0f from the same way undebanded\n", box_apart);
-    check(box_apart == 0.0, "debanded: what is drawn is exactly as it was");
+    // The box's pixels: those brighter than halfway from the empty to the
+    // box. (A box guessed round it took in rows of the empty above it, which
+    // deband smooths, as it should.) Its antialiased edge is among them, and
+    // is left too: an empty pixel beside a drawn one is never changed.
+    int box_px = 0;
+    const double box_apart = debanded.most_apart_where(through, 0.5 * (box_plain + empty_plain), box_px);
+    std::printf("  debanded: the box's %d pixels differ by at most %.0f from the same way undebanded\n", box_px, box_apart);
+    check(box_px > 200 && box_apart == 0.0, "debanded: what is drawn is exactly as it was");
     check(std::fabs(empty_d - empty_plain) < 2.0, "debanded: the empty is as bright as it was");
     soft.setting(sg::passes::composite, "deband", 0.0);
 
