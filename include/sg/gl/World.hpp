@@ -204,14 +204,6 @@ public:
         surfaces_[portal_element].surface = surface;
     }
 
-    // A lamp that takes its colour and its strength from a picture: the light
-    // `light` (an element's id, in whatever room is drawn) glows as `from`
-    // looks - eased a quarter of the way there each frame, up to `most` - and
-    // not at all while it is not `on`. How a screen lights the room it is in
-    // is how it is drawn: the renderer's to work out, frame by frame, never
-    // written into the world.
-    void spill(Key light, const Surface2D* from, double most, bool on = true);
-
     // Shafts of daylight in `room`: toward `at` (a point in the room, where
     // the light comes in), as strong as `strength`, of `colour` - aimed from
     // whatever camera the room is drawn with. Strength 0, or another room
@@ -425,16 +417,6 @@ private:
     void make_targets(int w, int h);
     void keep_sizes(const std::vector<std::pair<int, int>>& sizes);
     void release_targets();
-
-    // Each spilling lamp, a frame further towards what its picture shows.
-    struct Spill {
-        const Surface2D* from = nullptr;
-        double most = 0.0;
-        bool on = true;
-        bool begun = false;
-        double r = 0, g = 0, b = 0, intensity = 0;
-    };
-    void ease_spills(const std::vector<PlacedRoom>& rooms);
 
     // The shafts' aim, from the camera of the room drawn first - if it is the
     // room they are in.
@@ -1107,7 +1089,6 @@ private:
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
     std::unordered_map<Key, BoundSurface> surfaces_;
-    std::unordered_map<Key, Spill> spills_;
     const Spatial3D* rays_room_ = nullptr;
     Vec3d rays_at_{}, rays_dir_{}, rays_fwd_{};
     double rays_strength_ = 0, rays_tan_ = 0.7;

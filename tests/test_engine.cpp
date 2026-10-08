@@ -1587,17 +1587,43 @@ void test_light() {
     red.raster();
     sg::Element lamp;
     lamp.params.set(sg::keys::r, 1.0).set(sg::keys::g, 1.0).set(sg::keys::b, 1.0).set(sg::keys::intensity, 0.0);
-    for (int i = 0; i < 60; ++i) sg::spill(lamp, red, 0.05);
+    const sg::Spill to_red = sg::spill_of(red, 0.05);
+    for (int i = 0; i < 60; ++i) sg::spill(lamp, to_red, 1.0 / 60.0);
     check(lamp.params.num(sg::keys::r) > 0.99 && lamp.params.num(sg::keys::g) < 0.4,
           "a screen's lamp takes the colour of its picture, paler");
     sg::Surface2D white(sg::Key{"white"}, 4, 3, 8);
     white.set_background(255, 255, 255);
     white.raster();
     sg::Element bright = lamp;
-    for (int i = 0; i < 60; ++i) sg::spill(bright, white, 0.05);
+    const sg::Spill to_white = sg::spill_of(white, 0.05);
+    for (int i = 0; i < 60; ++i) sg::spill(bright, to_white, 1.0 / 60.0);
     check(std::fabs(bright.params.num(sg::keys::intensity) - 0.05) < 1e-3 &&
               lamp.params.num(sg::keys::intensity) < 0.03,
           "as strong as the picture is bright");
+    check(bright.params.num(sg::keys::intensity) == to_white.level && bright.params.num(sg::keys::r) == to_white.r,
+          "and it arrives: in a second it is what its picture asks, exactly");
+    {
+        // A lamp is eased on its own time, not by the frame: a sixth of a
+        // second at 30 frames a second and at 144 leaves it at one light.
+        sg::Element slow = lamp, fast = lamp;
+        for (int i = 0; i < 5; ++i) sg::spill(slow, to_white, 1.0 / 30.0);
+        for (int i = 0; i < 24; ++i) sg::spill(fast, to_white, 1.0 / 144.0);
+        const double a = slow.params.num(sg::keys::intensity), b = fast.params.num(sg::keys::intensity);
+        std::printf("a spill a sixth of a second on: %.6f at 30 fps, %.6f at 144\n", a, b);
+        check(std::fabs(a - b) < 1e-9 && a > lamp.params.num(sg::keys::intensity) && a < to_white.level,
+              "a spill follows its picture at the same pace at any frame rate");
+        // A quarter of the way in a sixtieth of a second, as it went by the frame.
+        sg::Element one = lamp;
+        sg::spill(one, to_white, 1.0 / 60.0);
+        const double was = lamp.params.num(sg::keys::intensity);
+        check(std::fabs((one.params.num(sg::keys::intensity) - was) - 0.25 * (to_white.level - was)) < 1e-9,
+              "a sixtieth of a second is a quarter of the way");
+        sg::Element still = lamp;
+        sg::spill(still, to_white, 0.0);
+        check(still.params.num(sg::keys::intensity) == was, "no time, no change");
+        sg::spill(still, to_white, 1.0 / 60.0, false);
+        check(still.params.num(sg::keys::intensity) == 0.0, "off, it gives no light");
+    }
 }
 
 void test_looks() {

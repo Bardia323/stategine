@@ -26,13 +26,6 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     return out;
 }
 
-void GLWorldView::spill(Key light, const Surface2D* from, double most, bool on) {
-    Spill& sp = spills_[light];
-    sp.from = from;
-    sp.most = most;
-    sp.on = on;
-}
-
 GLWorldView::Rect GLWorldView::ball_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
     // Where a ball is on the screen: round its middle, as wide as it looks
     // from the eye (a little more, for the stretch off the middle of the view).
@@ -234,7 +227,6 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     }
     if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
     world_time_ = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
-    ease_spills(rooms);
     aim_rays(*rooms.front().room);
     // Feeds the graph declares: an open embedding of a 3D state in a
     // `feed` portal. Those it no longer declares go. Only the view on
@@ -715,38 +707,6 @@ void GLWorldView::make_targets(int w, int h) {
         bloom_chain_[bloom_levels_++].create(lw, lh, gl::GL_RGBA16F, 0, false);
 }
 
-void GLWorldView::ease_spills(const std::vector<PlacedRoom>& rooms) {
-    for (auto& [id, sp] : spills_) {
-        if (!sp.from) continue;
-        if (!sp.begun)
-            for (const PlacedRoom& placed : rooms)
-                if (const Element* e = placed.room ? placed.room->find(id) : nullptr) {
-                    sp.r = e->params.num(keys::r), sp.g = e->params.num(keys::g), sp.b = e->params.num(keys::b);
-                    sp.intensity = e->params.num(keys::intensity);
-                    sp.begun = true;
-                    break;
-                }
-        if (!sp.begun) continue;
-        // As sg::spill: toward the picture's colour, and its brightness.
-        const Rgb c = average_colour(*sp.from);
-        const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-        const double m = std::max({c.r, c.g, c.b, 1e-4});
-        // Eased, and arrived: where it is within a step of where it goes, it
-        // is there - an easing that never arrives changes every frame for
-        // ever, and lights its room again each time. (What it goes to, in
-        // steps of 1/512: a picture's colour moving by less lights nothing.)
-        const auto toward = [](double& v, double to) {
-            to = std::round(to * 512.0) / 512.0;
-            v = std::fabs(to - v) < 1.0 / 1024.0 ? to : v + (to - v) * 0.25;
-        };
-        toward(sp.r, 0.35 + 0.65 * c.r / m);
-        toward(sp.g, 0.35 + 0.65 * c.g / m);
-        toward(sp.b, 0.35 + 0.65 * c.b / m);
-        toward(sp.intensity, sp.most * std::min(1.0, 0.12 + 1.5 * lum));
-        if (!sp.on) sp.intensity = 0.0;
-    }
-}
-
 void GLWorldView::aim_rays(const Spatial3D& first) {
     rays_on_ = rays_room_ == &first;
     if (!rays_on_) return;
@@ -765,10 +725,6 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
         const Element& e = *ep;
         if (!e.alive) continue;
         Light l=light_of(room,e,pose);
-        if (auto sp = spills_.find(e.id); sp != spills_.end() && sp->second.begun && sp->second.from) {
-            l.color = {static_cast<float>(sp->second.r), static_cast<float>(sp->second.g), static_cast<float>(sp->second.b)};
-            l.power = static_cast<float>(sp->second.intensity) * 26.0f;
-        }
         if (l.power <= 0.0f) continue;  // switched off
         out.push_back(l);
     }
@@ -3698,13 +3654,9 @@ uint64_t GLWorldView::lights_key(const std::vector<PlacedRoom>& rooms, const std
         for (double v : {p.pose.position.x, p.pose.position.y, p.pose.position.z, p.pose.yaw, p.pose.pitch, p.pose.roll}) h = fnv(h, bits_of(v));
         for (Key d : p.doorways) h = fnv(h, std::hash<Key>{}(d));
         const KindIndex& ix = index_of(room);
-        for (const Element* e : ix.lights) {
-            h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
-            // A lamp lit by a picture (spill): as it is now. Only the rooms
-            // drawn here: a screen in another room lights nothing of these.
-            if (auto sp = spills_.find(e->id); sp != spills_.end() && sp->second.from && sp->second.begun)
-                for (double v : {sp->second.r, sp->second.g, sp->second.b, sp->second.intensity}) h = fnv(h, bits_of(v));
-        }
+        // (A lamp lit by a picture is a lamp like any other: its room eases
+        // it, and its stamp says when it moved.)
+        for (const Element* e : ix.lights) h = fnv(h, (chain_stamp(room, *e) << 1) | (e->alive ? 1u : 0u));
         const RoomCasters& rc = *casters[r];
         h = fnv(h, rc.flip_count);
         for (const Element* e : ix.portals) {
@@ -3738,11 +3690,7 @@ uint64_t GLWorldView::worlds_stamp() const {
         h = (h ^ std::hash<Key>{}(id)) * 1099511628211ULL;
         // Its lights, not all it holds: snow falling in it lets in no more
         // light than it did.
-        for (const Element* e : index_of(*wp.world).lights) {
-            h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
-            if (auto sp = spills_.find(e->id); sp != spills_.end() && sp->second.from && sp->second.begun)
-                for (double v : {sp->second.r, sp->second.g, sp->second.b, sp->second.intensity}) h = fnv(h, bits_of(v));
-        }
+        for (const Element* e : index_of(*wp.world).lights) h = (h ^ chain_stamp(*wp.world, *e) ^ (e->alive ? 1u : 0u)) * 1099511628211ULL;
         // And the sky it lets in (through_doorways), not the look as a whole:
         // grain and clouds move every frame, and light nothing again.
         static const Key sky[] = {Key{"uAmbient"}, Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}};

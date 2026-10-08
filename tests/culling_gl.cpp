@@ -54,21 +54,24 @@ int main() {
               "a still world costs a frame nothing but drawing it: no light read, no caster listed, no index built, no look's "
               "uniform found by name, no question put to the graph");
     }
-    // A lamp lit by a still picture: eased to it, and arrived - then it
-    // lights nothing again. One lit by a picture that keeps changing, in a
-    // room not drawn here, lights nothing of this one.
+    // A lamp lit by a still picture: eased to it on its room's time
+    // (sg::spill), and arrived - then it lights nothing again. One lit by a
+    // picture that keeps changing, in a room not drawn here, lights nothing
+    // of this one. The renderer only reads the lamps.
     {
         auto& tv = g.add<sg::Surface2D>("tv", 4, 3);
         tv.set_background(200, 120, 40);
+        tv.raster();
         room.light("glow", {3.0, 1.0, 6.0}).params.set(sg::keys::intensity, 0.2);
-        view.spill("glow", &tv, 0.5);
         auto& other = g.add<sg::Spatial3D>("other");
         other.light("far_glow", {0.0, 1.0, 0.0}).params.set(sg::keys::intensity, 0.2);
         auto& flicker = g.add<sg::Surface2D>("flicker", 4, 3);
-        view.spill("far_glow", &flicker, 0.5);
         int last = 0;
         for (int i = 0; i < 90; ++i) {
             flicker.set_background(i % 2 ? 250 : 10, 30, 30);
+            flicker.raster();
+            sg::spill(room.element("glow"), sg::spill_of(tv, 0.5), 1.0 / 60.0);
+            sg::spill(other.element("far_glow"), sg::spill_of(flicker, 0.5), 1.0 / 60.0);
             last = frame().lights_read;
         }
         std::printf("a still picture's lamp, eased: lights read %d\n", last);
