@@ -289,6 +289,83 @@ void main() {
     return source.c_str();
 }
 
+const char* taa_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uCurrent;
+uniform sampler2D uHistory;
+uniform sampler2D uDepth;
+uniform mat4 uReproject;
+uniform vec2 uJitter;
+uniform vec2 uTexel;
+uniform float uFresh;
+// Blended in a curve that keeps a bright pixel from outweighing its
+// neighbours (and back): what makes a highlight flicker otherwise.
+vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 unsquash(vec3 c) { return c / max(1.0 - max(c.r, max(c.g, c.b)), 1e-4); }
+vec3 ycocg(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 rgb(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+// What was, read between its pixels sharply (Catmull-Rom, in five taps):
+// read bilinearly, the history would soften a little every frame.
+vec3 history_at(vec2 uv) {
+    vec2 size = 1.0 / uTexel;
+    vec2 pos = uv * size;
+    vec2 c = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - c;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (c - 1.0) * uTexel, t3 = (c + 2.0) * uTexel, t12 = (c + w2 / w12) * uTexel;
+    vec3 r = texture(uHistory, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y) + texture(uHistory, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y) +
+             texture(uHistory, t12).rgb * (w12.x * w12.y) + texture(uHistory, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y) +
+             texture(uHistory, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y);
+    float ws = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return max(r / ws, vec3(0.0));
+}
+void main() {
+    vec3 cur = texture(uCurrent, vUV).rgb;
+    if (uFresh > 0.5) {
+        FragColor = vec4(cur, 1.0);
+        return;
+    }
+    // The neighbourhood: what this frame says the pixel may be, and the
+    // nearest depth in it (an edge moves with what is in front).
+    vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+    float near = 1.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec2 at = vUV + vec2(x, y) * uTexel;
+            vec3 c = ycocg(squash(texture(uCurrent, at).rgb));
+            m1 += c;
+            m2 += c * c;
+            near = min(near, texture(uDepth, at).r);
+        }
+    vec3 mean = m1 / 9.0, spread = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+    // Where it was last frame.
+    vec4 was = uReproject * vec4(vUV * 2.0 - 1.0 - uJitter, near * 2.0 - 1.0, 1.0);
+    vec2 back = was.xy / was.w * 0.5 + 0.5;
+    if (was.w <= 0.0 || any(lessThan(back, vec2(0.0))) || any(greaterThan(back, vec2(1.0)))) {
+        FragColor = vec4(cur, 1.0);
+        return;
+    }
+    // What was, brought within what is: towards the neighbourhood's middle
+    // until it is inside its spread.
+    vec3 h = ycocg(squash(history_at(back)));
+    vec3 lo = mean - spread * 1.25, hi = mean + spread * 1.25;
+    vec3 mid = 0.5 * (lo + hi), half_ = max(0.5 * (hi - lo), vec3(1e-5));
+    vec3 off = h - mid;
+    vec3 out_ = abs(off / half_);
+    float most = max(out_.x, max(out_.y, out_.z));
+    if (most > 1.0) h = mid + off / most;
+    vec3 now = squash(cur);
+    FragColor = vec4(unsquash(mix(rgb(h), now, 0.1)), 1.0);
+}
+)";
+}
+
 const char* air_sum_fs() {
     return R"(#version 330 core
 layout(location = 0) out vec4 Slice[8];
@@ -572,6 +649,20 @@ uniform vec3  uSunColor;
 
 uniform sampler2D uTex;
 uniform samplerCube uEnv;     // what is seen every way from a polished thing (a glass's reflection)
+// The planes the eye's room reflects in, and the room seen in each
+// (GLWorldView::draw_mirrors): a plane as normal and offset; the part of the
+// screen it was drawn for (clip x0, y0, x1, y1); how much it reflects, how
+// much of its picture holds that part (x, y), and its picture's mip levels.
+uniform int  uMirrorCount;
+uniform vec4 uMirrorPlane[2];
+uniform vec4 uMirrorSeen[2];
+uniform vec4 uMirrorUse[2];
+uniform vec2 uMirrorScreen;   // the picture being drawn, in pixels
+uniform float uGlassMirror;   // 1 + which of them a window's glass is (0: none)
+uniform float uSeenFrom;      // 1: a doorway in a mirror, its picture where this eye sees it
+uniform mat4  uSeenFromVP;
+uniform sampler2D uMirror0;
+uniform sampler2D uMirror1;
 uniform float uEnvMix;        // > 0: it reflects uEnv, by Fresnel - faint face on, strong at its edges
 uniform vec2 uShadowTexel;
 uniform float uShadowSoft;    // how wide the filter is, in texels (1: tight)
@@ -1277,7 +1368,9 @@ void main() {
     vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
     float relief_h = -1.0;  // how high a skin's paint stands here, if it says
     if (uTexMix > 0.0) {
-        vec2 uv = uScreenUV > 0.5 ? (gl_FragCoord.xy / uViewport - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4))
+        vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
+        vec2 on_screen = uSeenFrom > 0.5 ? seen_at.xy / seen_at.w * 0.5 + 0.5 : gl_FragCoord.xy / uViewport;
+        vec2 uv = uScreenUV > 0.5 ? (on_screen - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4))
                 : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
@@ -1309,6 +1402,19 @@ void main() {
             vec3 gn = normalize(vNormal), gv = normalize(uViewPos - vWorld);
             float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(gn, gv), 0.0, 1.0), 5.0);
             seen = mix(seen, texture(uEnv, reflect(-gv, gn)).rgb, clamp(fres * uEnvMix, 0.0, 1.0));
+        }
+        // A window's glass: the room seen in it, as much as glass reflects
+        // from where it is looked at (4% face on, all but everything edge on).
+        if (uGlassMirror > 0.5) {
+            int k = int(uGlassMirror + 0.5) - 1;
+            vec3 gn = normalize(vNormal), gv = normalize(uViewPos - vWorld);
+            float fres = 0.04 + 0.96 * pow(1.0 - abs(dot(gn, gv)), 5.0);
+            vec4 s = uMirrorSeen[k];
+            vec2 ndc = gl_FragCoord.xy / uMirrorScreen * 2.0 - 1.0;
+            vec2 t = vec2((s.z - ndc.x) / max(s.z - s.x, 1e-4), (ndc.y - s.y) / max(s.w - s.y, 1e-4));
+            t = clamp(t, vec2(0.0), vec2(1.0)) * uMirrorUse[k].yz;
+            vec3 room = k == 0 ? textureLod(uMirror0, t, 0.0).rgb : textureLod(uMirror1, t, 0.0).rgb;
+            seen = mix(seen, room, clamp(fres * uMirrorUse[k].x, 0.0, 1.0));
         }
         // This side's air up to the opening is this side's to light.
         seen += air_light(length(vWorld - uViewPos));
@@ -1485,6 +1591,27 @@ void main() {
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
     if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
+    // Lying in a plane the room is seen in: what is seen there, turned left
+    // for right as a mirror turns it, bent where the surface is (relief,
+    // waves), and blurred as it roughens.
+    for (int k = 0; k < 2; ++k) {
+        if (k >= uMirrorCount) break;
+        vec4 plane = uMirrorPlane[k];
+        if (abs(dot(plane.xyz, vLit) + plane.w) > 0.01 || dot(normalize(vNormal), plane.xyz) < 0.9) continue;
+        vec4 s = uMirrorSeen[k];
+        vec2 ndc = gl_FragCoord.xy / uMirrorScreen * 2.0 - 1.0;
+        vec2 t = vec2((s.z - ndc.x) / max(s.z - s.x, 1e-4), (ndc.y - s.y) / max(s.w - s.y, 1e-4));
+        vec3 side = n - plane.xyz * dot(n, plane.xyz);
+        t += vec2(-side.x, side.z) * 0.08;
+        t = clamp(t, vec2(0.0), vec2(1.0)) * uMirrorUse[k].yz;
+        float lod = roughness * roughness * uMirrorUse[k].w * 0.6;
+        vec3 seen = k == 0 ? textureLod(uMirror0, t, lod).rgb : textureLod(uMirror1, t, lod).rgb;
+        mirrored = seen;
+        // How much of what is before it it says is seen in it, face on as
+        // edge on (0.2 or so a polished floor, 1 a mirror) - not only edge on
+        // as bare Fresnel gives - and less as it roughens.
+        reflected = max(reflected, vec3(uMirrorUse[k].x * (1.0 - roughness)));
+    }
     vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced;
 
     vec3 color = ambient + direct + albedo * (mEmissive + uGlow) * (1.0 - uDark);

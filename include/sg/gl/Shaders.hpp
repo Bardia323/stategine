@@ -146,6 +146,15 @@ const char* air_fs();
 // And the same slices added up from the eye out, eight a pass, each pass on
 // its own: the light gathered up to each slice's distance.
 const char* air_sum_fs();
+
+// Temporal antialiasing: this frame's picture (uCurrent, its view moved by
+// uJitter, in clip units) and what was made of the frames before
+// (uHistory), found where each pixel was last frame by its depth (uDepth)
+// and how the view moved (uReproject: this frame's clip space, unmoved, to
+// the last frame's), taken only within what this frame's neighbourhood of
+// the pixel holds - so what moved or came into sight does not trail - and
+// blended, a tenth of this frame to nine of what was. uFresh 1: no history.
+const char* taa_fs();
 // Relighting a room's light from all round (GLWorldView::relight_room): what
 // each box sees lit by one light, and that taken to nine harmonics a box.
 const char* relight_fs();
@@ -611,7 +620,9 @@ vec3 godrays(vec2 uv) {
 // `smooth_edges(uv, toned)`.
 inline const char* fxaa_glsl() {
     return R"(
+uniform float uEdgesSmooth;  // 1: the picture's edges were made smooth over frames (taa): left as they are
 vec3 smooth_edges(vec2 uv, vec3 toned) {
+    if (uEdgesSmooth > 0.5) return toned;
     const vec3 w = vec3(0.299, 0.587, 0.114);
     vec3 n = texture(uScene, uv + vec2(0.0, uTexel.y)).rgb, s = texture(uScene, uv - vec2(0.0, uTexel.y)).rgb;
     vec3 e = texture(uScene, uv + vec2(uTexel.x, 0.0)).rgb, o = texture(uScene, uv - vec2(uTexel.x, 0.0)).rgb;

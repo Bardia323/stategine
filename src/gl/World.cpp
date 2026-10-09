@@ -389,6 +389,19 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     keep_shadows_within_room();
     std::size_t root_views = 0;
     ++frame_count_;
+    // This frame's part of a pixel (Halton's 2 and 3, eight in turn): spread
+    // evenly over the pixel within every eight frames.
+    if (taa_on()) {
+        const auto halton = [](uint64_t i, uint64_t b) {
+            float f = 1.0f, r = 0.0f;
+            for (; i > 0; i /= b) f /= static_cast<float>(b), r += f * static_cast<float>(i % b);
+            return r;
+        };
+        jitter_x_ = halton(frame_count_ % 8 + 1, 2) - 0.5f;
+        jitter_y_ = halton(frame_count_ % 8 + 1, 3) - 0.5f;
+    } else if (!root_) {
+        jitter_x_ = jitter_y_ = 0.0f;
+    }
     shadow_budget_ = kNestedShadowMaps;
     times_ = FrameTimes{};
     times_.feeds = feeds_ms;
@@ -488,6 +501,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             const bool lend = target_w_ == fb_w && target_h_ == fb_h;
             if (lend) wp.own->trade_scratch(*this);
             else if (wp.own->scratch_lent_) wp.own->scratch_lent_ = false, wp.own->make_scratch(fb_w, fb_h);
+            // (Moved as this view is: it is shown at the screen's pixels.)
+            wp.own->jitter_x_ = jitter_x_, wp.own->jitter_y_ = jitter_y_;
             wp.own->render(*wp.world, fb_w, fb_h);
             if (lend) wp.own->trade_scratch(*this);
             wp.own->lent_scene_ = nullptr;
@@ -558,6 +573,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
 
     // --- the room the viewer is actually standing in ------------------------
     path_.clear();
+    if (!root_) draw_mirrors(rooms, eye_cam, aspect);
     draw_world(rooms, eye_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();
@@ -576,7 +592,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     }
     // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl).
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0;
-    if (fog_depth_ && ao <= 0.0) scene_ms().blit_depth_to(depth_);
+    if ((fog_depth_ || taa_on()) && ao <= 0.0) scene_ms().blit_depth_to(depth_);
+    if (taa_on()) run_taa();
     meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);

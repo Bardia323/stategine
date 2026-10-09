@@ -20,6 +20,20 @@ struct Quality {
     // where the card does not say); below 0: every map kept, as many as
     // there are.
     int shadow_budget_mb=0;
+    // Edges and what shimmers within a surface (highlights, paint, fine
+    // lines far off) made smooth over frames: each frame's view moved by a
+    // part of a pixel, and the frames before taken in where they still hold
+    // (temporal antialiasing). With it, `msaa` 0 is as smooth, for less.
+    bool taa=false;
+    // A plane that says it reflects shows the room in it, drawn again from
+    // the mirrored eye at `reflection_scale` of the screen's pixels (0.5: a
+    // quarter of them), where the plane is on the screen: two such planes at
+    // most. A thing's `reflects` (on the face across its thinnest side that
+    // faces the eye), a room's `floor_reflects`, a window's `reflects` on its
+    // glass: 0..1, how much of what is before it is seen in it face on (0.2
+    // or so a polished floor, 1 a mirror; a window's glass as glass does).
+    bool reflections=true;
+    float reflection_scale=0.5f;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

@@ -1361,6 +1361,56 @@ private:
     // own for the moment - that view's, lent (lent_scene_), if it is the size.
     gl::RenderTarget* lent_scene_ = nullptr;
     gl::RenderTarget& scene_ms();
+    // Temporal antialiasing (Quality::taa), for the view on the screen: the
+    // views drawn at the screen's pixels this frame (the eye's, the doorways'
+    // and a doorway's own view) moved by jitter_x_/y_ pixels, a different part
+    // of a pixel each frame; and what was made of the frames before, in two
+    // pictures taken in turn. The eye's view as it was drawn, unmoved, and in
+    // which world, this frame and the last: how a pixel is found where it
+    // was. Across a doorway the picture goes on, so it is taken as it stood.
+    gl::RenderTarget taa_history_[2];
+    int taa_front_ = 0;
+    bool taa_held_ = false;
+    float jitter_x_ = 0.0f, jitter_y_ = 0.0f;
+    gl::Mat4 taa_vp_ = gl::Mat4::identity(), taa_last_vp_ = gl::Mat4::identity();
+    const void* taa_world_ = nullptr;
+    const void* taa_last_world_ = nullptr;
+    gl::Vec3 taa_eye_{0, 0, 0}, taa_last_eye_{0, 0, 0};
+    std::unique_ptr<gl::Program> taa_prog_;
+    bool taa_on() const { return q_.taa && !root_ && !output_ && !baking_ && surface_only_ == 0; }
+    void run_taa();
+    // Mirrors (Quality::reflections; WorldMirrors.cpp): the planes the eye's
+    // room says reflect, a thing's top face (`reflects`) or its floor
+    // (`floor_reflects`), each with the room seen in it this frame - drawn
+    // from the eye mirrored in the plane, only what stands above it, only
+    // where the plane is on the screen, at `reflection_scale` of its pixels
+    // - or a window's glass (a doorway that `reflects`), over what is seen
+    // through it, as much as glass reflects from where it is seen -
+    // with the room's own shadow maps and light and no air, its doorways
+    // showing their worlds' air (as views too deep do); kept while nothing it
+    // shows has moved. Everything on one plane shares one. The eye's view
+    // reads it where a surface lies in the plane, blurred as it roughens.
+    struct Mirror {
+        gl::Vec3 normal{0, 1, 0};
+        float offset = 0.0f, strength = 0.0f, fx = 1.0f, fy = 1.0f;
+        Rect seen{-1, -1, 1, 1};
+        gl::RenderTarget target;
+        uint64_t of = 0;
+        Key glass;  // the window whose glass it is (a doorway that `reflects`), if it is one
+    };
+    static constexpr int kMirrors = 2, kMirrorUnit = 12;
+    int mirror_of(const Element& portal) const;  // 1 + which mirror a window's glass reads, 0: none
+    Mirror mirrors_[kMirrors];
+    int mirror_count_ = 0;
+    bool mirroring_ = false;  // a mirror's view being drawn: it shows no mirror
+    // The eye a mirror is seen from, as it draws (unmoved): in a mirror, a
+    // doorway shows the picture drawn through it for that eye this frame,
+    // each point of it where the eye sees it - what is far off through a
+    // window is the same seen from either side of a floor.
+    gl::Mat4 mirror_eye_vp_ = gl::Mat4::identity();
+    Rect seen_rect(const std::vector<gl::Vec3>& corners, const Camera& cam, float aspect) const;
+    void draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect);
+    void mirror_uniforms(const gl::Program& p, bool use);
     // A doorway's own view makes none of the pictures its frame works in and
     // throws away (lit, occlusion, glow): the view it is drawn for hands it
     // its own for the time it is drawn (trade_scratch), and writes its own

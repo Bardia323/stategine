@@ -169,6 +169,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const gl::Mat4 view_proj =
         narrow * projection_of(cam, aspect, znear, zfar) *
         gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
+    // As drawn: moved by this frame's part of a pixel, for the views drawn at
+    // the screen's pixels (temporal antialiasing; nothing else sees it - the
+    // air, what is culled and what a view is kept by go by the view unmoved).
+    const bool jittered = depth <= 1 && (jitter_x_ != 0.0f || jitter_y_ != 0.0f);
+    const gl::Mat4 drawn_proj = jittered ? gl::Mat4::translate({2.0f * jitter_x_ / vp_w_, 2.0f * jitter_y_ / vp_h_, 0.0f}) * view_proj : view_proj;
+    if (depth == 0 && taa_on()) {
+        taa_vp_ = view_proj;
+        taa_world_ = rooms.front().room;
+        taa_eye_ = cam.eye;
+    }
 
     if (timing_) gl::glFinish();
     const auto shadow_start = std::chrono::steady_clock::now();
@@ -612,7 +622,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // Everything a scene shader is fed that is not the look's. Set again
     // whenever a room's look brings a different program.
     const auto frame_uniforms = [&](const gl::Program& p) {
-        p.set("uViewProj", view_proj);
+        p.set("uViewProj", drawn_proj);
+        p.set("uMirrorScreen", vp_w_, vp_h_);
+        mirror_uniforms(p, depth == 0 && !mirroring_);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
         p.set("uSurfaceOnly", surface_only_);

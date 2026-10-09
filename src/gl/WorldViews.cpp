@@ -268,8 +268,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         const Vec3d eye_here = local_of(frame_, {cam_eye_.x, cam_eye_.y, cam_eye_.z});
         const float side = gl::dot(to_vec3(eye_here) - (pos + n * inset), n);
         // Seen from a side it is not crossed from, a doorway is only its
-        // frame: what is behind it is what one walks into (opens_from).
-        if (!opens_from(e, eye_here)) return;
+        // frame: what is behind it is what one walks into (opens_from). (In a
+        // mirror it is as the eye the mirror is seen from sees it.)
+        if (!mirroring_ && !opens_from(e, eye_here)) return;
         // Seen through another doorway, its own view is the one drawn for
         // the way the eye came (view_through) - or, past how deep views go,
         // glass.
@@ -284,7 +285,10 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // (`uFogFull`, from `uFogStart`), and its views that far off are not
         // drawn at all (view_through).
         const bool fresh = wp.shown && wp.drawn == frame_count_;
-        if ((depth > 0 && !deeper) || (depth == 0 && !fresh && !(wp.own_drawn && wp.own_out.valid()))) {
+        // In a mirror: the picture drawn through it this frame, where the eye
+        // the mirror is seen from sees each point of it.
+        const bool in_mirror = mirroring_ && fresh && !deeper;
+        if (!in_mirror && ((depth > 0 && !deeper) || (depth == 0 && !fresh && !(wp.own_drawn && wp.own_out.valid())))) {
             const Mix far = mix(wp.world->id(), look_of(*wp.world));
             set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
             scene_->set("uAlbedo", gl::Vec3{static_cast<float>(setting(far, passes::scene, "clear.x", 0.012)),
@@ -331,7 +335,18 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // (leaned in to it) is not dimmed with the room.
         const bool undim = e.params.num(Key{"undim"}, 0.0) > 0.5;
         if (undim) scene_->set("uUndim", 1.0f);
+        if (in_mirror) {
+            scene_->set("uSeenFrom", 1.0f);
+            scene_->set("uSeenFromVP", mirror_eye_vp_);
+            scene_->set("uScreenRect", 0.0f, 0.0f, 1.0f, 1.0f);  // (the whole picture drawn through it)
+            if (wp.fx < 1.0f || wp.fy < 1.0f) scene_->set("uUVRect", 0.0f, 0.0f, wp.fx, wp.fy);
+        }
+        // A window's glass shows the room in it (draw_mirrors), over the view.
+        const int glass = depth == 0 ? mirror_of(e) : 0;
+        if (glass) scene_->set("uGlassMirror", static_cast<float>(glass));
         quad_.draw();
+        if (glass) scene_->set("uGlassMirror", 0.0f);
+        if (in_mirror) scene_->set("uSeenFrom", 0.0f);
         if (undim) scene_->set("uUndim", 0.0f);
         if (own) scene_->set("uUntone", 0.0f);
         // Stepping through, the eye comes nearer the doorway than the near

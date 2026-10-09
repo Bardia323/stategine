@@ -4,6 +4,48 @@
 
 namespace sg::render {
 
+void GLWorldView::run_taa() {
+    if (!taa_prog_) taa_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::taa_fs(), "taa");
+    const int w = scene_src_->width(), h = scene_src_->height();
+    bool fresh = !taa_held_;
+    for (gl::RenderTarget& t : taa_history_)
+        if (!t.valid() || t.width() != w || t.height() != h) t.create(w, h, gl::GL_RGBA16F, 0, false), fresh = true;
+    // How the view moved since the last frame - in one world; carried across
+    // a doorway, the picture goes on as it stood. A jump (put somewhere else)
+    // starts again.
+    gl::Mat4 reproject = gl::Mat4::identity();
+    if (taa_world_ == taa_last_world_) {
+        const gl::Vec3 d = taa_eye_ - taa_last_eye_;
+        if (gl::dot(d, d) > 4.0f) fresh = true;
+        reproject = taa_last_vp_ * taa_vp_.inverse();
+    }
+    gl::RenderTarget& out = taa_history_[1 - taa_front_];
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    out.bind();
+    gl::glViewport(0, 0, w, h);
+    const gl::Program& p = *taa_prog_;
+    p.use();
+    p.set("uCurrent", 0);
+    p.set("uHistory", 1);
+    p.set("uDepth", 2);
+    scene_src_->bind_color(0);
+    taa_history_[taa_front_].bind_color(1);
+    depth_.bind_depth(2);
+    p.set("uReproject", reproject);
+    p.set("uJitter", 2.0f * jitter_x_ / static_cast<float>(w), 2.0f * jitter_y_ / static_cast<float>(h));
+    p.set("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    p.set("uFresh", fresh ? 1.0f : 0.0f);
+    screen_.draw();
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    taa_front_ = 1 - taa_front_;
+    taa_held_ = true;
+    scene_src_ = &out;
+    taa_last_vp_ = taa_vp_;
+    taa_last_world_ = taa_world_;
+    taa_last_eye_ = taa_eye_;
+}
+
 void GLWorldView::run_ao(float strength, float radius) {
     if (!ao_prog_) {
         ao_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::ao_fs(), "ao");
@@ -272,6 +314,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         }
         p.set("uTime", static_cast<float>(world_time_));
         p.set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
+        p.set("uEdgesSmooth", taa_on() ? 1.0f : 0.0f);
         screen_.draw();
     };
     // Looks that share a program share its draw.

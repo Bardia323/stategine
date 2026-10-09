@@ -117,7 +117,9 @@ std::vector<DrawInstance> enclosure(const Spatial3D &world) {
                                    static_cast<float>(world.params().num(Key{"ceiling_g"})),
                                    static_cast<float>(world.params().num(Key{"ceiling_b"}))}
                             : wall_c * 0.5f;
-    add(Mat4::translate({w / 2, -t / 2, d / 2}) * Mat4::scale({w, t, d}), floor_c, 0.55f, floor_s);
+    // (`floor_roughness`: how polished the floor is - 0 a mirror, 1 chalk.)
+    const float floor_rough = static_cast<float>(world.params().num(Key{"floor_roughness"}, 0.55));
+    add(Mat4::translate({w / 2, -t / 2, d / 2}) * Mat4::scale({w, t, d}), floor_c, floor_rough, floor_s);
     add(Mat4::translate({w / 2, h + t / 2, d / 2}) * Mat4::scale({w, t, d}), ceil_c, 0.95f, ceil_s);
 
     if (std::any_of(world.elements().begin(), world.elements().end(),
