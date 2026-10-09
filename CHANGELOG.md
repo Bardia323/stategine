@@ -8,6 +8,9 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A project says how it is drawn in a file it ships with: `render.conf`, one `key = value` a line, `#` a remark, every line optional (a setting left out keeps the engine's default). `sg::render::read_quality` reads it into a `Quality` - anything it cannot take is said, and the rest taken - and `quality_text` writes one with every setting and what it is. `stategine_render_conf(<target> <file>)` (cmake/StategineModules.cmake) copies a project's file beside its program, again whenever it changes. The settings: `shadow_size`, `shadow_budget_mb`, `msaa`, `bloom_passes`, `bloom_strength`, `bloom_threshold`, `exposure`, `instancing`, `pack`.
+
+
 - The card holds a quarter of what it did, with the same pictures and frames (the lab's dev room: 12.8 GB to 3.2 GB at its own size, 15.2 GB to 4.4 GB at 2560 x 1440; started a little sooner):
   - Shadow maps are kept within a room of the card's (`Quality::shadow_budget_mb`; 0, the default: a sixteenth of the card, 512 MB to 2 GB; below 0: every map kept, as before). A frame draws with under a gigabyte of them; the rest were every place's, kept from its first drawing. Past the room, the sets of the views asked for longest ago are let go - never one drawn this frame or the last - and what they held is taken whole by the next set that needs it: making room on the card costs tens of milliseconds, laying a map a tenth of one.
   - A map never laid - a view just come into sight, or come back after its maps were let go - is laid the frame it is asked for, every one: a view is never seen without its shadows (it was, for a frame or two, past two new maps a frame).

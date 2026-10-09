@@ -25,6 +25,25 @@
 
 set(STATEGINE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE INTERNAL "")
 
+#   stategine_render_conf(<target> <file>)
+#
+# ships a project's render settings with its program: <file> (a
+# `render.conf`, read by sg::render::read_quality) is copied beside <target>'s
+# executable, again whenever it changes - so a project's own file is the one
+# to edit, and a shipped build's copy can be edited where it stands.
+function(stategine_render_conf target file)
+  get_filename_component(_conf "${file}" ABSOLUTE)
+  get_target_property(_dir ${target} RUNTIME_OUTPUT_DIRECTORY)
+  if(NOT _dir)
+    if(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+      set(_dir "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+    else()
+      set(_dir "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+  endif()
+  configure_file("${_conf}" "${_dir}/render.conf" COPYONLY)
+endfunction()
+
 function(stategine_module name)
   cmake_parse_arguments(M "" "DIR;ROOT;INCLUDED_AS" "USES;EXCLUDE" ${ARGN})
   if(NOT M_ROOT)
