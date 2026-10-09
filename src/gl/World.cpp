@@ -467,6 +467,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             if (!wp.own) {
                 wp.own = std::make_unique<GLWorldView>(q_);
                 wp.own->set_fixed_step(fixed_step_);
+                wp.own->scratch_lent_ = true;
             }
             if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
                 wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
@@ -482,7 +483,13 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             const Element* own_back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
             wp.own->own_clips_ = {far_side(world, e, eye)};
             wp.own->own_skip_ = own_back ? own_back->id.key() : Key{};
+            // (Its working pictures, this view's, lent while it is drawn:
+            // the same size - both are the screen's.)
+            const bool lend = target_w_ == fb_w && target_h_ == fb_h;
+            if (lend) wp.own->trade_scratch(*this);
+            else if (wp.own->scratch_lent_) wp.own->scratch_lent_ = false, wp.own->make_scratch(fb_w, fb_h);
             wp.own->render(*wp.world, fb_w, fb_h);
+            if (lend) wp.own->trade_scratch(*this);
             wp.own->lent_scene_ = nullptr;
             wp.own->own_clips_.clear();
             wp.own->own_skip_ = Key{};

@@ -109,7 +109,6 @@ void GLWorldView::make_targets(int w, int h) {
     else scene_target_.create(w, h, gl::GL_RGBA16F, msaa_, true);
     resolve_.create(w, h, gl::GL_RGBA16F, 0, false);
     depth_.create(w, h, gl::GL_RGBA16F, 0, true, /*depth_texture=*/true);
-    lit_.create(w, h, gl::GL_RGBA16F, 0, false);
     // The views through doorways seen through doorways, and the last frame's
     // picture: made now, with the rest, so that no step through a doorway
     // waits on one being made. (A view drawn for another - a feed's, a
@@ -125,6 +124,12 @@ void GLWorldView::make_targets(int w, int h) {
             n.frame = 0;
         }
     }
+    // (Lent them by the view it is drawn for, it makes none of its own.)
+    if (!scratch_lent_) make_scratch(w, h);
+}
+
+void GLWorldView::make_scratch(int w, int h) {
+    lit_.create(w, h, gl::GL_RGBA16F, 0, false);
     // Full resolution: at half, the occlusion's edges stair-step over the
     // antialiased picture.
     ao_a_.create(w, h, gl::GL_RGBA16F, 0, false);
@@ -150,6 +155,16 @@ void GLWorldView::fit(Nested& n, int w, int h, bool anew) {
     n.target.create(step(ahead(w, was_w), target_w_), step(ahead(h, was_h), target_h_), gl::GL_RGBA16F, 0, true);
     n.target.bind();
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+}
+
+void GLWorldView::trade_scratch(GLWorldView& with) {
+    std::swap(lit_, with.lit_);
+    std::swap(ao_a_, with.ao_a_);
+    std::swap(ao_b_, with.ao_b_);
+    std::swap(bloom_a_, with.bloom_a_);
+    std::swap(bloom_b_, with.bloom_b_);
+    for (int i = 0; i < kBloomLevels; ++i) std::swap(bloom_chain_[i], with.bloom_chain_[i]);
+    std::swap(bloom_levels_, with.bloom_levels_);
 }
 
 gl::RenderTarget& GLWorldView::scene_ms() {

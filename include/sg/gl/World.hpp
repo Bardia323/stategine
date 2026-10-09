@@ -1361,6 +1361,14 @@ private:
     // own for the moment - that view's, lent (lent_scene_), if it is the size.
     gl::RenderTarget* lent_scene_ = nullptr;
     gl::RenderTarget& scene_ms();
+    // A doorway's own view makes none of the pictures its frame works in and
+    // throws away (lit, occlusion, glow): the view it is drawn for hands it
+    // its own for the time it is drawn (trade_scratch), and writes its own
+    // in them only after. (Its scene and depth it keeps: a still view is
+    // developed again from them, not drawn again.)
+    bool scratch_lent_ = false;
+    void trade_scratch(GLWorldView& with);
+    void make_scratch(int w, int h);
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
