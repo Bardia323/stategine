@@ -36,6 +36,7 @@ void GLWorldView::run_taa() {
     p.set("uJitter", 2.0f * jitter_x_ / static_cast<float>(w), 2.0f * jitter_y_ / static_cast<float>(h));
     p.set("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
     p.set("uFresh", fresh ? 1.0f : 0.0f);
+    p.set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
     screen_.draw();
     gl::glActiveTexture(gl::GL_TEXTURE0);
     taa_front_ = 1 - taa_front_;
@@ -62,6 +63,7 @@ void GLWorldView::run_ao(float strength, float radius) {
     depth_.bind_depth(0);
     ao_prog_->set("uTexel", 1.0f / static_cast<float>(ao_a_.width()), 1.0f / static_cast<float>(ao_a_.height()));
     ao_prog_->set("uNear", view_.znear);
+    ao_prog_->set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
     ao_prog_->set("uFar", view_.zfar);
     ao_prog_->set("uTanHalf", tan_half);
     ao_prog_->set("uAspect", view_.aspect);
@@ -76,6 +78,7 @@ void GLWorldView::run_ao(float strength, float radius) {
     depth_.bind_depth(1);
     ao_blur_prog_->set("uTexel", 1.0f / static_cast<float>(ao_b_.width()), 1.0f / static_cast<float>(ao_b_.height()));
     ao_blur_prog_->set("uNear", view_.znear);
+    ao_blur_prog_->set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
     ao_blur_prog_->set("uFar", view_.zfar);
     screen_.draw();
 
@@ -86,6 +89,7 @@ void GLWorldView::run_ao(float strength, float radius) {
     ao_apply_prog_->set("uStrength", strength);
     ao_apply_prog_->set("uDepth", 2);
     ao_apply_prog_->set("uNear", view_.znear);
+    ao_apply_prog_->set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
     ao_apply_prog_->set("uFar", view_.zfar);
     ao_apply_prog_->set("uTexel", 1.0f / static_cast<float>(lit_.width()), 1.0f / static_cast<float>(lit_.height()));
     resolve_.bind_color(0);
@@ -310,6 +314,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         p.set("uDepth", 2);
         if (fog_depth_) {
             p.set("uDepthView", view_.znear, view_.zfar, std::tan(view_.fov * 0.5f), view_.aspect);
+            p.set("uFogReversed", gl::reversed_depth() ? 1.0f : 0.0f);
             p.set("uAirThick", air_density, air_start);
         }
         p.set("uTime", static_cast<float>(world_time_));
@@ -480,6 +485,7 @@ void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
     if (f.smear) smear_hist_[smear_front_].bind_color(2);
     p->set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
     p->set("uDeband", f.deband);
+    p->set("uDebandReversed", gl::reversed_depth() ? 1.0f : 0.0f);
     p->set("uSmearKeep", keep ? f.keep : 0.0f);
     p->set("uSmearBlur", f.blur);
     screen_.draw();

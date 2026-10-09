@@ -29,6 +29,10 @@ constexpr GLenum GL_COLOR_BUFFER_BIT = 0x00004000;
 constexpr GLenum GL_TRIANGLES = 0x0004;
 constexpr GLenum GL_LEQUAL = 0x0203;
 constexpr GLenum GL_LESS = 0x0201;
+constexpr GLenum GL_GREATER = 0x0204;
+constexpr GLenum GL_LOWER_LEFT = 0x8CA1;
+constexpr GLenum GL_NEGATIVE_ONE_TO_ONE = 0x935E;
+constexpr GLenum GL_ZERO_TO_ONE = 0x935F;
 constexpr GLenum GL_ALWAYS = 0x0207;
 constexpr GLenum GL_DEPTH_CLAMP = 0x864F;
 constexpr GLenum GL_TEXTURE_CUBE_MAP = 0x8513;
@@ -118,6 +122,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, Viewport, (GLint, GLint, GLsizei, GLsizei))                                       \
     X(void, DepthFunc, (GLenum))                                                              \
     X(void, DepthRange, (double, double))                                                     \
+    X(void, ClearDepth, (double))                                                             \
     X(void, BlendFunc, (GLenum, GLenum))                                                      \
     X(void, BlendColor, (GLfloat, GLfloat, GLfloat, GLfloat))                                 \
     X(void, BlendFuncSeparate, (GLenum, GLenum, GLenum, GLenum))                              \
@@ -203,16 +208,21 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
 #define SG_GL_DECLARE(ret, name, args) inline ret(*gl##name) args = nullptr;
 SG_GL_FUNCS(SG_GL_DECLARE)
 #undef SG_GL_DECLARE
+// Where the driver has it (GL 4.5, or ARB_clip_control): how clip space's
+// depth is taken - for depth reversed (Renderer.hpp, reversed_depth).
+inline void (*glClipControl)(GLenum, GLenum) = nullptr;
 
 using ProcLoader = void* (*)(const char*);
 
 // Pass glfwGetProcAddress. Throws on the first entry point the driver lacks.
+// inline: GL.hpp is the loader's own header, macros and all.
 inline void load(ProcLoader loader) {
 #define SG_GL_LOAD(ret, name, args)                                              \
     gl##name = reinterpret_cast<ret(*) args>(loader("gl" #name));                \
     if (!gl##name) throw std::runtime_error("GL entry point missing: gl" #name);
     SG_GL_FUNCS(SG_GL_LOAD)
 #undef SG_GL_LOAD
+    glClipControl = reinterpret_cast<void (*)(GLenum, GLenum)>(loader("glClipControl"));
 }
 
 // Cheap guard used after each pipeline stage while bringing a scene up.

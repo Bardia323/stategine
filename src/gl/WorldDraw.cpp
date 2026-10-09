@@ -166,14 +166,21 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // (The screen's pixels: a part's picture need only be as big as the part.)
     vp_w_ = part ? std::round(static_cast<float>(target_w_) * hx) : static_cast<float>(target.width());
     vp_h_ = part ? std::round(static_cast<float>(target_h_) * hy) : static_cast<float>(target.height());
-    const gl::Mat4 view_proj =
-        narrow * projection_of(cam, aspect, znear, zfar) *
-        gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
-    // As drawn: moved by this frame's part of a pixel, for the views drawn at
-    // the screen's pixels (temporal antialiasing; nothing else sees it - the
-    // air, what is culled and what a view is kept by go by the view unmoved).
+    const gl::Mat4 lens = projection_of(cam, aspect, znear, zfar), looking = gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
+    const gl::Mat4 view_proj = narrow * lens * looking;
+    // As drawn: with its depth reversed, where it may be (near 1, far 0, in
+    // float: gl::reversed_depth) - the lens's own depth row turned, before the
+    // view is put to it, so nothing of a float's precision is lost - and moved
+    // by this frame's part of a pixel, for the views drawn at the screen's
+    // pixels (temporal antialiasing). Nothing else sees either: the air, what
+    // is culled and what a view is kept by go by the view as it is.
+    const bool reversed = gl::reversed_depth();
+    gl::Mat4 drawn_lens = lens;
+    if (reversed)
+        for (int c = 0; c < 4; ++c) drawn_lens.m[c * 4 + 2] = 0.5f * lens.m[c * 4 + 3] - 0.5f * lens.m[c * 4 + 2];
     const bool jittered = depth <= 1 && (jitter_x_ != 0.0f || jitter_y_ != 0.0f);
-    const gl::Mat4 drawn_proj = jittered ? gl::Mat4::translate({2.0f * jitter_x_ / vp_w_, 2.0f * jitter_y_ / vp_h_, 0.0f}) * view_proj : view_proj;
+    const gl::Mat4 drawn_proj = (jittered ? gl::Mat4::translate({2.0f * jitter_x_ / vp_w_, 2.0f * jitter_y_ / vp_h_, 0.0f}) : gl::Mat4::identity()) *
+                                narrow * drawn_lens * looking;
     if (depth == 0 && taa_on()) {
         taa_vp_ = view_proj;
         taa_world_ = rooms.front().room;
@@ -610,9 +617,25 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                      1.0f);
     // (Asked what surfaces are, where there are none is nothing: 0.)
     if (surface_only_) gl::glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    // Its depth reversed, where it may be: taken 0 to 1, cleared to the far
+    // (0), the nearer the greater - and put back as GL keeps it once the scene
+    // is drawn, for shadow maps and all else.
+    struct Reversed {
+        bool on;
+        ~Reversed() {
+            if (!on) return;
+            gl::glClipControl(gl::GL_LOWER_LEFT, gl::GL_NEGATIVE_ONE_TO_ONE);
+            gl::glClearDepth(1.0);
+            gl::glDepthFunc(gl::GL_LESS);
+        }
+    } reversed_scene{reversed};
+    if (reversed) {
+        gl::glClipControl(gl::GL_LOWER_LEFT, gl::GL_ZERO_TO_ONE);
+        gl::glClearDepth(0.0);
+    }
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
     gl::glEnable(gl::GL_DEPTH_TEST);
-    gl::glDepthFunc(gl::GL_LESS);
+    gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
     gl::glEnable(gl::GL_MULTISAMPLE);
     gl::glDisable(gl::GL_CULL_FACE);
     for (int i = 0; i < kMaxBounds; ++i)
@@ -623,6 +646,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // whenever a room's look brings a different program.
     const auto frame_uniforms = [&](const gl::Program& p) {
         p.set("uViewProj", drawn_proj);
+        p.set("uDepthNudge", reversed ? 1.0f : 0.0f);
         p.set("uMirrorScreen", vp_w_, vp_h_);
         mirror_uniforms(p, depth == 0 && !mirroring_);
         p.set("uInstanced", 0);

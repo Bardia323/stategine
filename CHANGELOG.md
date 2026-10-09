@@ -8,6 +8,11 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- The scene's depth is reversed and in float, where the driver has it (`gl::reversed_depth`, GL_ARB_clip_control; `SG_REVERSED_Z=0` to compare): near 1, far 0, taken 0 to 1, so a float's precision is spent alike near and far. Two surfaces a hair apart - a lining a millimetre and a half off a wall - no longer fight when seen from far off and edge on, as a mirror's eye sees them (an integer depth from a near plane of a few centimetres has steps of centimetres there). What parts coinciding surfaces is then a share of the distance, the same at every corner of a thing, so its faces stay flat. Depth's readers (occlusion, glow in thick air, deband, temporal antialiasing) read either way; shadow maps are as they were. The same pictures, the same frame time.
+- A panel (a picture, a screen, a room's finish laid on a wall) is told apart from what it coincides with by its size as the sheet it is, not by the unit depth of its quad - by that it was the size of a room, and lost to the wall behind it from far off.
+- A mirror's view is drawn with the scene's own near plane again; `sg_coplanar_gl` holds linings, sheets a hair off a wall, a tile behind a sheet and all of it in a mirror, from two metres to sixty.
+
+
 - What hangs in a doorway (`straddle`, a door's leaf and its handle) keeps a mirror's cut: drawn whole in a view through a doorway, it was drawn whole in a mirror's view too, so a door behind the glass showed in it, close up.
 - `sg::render::load_quality(file, argv0, quality, problems)`: a project's render.conf, from where it is named or beside the program - the whole of reading one, for any program.
 

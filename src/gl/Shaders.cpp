@@ -300,6 +300,7 @@ uniform mat4 uReproject;
 uniform vec2 uJitter;
 uniform vec2 uTexel;
 uniform float uFresh;
+uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
 // Blended in a curve that keeps a bright pixel from outweighing its
 // neighbours (and back): what makes a highlight flicker otherwise.
 vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
@@ -341,7 +342,8 @@ void main() {
             vec3 c = ycocg(squash(texture(uCurrent, at).rgb));
             m1 += c;
             m2 += c * c;
-            near = min(near, texture(uDepth, at).r);
+            float d = texture(uDepth, at).r;
+            near = min(near, uReversedZ > 0.5 ? 1.0 - d : d);
         }
     vec3 mean = m1 / 9.0, spread = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
     // Where it was last frame.
@@ -1685,13 +1687,15 @@ float air_past(float d, float start) {
 }
 uniform float uFogBloom;
 uniform float uFogBloomCap;
+uniform float uFogReversed;  // 1: the depth is reversed (near 1, far 0)
 float fog_bloom(vec2 uv) {
     if (uFogBloom <= 0.0) return 0.0;
     float d = texture(uDepth, uv).r;
     float n = uDepthView.x, f = uDepthView.y;
     // Along the ray, not the view's axis; what nothing stands in front of
     // is as far as the view goes.
-    float z = d >= 1.0 ? f : 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n));
+    float z = uFogReversed > 0.5 ? (d <= 0.0 ? f : n * f / (n + d * (f - n)))
+                                 : (d >= 1.0 ? f : 2.0 * n * f / (f + n - (d * 2.0 - 1.0) * (f - n)));
     vec2 p = (uv * 2.0 - 1.0) * vec2(uDepthView.z * uDepthView.w, uDepthView.z);
     float tau = uAirThick.x * air_past(z * length(vec3(p, 1.0)), uAirThick.y);
     return uFogBloom * min(tau, uFogBloomCap > 0.0 ? uFogBloomCap : 3.0);
@@ -1816,7 +1820,11 @@ uniform float uDeband;
 // Nothing drawn here: the depth the view was cleared to. (Read back from a
 // 24-bit buffer the clear may come as a hair under 1; nothing drawn stands
 // that far.)
-bool deband_empty(vec2 uv) { return texture(uDepth, uv).r >= 0.9999999; }
+uniform float uDebandReversed;  // 1: the depth is reversed: nothing drawn is 0
+bool deband_empty(vec2 uv) {
+    float d = texture(uDepth, uv).r;
+    return uDebandReversed > 0.5 ? d <= 1e-7 : d >= 0.9999999;
+}
 // Only where nothing was drawn, and nothing drawn is within a pixel: an
 // antialiased edge's pixel may say "empty" by its one depth while its colour
 // holds some of what was drawn, so neither it nor any pixel beside a drawn

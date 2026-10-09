@@ -175,6 +175,14 @@ private:
     int size_ = 0;
 };
 
+// Whether the scene's depth is reversed: near 1, far 0, in floating point
+// (GL_ARB_clip_control, depth taken 0 to 1). Kept so, a float's precision is
+// spent alike near and far - two surfaces a hair apart stay apart forty
+// metres off and edge on, where an integer depth from a near plane of a few
+// centimetres has steps of centimetres. Where the driver lacks it (or
+// SG_REVERSED_Z=0 says), depth is as GL keeps it by default.
+bool reversed_depth();
+
 class RenderTarget {
 public:
     // `depth_texture`: a single-sampled target keeps its depth as a texture a

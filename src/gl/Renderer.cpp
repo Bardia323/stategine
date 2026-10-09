@@ -1,6 +1,9 @@
 #include "sg/gl/Renderer.hpp"
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <utility>
 
 namespace sg::gl {
@@ -151,6 +154,20 @@ void Texture::create_packed(const render::Packed& p) {
     glGetError();  // as create's: without anisotropy, plain trilinear
 }
 
+bool reversed_depth() {
+    static const bool yes = [] {
+        if (const char* e = std::getenv("SG_REVERSED_Z"); e && std::string(e) == "0") return false;
+        if (!glClipControl) return false;
+        GLint n = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (GLint i = 0; i < n; ++i)
+            if (const unsigned char* e = glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)))
+                if (std::strcmp(reinterpret_cast<const char*>(e), "GL_ARB_clip_control") == 0) return true;
+        return false;
+    }();
+    return yes;
+}
+
 bool Texture::packs() {
     static const bool yes = [] {
         GLint n = 0;
@@ -255,7 +272,7 @@ void RenderTarget::create(int w, int h, GLenum internal_format, int samples, boo
     if (with_depth && depth_texture && samples == 0) {
         glGenTextures(1, &depth_tex_);
         glBindTexture(GL_TEXTURE_2D, depth_tex_);
-        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(GL_DEPTH_COMPONENT24), w, h, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(reversed_depth() ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24), w, h, 0,
                      GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -266,10 +283,10 @@ void RenderTarget::create(int w, int h, GLenum internal_format, int samples, boo
         glGenRenderbuffers(1, &depth_rb_);
         glBindRenderbuffer(GL_RENDERBUFFER, depth_rb_);
         if (samples > 0) {
-            glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, w,
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, reversed_depth() ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24, w,
                                              h);
         } else {
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+            glRenderbufferStorage(GL_RENDERBUFFER, reversed_depth() ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24, w, h);
         }
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
                                   depth_rb_);

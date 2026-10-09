@@ -41,6 +41,7 @@ uniform mat4 uModel;
 // tiles fall.
 uniform mat4 uTexModel;
 uniform mat4 uViewProj;
+uniform float uDepthNudge;  // 1: depth reversed (near 1, far 0, float), the nudge below a share of it; 0: as GL keeps depth
 
 // The half-spaces this room owns: one per doorway, the room's own side of the
 // plane it is glued along. Two rooms both build a wall on that plane; each
@@ -98,7 +99,13 @@ void main() {
     // A thing may say more (`depth_layer`): the parts of one model, made to
     // fit together, each a layer of its own, so none ties with another.
     rank += uInstanced == 1 ? iMat2.x : uDepthLayer;
-    gl_Position.z -= rank * (2.0 / 16777216.0) * gl_Position.w;
+    // (Depth reversed, in float: the nudge is a share of the distance - five
+    // parts in a million a step of rank, more for a thing far from the
+    // world's middle, whose corners round coarser - the same share at every
+    // corner of a thing, so its faces stay flat: a twentieth of a millimetre
+    // a step at a metre, a few millimetres at forty for the smallest things.)
+    if (uDepthNudge > 0.0) gl_Position.z *= 1.0 + rank * max(5e-6, length(model[3].xyz) * 1e-7);
+    else gl_Position.z -= rank * (2.0 / 16777216.0) * gl_Position.w;
 })";
 }
 
@@ -306,8 +313,10 @@ out vec4 FragColor;
 uniform sampler2D uDepth;
 uniform vec2  uTexel;     // one pixel of the depth buffer
 uniform float uNear, uFar, uTanHalf, uAspect, uRadius;
+uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
 
 float linear(float d) {
+    if (uReversedZ > 0.5) return uNear * uFar / (uNear + d * (uFar - uNear));
     float z = d * 2.0 - 1.0;
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
 }
@@ -319,7 +328,7 @@ vec3 view_at(vec2 uv) {
 
 void main() {
     float d = texture(uDepth, vUV).r;
-    if (d >= 1.0) { FragColor = vec4(1.0); return; }
+    if (uReversedZ > 0.5 ? d <= 0.0 : d >= 1.0) { FragColor = vec4(1.0); return; }
     vec3 p = view_at(vUV);
     // The surface's normal from its neighbours, each side's nearer one, so
     // an edge does not bend it.
@@ -363,7 +372,9 @@ uniform sampler2D uAO;
 uniform sampler2D uDepth;
 uniform vec2  uTexel;     // one pixel of the AO target
 uniform float uNear, uFar;
+uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
 float linear(float d) {
+    if (uReversedZ > 0.5) return uNear * uFar / (uNear + d * (uFar - uNear));
     float z = d * 2.0 - 1.0;
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
 }
@@ -397,7 +408,9 @@ uniform sampler2D uDepth;
 uniform float uStrength;
 uniform float uNear, uFar;
 uniform vec2  uTexel;
+uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
 float linear(float d) {
+    if (uReversedZ > 0.5) return uNear * uFar / (uNear + d * (uFar - uNear));
     float z = d * 2.0 - 1.0;
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
 }

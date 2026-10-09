@@ -175,6 +175,15 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
 }
 
 void GLWorldView::draw_portal(const State& st, const Element& e, int depth, const gl::RenderTarget& target, bool frame_only) {
+    // A panel is a flat face laid on what it hangs on: told apart from what
+    // it coincides with by its size as the sheet it is (as if a millimetre
+    // thick), not by the unit depth its quad is drawn with - by that it was
+    // the size of a room, and lost to the wall behind it from far off.
+    struct Laid {
+        const gl::Program* p;
+        ~Laid() { p->set("uDepthLayer", 0.0f); }
+    } laid{scene_};
+    scene_->set("uDepthLayer", 10.0f);
     // A ball is the boundary of a world drawn where it is (sg::nests): there
     // is no picture of it to draw - unless the world is of another scale (a
     // snow globe's): then the ball is a window onto it, its view on the ball.
@@ -372,10 +381,11 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
                       gl::Mat4::scale({1.0f, h * k, w * k})));
             // (Not tested against what is there: a wall right behind the
             // doorway may stand on the near plane, at the same depth.)
-            gl::glDepthRange(0.0, 0.0);
+            const bool reversed = gl::reversed_depth();
+            gl::glDepthRange(reversed ? 1.0 : 0.0, reversed ? 1.0 : 0.0);
             gl::glDepthFunc(gl::GL_ALWAYS);
             quad_.draw();
-            gl::glDepthFunc(gl::GL_LESS);
+            gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
             gl::glDepthRange(0.0, 1.0);
         }
         scene_->set("uScreenUV", 0.0f);
