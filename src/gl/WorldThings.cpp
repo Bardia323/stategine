@@ -2,6 +2,8 @@
 // meshes and their skins, lamps.
 #include "sg/gl/World.hpp"
 
+#include <algorithm>
+
 #include "sg/domains/Texture.hpp"
 
 namespace sg::render {
@@ -82,7 +84,8 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // seen through the doorway - each point by the rooms it is in, as far as
     // it is in them (uStraddle): the two pictures of it are one, and shut or
     // ajar it is lit the same. Seen through the doorway it is drawn whole: no
-    // plane cuts it.
+    // plane cuts it - but a mirror's (the first the view is given, in a
+    // mirror's view): what is behind the glass is not in it.
     struct Hung {
         const gl::Program* p;
         float on;
@@ -95,7 +98,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     } hung{scene_, static_cast<float>(e.params.num(Key{"straddle"}, 0.0))};
     if (hung.on > 0.5f) {
         scene_->set("uStraddle", 1.0f);
-        if (guest_pass_) hung.clips = clip_count_, scene_->set("uClipCount", 0);
+        if (guest_pass_) hung.clips = clip_count_, scene_->set("uClipCount", mirroring_ ? std::min(clip_count_, 1) : 0);
     }
     // Its depth layer, for this draw alone.
     struct Layer {

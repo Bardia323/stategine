@@ -8,6 +8,10 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- What hangs in a doorway (`straddle`, a door's leaf and its handle) keeps a mirror's cut: drawn whole in a view through a doorway, it was drawn whole in a mirror's view too, so a door behind the glass showed in it, close up.
+- `sg::render::load_quality(file, argv0, quality, problems)`: a project's render.conf, from where it is named or beside the program - the whole of reading one, for any program.
+
+
 - A mirror is read only where it was drawn, and a window's reflection only by its own glass: what else lies in a mirror's plane outside it - a bookcase's back against the window's wall - no longer takes the edges of its picture (a bright, blocky speckle that moved as one walked).
 
 

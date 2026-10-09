@@ -2,6 +2,8 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 
 namespace sg::render {
@@ -78,6 +80,18 @@ void read_quality(const std::string& text, Quality& into, std::vector<std::strin
             else into.*(s->number) = v;
         }
     }
+}
+
+bool load_quality(const std::string& file, const std::string& program, Quality& into, std::vector<std::string>* problems) {
+    std::error_code ec;
+    const std::filesystem::path path =
+        !file.empty() ? std::filesystem::path(file) : std::filesystem::absolute(std::filesystem::path(program), ec).parent_path() / "render.conf";
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::stringstream text;
+    text << f.rdbuf();
+    read_quality(text.str(), into, problems);
+    return true;
 }
 
 std::string quality_text(const Quality& q) {

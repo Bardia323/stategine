@@ -48,4 +48,8 @@ void read_quality(const std::string& text, Quality& into, std::vector<std::strin
 // The file, every key said as `q` has it and what each is: a project's
 // starting point.
 std::string quality_text(const Quality& q = {});
+// A project's render.conf read into `into`, if there is one: the file named
+// by `file`, or a render.conf beside the program `program` names (argv[0])
+// when `file` is empty. False, `into` as it was, when there is none.
+bool load_quality(const std::string& file, const std::string& program, Quality& into, std::vector<std::string>* problems = nullptr);
 }
