@@ -4,8 +4,11 @@
 
 #include "sg/domains/Texture.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <thread>
+#include <utility>
 
 namespace sg::render {
 
@@ -97,9 +100,48 @@ void GLWorldView::upload_skin(BoundSurface& bound) {
     refresh(bound);
 }
 
+void GLWorldView::LetGo::now() {
+    // (What is let go while it is still at the last of it waits for the next;
+    // and all of it, while every world is first drawn: starting is not slowed.)
+    if ((pixels.empty() && blocks.empty()) || busy.load(std::memory_order_acquire) || held) return;
+    if (freeing.joinable()) freeing.join();
+    // A little at a time, with a rest between: memory given back to the
+    // system stops every core the program runs on for a moment, and given
+    // back all at once (hundreds of megabytes, as a world's pictures go to
+    // the card) that is felt; spread out, it is not.
+    busy = true;
+    freeing = std::thread([this, p = std::move(pixels), b = std::move(blocks)]() mutable {
+        constexpr std::size_t kPiece = std::size_t{64} << 20;
+        std::size_t given = 0;
+        const auto rest = [&](std::size_t bytes) {
+            given += bytes;
+            if (given < kPiece || hurry.load(std::memory_order_relaxed)) return;
+            given = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        };
+        for (auto& v : p) {
+            const std::size_t n = v.capacity();
+            std::vector<unsigned char>{}.swap(v);
+            rest(n);
+        }
+        for (auto& s : b) {
+            const std::size_t n = s.capacity();
+            std::string{}.swap(s);
+            rest(n);
+        }
+        busy.store(false, std::memory_order_release);
+    });
+    pixels.clear(), blocks.clear();
+}
+
+GLWorldView::LetGo::~LetGo() {
+    hurry = true;
+    if (freeing.joinable()) freeing.join();
+}
+
 void GLWorldView::refresh(BoundSurface& bound) {
     Surface2D& surf = *bound.surface;
-    const auto& pixels = surf.raster();
+    surf.catch_up();
     if (bound.packed && bound.packed_revision == surf.revision()) {
         if (!bound.texture.packed() || bound.revision != surf.revision()) {
             // The card's one copy of that picture, made the first time.
@@ -107,6 +149,9 @@ void GLWorldView::refresh(BoundSurface& bound) {
             if (!on.texture.valid()) {
                 on.keep = bound.packed;
                 on.texture.create_packed(*bound.packed);
+                // Its blocks are the card's now, and never sent again (every
+                // surface that shows it shows this texture): not kept twice.
+                let_go_.blocks.push_back(std::exchange(on.keep->bytes, {}));
             }
             if (!bound.shared && bound.texture.valid()) {
                 const gl::GLuint was = bound.texture.id();  // (its own, from before: let go)
@@ -115,6 +160,10 @@ void GLWorldView::refresh(BoundSurface& bound) {
             bound.texture = on.texture;
             bound.shared = true;
             bound.revision = surf.revision();
+            // Its picture is on the card: its pixels are not wanted here
+            // until it changes, and are had again from the kept ones if they
+            // are asked for (only while there are kept ones to have them from).
+            if (!cache::folder().empty()) let_go_.pixels.push_back(surf.let_go_of_pixels());
         }
         return;
     }
@@ -128,20 +177,41 @@ void GLWorldView::refresh(BoundSurface& bound) {
         bound.revision = ~uint64_t{0};
     }
     if (bound.revision != surf.revision()) {
-        bound.texture.upload(pixels);
+        bound.texture.upload(surf.raster());
         bound.revision = surf.revision();
     }
 }
 
 void GLWorldView::pack_skins() {
-    if (!q_.pack || !gl::Texture::packs()) return;
-    // Each texture once, however many things it is bound to; its picture
-    // made here, on this thread, if it was not yet.
+    // (Unpacked, every texture's picture is made now all the same, each on
+    // a core of its own - a texture paints only itself - not one after
+    // another as each is first shown.)
+    if (!q_.pack || !gl::Texture::packs()) {
+        std::vector<Surface2D*> all;
+        for (auto& [id, bound] : surfaces_)
+            if (bound.surface && dynamic_cast<const Texture*>(bound.surface) &&
+                std::find(all.begin(), all.end(), bound.surface) == all.end())
+                all.push_back(bound.surface);
+        std::atomic<std::size_t> next{0};
+        const auto hand = [&] {
+            for (std::size_t k; (k = next.fetch_add(1)) < all.size();) all[k]->raster();
+        };
+        std::vector<std::thread> hands;
+        const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), all.size());
+        for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+        hand();
+        for (std::thread& t : hands) t.join();
+        return;
+    }
+    // Each texture once, however many things it is bound to. One that can
+    // say what its pixels would be painted from (name_now, pixels_digest),
+    // and whose picture is kept packed by that, is read back: its pixels are
+    // never made. Any other is painted and packed here, each on a core of
+    // its own (a texture paints only itself).
     struct Job {
         Surface2D* surface;
-        const std::vector<unsigned char>* pixels;
         uint64_t revision;
-        std::shared_ptr<const render::Packed> packed;
+        std::shared_ptr<render::Packed> packed;
     };
     std::vector<Job> jobs;
     std::unordered_map<const Surface2D*, std::size_t> job_of;
@@ -160,7 +230,7 @@ void GLWorldView::pack_skins() {
     for (auto& [id, bound] : surfaces_) {
         Surface2D* s = bound.surface;
         if (!s || !dynamic_cast<const Texture*>(s) || job_of.count(s)) continue;
-        const std::vector<unsigned char>* pixels = &s->raster();
+        s->catch_up();
         if (!render::packable(s->px_w(), s->px_h())) continue;
         Digest made;
         if (s->pixels_digest(made)) {
@@ -171,26 +241,31 @@ void GLWorldView::pack_skins() {
             }
         }
         job_of.emplace(s, jobs.size());
-        jobs.push_back(Job{s, pixels, s->revision(), nullptr});
+        jobs.push_back(Job{s, s->revision(), nullptr});
     }
-    // The biggest first, so no core is left with one at the end; each a
-    // picture of its own pixels alone.
+    // The biggest first, so no core is left with one at the end.
     std::vector<std::size_t> order(jobs.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-        return jobs[a].pixels->size() > jobs[b].pixels->size();
+        return static_cast<int64_t>(jobs[a].surface->px_w()) * jobs[a].surface->px_h() >
+               static_cast<int64_t>(jobs[b].surface->px_w()) * jobs[b].surface->px_h();
     });
     std::atomic<std::size_t> next{0};
     const auto hand = [&] {
         for (std::size_t k; (k = next.fetch_add(1)) < order.size();) {
             Job& j = jobs[order[k]];
-            // (By what its pixels were made from, if it says: they are then
-            // not read through to be known.)
+            Surface2D& s = *j.surface;
+            auto packed = std::make_shared<render::Packed>();
+            // (By what its pixels are made from, if it says: they are then
+            // not made, or read through, to be known.)
             Digest made;
-            j.packed = std::make_shared<const render::Packed>(
-                j.surface->pixels_digest(made)
-                    ? render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb(), made)
-                    : render::pack_kept(j.pixels->data(), j.surface->px_w(), j.surface->px_h(), j.surface->srgb()));
+            if (s.pixels_digest(made)) {
+                if (!render::packed_kept(s.px_w(), s.px_h(), s.srgb(), made, *packed))
+                    *packed = render::pack_kept(s.raster().data(), s.px_w(), s.px_h(), s.srgb(), made);
+            } else {
+                *packed = render::pack_kept(s.raster().data(), s.px_w(), s.px_h(), s.srgb());
+            }
+            j.packed = std::move(packed);
         }
     };
     std::vector<std::thread> hands;

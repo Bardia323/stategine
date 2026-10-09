@@ -1,7 +1,41 @@
 #include "sg/render/Geometry.hpp"
 #include "sg/spatial/Projection.hpp"
 #include <algorithm>
+#include <cstring>
+#include <unordered_map>
 namespace sg::render {
+namespace {
+// A corner by its bits: two that differ in any bit are two corners.
+struct Corner {
+    uint32_t bits[8];
+    bool operator==(const Corner& o) const { return std::memcmp(bits, o.bits, sizeof bits) == 0; }
+};
+struct CornerHash {
+    std::size_t operator()(const Corner& c) const {
+        uint64_t h = 1469598103934665603ULL;
+        for (uint32_t b : c.bits) h = (h ^ b) * 1099511628211ULL;
+        return static_cast<std::size_t>(h ^ (h >> 29));
+    }
+};
+}  // namespace
+
+Indexed indexed(const std::vector<float>& corners) {
+    Indexed out;
+    const std::size_t n = corners.size() / 8;
+    out.index.reserve(n);
+    std::unordered_map<Corner, uint32_t, CornerHash> seen;
+    seen.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        Corner c;
+        std::memcpy(c.bits, corners.data() + i * 8, sizeof c.bits);
+        const auto [it, fresh] = seen.emplace(c, static_cast<uint32_t>(out.corners.size() / 8));
+        if (fresh) out.corners.insert(out.corners.end(), corners.begin() + static_cast<std::ptrdiff_t>(i * 8),
+                                      corners.begin() + static_cast<std::ptrdiff_t>(i * 8 + 8));
+        out.index.push_back(it->second);
+    }
+    return out;
+}
+
 using spatial::projection::normalize;
 using spatial::projection::Vec3;
 std::vector<float> cube_vertices() {

@@ -173,6 +173,7 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     const double ev = exposure_.ev, ev_target = exposure_.target;
     const bool ev_known = exposure_.known, ev_settle = exposure_.settle;
     const float ev_weight = exposure_.weight;
+    let_go_.held = true;
     pack_skins();
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
@@ -196,6 +197,7 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     exposure_.ev = ev, exposure_.target = ev_target, exposure_.known = ev_known, exposure_.settle = ev_settle;
     exposure_.weight = ev_weight;
     exposure_.asked[0] = exposure_.asked[1] = false;
+    let_go_.held = false;
 }
 
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
@@ -211,6 +213,7 @@ std::vector<PlacedRoom> GLWorldView::seen(const Spatial3D& world) const {
 }
 
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    let_go_.now();
     // What is seen of the world the eye is in: it, and the worlds round it
     // or in it (sg::nests) - as through any doorway onto it.
     auto rooms = requested;

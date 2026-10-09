@@ -37,6 +37,21 @@ Generated JS/Wasm and preloaded filesystem data remain in `build/wasm`.
 Assets and TextStore keep their existing owner/path semantics; preload files
 into Emscripten's filesystem rather than adding URL-owned world data.
 
+## Shipping a world
+
+What a game made with the engine ships to a browser is what its renderer
+reads, kept by what made it (`sg::cache`): the packed pictures (`packed`),
+the meshes of its models (`modeler`), the strokes its materials lay
+(`strokes`), its terrain and characters - preloaded into Emscripten's file
+system and named by `cache::set_folder`. A texture that names its pixels
+(`Surface2D::name_now`, `pixels_digest`) is then found packed by that name and
+never painted: the raw pixels (`paint`) need not ship. Packed pictures go to
+the card as BC7 with every mip where the device has `texture-compression-bc`
+(desktop browsers); elsewhere, as pixels. Meshes go indexed. Each is sent once,
+and again only when it changes or after a frame that did not use it. Serve the
+files compressed (HTTP `Content-Encoding`): packed pictures and meshes shrink
+to about a third and a fifth, and the browser undoes it as it reads them.
+
 ## Run the example
 
 `examples/browser` uses the existing `examples/pong/pong.sg`, native computations

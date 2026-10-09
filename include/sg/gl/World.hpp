@@ -376,7 +376,7 @@ private:
         uint64_t asked = 0;
         // The picture packed for the card (warm), and which of the surface's
         // pictures it is: shown packed while the surface still shows that one.
-        std::shared_ptr<const render::Packed> packed;
+        std::shared_ptr<render::Packed> packed;
         uint64_t packed_revision = 0;
         // Its texture is the one its packed picture is on the card as, shared
         // by every surface that packs to the same (`packed_on_card_`): not its
@@ -385,10 +385,24 @@ private:
     };
     // Each packed picture on the card once, however many surfaces show it.
     struct PackedOnCard {
-        std::shared_ptr<const render::Packed> keep;
+        std::shared_ptr<render::Packed> keep;
         gl::Texture texture;
     };
     std::unordered_map<const render::Packed*, PackedOnCard> packed_on_card_;
+    // What was let go once the card holds it (pixels, packed blocks), given
+    // back on a thread of its own, a frame later: a frame never waits on
+    // memory being returned.
+    struct LetGo {
+        std::vector<std::vector<unsigned char>> pixels;
+        std::vector<std::string> blocks;
+        std::thread freeing;
+        std::atomic<bool> hurry{false};  // (going: all of it at once)
+        std::atomic<bool> busy{false};   // that thread still at it
+        bool held = false;               // kept until warming is done
+        void now();  // what there is, handed to that thread
+        ~LetGo();
+    };
+    LetGo let_go_;
 
     // Where a doorway is on the view, in -1..1 each way, and what of it a
     // view through another leaves open.
@@ -1186,6 +1200,7 @@ private:
         uint64_t used = 0;  // the frame a view last asked for it
         void forget();  // every map to be laid again
     };
+    ShadowSet lightless_maps_;  // what a view asked only what surfaces are binds: one texel, never laid
     // A view's air, lit by its lamps (air_fs): each slice's own light (laid
     // eight to a row), the slices added up from the eye (what the scene
     // reads), and what they were gathered from - gathered again only when

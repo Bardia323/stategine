@@ -1,9 +1,12 @@
 #include "sg/web/WebGPU.hpp"
+#include "sg/domains/Texture.hpp"
 #include "sg/render/Defaults.hpp"
 #include "sg/render/Geometry.hpp"
+#include "sg/render/Pack.hpp"
 #include <cctype>
 #include <cstring>
 #include <emscripten/val.h>
+#include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -21,21 +24,6 @@ Mat4 web_depth(Mat4 m) {
         m.m[c * 4 + 2] = (m.m[c * 4 + 2] + m.m[c * 4 + 3]) * 0.5f;
     return m;
 }
-std::string mesh_key(const std::vector<float> &mesh) {
-    std::uint64_t h = 1469598103934665603ULL;
-    for (float x : mesh) {
-        std::uint32_t n;
-        std::memcpy(&n, &x, 4);
-        h = (h ^ n) * 1099511628211ULL;
-    }
-    return std::to_string(h) + ":" + std::to_string(mesh.size());
-}
-val geometry(const std::vector<float> &mesh) {
-    auto v = val::object();
-    v.set("key", mesh_key(mesh));
-    v.set("vertices", copy(mesh, "Float32Array"));
-    return v;
-}
 void matrix(std::vector<float> &f, std::size_t at, const Mat4 &m) { std::copy(m.m, m.m + 16, f.begin() + at); }
 } // namespace
 struct WebGPUView::Impl {
@@ -50,6 +38,47 @@ struct WebGPUView::Impl {
     std::map<Key, const LookState *> borrowed_looks;
     std::set<std::string> prepared_shaders;
     std::set<std::string> active_feeds, finished_feeds;
+    // What the browser holds: each mesh by its key, each picture by its key
+    // and revision - as of the last frame it drew, which kept exactly what
+    // that frame used (and let the rest go). What this frame uses, the first
+    // use of each carrying its data only when the browser does not hold it.
+    std::set<std::string> held_meshes, used_meshes;
+    std::map<std::string, std::string> held_pictures, used_pictures;
+    unsigned held_generation = 0;
+    // The shapes every frame draws, made once.
+    const std::vector<float> cube = render::cube_vertices(), quad = render::quad_vertices(),
+                             sphere = render::sphere_vertices();
+    std::map<std::string, std::vector<float>> shapes;
+    const std::vector<float> &shape(const std::string &key, const std::function<std::vector<float>()> &make) {
+        auto it = shapes.find(key);
+        if (it == shapes.end()) it = shapes.emplace(key, make()).first;
+        return it->second;
+    }
+    // A mesh by what it is (its key), its corners sent, indexed, only when
+    // the browser does not hold it.
+    val geometry(const std::string &key, const std::vector<float> &mesh) {
+        auto v = val::object();
+        v.set("key", key);
+        if (used_meshes.insert(key).second && !held_meshes.count(key)) {
+            const render::Indexed ix = render::indexed(mesh);
+            v.set("vertices", copy(ix.corners, "Float32Array"));
+            if (ix.corners.size() / 8 <= 65536) {
+                const std::vector<std::uint16_t> small(ix.index.begin(), ix.index.end());
+                v.set("indices", copy(small, "Uint16Array"));
+            } else {
+                v.set("indices", copy(ix.index, "Uint32Array"));
+            }
+        }
+        return v;
+    }
+    // A picture's bytes, sent only when the browser does not hold this
+    // revision of it: packed (BC7, every mip) when the browser takes that
+    // and the packed picture is kept by what names it, else its pixels.
+    bool send_picture(const std::string &key, const std::string &revision) {
+        if (!used_pictures.emplace(key, revision).second) return false;
+        const auto held = held_pictures.find(key);
+        return held == held_pictures.end() || held->second != revision;
+    }
     MissingShader policy = MissingShader::Refuse;
     explicit Impl(const std::string &selector) : handle(val::global("sgGPU").call<val>("create", selector)) {
         render::standard_look(standard);
@@ -87,13 +116,36 @@ struct WebGPUView::Impl {
     }
     val texture(Surface2D &surface) {
         auto t = val::object();
-        const auto &bytes = surface.raster();
-        t.set("key", surface.id().str());
+        surface.catch_up();
+        const auto key = surface.id().str(), revision = std::to_string(surface.revision());
+        t.set("key", key);
         t.set("w", surface.px_w());
         t.set("h", surface.px_h());
         t.set("srgb", surface.srgb());
-        t.set("revision", std::to_string(surface.revision()));
-        t.set("bytes", copy(bytes, "Uint8Array"));
+        t.set("revision", revision);
+        if (!send_picture(key, revision)) return t;
+        Digest made;
+        render::Packed packed;
+        if (handle.call<bool>("packs") && dynamic_cast<const Texture *>(&surface) &&
+            render::packable(surface.px_w(), surface.px_h()) && surface.pixels_digest(made) &&
+            render::packed_kept(surface.px_w(), surface.px_h(), surface.srgb(), made, packed)) {
+            auto levels = val::array();
+            for (std::size_t i = 0; i < packed.levels.size(); ++i) {
+                const auto &l = packed.levels[i];
+                auto level = val::object();
+                level.set("w", l.w);
+                level.set("h", l.h);
+                level.set("at", static_cast<double>(l.at));
+                level.set("size", static_cast<double>(l.size));
+                levels.set(i, level);
+            }
+            t.set("levels", levels);
+            t.set("bytes", val::global("Uint8Array")
+                               .new_(val(emscripten::typed_memory_view(packed.bytes.size(),
+                                                                       reinterpret_cast<const unsigned char *>(packed.bytes.data())))));
+            return t;
+        }
+        t.set("bytes", copy(surface.raster(), "Uint8Array"));
         return t;
     }
     val room(const StateGraph &g, const State &root, int w, int h, const render::ViewCamera *eye,
@@ -328,7 +380,7 @@ struct WebGPUView::Impl {
         out.set("composites", composites);
         val batches = val::array();
         unsigned number = 0;
-        const auto append = [&](const std::vector<float> &mesh, const Mat4 &m, Rgb colour, double roughness,
+        const auto append = [&](const std::string &mesh_key, const std::vector<float> &mesh, const Mat4 &m, Rgb colour, double roughness,
                                 double surface, double emissive, val picture, const std::string &feed, bool feedback,
                                 double glass, const Element *source = nullptr, bool sample_hdr = false) {
             std::vector<float> data(m.m, m.m + 16);
@@ -352,7 +404,7 @@ struct WebGPUView::Impl {
                          0, glass == 6 ? static_cast<float>(1 / std::max(1.0, source->params.num("frames", 1))) : 0,
                          glass == 6 ? 1.0f : 0});
             auto batch = val::object();
-            batch.set("mesh", geometry(mesh));
+            batch.set("mesh", geometry(mesh_key, mesh));
             batch.set("instances", copy(data, "Float32Array"));
             batch.set("picture", picture);
             batch.set("target", feed);
@@ -362,38 +414,46 @@ struct WebGPUView::Impl {
                                    (!source || source->params.num("cast", 1) > .5));
             batches.set(number++, batch);
         };
-        const auto cube = render::cube_vertices();
         if (derived.surface) {
             // raster() only memoizes pixels; the surface's semantic data is read.
             auto &surface = const_cast<Surface2D &>(*derived.surface);
             const auto m = Mat4::rotate_y(1.5707963267948966f) * Mat4::scale({1, 2, 2});
-            append(render::quad_vertices(), m, {1, 1, 1}, 1, 0, 0, texture(surface), {}, false, 1);
+            append("quad", quad, m, {1, 1, 1}, 1, 0, 0, texture(surface), {}, false, 1);
         }
         const auto &instances = flat ? derived.sprites : derived.rooms[0].instances;
         if (!derived.surface)
             for (const auto &instance : instances) {
                 const auto *e = instance.element;
-                auto mesh = cube;
+                std::string mesh_key = "cube";
+                const std::vector<float> *mesh = &cube;
                 Mat4 m = instance.model;
                 if (flat) {
                     m = Mat4::translate(vec(instance.pose.position)) *
                         Mat4::scale({static_cast<float>(instance.size.x), static_cast<float>(instance.size.y), .01f});
                 } else if (e) {
                     const auto shape = e->params.get_or<std::string>("shape", {});
-                    if (shape == "sphere")
-                        mesh = render::sphere_vertices();
-                    else if (shape == "cylinder")
-                        mesh = render::cylinder_vertices(28, static_cast<float>(e->params.num("taper", 1)));
-                    else if (shape == "model") {
-                        const auto *model = dynamic_cast<const Spatial3D &>(root).model(
-                            Key{e->params.get_or<std::string>("model", {})});
-                        if (model)
-                            mesh = *model;
-                    } else if (e->params.num("bevel") > 0)
-                        mesh = render::rounded_box_vertices(
-                            static_cast<float>(instance.size.x), static_cast<float>(instance.size.y),
-                            static_cast<float>(instance.size.z), static_cast<float>(e->params.num("bevel")),
-                            static_cast<float>(e->params.num("taper", 1)));
+                    if (shape == "sphere") {
+                        mesh_key = "sphere", mesh = &sphere;
+                    } else if (shape == "cylinder") {
+                        const float taper = static_cast<float>(e->params.num("taper", 1));
+                        mesh_key = "cylinder:" + std::to_string(taper);
+                        mesh = &this->shape(mesh_key, [&] { return render::cylinder_vertices(28, taper); });
+                    } else if (shape == "model") {
+                        const Key name{e->params.get_or<std::string>("model", {})};
+                        const auto &space = dynamic_cast<const Spatial3D &>(root);
+                        if (const auto *model = space.model(name)) {
+                            // (By what it is: the model, as made this time.)
+                            mesh_key = "model:" + root.id().str() + ":" + name.str() + ":" + std::to_string(space.model_revision(name));
+                            mesh = model;
+                        }
+                    } else if (e->params.num("bevel") > 0) {
+                        const float sx = static_cast<float>(instance.size.x), sy = static_cast<float>(instance.size.y),
+                                    sz = static_cast<float>(instance.size.z), bevel = static_cast<float>(e->params.num("bevel")),
+                                    taper = static_cast<float>(e->params.num("taper", 1));
+                        mesh_key = "rounded:" + std::to_string(sx) + "," + std::to_string(sy) + "," + std::to_string(sz) + "," +
+                                   std::to_string(bevel) + "," + std::to_string(taper);
+                        mesh = &this->shape(mesh_key, [&] { return render::rounded_box_vertices(sx, sy, sz, bevel, taper); });
+                    }
                 }
                 val skin = val::null();
                 double mode = 0;
@@ -409,13 +469,14 @@ struct WebGPUView::Impl {
                         skin.set("srgb", true);
                         skin.set("pixel", true);
                         skin.set("revision", std::to_string(pic->revision));
-                        skin.set("bytes", copy(pic->rgba, "Uint8Array"));
+                        if (send_picture(root.id().str() + ":" + name, std::to_string(pic->revision)))
+                            skin.set("bytes", copy(pic->rgba, "Uint8Array"));
                         mode = sprite ? 6 : 5;
                     }
                     if (sprite) {
                         if (skin.isNull())
                             continue;
-                        mesh = render::quad_vertices();
+                        mesh_key = "quad", mesh = &quad;
                         m = render::sprite_transform(root, *e, camera);
                     }
                 }
@@ -426,27 +487,27 @@ struct WebGPUView::Impl {
                         mode = 4;
                     }
                 }
-                append(mesh, m, instance.colour, instance.roughness, instance.surface,
+                append(mesh_key, *mesh, m, instance.colour, instance.roughness, instance.surface,
                        instance.emissive + (mode == 6 ? e->params.num("glow") : 0), skin, {}, false, mode, e);
             }
         if (!flat) {
             const auto &room = derived.rooms[0];
             if (root.params().num("sky") > .5)
-                append(render::sphere_vertices(),
+                append("sphere", sphere,
                        Mat4::translate(vec(camera.eye)) * Mat4::scale({static_cast<float>(camera.far_plane * 1.8),
                                                                        static_cast<float>(camera.far_plane * 1.8),
                                                                        static_cast<float>(camera.far_plane * 1.8)}),
                        {1, 1, 1}, 1, 9, 0, val::null(), {}, false, 0);
             else
                 for (const auto &d : render::enclosure(*room.room))
-                    append(cube, d.model, d.colour, d.roughness, d.surface, 0, val::null(), {}, false, 0);
+                    append("cube", cube, d.model, d.colour, d.roughness, d.surface, 0, val::null(), {}, false, 0);
             for (const auto &portal : room.portals) {
                 const auto &e = *portal.portal;
                 const auto pose = world_pose(root, e);
                 const bool window = !portal.feed && dynamic_cast<const Spatial3D *>(portal.guest);
                 const auto panel = render::portal_face(root, e, window);
                 for (const auto &body : render::portal_body(root, e, window))
-                    append(cube, body.model, body.colour, body.roughness, 0, 0, val::null(), {}, false, 0);
+                    append("cube", cube, body.model, body.colour, body.roughness, 0, 0, val::null(), {}, false, 0);
                 if (portal.seam && portal.seam->name == entered)
                     continue;
                 val image = val::null();
@@ -510,7 +571,7 @@ struct WebGPUView::Impl {
                 }
                 if (!opens_from(e, camera.eye)) continue;
                 if (!image.isNull() || !feed.empty())
-                    append(render::quad_vertices(), panel, {1, 1, 1}, e.params.num("roughness", .6), 0,
+                    append("quad", quad, panel, {1, 1, 1}, e.params.num("roughness", .6), 0,
                            e.params.num("glow", 0), image, feed, feedback,
                            e.params.num("crt") > .5 ? 2
                            : portal.feed            ? 1
@@ -628,11 +689,21 @@ void WebGPUView::render(const StateGraph &g, const State &root, int w, int h, do
     impl_->fader.advance(dt);
     impl_->active_feeds.clear();
     impl_->finished_feeds.clear();
+    // (A device made again holds nothing.)
+    if (impl_->held_generation != impl_->resource_generation) {
+        impl_->held_meshes.clear(), impl_->held_pictures.clear();
+        impl_->held_generation = impl_->resource_generation;
+    }
+    impl_->used_meshes.clear(), impl_->used_pictures.clear();
     auto rooms = val::array();
     rooms.set(0, val::null());
     auto first = impl_->room(g, root, w, h, nullptr, {}, 0, rooms, root.id().str());
     rooms.set(0, first);
-    impl_->handle.call<bool>("render", rooms, w, h);
+    // Drawn, the browser holds what this frame used - and only that (what
+    // a frame does not use it lets go); not drawn, what it holds is as it was.
+    if (!impl_->handle.call<bool>("render", rooms, w, h)) return;
+    impl_->held_meshes.swap(impl_->used_meshes);
+    impl_->held_pictures.swap(impl_->used_pictures);
 }
 void WebGPUView::bind_surface(Key p, Surface2D *s) { impl_->surfaces[p] = s; }
 void WebGPUView::recreate() {

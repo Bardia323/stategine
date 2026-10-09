@@ -2,6 +2,8 @@
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
 #include "sg/domains/Surface.hpp"
+#include "sg/domains/Texture.hpp"
+#include "sg/render/Pack.hpp"
 #include "sg/dsl/Facts.hpp"
 #include "sg/dsl/Natives.hpp"
 #include "sg/dsl/Runtime.hpp"
@@ -19,12 +21,23 @@ namespace sgen {
 void build_browser_render(sg::StateGraph &, const sg::dsl::Natives &, sg::dsl::Bindings &);
 }
 namespace {
+// A texture that names its pixels (so a picture kept packed by that name is
+// what is sent of it, as BC7 with every mip, where the device takes it).
+struct NamedSkin : sg::Texture {
+    using sg::Texture::Texture;
+    bool pixels_digest(sg::Digest &out) const override {
+        out = sg::Hasher{}.text("browser fixture skin").digest();
+        return true;
+    }
+};
 struct Fixture {
     sg::StateGraph graph;
     sg::dsl::Bindings bindings;
     sg::Engine engine{graph};
     Fixture() {
         graph.add<sg::Surface2D>("board", 8, 5);
+        graph.add<NamedSkin>("skin", 64);
+        graph.find("skin")->element(sg::Texture::map_id()).params.set("generator", std::string("checks")).set("tint_g", 0.6);
         sg::dsl::Natives natives;
         natives.arrow("shader_source", [](sg::State &, sg::Element &pass, sg::Element *, const sg::Event &e) {
             if (e.args.has("source"))
@@ -72,6 +85,13 @@ EMSCRIPTEN_KEEPALIVE int sg_fixture_start() {
         view = std::make_unique<sg::web::WebGPUView>("#canvas");
         view->bind_surface("screen", dynamic_cast<sg::Surface2D *>(fixture->graph.find("board")));
         view->bind_surface("box", dynamic_cast<sg::Surface2D *>(fixture->graph.find("board")));
+        // The crate's picture kept packed by its name, as a game ships it.
+        auto *skin = dynamic_cast<sg::Surface2D *>(fixture->graph.find("skin"));
+        sg::cache::set_folder("/cache");
+        sg::Digest named;
+        skin->pixels_digest(named);
+        sg::render::pack_kept(skin->raster().data(), skin->px_w(), skin->px_h(), skin->srgb(), named);
+        view->bind_surface("crate", skin);
         const auto errors = view->prepare(fixture->graph);
         if (!errors.empty())
             throw std::runtime_error(errors[0]);
@@ -135,6 +155,7 @@ int main() {
             throw std::runtime_error(errors[0]);
         view.bind_surface("screen", dynamic_cast<sg::Surface2D *>(f.graph.find("board")));
         view.bind_surface("box", dynamic_cast<sg::Surface2D *>(f.graph.find("board")));
+        view.bind_surface("crate", dynamic_cast<sg::Surface2D *>(f.graph.find("skin")));
         const auto &seam = f.graph.seams().front();
         const auto *forward = f.graph.functor(seam.a_to_b)->transport_of("camera");
         view.bind_world("door", dynamic_cast<const sg::Spatial3D *>(f.graph.find("guest")), *forward, "door");

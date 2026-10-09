@@ -1,6 +1,7 @@
 # Ordinary worlds and interfaces; both native and browser executors read this.
 state time : temporal
 extern state board
+extern state skin
 initial room
 state room : spatial3d {
     room_w = 14.0 room_h = 4.0 room_d = 12.0
@@ -8,6 +9,7 @@ state room : spatial3d {
     element box : mesh { x = 5.0 z = 5.0 sx = 1.0 sy = 1.0 sz = 1.0 r = 0.8 g = 0.3 b = 0.1 bevel = 0.06 }
     element ball : mesh { x = 8.0 z = 4.0 sx = 1.0 sy = 1.0 sz = 1.0 shape = "sphere" surface = 5.0 }
     element column : mesh { x = 3.0 z = 5.0 sx = 0.8 sy = 2.0 sz = 0.8 shape = "cylinder" }
+    element crate : mesh { x = 10.5 z = 6.0 sx = 1.2 sy = 1.2 sz = 1.2 }
     element lamp : light { x = 7.0 y = 3.6 z = 6.0 intensity = 1.0 dx = 0.0 dy = -1.0 dz = 0.0 inner = 0.8 outer = 1.4 }
     element screen : portal { x = 10.0 y = 2.0 z = 3.0 yaw = 1.5707963267948966 w = 2.0 h = 1.4 open = true feed = 1 crt = 1 halo = 0.2 shows = "" }
     element feed : portal { x = 3.0 y = 2.0 z = 2.0 yaw = 1.5707963267948966 w = 2.0 h = 1.4 open = true feed = 1 feed_w = 320 feed_h = 180 }
@@ -48,6 +50,7 @@ wear room <- room.look
 seam room.door <-> guest.door name doorway
 functor screen_refresh : room -> board { }
 functor skin_source : board -> room { object camera -> box only(fov) }
+embed room.crate -> skin name wears.crate focus false
 embed room.feed -> guest name feed in doorway.ab sync view focus false follows true
 embed room.screen -> board name screen in screen_refresh sync view focus false follows true
 drive time -> room event room.step

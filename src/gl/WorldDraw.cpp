@@ -202,8 +202,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lit = (lit ^ std::hash<std::string>{}(path_)) * 1099511628211ULL;
         lit = (lit ^ reinterpret_cast<std::uintptr_t>(root_)) * 1099511628211ULL;
     }
-    ShadowSet& maps = shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
-    if (maps.array.ensure(shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
+    // A view asked only what its surfaces are (see_into: where, which way,
+    // what of the light) lights nothing, and so lays no maps: one set of a
+    // texel stands for them, never a set of full maps a room for nothing.
+    const bool lightless = surface_only_ != 0;
+    ShadowSet& maps = lightless ? lightless_maps_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
+    if (maps.array.ensure(lightless ? 1 : shadow_px, lightless ? 1 : static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
     // Which rooms' casters these maps are laid from (their lists, and where
     // each room stands, which is part of the key of each).
     uint64_t layout_now = 1469598103934665603ULL;
@@ -248,7 +252,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     };
     const auto layers_from = std::chrono::steady_clock::now();
     std::vector<const Caster*> sees, movers_in, extras_in;
-    bool unshadowed = false;
+    bool unshadowed = lightless;
     // A map holds what stands still in the volume its light sees, and what
     // moves in it, drawn over. What stands still is laid once, and kept as it
     // was laid (ShadowSet::still) while nothing at rest in that volume has
@@ -292,7 +296,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             for (std::size_t j = 0; j < kShadowMaps; ++j)
                 if (j != i) maps.base[j] = false, maps.still_at[j] = 0;
     };
-    for (std::size_t n = 0; n < layers; ++n) {
+    for (std::size_t n = 0; n < (lightless ? 0 : layers); ++n) {
         const std::size_t i = order[n];
         const Light& li = lights[layer_light[i]];
         // Which light this layer holds now, as far as a depth map goes: a map

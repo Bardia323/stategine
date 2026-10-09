@@ -1,6 +1,17 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 namespace sg::render {
+// Corners (8 floats each: where, which way, uv; 3 a face) as the different
+// ones once each, and for every corner which of them it is: the same faces,
+// to the bit, in what a card that draws by index holds - a smooth surface's
+// corners are shared by the faces round them.
+struct Indexed {
+    std::vector<float> corners;
+    std::vector<uint32_t> index;
+};
+Indexed indexed(const std::vector<float>& corners);
+
 std::vector<float> cube_vertices();
 
 // A cylinder standing on y, radius 0.5 and height 1, centred like the cube, so

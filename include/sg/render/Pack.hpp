@@ -51,6 +51,9 @@ Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb);
 // Or by `made_of`, a digest that names those pixels exactly
 // (Surface2D::pixels_digest): the pixels themselves not read to be known.
 Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb, const Digest& made_of);
+// The picture `made_of` names, if it is kept packed (as the call above keeps
+// it): read back into `out` with no pixels made or read. False if it is not.
+bool packed_kept(int w, int h, bool srgb, const Digest& made_of, Packed& out);
 
 // One block of four by four pixels (RGBA, rows top first) as BC7, and back.
 // What packing a block leaves comes back: its sixteen pixels' four channels'

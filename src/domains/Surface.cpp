@@ -1,5 +1,7 @@
 #include "sg/domains/Surface.hpp"
 
+#include <utility>
+
 namespace sg {
 
 // Its picture is made when it is first painted (pixels()): a world of many
@@ -11,12 +13,39 @@ std::vector<unsigned char>& Surface2D::blank() {
     return pixels_;
 }
 
-const std::vector<unsigned char>& Surface2D::raster() {
+void Surface2D::catch_up() {
     // layout_changed() also refreshes the signature, so it runs either way.
     const bool moved = layout_changed();
     if (stale()) dirty_ = true;
-    if (dirty_ || moved) redraw();
+    if (!dirty_ && !moved) return;
+    // With no pixels to keep up to date, named by what would make them: a
+    // new picture all the same (its revision moves), made when asked for.
+    if (!moved && pixels_.empty() && name_now()) {
+        dirty_ = false;
+        let_go_ = true;
+        ++revision_;
+        return;
+    }
+    redraw();
+    let_go_ = false;
+}
+
+const std::vector<unsigned char>& Surface2D::raster() {
+    catch_up();
+    if (let_go_) {
+        // The same picture, made again from what names it.
+        pixels();
+        paint();
+        let_go_ = false;
+    }
     return pixels_;
+}
+
+std::vector<unsigned char> Surface2D::let_go_of_pixels() {
+    Digest named;
+    if (pixels_.empty() || dirty_ || !pixels_digest(named)) return {};
+    let_go_ = true;
+    return std::exchange(pixels_, {});
 }
 
 const unsigned char* Surface2D::pixel(int x, int y) const {

@@ -49,6 +49,18 @@ public:
 
     // Redraw only when a sprite moved, the selection changed, or somebody asked.
     const std::vector<unsigned char>& raster();
+    // The same, brought up to date (painted again if what it shows changed,
+    // its revision moved), without its pixels made if it need not: let go, or
+    // never made and named by what would make them (name_now) - they are
+    // made when they are asked for.
+    void catch_up();
+    // Lets its pixels go while a digest names them (pixels_digest): they are
+    // a memo of what made them, and are made again, the same to the byte, the
+    // next time they are asked for (raster) - with no new revision, for
+    // nothing about them changed. For whoever keeps the picture elsewhere (a
+    // card, packed), which would otherwise be held twice: they are handed to
+    // it, to give back when it likes. Empty, and kept, when nothing names them.
+    std::vector<unsigned char> let_go_of_pixels();
 
     // One pixel of the last raster: r, g, b, a.
     const unsigned char* pixel(int x, int y) const;
@@ -70,6 +82,12 @@ public:
     // themselves. False when it knows none, and they are known only by
     // themselves.
     virtual bool pixels_digest(Digest&) const { return false; }
+
+    // Brought up to date by name alone, with no pixels made: what it shows
+    // now taken as shown, and named (pixels_digest) by what its pixels would
+    // be painted from - painted when they are asked for, the same to the
+    // byte. False (the default) when it cannot be named so: it is painted.
+    virtual bool name_now() { return false; }
 
 protected:
     // What the surface looks like. The default is a board: tiles, a grid, and
@@ -126,6 +144,7 @@ private:
     Key selected_;
     bool dirty_ = true;
     bool srgb_ = false;
+    bool let_go_ = false;  // its pixels let go, to be made again when asked for
     uint64_t revision_ = 0;
     std::vector<unsigned char> pixels_;
     std::vector<double> signature_;

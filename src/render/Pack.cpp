@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 #include "SG_PACK_CODE.hpp"
 #include "sg/core/Cache.hpp"
@@ -717,17 +718,30 @@ Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb) {
     return kept_by(key, rgba, w, h, srgb);
 }
 
+namespace {
+Digest key_of(int w, int h, bool srgb, const Digest& made_of) {
+    return Hasher{}
+        .text("packed.of")
+        .text(SG_PACK_CODE)
+        .integer(w)
+        .integer(h)
+        .integer(srgb ? 1 : 0)
+        .integer(static_cast<int64_t>(made_of.hi))
+        .integer(static_cast<int64_t>(made_of.lo))
+        .digest();
+}
+}  // namespace
+
 Packed pack_kept(const unsigned char* rgba, int w, int h, bool srgb, const Digest& made_of) {
-    const Digest key = Hasher{}
-                           .text("packed.of")
-                           .text(SG_PACK_CODE)
-                           .integer(w)
-                           .integer(h)
-                           .integer(srgb ? 1 : 0)
-                           .integer(static_cast<int64_t>(made_of.hi))
-                           .integer(static_cast<int64_t>(made_of.lo))
-                           .digest();
-    return kept_by(key, rgba, w, h, srgb);
+    return kept_by(key_of(w, h, srgb, made_of), rgba, w, h, srgb);
+}
+
+bool packed_kept(int w, int h, bool srgb, const Digest& made_of, Packed& out) {
+    std::string kept;
+    Packed p;
+    if (!cache::load("packed", key_of(w, h, srgb, made_of), kept) || !unflat(kept, p) || p.w != w || p.h != h || p.srgb != srgb) return false;
+    out = std::move(p);
+    return true;
 }
 
 }  // namespace sg::render

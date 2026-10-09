@@ -8,6 +8,15 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- What things wear holds less memory, with the same pictures (the lab's dev room: about 3.8 GB held by the program once started to 1.7 GB, at most 3.8 to 2.0 while starting, 2 GB less asked of the system; no slower to start or to draw):
+  - A surface can be brought up to date without its pixels being made (`Surface2D::catch_up`), and made only when asked for (`raster`): one that can say what its pixels would be painted from without painting them (`Surface2D::name_now`, then `pixels_digest`) is taken as shown by that name. The renderer reads a picture kept packed by that name (`render::packed_kept`) and never makes its pixels; only one that is not kept is painted and packed, each on a core of its own. Unpacked, every texture is painted at once on every core, not one by one as each is first shown.
+  - Once a packed picture is on the card, the renderer lets go of its blocks, and of the pixels of a surface a name says can be had again (`Surface2D::let_go_of_pixels`: made again to the byte when asked for, with no new revision). What it lets go is given back on a thread of its own, a little at a time and only after every place is first drawn (`GLWorldView::LetGo`): memory given back stops every core a moment, and starting is not slowed.
+  - A view asked only what its surfaces are (`see_into`, for the light from all round) lays no shadow maps: they were full maps of every lamp of every room it saw, for nothing.
+- The browser's renderer sends the card only what it does not hold, and less of it:
+  - A mesh is sent once, by what it is (a model by its state, name and revision; a shape by its kind and size), not copied and digested every frame; a picture once for each revision, not copied every frame. What the browser holds follows what it drew last (what a frame does not use, it lets go).
+  - A mesh is sent indexed: its different corners once each, and which each corner is (`render::indexed`), drawn by index - the same faces, to the bit, in about half the memory for models.
+  - A picture kept packed by what names it (`render::packed_kept`) is sent as BC7 with every mip, where the device has `texture-compression-bc` (desktop browsers): a quarter of the memory, and sampled as the native renderer samples it (trilinear, anisotropic). Any other is sent as its pixels, as before.
+
 - Every place drawn once costs less at start (the dev room's, 3.3 s to about 2.5 s), with the same pictures to the pixel:
   - A model first seen is sent to the card once for all that are the same to the last corner - the same lamp in every street, the same door in every room - by a digest of its corners (`GLWorldView::corners_key`); one made again after has a mesh of its own. About half the meshes the lab's places send were the same as another's.
   - Surfaces whose pixels are said to be the same (`Surface2D::pixels_digest`, at one size) are packed once, and a packed picture is on the card once (`packed_on_card_`), however many surfaces show it; one painted over takes a texture of its own.
