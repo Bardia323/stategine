@@ -1226,17 +1226,29 @@ private:
 
     // How many maps the views seen through doorways may still lay this
     // frame, between them: past it, a map stays as it was last laid (with the
-    // box it was laid for) and waits its turn; a view whose maps were never
-    // laid is lit without them until they are (`kFirstShadowMaps` more, for
-    // those, that a view that has just come into sight has a few at once) - a
-    // few frames, never a stall. The eye's own view lays every map it must,
-    // the frame it must.
+    // box it was laid for) and waits its turn - a few frames, never a stall.
+    // A map never laid (a view just come into sight, or come back after its
+    // maps were let go) is laid the frame it is asked for, every one: a view
+    // is never seen without its shadows. The eye's own view lays every map
+    // it must, the frame it must.
     static constexpr int kNestedShadowMaps = 6;
-    static constexpr int kFirstShadowMaps = 2;
     static constexpr uint32_t kShadowWaits = 3;  // frames a map may stand out of date, in a view through a doorway
     int shadow_budget_ = kNestedShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
+    // The card's room for shadow maps (Quality::shadow_budget_mb), kept to:
+    // what a set lets go is spare until another that it holds takes it, or
+    // given back when over. A set not asked for this frame or the last is
+    // let go - the one asked for longest ago first - only when the maps
+    // would not fit otherwise. Making a map costs a fraction of a
+    // millisecond; making room on the card for one costs far more, and is
+    // done as little as can be.
+    std::vector<gl::ShadowArray> spare_shadows_;
+    long long shadow_room_ = 0;  // bytes (0: not yet known; below 0: no limit)
+    long long shadow_room();
+    bool fit_shadows(gl::ShadowArray& maps, int size, int layers);
+    bool let_go_of_oldest_shadows();
+    void keep_shadows_within_room();
     static void copy_depth(const gl::ShadowArray& from, const gl::ShadowArray& to, int layer, const int* rect = nullptr);
     static uint64_t mix_bits(uint64_t h, float f);
     // Everything that casts a shadow in a room, and where it is: its matrix,
@@ -1344,6 +1356,11 @@ private:
     static bool shades(const Caster& c, const Frustum& sees, const Light& light);
     // Which mesh a box is drawn with (its shape, rounding and taper).
     gl::RenderTarget scene_target_, resolve_, bloom_a_, bloom_b_;
+    // Where the scene is drawn, antialiased: its own, or - a doorway's own
+    // view, drawn whole while the view it is drawn for has done with its
+    // own for the moment - that view's, lent (lent_scene_), if it is the size.
+    gl::RenderTarget* lent_scene_ = nullptr;
+    gl::RenderTarget& scene_ms();
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
@@ -1502,8 +1519,11 @@ private:
     // And the pictures of the doorways of the room the eye is in: as many as
     // are seen at once (made with the screen's targets, and more the first
     // frame more are in sight), not one for every doorway the world has.
+    // A doorway's view, as the frame shows it: drawn (antialiased) in the
+    // scene's own target - the eye's view is drawn there after them all, and
+    // each is taken out of it the moment it is drawn - and kept here.
     struct RootView {
-        gl::RenderTarget ms, target;
+        gl::RenderTarget target;
     };
     std::vector<RootView> root_pool_;
     static constexpr std::size_t kRootViews = 8, kRootViewsMost = 32;

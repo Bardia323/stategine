@@ -262,10 +262,22 @@ public:
     ShadowArray() = default;
     ShadowArray(const ShadowArray&) = delete;
     ShadowArray& operator=(const ShadowArray&) = delete;
+    // Handed on whole (from a view's set to what is spare, and to another).
+    ShadowArray(ShadowArray&& o) noexcept { swap(o); }
+    ShadowArray& operator=(ShadowArray&& o) noexcept {
+        if (this != &o) release(), swap(o);
+        return *this;
+    }
     ~ShadowArray() { release(); }
+    void swap(ShadowArray& o) noexcept;
 
     // At least `layers` maps of `size` square. True if it was made anew.
     bool ensure(int size, int layers);
+
+    bool valid() const { return depth_ != 0; }
+    long long bytes() const { return static_cast<long long>(size_) * size_ * layers_ * 4; }
+    // What every shadow array there is holds on the card, in bytes.
+    static long long made_bytes();
 
     // Draw into one layer.
     void bind_layer(int layer) const;

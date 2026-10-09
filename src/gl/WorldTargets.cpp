@@ -72,7 +72,7 @@ void GLWorldView::keep_sizes(const std::vector<std::pair<int, int>>& sizes) {
     const auto give_back = [](Targets& t) {
         for (gl::RenderTarget* r : {&t.scene, &t.resolve, &t.depth, &t.lit, &t.ao_a, &t.ao_b, &t.bloom_a, &t.bloom_b, &t.post}) r->destroy();
         for (gl::RenderTarget& r : t.chain) r.destroy();
-        for (RootView& v : t.roots) v.ms.destroy(), v.target.destroy();
+        for (RootView& v : t.roots) v.target.destroy();
         for (Nested& n : t.nested) n.target.destroy();
     };
     for (auto it = parked_.begin(); it != parked_.end();)
@@ -104,7 +104,9 @@ void GLWorldView::make_targets(int w, int h) {
     gl::GLint most = 0;
     gl::glGetIntegerv(gl::GL_MAX_SAMPLES, &most);
     msaa_ = most > 0 ? std::min(q_.msaa, static_cast<int>(most)) : q_.msaa;
-    scene_target_.create(w, h, gl::GL_RGBA16F, msaa_, true);
+    // (Lent one of the size, it makes none of its own.)
+    if (lent_scene_ && lent_scene_->width() == w && lent_scene_->height() == h) scene_target_.destroy();
+    else scene_target_.create(w, h, gl::GL_RGBA16F, msaa_, true);
     resolve_.create(w, h, gl::GL_RGBA16F, 0, false);
     depth_.create(w, h, gl::GL_RGBA16F, 0, true, /*depth_texture=*/true);
     lit_.create(w, h, gl::GL_RGBA16F, 0, false);
@@ -150,13 +152,17 @@ void GLWorldView::fit(Nested& n, int w, int h, bool anew) {
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 }
 
+gl::RenderTarget& GLWorldView::scene_ms() {
+    if (lent_scene_ && lent_scene_->valid() && lent_scene_->width() == target_w_ && lent_scene_->height() == target_h_) return *lent_scene_;
+    if (!scene_target_.valid() || scene_target_.width() != target_w_ || scene_target_.height() != target_h_)
+        scene_target_.create(target_w_, target_h_, gl::GL_RGBA16F, msaa_, true);
+    return scene_target_;
+}
+
 void GLWorldView::make_root_view(RootView& v, int w, int h) {
-    v.ms.create(w, h, gl::GL_RGBA16F, msaa_, true);
     v.target.create(w, h, gl::GL_RGBA16F, 0, false);
-    for (gl::RenderTarget* t : {&v.ms, &v.target}) {
-        t->bind();
-        gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
-    }
+    v.target.bind();
+    gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 }
 
 void GLWorldView::sample_screen(const Rect& r, float fx, float fy) const {

@@ -34,6 +34,81 @@ void GLWorldView::ShadowSet::forget() {
     }
 }
 
+long long GLWorldView::shadow_room() {
+    if (shadow_room_ != 0) return shadow_room_;
+    if (q_.shadow_budget_mb < 0) return shadow_room_ = -1;
+    if (q_.shadow_budget_mb > 0) return shadow_room_ = static_cast<long long>(q_.shadow_budget_mb) << 20;
+    // As the card says it is (in kilobytes): how much it has, or how much is
+    // free for textures; a sixteenth of that, within reason.
+    constexpr gl::GLenum kDedicatedNvx = 0x9047, kFreeAti = 0x87FC;
+    gl::GLint kb[4] = {0, 0, 0, 0};
+    gl::glGetIntegerv(kDedicatedNvx, kb);
+    if (gl::glGetError() != gl::GL_NO_ERROR || kb[0] <= 0) {
+        kb[0] = 0;
+        gl::glGetIntegerv(kFreeAti, kb);
+        if (gl::glGetError() != gl::GL_NO_ERROR) kb[0] = 0;
+    }
+    const long long card = static_cast<long long>(kb[0]) << 10;
+    return shadow_room_ = card > 0 ? std::clamp(card / 16, 512LL << 20, 2048LL << 20) : 1024LL << 20;
+}
+
+bool GLWorldView::let_go_of_oldest_shadows() {
+    // (Never one asked for this frame or the last: what is being drawn.)
+    auto oldest = shadow_sets_.end();
+    for (auto it = shadow_sets_.begin(); it != shadow_sets_.end(); ++it)
+        if (it->second->used + 1 < frame_count_ && (oldest == shadow_sets_.end() || it->second->used < oldest->second->used)) oldest = it;
+    if (oldest == shadow_sets_.end()) return false;
+    for (gl::ShadowArray* a : {&oldest->second->array, &oldest->second->still})
+        if (a->valid()) spare_shadows_.push_back(std::move(*a));
+    shadow_sets_.erase(oldest);
+    return true;
+}
+
+bool GLWorldView::fit_shadows(gl::ShadowArray& maps, int size, int layers) {
+    const long long room = shadow_room();
+    if (room < 0) return maps.ensure(size, layers);
+    layers = std::max(1, layers);
+    if (maps.valid() && maps.size() == size && maps.layers() >= layers) return false;
+    if (maps.valid()) spare_shadows_.push_back(std::move(maps));
+    // A spare that holds them and little more (the smallest), else room made
+    // for them: a spare much bigger would hold the card for nothing.
+    const auto take_spare = [&] {
+        auto best = spare_shadows_.end();
+        for (auto it = spare_shadows_.begin(); it != spare_shadows_.end(); ++it)
+            if (it->size() == size && it->layers() >= layers && it->layers() <= layers + layers / 4 + 1 &&
+                (best == spare_shadows_.end() || it->layers() < best->layers()))
+                best = it;
+        if (best == spare_shadows_.end()) return false;
+        maps = std::move(*best);
+        spare_shadows_.erase(best);
+        return true;
+    };
+    if (take_spare()) return true;
+    const long long need = static_cast<long long>(size) * size * layers * 4;
+    while (gl::ShadowArray::made_bytes() + need > room) {
+        if (!spare_shadows_.empty()) {
+            spare_shadows_.pop_back();  // (none of them would do)
+            continue;
+        }
+        if (!let_go_of_oldest_shadows()) break;  // (what is being drawn needs more than there is room for)
+        if (take_spare()) return true;
+    }
+    maps.ensure(size, layers);
+    return true;
+}
+
+void GLWorldView::keep_shadows_within_room() {
+    const long long room = shadow_room();
+    if (room < 0) return;
+    while (gl::ShadowArray::made_bytes() > room) {
+        if (!spare_shadows_.empty()) {
+            spare_shadows_.pop_back();
+            continue;
+        }
+        if (!let_go_of_oldest_shadows()) break;
+    }
+}
+
 auto GLWorldView::shadows_for(const void* world, const void* view) -> ShadowSet& {
     // Never more than the views there can be: past that, the set asked for
     // longest ago goes - one, never all of them at once (every view would

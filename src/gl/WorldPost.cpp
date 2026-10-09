@@ -11,7 +11,7 @@ void GLWorldView::run_ao(float strength, float radius) {
         ao_apply_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::ao_apply_fs(), "ao apply");
     }
     gl::glDisable(gl::GL_DEPTH_TEST);
-    scene_target_.blit_depth_to(depth_);
+    scene_ms().blit_depth_to(depth_);
     const float tan_half = std::tan(view_.fov * 0.5f);
 
     ao_a_.bind();
@@ -400,7 +400,7 @@ void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
     // Where nothing was drawn is read from the view's depth: resolved already
     // if the occlusion or the air's glow read it this frame, else now.
     if (f.deband > 0.0f && !fog_depth_ && setting(post_, passes::composite, "ao", 0.0) <= 0.0)
-        scene_target_.blit_depth_to(depth_);
+        scene_ms().blit_depth_to(depth_);
     if (f.smear)
         for (gl::RenderTarget& h : smear_hist_)
             if (!h.valid() || h.width() != fb_w || h.height() != fb_h) {

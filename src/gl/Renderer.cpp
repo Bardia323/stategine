@@ -1,5 +1,8 @@
 #include "sg/gl/Renderer.hpp"
 
+#include <atomic>
+#include <utility>
+
 namespace sg::gl {
 
 GLuint compile(GLenum type, const char* src, const char* tag) {
@@ -373,12 +376,26 @@ GLuint InstanceBuffer::upload(const std::vector<float>& data) {
     return vbo_;
 }
 
+namespace {
+std::atomic<long long> shadow_bytes{0};
+}  // namespace
+
+long long ShadowArray::made_bytes() { return shadow_bytes.load(std::memory_order_relaxed); }
+
+void ShadowArray::swap(ShadowArray& o) noexcept {
+    std::swap(fbo_, o.fbo_);
+    std::swap(depth_, o.depth_);
+    std::swap(size_, o.size_);
+    std::swap(layers_, o.layers_);
+}
+
 bool ShadowArray::ensure(int size, int layers) {
     layers = std::max(layers, 1);
     if (depth_ != 0 && size == size_ && layers <= layers_) return false;
     release();
     size_ = size;
     layers_ = layers;
+    shadow_bytes += bytes();
     glGenTextures(1, &depth_);
     glBindTexture(GL_TEXTURE_2D_ARRAY, depth_);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, static_cast<GLint>(GL_DEPTH_COMPONENT24), size, size, layers, 0,
@@ -414,6 +431,7 @@ void ShadowArray::bind_depth(int unit) const {
 }
 
 void ShadowArray::release() {
+    if (depth_) shadow_bytes -= bytes();
     if (fbo_) glDeleteFramebuffers(1, &fbo_);
     if (depth_) glDeleteTextures(1, &depth_);
     fbo_ = depth_ = 0;

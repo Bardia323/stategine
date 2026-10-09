@@ -386,6 +386,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     }
     // (The doorways' pictures are this frame's, from pools made with the
     // screen's targets: none is made in the middle of a frame.)
+    keep_shadows_within_room();
     std::size_t root_views = 0;
     ++frame_count_;
     shadow_budget_ = kNestedShadowMaps;
@@ -474,6 +475,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             wp.own->output_ = &wp.own_out;
             wp.own->eye_override_ = &eye;
             wp.own->film_of_viewer_ = true;
+            wp.own->lent_scene_ = &scene_ms();
             // Cut as any view through a doorway is: nothing between the
             // carried eye and the far doorway, and that doorway's own view
             // left out - right at the threshold the eye stands in its frame.
@@ -481,6 +483,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             wp.own->own_clips_ = {far_side(world, e, eye)};
             wp.own->own_skip_ = own_back ? own_back->id.key() : Key{};
             wp.own->render(*wp.world, fb_w, fb_h);
+            wp.own->lent_scene_ = nullptr;
             wp.own->own_clips_.clear();
             wp.own->own_skip_ = Key{};
             wp.own->output_ = nullptr;
@@ -528,16 +531,16 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
         const Through way = !screen && !e.params.has(Key{"ball"}) && back && !wp.back.empty() ? through(e, *wp.world, *back, guest_cam) : Through{};
         cull_ = way.sides;
         for (const HalfSpace& h : clips) cull_.push_back(spatial::HalfSpace{{h.normal.x, h.normal.y, h.normal.z}, h.offset});
-        draw_world(seen(*wp.world), guest_cam, aspect, view.ms,
+        draw_world(seen(*wp.world), guest_cam, aspect, scene_ms(),
                    /*depth=*/1, way.znear, back ? back->id.key() : Key{}, clips);
         cull_.clear();
-        wp.fx = vp_w_ / static_cast<float>(view.ms.width()), wp.fy = vp_h_ / static_cast<float>(view.ms.height());
+        wp.fx = vp_w_ / static_cast<float>(scene_ms().width()), wp.fy = vp_h_ / static_cast<float>(scene_ms().height());
         sub_ = Rect{-1, -1, 1, 1};
         host_air_.on = false;
         wp.drawn = frame_count_;
         path_.clear();
-        const bool cut = scissor_to(cut_, view.ms.width(), view.ms.height());
-        view.ms.blit_to(view.target);
+        const bool cut = scissor_to(cut_, scene_ms().width(), scene_ms().height());
+        scene_ms().blit_to(view.target);
         if (cut) gl::glDisable(gl::GL_SCISSOR_TEST);
         cut_ = Rect{-1, -1, 1, 1};
         wp.shown = &view.target;
@@ -548,13 +551,13 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
 
     // --- the room the viewer is actually standing in ------------------------
     path_.clear();
-    draw_world(rooms, eye_cam, aspect, scene_target_, /*depth=*/0, kNear, own_skip_, own_clips_);
+    draw_world(rooms, eye_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();
     times_.scene = since(t0);
     t0 = mark();
 
-    scene_target_.blit_to(resolve_);
+    scene_ms().blit_to(resolve_);
     }
     scene_src_ = &resolve_;
     const double ao = setting(post_, passes::composite, "ao", 0.0);
@@ -566,7 +569,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     }
     // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl).
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0;
-    if (fog_depth_ && ao <= 0.0) scene_target_.blit_depth_to(depth_);
+    if (fog_depth_ && ao <= 0.0) scene_ms().blit_depth_to(depth_);
     meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);

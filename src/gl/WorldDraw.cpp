@@ -207,7 +207,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // texel stands for them, never a set of full maps a room for nothing.
     const bool lightless = surface_only_ != 0;
     ShadowSet& maps = lightless ? lightless_maps_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
-    if (maps.array.ensure(lightless ? 1 : shadow_px, lightless ? 1 : static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
+    if (lightless ? maps.array.ensure(1, 1) : fit_shadows(maps.array, shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
     // Which rooms' casters these maps are laid from (their lists, and where
     // each room stands, which is part of the key of each).
     uint64_t layout_now = 1469598103934665603ULL;
@@ -292,7 +292,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // grown with the maps: grown, they are empty, and the maps that had
     // something laid in them lay it again when they next change.
     const auto keep_still = [&](std::size_t i) {
-        if (maps.still.ensure(shadow_px, layer_count))
+        if (fit_shadows(maps.still, shadow_px, layer_count))
             for (std::size_t j = 0; j < kShadowMaps; ++j)
                 if (j != i) maps.base[j] = false, maps.still_at[j] = 0;
     };
@@ -346,12 +346,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 // drawn, with its own box: the box of a sun that goes with
                 // the eye is moved in whole texels, so what stands in its
                 // overlap is the same - it may wait a few frames, not for ever.
-                const bool first = maps.sig[i] == 0;  // never drawn: it is drawn now, if there are maps
+                const bool first = maps.sig[i] == 0;  // never drawn: it is drawn now, whatever the frame has left
                 const bool may_wait = !first && maps.ident[i] == ident && maps.waits[i] < kShadowWaits;
-                if (shadow_budget_ <= (first ? -kFirstShadowMaps : may_wait ? 0 : -kNestedShadowMaps)) {
+                if (!first && shadow_budget_ <= (may_wait ? 0 : -kNestedShadowMaps)) {
                     ++maps.waits[i];
-                    if (first) unshadowed = true;  // nothing to cast with yet
-                    else light_vp[i] = maps.vp[i];  // as last drawn, with its own box
+                    light_vp[i] = maps.vp[i];  // as last drawn, with its own box
                     continue;
                 }
                 --shadow_budget_;
