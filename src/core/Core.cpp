@@ -91,6 +91,11 @@ void set_observers(Observers policy, std::function<void(const std::string&)> rep
 
 namespace sg::detail {
 
+uint64_t next_revision() {
+    static std::atomic<uint64_t> count{0};
+    return count.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 void Revision::refuse(const char* what) const {
     if (sealed.load(std::memory_order_relaxed) > 0 && restoring() == 0)
         throw RewriteRefused(std::string("the graph was rewritten while it was being checked: ") + what);
@@ -99,14 +104,14 @@ void Revision::refuse(const char* what) const {
 void Revision::element(const char* what) {
     refuse(what);
     if (observing() > 0) refused_to_observer(std::string("changed what a state is made of: ") + what);
-    ++all;
+    all = next_revision();
 }
 
 void Revision::rewired(const char* what) {
     refuse(what);
     if (observing() > 0) refused_to_observer(std::string("rewrote the graph: ") + what);
-    ++all;
-    ++topology;
+    all = next_revision();
+    topology = next_revision();
 }
 
 }  // namespace sg::detail

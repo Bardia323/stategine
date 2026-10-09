@@ -208,9 +208,15 @@ namespace detail {
 //
 // Counted atomically: the laws run trials of many states at once, each on a
 // thread of its own, and every one of them seals the graph while it runs.
+//
+// Every revision is the next number of one count, shared by every graph (as
+// a param's stamp is): no two graphs ever stand at the same revision, from
+// the start. So whatever keeps something by a graph's address and revision
+// cannot take a new graph, made where an old one was, for the old one.
+uint64_t next_revision();
 struct Revision {
-    std::atomic<uint64_t> all{0};       // anything structural: elements and arrows too
-    std::atomic<uint64_t> topology{0};  // the interfaces: states, functors, embeddings, seams, transitions
+    std::atomic<uint64_t> all{next_revision()};       // anything structural: elements and arrows too
+    std::atomic<uint64_t> topology{next_revision()};  // the interfaces: states, functors, embeddings, seams, transitions
     std::atomic<int> sealed{0};         // > 0 while a law's trial runs, on any thread
 
     void element(const char* what);

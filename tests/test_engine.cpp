@@ -6,6 +6,7 @@
 #include <fstream>
 #include <filesystem>
 #include <cstdio>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -13,7 +14,9 @@
 #include "sg/gl/Math.hpp"
 #include "sg/gl/Shaders.hpp"
 #include "sg/domains/Atlas.hpp"
+#include "sg/domains/Texture.hpp"
 #include "sg/render/Ascii.hpp"
+#include "sg/render/ViewPlan.hpp"
 #include "sg/sg.hpp"
 
 namespace {
@@ -31,6 +34,28 @@ bool near(double a, double b) { return std::fabs(a - b) < 1e-9; }
 bool roughly(double a, double b) { return std::fabs(a - b) < 1e-5; }
 
 // --- core -------------------------------------------------------------------
+// A graph made where another stood - the same storage, built the same way -
+// is not taken for the one before it by anything that keeps what it found by
+// a graph's address and revision (the renderer's index of what wears what).
+void test_a_new_graph_is_not_the_old() {
+    std::optional<sg::StateGraph> slot;
+    uint64_t before = 0;
+    bool declared[2] = {false, false};
+    for (int i = 0; i < 2; ++i) {
+        slot.emplace();
+        sg::StateGraph& g = *slot;
+        auto& room = g.add<sg::Spatial3D>("room");
+        room.fixture("box", 0, 0, 0);
+        auto& skin = g.add<sg::Texture>("skin", 16);
+        g.set_initial("room");
+        g.embed("wears.box", "room", "box", "skin", "", "", sg::EmbedSync::Commit);
+        if (i == 1) check(g.revision() != before, "a graph built again in the same place stands at another revision");
+        before = g.revision();
+        declared[i] = sg::render::declared_surface(g, room.element("box"), skin);
+    }
+    check(declared[0] && declared[1], "what a thing wears is declared in the new graph as in the old");
+}
+
 void test_keys_and_params() {
     const sg::Key a{"velocity"};
     const sg::Key b{std::string("velocity")};
@@ -2324,6 +2349,7 @@ void test_kan_extensions() {
 int main() {
     test_one_rotation();
     test_keys_and_params();
+    test_a_new_graph_is_not_the_old();
     test_elements_and_morphisms();
     test_composition();
     test_transitions_and_stack();
