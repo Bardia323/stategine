@@ -117,6 +117,13 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // light from all round - glossy stone, still water, under a sky.
     const float mirror = static_cast<float>(e.params.num(Key{"mirror"}, 0.0));
     scene_->set("uMirror", mirror);
+    // `metal`: how metal it is, 0..1 - for this draw alone (a texture's
+    // surface map says instead, where it has one).
+    struct Metal {
+        const gl::Program* p;
+        ~Metal() { p->set("uMetal", 0.0f); }
+    } metal{scene_};
+    scene_->set("uMetal", static_cast<float>(std::clamp(e.params.num(Key{"metal"}, 0.0), 0.0, 1.0)));
     // A land's water, how deep; a road's lines.
     struct Land {
         GLWorldView* view;
@@ -175,9 +182,10 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             scene_->set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
             scene_->set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
+            scene_->set("uSurfaceMapOn", bind_surface_map(bound) ? 1.0f : 0.0f);
         }
         shape_of(st, e).draw();
-        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f);
+        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), scene_->set("uSurfaceMapOn", 0.0f);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

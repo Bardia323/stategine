@@ -240,7 +240,7 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
     # The stage holds its laws and draws a worn texture under every preset
     # with nothing to report (sgmat exits 2 on any `!` problem).
     if(SG_BUILD_TESTS)
-      add_test(NAME sgmat COMMAND sgmat ${CMAKE_SOURCE_DIR}/tools/materials/worn_stone.mat --preset all
+      add_test(NAME sgmat COMMAND sgmat ${CMAKE_SOURCE_DIR}/tools/materials/rusted_steel.mat --preset all
                -o ${CMAKE_BINARY_DIR}/out/sgmat/test.sheet.png -w 320 -h 180)
     endif()
   endif()

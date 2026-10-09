@@ -22,6 +22,7 @@ fraction of the light a surface gives back, not a colour picked on a screen
 | --- | --- | --- |
 | `r` `g` `b` | albedo: the fraction of each colour of light it scatters | mesh 0.8 0.5 0.25 (orange), wall 0.52 0.50 0.48 |
 | `roughness` | 0.05 a polished mirror .. 1 chalk (kept to 0.05..1) | mesh 0.6, wall 0.9 |
+| `metal` | 0..1, how metal: 1 reflects in its own colour (`r g b` its tint: gold 1.0 0.78 0.34, copper 0.95 0.64 0.54, iron 0.56 0.57 0.58) and scatters none; 0 a dielectric (paint, stone, wood) reflecting 4% white. Real things are 0 or 1; between is for a dusty or painted-over metal | 0 |
 | `surface` | which procedural surface it is (section 2) | **mesh 3 (crate)**, wall 2 (plaster) |
 | `emissive` | light of its own, added to what it reflects | 0 |
 | `glass` | 0..1, how clear: drawn after the rest of its room, blended over what is behind, more reflective edge on | 0 (opaque) |
@@ -39,11 +40,14 @@ A room with no walls of its own is a box drawn from the room's params:
 `floor_r/g/b`, `floor_surface` (1 tiles), `floor_roughness`, `floor_reflects`;
 `wall_r/g/b` (plaster); `ceiling_r/g/b`, `ceiling_surface`.
 
-**There is no metallic param.** Every surface reflects 4% head on, white
-(a dielectric), except `surface` 5, which is 35% metal: it reflects in its
-own colour and scatters less. A truly metallic surface would need the
-renderer to gain one (`metal` beside `roughness` in `WorldBatches`/
-`WorldThings` and the scene shader); until then, brushed metal is the metal.
+A metal is only as good as what it has to reflect: a bare metal in a room
+lit only by its look's sky and ground goes dark. A room's probes (bounce,
+on by default) and its lamps' highlights give it something; under an open
+sky, `mirror` adds the sky itself. `surface` 5 (brushed) is at least 35%
+metal whatever `metal` says.
+
+`metal` is drawn by the native renderer (GL); the browser's (WebGPU) does
+not read it yet.
 
 ## 2. `surface`: the procedural kinds
 
@@ -82,32 +86,70 @@ for what the graph declares (`GLWorldView::bind_surface(thing, texture)`;
 derive it from the embeddings, never bind what the graph does not say).
 
 **A worn texture is the albedo.** It replaces `r g b` and the pattern of
-`surface`; `roughness`, `emissive`, `reflects` and the rest still hold.
-Colour the texture with its tint instead.
+`surface`; `roughness`, `metal`, `emissive`, `reflects` and the rest still
+hold - unless it has a surface map (below), which says roughness and metal
+point by point. Colour the texture with its tint instead.
 
 Its one element, `map`:
 
 | Param | What it is |
 | --- | --- |
-| `generator` | what paints it, by name: `plain`, `noise` (`scale` cells across, `seed`; four octaves, 0.55..1), `checks` (`count`) |
+| `generator` | what paints it, by name: `plain`, `noise` (`scale` cells across, `seed`; four octaves, 0.55..1), `checks` (`count`), or a material: `rust` (below) |
 | `seed` | whatever a generator reads for its variety |
-| `tint_r` `tint_g` `tint_b` | multiplied over all of it - the material's colour |
+| `tint_r` `tint_g` `tint_b` | multiplied over its colour - the material's colour |
 | `layer`, `layer_mix` | a picture file painted over it, followed as it changes; read by the program's `Texture::set_reader` (the engine reads no image format) |
+| `surface_layer` | a picture file of the surface map (red occlusion, green roughness, blue metal - glTF's ORM order), over what the material says; read as `layer` is |
 | `tile` | metres of the thing one cell covers, its pattern going on round it from face to face; 0, each face the whole cell |
 | `blend` | 0 each face its own cell; 1 curves shade softly between the cells of the ways they face |
 | `relief` | metres its paint stands at full height: the map's alpha is height, and the surface is bent by it so raised paint catches the light |
 
-Its pixels are **linear** unless the texture says `set_srgb(true)` - do,
-for a photograph or anything whose colours were picked by eye; otherwise it
-is lit as brighter than it is and comes out washed out.
+**Colour spaces.** A texture's colours are as seen on a screen (sRGB), as a
+photograph's or anything picked by eye are: the renderer decodes them
+before lighting (`set_srgb`, on for every `Texture`). So a generator's 0.46
+is a screen's 0.46, about 0.18 linear - unlike a thing's `r g b`, which are
+linear. A texture of linear values (a measurement, data) says
+`set_srgb(false)`. The surface map is always linear.
 
-A new generator is a pure function of the map's params, the cell and a point
-(u, v) in it: `Texture::define("rust", [](const Params& map, int cell, double
-u, double v) { ... return {r, g, b, height}; })`. Where `tile` > 0 it must
-tile: what is at u = 1 is what is at u = 0. Register it where the module that
-owns it starts (never inside an arrow); a texture is remade only when its
-map's params change (`Texture::stale`), so a generator may be slow but must
-give the same picture for the same params.
+### The surface map: roughness, metal, occlusion, point by point
+
+Beside its colour a texture can say what its surface is at every point -
+a second picture of the same six cells, worn the same way:
+
+| Channel | What it is |
+| --- | --- |
+| red: occlusion | how open its hollows are to the light from all round: 1 open, 0 shut. It dims what comes from the look, the probes and bounce - the lamps' own light still reaches where they shine |
+| green: roughness | in place of the thing's `roughness` |
+| blue: metal | in place of the thing's `metal` |
+
+It is made only when something says it: the generator is a material, or
+there is a `surface_layer`. Without one, the thing's own `roughness` and
+`metal` hold. This is what makes a surface read as real: painted steel
+whose paint is satin, whose bare chips shine as metal, whose rust is rough
+and dull - on one thing, point by point.
+
+### Writing a generator or a material
+
+A generator is a pure function of the map's params, the cell and a point
+(u, v) in it, giving the colour and height: `Texture::define("bark", [](const
+Params& map, int cell, double u, double v) { ... return std::array<double,
+4>{r, g, b, height}; })`. A **material** gives every channel at once -
+colour, height, occlusion, roughness, metal - and paints the surface map
+too: `Texture::define_material("rust", [](const Params& map, int cell, double
+u, double v) { Texture::Channels c; ...; return c; })`. Write a material
+whenever roughness or metal vary across the surface; it costs nothing more
+where they do not.
+
+Both must tile where the texture does (`tile` > 0: what is at u = 1 is
+what is at u = 0) and give the same for the same params. Register them where
+the module that owns them starts (never inside an arrow). A texture is remade
+only when its map's params change, so they may be slow.
+
+`rust` (built in, `src/domains/Texture.cpp`) is the example to copy: steel,
+painted, the paint flaked to bright metal round patches of rust. Its params:
+`rust` (how much, 0..1, 0.45), `scale` (patches across a cell, 3), `paint_r/g/b`
+(the paint, as picked by eye), `seed`. It shows the pattern every material
+follows: masks from tiling noise (where it is rusted, where bare), and each
+channel blended between the kinds of surface by those masks.
 
 ## 4. The look of the state
 
@@ -119,10 +161,14 @@ look that grades it.
 
 ## How it is lit
 
-The scene shader is physically based: GGX highlights, Schlick's Fresnel from
-F0 (0.04 white for every dielectric; mixed toward the albedo for metal),
-Karis's split-sum fit for light from all round, energy kept (a rough metal
-goes darker). Light from all round comes from the look (`uAmbient`, `uSky`,
+The scene shader is physically based (metal/roughness, as glTF): GGX
+highlights, Schlick's Fresnel from F0 (0.04 white for every dielectric; the
+albedo for metal, which scatters none), Karis's split-sum fit for light from
+all round, energy kept (a rough metal goes darker), the surface bent by a
+texture's height (`relief`).
+
+Not yet: a normal map of its own (detail finer than the height's pixels),
+an emission map, clearcoat, sheen, subsurface and anisotropy. Light from all round comes from the look (`uAmbient`, `uSky`,
 `uGround`) and from the room's light probes (bounce, relit as lamps change;
 README *Light probes*). So an albedo above about 0.9 or below 0.02 looks
 wrong in any light: almost nothing real is either.
@@ -148,6 +194,17 @@ physicallybased.info):
 | charcoal, soot | 0.02-0.04 | 0.9-1.0 |
 | polished stone | (its colour) | 0.1-0.3 |
 
+Metals (`metal = 1`; the colour is what they reflect, linear):
+
+| Metal | `r g b` | Roughness |
+| --- | --- | --- |
+| silver | 0.97 0.96 0.91 | 0.05-0.3 |
+| aluminium | 0.91 0.92 0.92 | 0.2-0.5 |
+| gold | 1.00 0.78 0.34 | 0.1-0.4 |
+| copper | 0.95 0.64 0.54 | 0.15-0.5 |
+| iron, steel | 0.56 0.57 0.58 | 0.2-0.6 (brushed 0.3, cast 0.6) |
+| brass | 0.91 0.78 0.42 | 0.15-0.45 |
+
 Wet: darker (albedo times about 0.6) and smoother (roughness down by
 0.3-0.5) - water fills the pores.
 
@@ -164,15 +221,17 @@ the game uses. The stage never moves, so two pictures are two materials.
 cd build
 ./sgmat ../tools/materials/worn_stone.mat -o out/sgmat/stone.png
 ./sgmat ../tools/materials/worn_stone.mat --preset all -o out/sgmat/stone.sheet.png
-./sgmat --set r=0.62 --set g=0.63 --set b=0.65 --set surface=5 --set roughness=0.35
+./sgmat --set r=0.95 --set g=0.64 --set b=0.54 --set metal=1 --set roughness=0.3   # copper
+./sgmat ../tools/materials/rusted_steel.mat --preset all                           # a material: every channel
 ./sgmat stone.mat -e "roughness=0.6; texture.relief=0.008"   # a change tried without editing the file
 ```
 
 A material file is `key = value`, one a line, `#` a remark. A key is set on
 each specimen as said (section 1); `texture.<key>` on the map of a texture the
-specimens then wear (section 3), with `texture.srgb = 1` for a photograph and
-`texture.layer` a binary PPM (P6) beside the file. Examples to start from:
-`tools/materials/`.
+specimens then wear (section 3), with `texture.srgb = 0` for a texture of
+linear values, and `texture.layer` / `texture.surface_layer` binary PPMs (P6)
+beside the file. Examples to start from: `tools/materials/` (`rusted_steel`
+uses every channel).
 
 Presets (`--preset`): `studio` (a key from the front left, a fill, a rim),
 `lamp` (one warm bulb in a dark room, a night interior), `soft` (overcast,

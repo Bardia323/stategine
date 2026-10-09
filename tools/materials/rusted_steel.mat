@@ -1,0 +1,12 @@
+# Rusted steel: the engine's `rust` material - painted steel, the paint
+# flaked to bare metal round patches of rust. Every channel comes from the
+# material: colour and height (the picture), occlusion, roughness and metal
+# (its surface map), so the bare steel shines, the paint is satin and the
+# rust is rough and dull, point by point.
+texture.generator = rust
+texture.rust = 0.45     # how much has rusted, 0..1
+texture.scale = 3       # rust patches across a cell
+texture.seed = 4
+texture.tile = 0.6      # metres of the thing one cell covers
+texture.blend = 1
+texture.relief = 0.003  # rust flakes stand proud

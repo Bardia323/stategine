@@ -393,7 +393,14 @@ private:
         // by every surface that packs to the same (`packed_on_card_`): not its
         // own to make again or let go.
         bool shared = false;
+        // A texture's surface map (occlusion, roughness, metal), linear and
+        // its own, and which of the texture's surface maps it holds.
+        gl::Texture surface_map;
+        uint64_t surface_revision = ~uint64_t{0};
     };
+    // The surface map of what `bound` shows bound to unit 9, current, when it
+    // has one: true then, and the scene's `uSurfaceMapOn` is the caller's to set.
+    bool bind_surface_map(BoundSurface& bound);
     // Each packed picture on the card once, however many surfaces show it.
     struct PackedOnCard {
         std::shared_ptr<render::Packed> keep;

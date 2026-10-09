@@ -25,13 +25,15 @@ layout(location=2) in vec2 aUV;
 layout(location=3) in mat4 iLocal;
 layout(location=7) in vec4 iMat0;
 layout(location=8) in vec4 iMat1;
-// Its depth layer (x): steps nearer the eye it is drawn, past its size's (`depth_layer`).
+// Its depth layer (x): steps nearer the eye it is drawn, past its size's
+// (`depth_layer`); how metal it is (y).
 layout(location=9) in vec4 iMat2;
 uniform float uDepthLayer;
 uniform int uInstanced;
 uniform mat4 uFrame;
 flat out vec4 vMat0;
 flat out vec4 vMat1;
+flat out float vMetal;
 flat out float vInstanced;
 
 uniform mat4 uModel;
@@ -66,6 +68,7 @@ void main() {
     mat4 texModel = uInstanced == 1 ? iLocal : uTexModel;
     vMat0 = iMat0;
     vMat1 = iMat1;
+    vMetal = iMat2.y;
     vInstanced = float(uInstanced);
     vec4 world = model * vec4(aPos, 1.0);
     vWorld = world.xyz;

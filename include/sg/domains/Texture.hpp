@@ -22,6 +22,15 @@
 //   blend       0 a face its own cell; 1 a curve shading softly between them
 //   relief      metres its paint stands at full height (its alpha): the
 //               surface bent by it, so what is painted thick catches the light
+//   surface_layer  a file of what the surface is (its red occlusion, green
+//               roughness, blue metal), read as `layer` is, over the material's
+//
+// What the surface is beside its colour - how occluded its hollows are, how
+// rough, how metal - is a second picture of the same six cells, its surface
+// map (red, green, blue), made only when something says it: a material
+// (`define_material`, every channel at once) or a `surface_layer`. A thing
+// wearing a texture with a surface map takes its roughness and metal from
+// it, and its occlusion dims the light it is given from all round.
 //
 //   map --set--> map   texture.set {key: value ...}: whichever are given
 //
@@ -50,12 +59,27 @@ public:
     // as a device: the engine reads no image format of its own.
     using Reader = std::function<bool(const std::string& path, int& w, int& h, std::vector<unsigned char>& rgba)>;
 
+    // Everything a surface is at a point, 0..1 each: its colour, how high its
+    // paint stands, how much of the light from all round its hollows let in
+    // (1 open, 0 shut), how rough, how metal.
+    struct Channels {
+        double r = 1, g = 1, b = 1, height = 1;
+        double occlusion = 1, roughness = 0.6, metal = 0;
+    };
+    // A material: every channel of a point (u, v) of a cell, from the map's
+    // params - a generator that says what the surface is, not only its colour.
+    // It must tile where the texture does, and give the same for the same.
+    using Material = std::function<Channels(const Params& map, int cell, double u, double v)>;
+
     static Key map_id() { return Key{"map"}; }
     static Key set_event() { return Key{"texture.set"}; }
 
     // A generator by name, for every texture (the built-in ones: plain,
     // noise, checks).
     static void define(const std::string& name, Generator g);
+    // A material by name (built in: rust - steel, painted and rusting): it
+    // paints the colour as a generator does, and the surface map as well.
+    static void define_material(const std::string& name, Material m);
     static void set_reader(Reader r);
 
     Texture(Key id, int cell_px = 256);
@@ -63,6 +87,16 @@ public:
     Key kind() const override { return Key{"texture"}; }
 
     const Element& map() const { return element(map_id()); }
+
+    // Whether it has a surface map: its generator is a material, or it says a
+    // `surface_layer`.
+    bool has_surface() const;
+    // Its surface map, RGBA rows of the picture's size (red occlusion, green
+    // roughness, blue metal; linear), made when asked and again only when the
+    // map's params or the surface layer's file change; empty without one.
+    const std::vector<unsigned char>& surface_raster();
+    // Which surface map `surface_raster` last made: it moves when it changes.
+    uint64_t surface_revision() const { return surface_revision_; }
 
 protected:
     void paint() override;
@@ -73,6 +107,9 @@ private:
     uint64_t painted_stamp_ = 0;
     long long layer_time_ = 0;
     std::string layer_path_;
+    std::vector<unsigned char> surface_px_;
+    uint64_t surface_stamp_ = 0, surface_revision_ = 0;
+    long long surface_layer_time_ = 0;
 };
 
 // The six views of a thing, cell by cell as a texture's map has them - its

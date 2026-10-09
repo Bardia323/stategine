@@ -182,6 +182,23 @@ void GLWorldView::refresh(BoundSurface& bound) {
     }
 }
 
+bool GLWorldView::bind_surface_map(BoundSurface& bound) {
+    auto* tex = dynamic_cast<Texture*>(bound.surface);
+    if (!tex || !tex->has_surface()) return false;
+    const std::vector<unsigned char>& px = tex->surface_raster();
+    if (px.empty()) return false;
+    if (!bound.surface_map.valid() || bound.surface_map.width() != tex->px_w() || bound.surface_map.height() != tex->px_h()) {
+        bound.surface_map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
+        bound.surface_revision = ~uint64_t{0};
+    }
+    if (bound.surface_revision != tex->surface_revision()) {
+        bound.surface_map.upload(px);
+        bound.surface_revision = tex->surface_revision();
+    }
+    bound.surface_map.bind(9);
+    return true;
+}
+
 void GLWorldView::pack_skins() {
     // (Unpacked, every texture's picture is made now all the same, each on
     // a core of its own - a texture paints only itself - not one after
@@ -307,7 +324,9 @@ void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
                               static_cast<float>(e.params.num(Key{"emissive"}, 0.0)), 0.0f,
                               static_cast<float>(e.params.num(Key{"mirror"}, 0.0))};
         std::copy(mat, mat + 8, p.record.begin() + 16);
-        p.record[24] = static_cast<float>(e.params.num(Key{"depth_layer"}, 0.0)), p.record[25] = p.record[26] = p.record[27] = 0.0f;
+        p.record[24] = static_cast<float>(e.params.num(Key{"depth_layer"}, 0.0));
+        p.record[25] = static_cast<float>(std::clamp(e.params.num(Key{"metal"}, 0.0), 0.0, 1.0));  // how metal (iMat2.y)
+        p.record[26] = p.record[27] = 0.0f;
         p.recorded = true;
     }
     b.data.insert(b.data.end(), p.record.begin(), p.record.end());
@@ -370,10 +389,11 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             p.set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
             p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
+            p.set("uSurfaceMapOn", bind_surface_map(*b.skin) ? 1.0f : 0.0f);
         }
         b.mesh->draw_instanced(stream, n, first);
         first += static_cast<std::size_t>(n);
-        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f);
+        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), p.set("uSurfaceMapOn", 0.0f);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
     }

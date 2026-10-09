@@ -15,8 +15,9 @@
 // roughness surface emissive mirror glass` and whatever else a thing reads;
 // a key `texture.<k>` is set on the map of a Texture the specimens wear
 // (`texture.generator`, `texture.seed`, `texture.tile`, `texture.relief`,
-// `texture.layer` - a binary PPM beside the file; `texture.srgb = 1` when the
-// texture's pixels are colours picked by eye or a photograph).
+// `texture.layer` and `texture.surface_layer` - binary PPMs beside the file;
+// `texture.srgb = 0` when its colours are linear values, not colours as seen
+// on a screen, which a texture's are unless it says).
 //
 // The stage is tools/sgmat.sg (and sgmat_worn.sg, the specimens wearing a
 // texture); this program only sets what the material says on the specimens
@@ -61,8 +62,8 @@ const char* const kPresets[] = {"studio", "lamp", "soft"};
 // What a material says: what is set on the specimens, and on their texture's map.
 struct Material {
     std::vector<std::pair<std::string, sg::Value>> things, map;
-    bool srgb = false;
-    bool worn() const { return !map.empty() || srgb; }
+    int srgb = -1;  // -1: as a texture is (sRGB)
+    bool worn() const { return !map.empty() || srgb >= 0; }
 };
 
 std::string trim(const std::string& s) {
@@ -90,7 +91,7 @@ bool say(Material& m, const std::string& line, const fs::path& dir, std::string&
     if (key.rfind("texture.", 0) == 0) {
         const std::string k = key.substr(8);
         if (k == "srgb") {
-            m.srgb = std::holds_alternative<double>(v) && std::get<double>(v) != 0.0;
+            m.srgb = std::holds_alternative<double>(v) && std::get<double>(v) != 0.0 ? 1 : 0;
             return true;
         }
         if (k == "layer" && std::holds_alternative<std::string>(v)) {
@@ -184,7 +185,7 @@ Shot shoot(const Material& m, const std::string& preset, int W, int H, int frame
         for (const auto& [k, v] : m.things) stage.element(sg::Key{id}).params.set(sg::Key{k}, v);
     if (m.worn()) {
         auto& swatch = g.add<sg::Texture>(sg::Key{"swatch"}, cell);
-        swatch.set_srgb(m.srgb);
+        if (m.srgb >= 0) swatch.set_srgb(m.srgb == 1);
         for (const auto& [k, v] : m.map) swatch.element(sg::Texture::map_id()).params.set(sg::Key{k}, v);
         sgen::build_sgmat_worn(g, {}, bindings);
     }
@@ -201,9 +202,12 @@ Shot shoot(const Material& m, const std::string& preset, int W, int H, int frame
     for (const auto& p : view.prepare(g)) shot.notes.push_back("! " + p);
     // What the graph says a thing wears, the renderer is given the pixels of:
     // a binding supplies the picture, the embedding is what allows it.
+    int worn = 0;
     for (const sg::Embedding& e : g.embeddings())
         if (e.host == sg::Key{"stage"})
-            if (auto* skin = dynamic_cast<sg::Surface2D*>(g.find(e.guest))) view.bind_surface(e.portal, skin);
+            if (auto* skin = dynamic_cast<sg::Surface2D*>(g.find(e.guest))) view.bind_surface(e.portal, skin), ++worn;
+    if (m.worn() && worn != static_cast<int>(std::size(kSpecimens)))
+        shot.notes.push_back("! the specimens wear " + std::to_string(worn) + " textures, not " + std::to_string(std::size(kSpecimens)));
     view.set_fixed_step(1.0 / 60);
     for (int f = 0; f < frames; ++f) view.render(stage, W, H);
     std::vector<unsigned char> px(static_cast<std::size_t>(W) * H * 3);

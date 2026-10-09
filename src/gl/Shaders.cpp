@@ -697,8 +697,15 @@ uniform float uCalm;          // water: 0 its full swell, 1 still
 flat in vec4 vMat0;
 flat in vec4 vMat1;
 flat in float vInstanced;
+flat in float vMetal;
+uniform float uMetal;         // how metal, 0..1: reflects in its own colour, scatters none
 vec3 mAlbedo;
-float mRoughness, mSurface, mEmissive, mHighlight, mMirror;
+float mRoughness, mSurface, mEmissive, mHighlight, mMirror, mMetal;
+// A worn texture's surface map (Texture::surface_raster): red how open its
+// hollows are to the light from all round, green roughness, blue metal -
+// what the thing is there, in place of its own roughness and metal.
+uniform sampler2D uSurfaceMap;
+uniform float uSurfaceMapOn;
 uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
 uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
 
@@ -839,18 +846,19 @@ vec2 skin_at(float cell, vec3 p, vec3 size) {
     return vec2(u, v) / uSkinTile;
 }
 
-// That point of that cell of the atlas, filtered as the unwrapped place
-// changes across the screen (no seam where a tiling wraps).
-vec4 skin_sample(float cell, vec2 uv, vec2 dx, vec2 dy) {
+// That point of that cell of the atlas `t` (the picture, or its surface map:
+// laid alike), filtered as the unwrapped place changes across the screen (no
+// seam where a tiling wraps).
+vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     vec2 f = clamp(uSkinTile > 0.0 ? fract(uv) : uv, 0.002, 0.998);
     float col = mod(cell, 3.0), row = floor(cell / 3.0);
     vec2 k = vec2(1.0 / 3.0, -0.5);
-    return textureGrad(uTex, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);
+    return textureGrad(t, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);
 }
 
 // A skin worn by any shape: each point from the cell of the way it most
 // faces, or (uSkinBlend) from those of the ways it half faces, weighted.
-vec4 skin_texel() {
+vec4 skin_texel(sampler2D t) {
     // In the unit box of the thing that wears it, facing as it truly faces
     // there (its normal scaled back out of the box).
     vec3 size = uSkinOwn > 0.5 ? vTexScale : uSkinSize;
@@ -863,9 +871,9 @@ vec4 skin_texel() {
     if (uSkinBlend <= 0.0) w = a.x >= a.y && a.x >= a.z ? vec3(1, 0, 0) : (a.z >= a.y ? vec3(0, 0, 1) : vec3(0, 1, 0));
     w /= max(w.x + w.y + w.z, 1e-5);
     vec4 c = vec4(0.0);
-    if (w.x > 0.001) c += w.x * skin_sample(cx, ux, dxx, dyx);
-    if (w.y > 0.001) c += w.y * skin_sample(cy, uy, dxy, dyy);
-    if (w.z > 0.001) c += w.z * skin_sample(cz, uz, dxz, dyz);
+    if (w.x > 0.001) c += w.x * skin_sample(t, cx, ux, dxx, dyx);
+    if (w.y > 0.001) c += w.y * skin_sample(t, cy, uy, dxy, dyy);
+    if (w.z > 0.001) c += w.z * skin_sample(t, cz, uz, dxz, dyz);
     return c;
 }
 
@@ -1350,10 +1358,10 @@ void main() {
     vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
     if (vInstanced > 0.5) {
         mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
-        mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w;
+        mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w, mMetal = vMetal;
     } else {
         mAlbedo = uAlbedo, mRoughness = uRoughness;
-        mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror;
+        mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror, mMetal = uMetal;
     }
     if (mSurface > 8.5 && mSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
@@ -1369,6 +1377,7 @@ void main() {
     float rough_mod;
     vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
     float relief_h = -1.0;  // how high a skin's paint stands here, if it says
+    vec4 surface_at = vec4(-1.0);  // a worn texture's surface map here (occlusion, roughness, metal), if it has one
     if (uTexMix > 0.0) {
         vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
         vec2 on_screen = uSeenFrom > 0.5 ? seen_at.xy / seen_at.w * 0.5 + 0.5 : gl_FragCoord.xy / uViewport;
@@ -1376,7 +1385,9 @@ void main() {
                 : uSkin > 1.5 ? world_uv() : uSkin > 0.5 ? skin_uv() : vUV;
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
-        vec4 texel = uSkin > 0.5 && uSkin < 1.5 && uSkinFramed > 0.5 ? skin_texel() : texture(uTex, uv);
+        bool framed_skin = uSkin > 0.5 && uSkin < 1.5 && uSkinFramed > 0.5;
+        vec4 texel = framed_skin ? skin_texel(uTex) : texture(uTex, uv);
+        if (framed_skin && uSurfaceMapOn > 0.5) surface_at = skin_texel(uSurfaceMap);
 #ifdef SG_CUTOUT
         if (uCutout > 0.5 && texel.a < 0.5) discard;
 #endif
@@ -1424,11 +1435,21 @@ void main() {
         return;
     }
     float roughness = clamp(mRoughness + rough_mod, 0.05, 1.0);
-    // Metal (the brushed surface) reflects in its own colour and scatters
-    // less. Only partly: most of what wears it is painted, and a bare metal
-    // with only the sky and the floor to reflect would go dark. Everything
-    // else reflects 4% head on, white.
-    float metal = (mSurface > 4.5 && mSurface < 5.5) ? 0.35 : 0.0;
+    // Metal reflects in its own colour and scatters none: as much as it says
+    // (`metal`). The brushed surface is at least partly metal - only partly:
+    // most of what wears it is painted, and a bare metal with only the sky
+    // and the floor to reflect would go dark. Everything else reflects 4%
+    // head on, white.
+    float metal = max(clamp(mMetal, 0.0, 1.0), (mSurface > 4.5 && mSurface < 5.5) ? 0.35 : 0.0);
+    // A worn texture's surface map says what the thing is, point by point:
+    // its roughness and metal in place of the thing's own, and how open its
+    // hollows are to the light from all round (`occlusion`, below).
+    float occlusion = 1.0;
+    if (surface_at.x >= 0.0) {
+        occlusion = clamp(surface_at.r, 0.0, 1.0);
+        roughness = clamp(surface_at.g, 0.05, 1.0);
+        metal = clamp(surface_at.b, 0.0, 1.0);
+    }
     vec3 f0 = mix(vec3(0.04), albedo, metal);
     vec3 diffuse = albedo * (1.0 - metal);
     if (uSurfaceOnly > 0) {
@@ -1620,6 +1641,10 @@ void main() {
         reflected = max(reflected, vec3(uMirrorUse[k].x * (1.0 - roughness)));
     }
     vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced;
+    // What its own hollows shut out of the light from all round and back off
+    // the room (a surface map's occlusion): the lamps' direct light still
+    // reaches where they shine.
+    ambient *= occlusion;
 
     vec3 color = ambient + direct + albedo * (mEmissive + uGlow) * (1.0 - uDark);
     // How much of what is seen here is light from all round - the only part

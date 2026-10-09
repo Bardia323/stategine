@@ -15,6 +15,11 @@ std::map<std::string, Texture::Generator>& generators() {
     return all;
 }
 
+std::map<std::string, Texture::Material>& materials() {
+    static std::map<std::string, Texture::Material> all;
+    return all;
+}
+
 Texture::Reader& reader() {
     static Texture::Reader r;
     return r;
@@ -38,9 +43,60 @@ double tiled_noise(double u, double v, int n, uint32_t seed) {
     return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy;
 }
 
+// Four octaves of tiling value noise, 0..1, `n` cells across at the coarsest.
+double fbm(double u, double v, int n, uint32_t seed) {
+    double s = 0, w = 0.5, t = 0;
+    for (int o = 0; o < 4; ++o, w *= 0.5) s += w * tiled_noise(u, v, n << o, seed + 17 * o), t += w;
+    return s / t;
+}
+
+// A material's colour and height, as a generator gives them.
+Texture::Generator colour_of(Texture::Material m) {
+    return [m = std::move(m)](const Params& p, int cell, double u, double v) {
+        const Texture::Channels c = m(p, cell, u, v);
+        return std::array<double, 4>{c.r, c.g, c.b, c.height};
+    };
+}
+
+// Steel, painted, the paint chipped to bright metal at the edges of rust
+// that has eaten through it: every channel of it. `rust` (0..1) how much,
+// `scale` its patches across a cell, `paint_r/g/b` the paint's colour (as
+// picked by eye), `seed`.
+Texture::Channels rust(const Params& p, int, double u, double v) {
+    const int n = std::max(1, static_cast<int>(p.num("scale", 3.0)));
+    const uint32_t seed = static_cast<uint32_t>(p.num("seed", 1.0));
+    const double amount = std::clamp(p.num("rust", 0.45), 0.0, 1.0);
+    const double patches = fbm(u, v, n, seed), fine = fbm(u, v, n * 8, seed + 101), grain = tiled_noise(u, v, n * 64, seed + 7);
+    // Where it has rusted: the patches past a level set by how much, with a
+    // ragged edge; round it a band where the paint has flaked off the steel.
+    const double level = 1.0 - amount, edge = patches + 0.12 * (fine - 0.5);
+    const double rusted = smoothstep(level - 0.02, level + 0.06, edge);
+    const double bare = smoothstep(level - 0.09, level - 0.03, edge) * (1.0 - rusted);
+    Texture::Channels c;
+    const double pr = p.num("paint_r", 0.30), pg = p.num("paint_g", 0.37), pb = p.num("paint_b", 0.34);
+    const double wear = 0.9 + 0.2 * (fine - 0.5);
+    double r = pr * wear, g = pg * wear, b = pb * wear, rough = 0.42 + 0.12 * fine, metal = 0.0, height = 0.55, occl = 1.0;
+    // Bare steel: bright, smooth, metal, a hair below the paint.
+    const double steel = 0.62 + 0.08 * grain;
+    r += (steel - r) * bare, g += (steel - g) * bare, b += (steel * 1.02 - b) * bare;
+    rough += (0.28 + 0.1 * grain - rough) * bare, metal += (1.0 - metal) * bare, height += (0.5 - height) * bare;
+    // Rust: orange to dark brown by its own noise, rough, not metal, standing
+    // up in flakes, its pits dark and shut to the light from all round.
+    const double t = fine * 0.7 + grain * 0.3;
+    const double rr = 0.45 - 0.2 * t, rg = 0.22 - 0.11 * t, rb = 0.10 - 0.05 * t;
+    r += (rr - r) * rusted, g += (rg - g) * rusted, b += (rb - b) * rusted;
+    rough += (0.88 + 0.1 * grain - rough) * rusted, metal -= metal * rusted;
+    height += (0.6 + 0.4 * grain - height) * rusted;
+    occl -= 0.45 * rusted * (1.0 - grain);
+    c.r = r, c.g = g, c.b = b, c.height = height, c.roughness = rough, c.metal = metal, c.occlusion = occl;
+    return c;
+}
+
 void builtins() {
     static std::once_flag once;
     std::call_once(once, [] {
+        materials()["rust"] = rust;
+        generators()["rust"] = colour_of(rust);
         auto& g = generators();
         g["plain"] = [](const Params&, int, double, double) { return std::array<double, 4>{1, 1, 1, 1}; };
         g["noise"] = [](const Params& p, int, double u, double v) {
@@ -74,7 +130,60 @@ void Texture::define(const std::string& name, Generator g) {
     generators()[name] = std::move(g);
 }
 
+void Texture::define_material(const std::string& name, Material m) {
+    builtins();
+    generators()[name] = colour_of(m);
+    materials()[name] = std::move(m);
+}
+
 void Texture::set_reader(Reader r) { reader() = std::move(r); }
+
+bool Texture::has_surface() const {
+    const Element& m = map();
+    return materials().count(m.params.get_or<std::string>("generator", "plain")) > 0 ||
+           !m.params.get_or<std::string>("surface_layer", "").empty();
+}
+
+const std::vector<unsigned char>& Texture::surface_raster() {
+    const Element& m = map();
+    const std::string layer = m.params.get_or<std::string>("surface_layer", "");
+    const long long t = layer.empty() ? 0 : stamp_of(layer);
+    if (!has_surface()) {
+        if (!surface_px_.empty()) std::vector<unsigned char>{}.swap(surface_px_), ++surface_revision_;
+        return surface_px_;
+    }
+    if (!surface_px_.empty() && m.params.stamp() == surface_stamp_ && t == surface_layer_time_) return surface_px_;
+    surface_stamp_ = m.params.stamp();
+    surface_layer_time_ = t;
+    const int c = cell(), W = px_w(), H = px_h();
+    surface_px_.assign(static_cast<std::size_t>(W) * H * 4, 255);
+    // Unless a material says, a surface as a thing is: open, 0.6 rough, not metal.
+    const auto it = materials().find(m.params.get_or<std::string>("generator", "plain"));
+    for (int cl = 0; cl < 6; ++cl) {
+        const int x0 = (cl % 3) * c, y0 = (cl / 3) * c;
+        for (int y = 0; y < c; ++y)
+            for (int x = 0; x < c; ++x) {
+                const Channels ch = it != materials().end() ? it->second(m.params, cl, (x + 0.5) / c, 1.0 - (y + 0.5) / c) : Channels{};
+                unsigned char* p = &surface_px_[(static_cast<std::size_t>(y0 + y) * W + (x0 + x)) * 4];
+                p[0] = static_cast<unsigned char>(to_byte(ch.occlusion));
+                p[1] = static_cast<unsigned char>(to_byte(ch.roughness));
+                p[2] = static_cast<unsigned char>(to_byte(ch.metal));
+            }
+    }
+    // The surface layer over it, as the colour's layer is over the colour.
+    int lw = 0, lh = 0;
+    std::vector<unsigned char> over;
+    if (!layer.empty() && reader() && reader()(layer, lw, lh, over) && lw > 0 && lh > 0)
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const unsigned char* l = &over[(static_cast<std::size_t>(y * lh / H) * lw + static_cast<std::size_t>(x * lw / W)) * 4];
+                const double a = l[3] / 255.0;
+                unsigned char* p = &surface_px_[(static_cast<std::size_t>(y) * W + x) * 4];
+                for (int k = 0; k < 3; ++k) p[k] = static_cast<unsigned char>(std::lround(p[k] + (l[k] - p[k]) * a));
+            }
+    ++surface_revision_;
+    return surface_px_;
+}
 
 Texture::Texture(Key id, int cell_px) : Surface2D(id, 3, 2, cell_px) {
     builtins();
