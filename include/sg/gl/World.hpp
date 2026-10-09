@@ -128,6 +128,7 @@
 #include "sg/render/Visibility.hpp"
 #include "sg/render/ViewPlan.hpp"
 #include "sg/render/Defaults.hpp"
+#include "sg/render/Graphics.hpp"
 
 namespace sg::render {
 
@@ -200,6 +201,16 @@ public:
     // shader time. Zero keeps fades still; world time is declared by Temporal.
     void set_fixed_step(double seconds) { fixed_step_ = seconds; }
     void set_frame_delta(double seconds) { fixed_step_ = seconds; }
+
+    // How things are drawn, as a state says (render::Graphics): read at the
+    // start of each frame, as every state drawn is, and drawn by from then
+    // on - each setting changed made good where it is kept (shadow maps of
+    // the new size, targets with the new samples, the look's glow) and
+    // nothing else made again. Null: the quality it was made with, kept.
+    void follow(const render::Graphics* graphics) { graphics_ = graphics, graphics_stamp_ = 0; }
+    // Drawn by `q` from the next frame: what it changes, made again.
+    void set_quality(const GLQuality& q);
+    const GLQuality& quality() const { return q_; }
 
     // The eye's exposure. A look whose scene pass says `exposure.auto` = 1
     // has the eye adjust to what it sees: the scene's light, measured each
@@ -1098,6 +1109,8 @@ private:
     };
 
     GLQuality q_;
+    const render::Graphics* graphics_ = nullptr;  // the state it draws by, if one (follow)
+    uint64_t graphics_stamp_ = 0;                 // which of its settings were last read
     int msaa_ = 0;  // what the driver gave of q_.msaa
     bool ready_ = false;
     int target_w_ = 0, target_h_ = 0;

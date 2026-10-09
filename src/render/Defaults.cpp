@@ -1,6 +1,9 @@
 #include "sg/render/Defaults.hpp"
+#include "sg/render/Graphics.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -80,6 +83,52 @@ void read_quality(const std::string& text, Quality& into, std::vector<std::strin
             else into.*(s->number) = v;
         }
     }
+}
+
+void quality_to_params(const Quality& q, Params& out) {
+    for (const Setting& s : kSettings) {
+        const double v = s.flag ? (q.*(s.flag) ? 1.0 : 0.0) : s.whole ? static_cast<double>(q.*(s.whole)) : static_cast<double>(q.*(s.number));
+        out.set(Key{s.key}, v);
+    }
+}
+
+Quality quality_from_params(const Params& p, Quality base) {
+    for (const Setting& s : kSettings) {
+        const Key k{s.key};
+        if (!p.has(k)) continue;
+        // A setting said as a word ("true", "4") is read as render.conf reads it.
+        const Value& said = p.get(k);
+        double v = p.num(k);
+        if (const bool* b = std::get_if<bool>(&said)) v = *b ? 1.0 : 0.0;
+        else if (const std::string* t = std::get_if<std::string>(&said)) {
+            const std::string w = trimmed(*t);
+            if (w == "true" || w == "on" || w == "yes") v = 1.0;
+            else if (w == "false" || w == "off" || w == "no") v = 0.0;
+            else {
+                char* end = nullptr;
+                v = std::strtod(w.c_str(), &end);
+                if (w.empty() || *end) continue;
+            }
+        }
+        if (s.flag) base.*(s.flag) = v > 0.5;
+        else if (s.whole) base.*(s.whole) = static_cast<int>(std::lround(v));
+        else base.*(s.number) = static_cast<float>(v);
+    }
+    return base;
+}
+
+Quality kept_to_bounds(Quality q) {
+    int size = 256;
+    while (size < q.shadow_size && size < 8192) size *= 2;
+    q.shadow_size = size;
+    q.shadow_budget_mb = std::max(q.shadow_budget_mb, -1);
+    q.msaa = q.msaa >= 8 ? 8 : q.msaa >= 4 ? 4 : q.msaa >= 2 ? 2 : 0;
+    q.bloom_passes = std::clamp(q.bloom_passes, 0, 8);
+    q.bloom_strength = std::clamp(q.bloom_strength, 0.0f, 4.0f);
+    q.bloom_threshold = std::clamp(q.bloom_threshold, 0.0f, 16.0f);
+    q.exposure = std::clamp(q.exposure, 0.05f, 16.0f);
+    q.reflection_scale = std::clamp(q.reflection_scale, 0.1f, 1.0f);
+    return q;
 }
 
 bool load_quality(const std::string& file, const std::string& program, Quality& into, std::vector<std::string>* problems) {

@@ -212,8 +212,54 @@ std::vector<PlacedRoom> GLWorldView::seen(const Spatial3D& world) const {
     return out;
 }
 
+void GLWorldView::set_quality(const GLQuality& to) {
+    const GLQuality was = q_;
+    q_ = to;
+    // Shadow maps of another size, or room for them: the kept ones let go,
+    // made again as lamps ask.
+    if (was.shadow_size != q_.shadow_size) {
+        shadow_sets_.clear();
+        spare_shadows_.clear();
+    }
+    if (was.shadow_budget_mb != q_.shadow_budget_mb || was.shadow_size != q_.shadow_size) shadow_room_ = 0;
+    // Other samples: the targets drawn into made again at the size they are.
+    if (was.msaa != q_.msaa) {
+        parked_.clear();
+        if (target_w_ > 0) make_targets(target_w_, target_h_);
+    }
+    // Frames gathered by another rule are not this one's history.
+    if (was.taa != q_.taa || was.msaa != q_.msaa) taa_held_ = false;
+    if (was.bloom_passes != q_.bloom_passes || was.bloom_strength != q_.bloom_strength ||
+        was.bloom_threshold != q_.bloom_threshold || was.exposure != q_.exposure)
+        standard_look(standard_, q_);
+    // Packed: what things wear packed (as at start); unpacked: each its own
+    // pixels again, sent as it is next drawn.
+    if (was.pack != q_.pack) {
+        if (q_.pack) pack_skins();
+        else
+            for (auto& [id, bound] : surfaces_) bound.packed.reset();
+    }
+    // The views drawn for this one draw as it does (a screen's shadow maps
+    // no finer than 1024, as when it was made).
+    for (auto& [id, f] : feeds_)
+        if (f.view) {
+            GLQuality q = q_;
+            q.shadow_size = std::min(q_.shadow_size, 1024);
+            f.view->set_quality(q);
+        }
+    for (auto& [id, wp] : worlds_)
+        if (wp.own) wp.own->set_quality(q_);
+    for (auto* v : {&baker_, &lamp_seer_, &sun_seer_})
+        if (*v) (*v)->set_quality(q_);
+}
+
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
     let_go_.now();
+    // How things are drawn, as the state that says so says now.
+    if (graphics_ && graphics_->stamp() != graphics_stamp_) {
+        graphics_stamp_ = graphics_->stamp();
+        set_quality(graphics_->quality());
+    }
     // What is seen of the world the eye is in: it, and the worlds round it
     // or in it (sg::nests) - as through any doorway onto it.
     auto rooms = requested;
