@@ -1,0 +1,72 @@
+# sgmat's stage: a material seen the same way every time.
+#
+# A closed, neutral studio. Three specimens wear the material under test -
+# a ball (how it turns from the light), a bevelled cube (its edges and flat
+# faces) and a slab leaning back (its pattern's scale, its relief, a broad
+# highlight). Beside them what the eye measures against: a ball of 18% grey,
+# a chrome ball (what the light and the room are), and six patches of known
+# colour. Albedos here are linear, as every element's r/g/b is.
+#
+# The lights carry how bright each is under each preset (`studio`, `lamp`,
+# `soft`); sgmat makes the chosen one its `intensity` before the first frame,
+# and wears the look of the same name.
+
+initial stage
+
+state stage : spatial3d {
+    room_w = 10.0 room_h = 4.0 room_d = 8.0
+    floor_r = 0.20 floor_g = 0.20 floor_b = 0.20 floor_surface = 0.0 floor_roughness = 0.85
+    ceiling_r = 0.12 ceiling_g = 0.12 ceiling_b = 0.12 ceiling_surface = 0.0
+
+    element camera : camera { x = 5.0 y = 1.9 z = 7.4 yaw = -1.5707963267948966 pitch = -0.3 fov = 38.0 }
+
+    # The studio's walls: plain and neutral, so nothing but the material has a pattern.
+    element left : wall { x = 0.0 z = 4.0 sx = 0.25 sy = 4.0 sz = 8.0 r = 0.22 g = 0.22 b = 0.22 roughness = 0.95 surface = 0.0 }
+    element right : wall { x = 10.0 z = 4.0 sx = 0.25 sy = 4.0 sz = 8.0 r = 0.22 g = 0.22 b = 0.22 roughness = 0.95 surface = 0.0 }
+    element back : wall { x = 5.0 z = 0.0 sx = 10.0 sy = 4.0 sz = 0.25 r = 0.22 g = 0.22 b = 0.22 roughness = 0.95 surface = 0.0 }
+    element front : wall { x = 5.0 z = 8.0 sx = 10.0 sy = 4.0 sz = 0.25 r = 0.22 g = 0.22 b = 0.22 roughness = 0.95 surface = 0.0 }
+
+    # The specimens: what the material file says is set on each of them.
+    element ball : mesh { x = 3.7 y = 0.0 z = 3.2 sx = 0.9 sy = 0.9 sz = 0.9 shape = "sphere" surface = 0.0 r = 0.5 g = 0.5 b = 0.5 roughness = 0.5 }
+    element cube : mesh { x = 5.0 y = 0.0 z = 3.2 sx = 0.8 sy = 0.8 sz = 0.8 bevel = 0.05 surface = 0.0 r = 0.5 g = 0.5 b = 0.5 roughness = 0.5 }
+    element slab : mesh { x = 6.35 y = -0.03 z = 3.2 sx = 1.0 sy = 1.0 sz = 0.06 roll = 0.35 surface = 0.0 r = 0.5 g = 0.5 b = 0.5 roughness = 0.5 }
+
+    # The references, never touched by a material.
+    element grey : mesh { x = 3.45 y = 0.0 z = 4.3 sx = 0.32 sy = 0.32 sz = 0.32 shape = "sphere" surface = 0.0 r = 0.18 g = 0.18 b = 0.18 roughness = 0.5 }
+    element chrome : mesh { x = 6.55 y = 0.0 z = 4.3 sx = 0.32 sy = 0.32 sz = 0.32 shape = "sphere" surface = 5.0 r = 0.95 g = 0.95 b = 0.95 roughness = 0.05 }
+    element white : mesh { x = 4.25 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.85 g = 0.85 b = 0.85 roughness = 0.6 }
+    element mid : mesh { x = 4.55 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.18 g = 0.18 b = 0.18 roughness = 0.6 }
+    element black : mesh { x = 4.85 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.03 g = 0.03 b = 0.03 roughness = 0.6 }
+    element red : mesh { x = 5.15 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.43 g = 0.037 b = 0.045 roughness = 0.6 }
+    element green : mesh { x = 5.45 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.06 g = 0.30 b = 0.07 roughness = 0.6 }
+    element blue : mesh { x = 5.75 y = 0.0 z = 4.45 sx = 0.2 sy = 0.2 sz = 0.2 surface = 0.0 r = 0.04 g = 0.047 b = 0.30 roughness = 0.6 }
+
+    # studio: a key from the front left, a fill from the right, a rim behind.
+    element key : light { x = 2.2 y = 3.4 z = 6.6 dx = 0.45 dy = -0.62 dz = -0.65 inner = 0.5 outer = 0.95 r = 1.0 g = 0.96 b = 0.90 intensity = 1.0 studio = 1.0 lamp = 0.0 soft = 0.35 }
+    element fill : light { x = 8.4 y = 2.4 z = 6.4 dx = -0.55 dy = -0.35 dz = -0.75 inner = 0.7 outer = 1.3 r = 0.90 g = 0.94 b = 1.0 intensity = 0.3 indirect = 1.0 studio = 0.3 lamp = 0.0 soft = 0.25 }
+    element rim : light { x = 5.0 y = 3.2 z = 1.2 dx = 0.0 dy = -0.55 dz = 0.84 inner = 0.5 outer = 1.0 r = 1.0 g = 1.0 b = 1.0 intensity = 0.5 studio = 0.5 lamp = 0.0 soft = 0.0 }
+    # lamp: one warm bulb, lighting all round, in a dark room - a night interior.
+    element bulb : light { x = 3.0 y = 2.3 z = 5.2 outer = 3.2 r = 1.0 g = 0.72 b = 0.42 intensity = 0.0 falloff = 1.0 studio = 0.0 lamp = 1.6 soft = 0.0 }
+}
+
+# Each preset's air and light from all round. No fog, no grain, the eye's
+# exposure fixed: a picture of the material, not of a mood.
+state stage.studio : look {
+    fade = 0.0
+    element scene : pass { uAmbient = 0.03 uSky = [0.55, 0.57, 0.6] uGround = [0.25, 0.25, 0.25] uFogDensity = 0.0 }
+    element composite : pass { uGrain = 0.0 uExposure = 0.2 }
+}
+state stage.lamp : look {
+    fade = 0.0
+    element scene : pass { uAmbient = 0.04 uSky = [0.1, 0.1, 0.12] uGround = [0.06, 0.05, 0.04] uFogDensity = 0.0 }
+    element composite : pass { uGrain = 0.0 uExposure = 0.38 }
+}
+state stage.soft : look {
+    fade = 0.0
+    element scene : pass { uAmbient = 0.3 uSky = [0.8, 0.82, 0.85] uGround = [0.35, 0.35, 0.35] uFogDensity = 0.0 }
+    element composite : pass { uGrain = 0.0 uExposure = 0.5 }
+}
+
+wear stage <- stage.studio
+wear stage <- stage.lamp
+wear stage <- stage.soft

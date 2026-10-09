@@ -1,0 +1,7 @@
+# Brushed steel: the engine's own brushed-metal surface (5) - streaked, and
+# partly metallic (the only metal the renderer has; docs/materials.md).
+r = 0.62
+g = 0.63
+b = 0.65
+roughness = 0.35
+surface = 5

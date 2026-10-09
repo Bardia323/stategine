@@ -1,0 +1,13 @@
+# Worn stone: a generated texture worn by the specimens, its noise standing
+# in relief so the light catches it. A worn texture is the albedo: r/g/b and
+# surface are not seen under it - tint it instead.
+roughness = 0.85
+texture.generator = noise
+texture.scale = 6
+texture.seed = 7
+texture.tint_r = 0.46
+texture.tint_g = 0.43
+texture.tint_b = 0.39
+texture.tile = 0.5      # metres of the thing one cell covers
+texture.blend = 1       # curves shade softly between the cells
+texture.relief = 0.004  # metres the paint stands at full height (its alpha)

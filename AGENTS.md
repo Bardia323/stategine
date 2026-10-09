@@ -203,6 +203,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `field` (`physics/Field.hpp`) | named scalar/vector sources, receivers and pure query solver; directional/radial/plane or specialized const backend | private gravity/field logic, another clock or mutable captured state |
 | `net::Cellular`, `net::Reconcile` (`net/Cellular.hpp`, `Reconcile.hpp`) | stalks, overlaps, restrictions and CPU/CUDA reconciliation derived from an ordinary state's data | network entities, a second world, private reconciliation ticks or GPU-owned reality |
 | `Probe`, `Sh9` (`domains/Probe.hpp`; `GLWorldView::bake_probes`) | light from all round at a place in a room: what its lamps give it after lighting the room, as spherical harmonics, a set a lamp - summed with each lamp's light now, so no bake for a switch; baked by the renderer and handed back for an edit to write; its laws in a Spatial3D's `faults` | an ambient colour tuned by hand per room, a fake bounce lamp, a lightmap or GI pass of a game's own |
+| materials (`docs/materials.md`; `sgmat`) | what a surface is made of: a thing's params (`r g b roughness emissive glass reflects mirror`), its `surface` kind (0..20, procedural), a `Texture` it wears, its state's look - the only four ways a material reaches the renderer; `sgmat` draws one on a fixed stage beside grey, chrome and colour references and measures it | a shader, uniform or colour space of a game's own; a texture path in a mesh's params; a material tuned only inside a graded look; a colour judged without looking |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; a colour temperature (`kelvin`); extruded and lathed models | lighting maths or mesh code inside a game, a lamp colour picked by eye for a bulb of known kelvin |
 | `Modeler` (`domains/Modeler.hpp`, code in `src/domains/modeler/`) | a shape from a recipe, as text: primitives, cuts, arrays, macros, an imported `.obj` - its mesh a pure function of the recipe, closed, sharp where it should be; what Paint is to a texture (`docs/modeler.md`). Architecture is its libraries (`use mould orders pointed girih structure city param arch`): real construction - orders by module, arches by their centres, vaults, girih, frames, whole cities by seed; a style a point in continuous axes. What moves is a `moves` block - a turn (a hinge), a slide (a runner), a track ridden by two points (a garage door's panel, a shutter's slat); `with=` couples one to another, `step=` pushes it on round and round (a revolving door): `Model::joints`, `sculpt::pose`, `sculpt::moves_of` for a world that moves the parts itself. Doors, drawers and cabinets are `use doors` (`ModelerDoors.cpp`, docs/modeler.md *Doors*): one `door` of choices - surround, head, leaf body and cells, how it moves, hardware - every choice a variable of the library, a kind of door (`door.hotel`, `door.persian`, `cabinet.kitchen` ...) a set of them; `wall=` stands one in a wall cut round its surround | boxes placed by hand, a mesh built inside a game, a model loader of your own, a facade standing in for a building, a style's numbers written twice, a class per kind of door, a door or drawer of its own, hinge or track maths of its own |
 | `terrain` (`domains/Terrain.hpp`, code in `src/domains/terrain/`, `docs/terrain.md`) | land from a recipe, any size: noise, hills, erosion, roads graded along curves, rivers, lakes filled to their spill, sea, swamp; layers of covering by height, slope, wetness, nearness to road and water; things strewn by the same rules (`grow`n plants: `use trees`). `lay` puts it in any Spatial3D as the state's own ground (`Spatial3D::terrain`: walked, hit by rays, drawn round the eye). `sgterrain` (map) and `sgland` (the renderer's view) to look | a heightmap, ground mesh or scatter of your own; trees placed by hand; a walker's own ground |
@@ -381,6 +382,29 @@ backend-neutral, `sg/gl` native and `sg/web` above them. Cross builds consume
 a native `sgc`; Wasm networking keeps the double-precision CPU reference.
 Run the portable Wasm suite and real browser/native integration tests as well
 as native laws and renderer tests. See [browser.md](docs/browser.md).
+
+## Writing a material
+
+Read [docs/materials.md](docs/materials.md) first: it is the whole contract -
+what each param does and its default (a mesh that says nothing is an orange
+crate, `surface` 3), the `surface` kinds, how a `Texture` is worn and that it
+replaces the colour, colour spaces (params linear; a texture linear unless
+`set_srgb`), what the renderer cannot do (no metallic param), and real
+albedos to start from. Then work by looking, never by guessing:
+
+1. Write a `.mat` (`key = value`; `texture.<key>` for a worn texture),
+   starting from `tools/materials/` or the albedo table.
+2. `cd build && ./sgmat <file> --preset all -o out/sgmat/<name>.sheet.png`,
+   then **look at the PNG**, then read the numbers: brightness beside the
+   18% grey ball, the patches' white about 200, mid 120, black 35. Fix every
+   `!` line.
+3. One change at a time (`-e "key=value; ..."` to try one), look again. With a
+   reference photo, put it beside the sheet and compare scale, colour,
+   roughness variation and where wear sits.
+4. Land it as the engine says: params in the `.sg` that declares the thing, a
+   texture as a `Texture` state worn through an embedding. The `.mat` is a
+   sketch for `sgmat` only. A new `surface` kind or generator is an engine
+   change - a row in docs/materials.md and an `sgmat` picture with it.
 
 ## Joining two projects
 

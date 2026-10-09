@@ -1,0 +1,9 @@
+# sgmat: the specimens wearing the material's texture. Declared only when the
+# material says one (any `texture.` key): a worn texture is the albedo, in
+# place of the colour and its procedural surface.
+extern state stage
+extern state swatch
+
+embed stage.ball -> swatch name wears.ball focus false
+embed stage.cube -> swatch name wears.cube focus false
+embed stage.slab -> swatch name wears.slab focus false

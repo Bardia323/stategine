@@ -226,6 +226,24 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
   if(WIN32)
     target_link_libraries(sgland PRIVATE opengl32)
   endif()
+
+  # sgmat: a material on a stage that never moves, beside grey, chrome and
+  # colour references, by the renderer itself (docs/materials.md).
+  if(SG_BUILD_DSL)
+    add_executable(sgmat tools/sgmat.cpp)
+    target_link_libraries(sgmat PRIVATE stategine_dev stategine_dsl glfw)
+    stategine_compile_dsl(sgmat NAME sgmat SOURCES tools/sgmat.sg)
+    stategine_compile_dsl(sgmat NAME sgmat_worn SOURCES tools/sgmat_worn.sg)
+    if(WIN32)
+      target_link_libraries(sgmat PRIVATE opengl32)
+    endif()
+    # The stage holds its laws and draws a worn texture under every preset
+    # with nothing to report (sgmat exits 2 on any `!` problem).
+    if(SG_BUILD_TESTS)
+      add_test(NAME sgmat COMMAND sgmat ${CMAKE_SOURCE_DIR}/tools/materials/worn_stone.mat --preset all
+               -o ${CMAKE_BINARY_DIR}/out/sgmat/test.sheet.png -w 320 -h 180)
+    endif()
+  endif()
   add_executable(sg_room3d examples/room3d.cpp)
   target_link_libraries(sg_room3d PRIVATE stategine_dev glfw)
   if(WIN32)

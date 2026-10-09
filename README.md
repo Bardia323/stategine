@@ -625,6 +625,13 @@ shows what it sees by naming that embedding (`shows`). Pointed at its own
 screen, it shows the room, the screen in it, and so on down: each frame's
 picture holds the frame before.
 
+What a surface is made of reaches the renderer four ways only - a thing's
+params, its `surface` kind, a `Texture` it wears, its state's look; all of
+it is in [materials.md](docs/materials.md). `sgmat <file.mat>` draws a
+material on a fixed stage beside grey, chrome and colour references and
+says how bright it came out, so a material is judged by looking, the same
+way every time.
+
 ### Shots: many pictures from one start
 
 A program that draws a world is slow to start and quick to draw. To look at a
