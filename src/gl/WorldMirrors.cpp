@@ -195,7 +195,8 @@ void GLWorldView::mirror_uniforms(const gl::Program& p, bool use) {
         p.set(kPlane[i], mr.normal.x, mr.normal.y, mr.normal.z, mr.offset);
         p.set(kSeen[i], mr.seen.x0, mr.seen.y0, mr.seen.x1, mr.seen.y1);
         const float lods = std::floor(std::log2(static_cast<float>(std::max(mr.target.width(), mr.target.height()))));
-        p.set(kUse[i], mr.strength, mr.fx, mr.fy, lods);
+        // (A window's glass says so by its strength's sign: read by it alone.)
+        p.set(kUse[i], mr.glass.empty() ? mr.strength : -mr.strength, mr.fx, mr.fy, lods);
         mr.target.bind_color(kMirrorUnit + i);
     }
     gl::glActiveTexture(gl::GL_TEXTURE0);

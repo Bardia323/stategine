@@ -1414,7 +1414,7 @@ void main() {
             vec2 t = vec2((s.z - ndc.x) / max(s.z - s.x, 1e-4), (ndc.y - s.y) / max(s.w - s.y, 1e-4));
             t = clamp(t, vec2(0.0), vec2(1.0)) * uMirrorUse[k].yz;
             vec3 room = k == 0 ? textureLod(uMirror0, t, 0.0).rgb : textureLod(uMirror1, t, 0.0).rgb;
-            seen = mix(seen, room, clamp(fres * uMirrorUse[k].x, 0.0, 1.0));
+            seen = mix(seen, room, clamp(fres * abs(uMirrorUse[k].x), 0.0, 1.0));
         }
         // This side's air up to the opening is this side's to light.
         seen += air_light(length(vWorld - uViewPos));
@@ -1596,11 +1596,16 @@ void main() {
     // waves), and blurred as it roughens.
     for (int k = 0; k < 2; ++k) {
         if (k >= uMirrorCount) break;
+        // (A window's glass is read by that glass alone: what else lies in
+        // its plane - a bookcase's back against the wall - is not it.)
+        if (uMirrorUse[k].x <= 0.0) continue;
         vec4 plane = uMirrorPlane[k];
         if (abs(dot(plane.xyz, vLit) + plane.w) > 0.01 || dot(normalize(vNormal), plane.xyz) < 0.9) continue;
         vec4 s = uMirrorSeen[k];
         vec2 ndc = gl_FragCoord.xy / uMirrorScreen * 2.0 - 1.0;
         vec2 t = vec2((s.z - ndc.x) / max(s.z - s.x, 1e-4), (ndc.y - s.y) / max(s.w - s.y, 1e-4));
+        // (Only where it was drawn: past that, what lies in its plane is not it.)
+        if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) continue;
         vec3 side = n - plane.xyz * dot(n, plane.xyz);
         t += vec2(-side.x, side.z) * 0.08;
         t = clamp(t, vec2(0.0), vec2(1.0)) * uMirrorUse[k].yz;
