@@ -479,11 +479,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uShadowMaps", 1);
     };
     // The air of this view, lit by its lamps (air_fs) - when its look says
-    // its air scatters, and only in a view of the eye's own or one doorway
-    // on: a view deeper in is too small to see it in.
+    // its air scatters: in the eye's own view and in every view through a
+    // doorway, however deep (each gathered at its own pixels, so a small one
+    // costs little, and kept while nothing it is made from moves) - a room's
+    // haze is what is seen of it from any way. (A mirror's picture has none.)
     const Air* air = nullptr;
-    const float scatter = baking_ ? 0.0f : static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
-    if (scatter > 0.0f && depth <= 1) {
+    const float scatter = baking_ || mirroring_ ? 0.0f : static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
+    if (scatter > 0.0f) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
         // As far out as the look says (`scatter.far`), within what is drawn.
@@ -648,7 +650,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uViewProj", drawn_proj);
         p.set("uDepthNudge", reversed ? 1.0f : 0.0f);
         p.set("uMirrorScreen", vp_w_, vp_h_);
-        mirror_uniforms(p, depth == 0 && !mirroring_);
+        mirror_uniforms(p, !mirroring_);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
         p.set("uSurfaceOnly", surface_only_);

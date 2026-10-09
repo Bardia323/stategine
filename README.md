@@ -712,8 +712,9 @@ crossing slices is a grain, never bands - by every light of the view through its
 shadowed by its own map, dimmed by the look's fog (`uFogDensity`,
 `uFogStart`); the scene reads it at each pixel's distance (`air_light`), and
 a doorway's view has only the air beyond the doorway - this side of it is
-this side's. It is gathered for the eye's view and the views one doorway on,
-and again only when the view, its lights or their shadow maps move
+this side's. It is gathered for the eye's view and for every view through a
+doorway, however deep (each at its own pixels, so a small one costs little;
+a mirror's picture has none), and again only when the view, its lights or their shadow maps move
 (`FrameTimes::air_built`). Every cell of every slice is lit in one pass,
 and the slices are added up in eight: a gathering costs about a tenth of a
 millisecond at 2560 x 1440 - in the lab's dev room, within what one run

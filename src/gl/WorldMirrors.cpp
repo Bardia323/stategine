@@ -1,7 +1,9 @@
-// The GL view's mirrors: a plane things in the eye's room say they reflect
+// The GL view's mirrors: a plane things in a view's room say they reflect
 // in, and the room seen in it - drawn again from the eye mirrored in that
 // plane, only what stands above it, only where the plane is on the screen,
 // at a part of the screen's pixels, with the room's own shadow maps and light.
+// Every view has its own: the eye's room, and each room seen through a
+// doorway, however deep, seen from the eye carried there.
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
@@ -41,24 +43,22 @@ GLWorldView::Rect GLWorldView::seen_rect(const std::vector<gl::Vec3>& corners, c
     return Rect{std::max(r.x0, -1.0f), std::max(r.y0, -1.0f), std::min(r.x1, 1.0f), std::min(r.y1, 1.0f)};
 }
 
-void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect) {
-    mirror_count_ = 0;
-    if (!q_.reflections || rooms.empty() || !rooms.front().room || eye.ortho > 0.0f) return;
-    const Spatial3D& room = *rooms.front().room;
+const GLWorldView::MirrorSet* GLWorldView::mirrors_now() const {
+    if (mirroring_) return nullptr;
+    const auto it = mirror_sets_.find(path_);
+    return it != mirror_sets_.end() && it->second.used == frame_count_ ? &it->second : nullptr;
+}
+
+auto GLWorldView::mirror_planes(const Spatial3D& room, const Camera& eye, float aspect, Rect within) const -> std::vector<MirrorPlane> {
     // The planes said to reflect, each with where it is on the screen: a
     // thing's top face (`reflects`), the room's floor (`floor_reflects`).
-    struct Plane {
-        gl::Vec3 normal;
-        float offset = 0.0f, strength = 0.0f;
-        Rect seen{1, 1, -1, -1};
-        Key glass;
-    };
+    using Plane = MirrorPlane;
     std::vector<Plane> planes;
     const auto add = [&](const std::vector<gl::Vec3>& corners, gl::Vec3 normal, float strength, Key glass) {
         const float offset = -gl::dot(normal, corners.front());
         // (Seen from above it only: from below, a plane shows nothing.)
         if (gl::dot(normal, eye.eye) + offset <= 0.01f) return;
-        const Rect r = seen_rect(corners, eye, aspect);
+        const Rect r = seen_rect(corners, eye, aspect).cut(within);
         if (r.empty()) return;
         // (A window's glass is a mirror of its own; things on one plane share one.)
         if (!glass.empty()) {
@@ -109,13 +109,67 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
     std::sort(planes.begin(), planes.end(), [](const Plane& a, const Plane& b) {
         return (a.seen.x1 - a.seen.x0) * (a.seen.y1 - a.seen.y0) > (b.seen.x1 - b.seen.x0) * (b.seen.y1 - b.seen.y0);
     });
+    if (planes.size() > static_cast<std::size_t>(kMirrors)) planes.resize(kMirrors);
+    return planes;
+}
+
+Element GLWorldView::mirrored_eye(const Element& eye, const Camera& by, const MirrorPlane& p) {
+    // Where it is, which way it looks and which way is up, each mirrored -
+    // a turn still (the picture is turned left for right after: draw_mirrors)
+    // - said as any camera says them (yaw, pitch, roll about its look).
+    const gl::Vec3 at = by.eye - p.normal * (2.0f * (gl::dot(p.normal, by.eye) + p.offset));
+    const gl::Vec3 f = gl::normalize(mirrored(by.forward, p.normal)), u = mirrored(by.up, p.normal);
+    Element m = eye;
+    m.params.clear();
+    set_position(m, {at.x, at.y, at.z});
+    const gl::Vec3 side = gl::normalize(gl::cross(f, gl::Vec3{0, 1, 0})), up0 = gl::cross(side, f);
+    m.params.set(keys::yaw, static_cast<double>(std::atan2(f.z, f.x)));
+    m.params.set(keys::pitch, static_cast<double>(std::asin(std::clamp(f.y, -1.0f, 1.0f))));
+    m.params.set(keys::roll, static_cast<double>(std::atan2(gl::dot(u, side), gl::dot(u, up0))));
+    m.params.set(keys::fov, eye.params.num(keys::fov, 70.0));
+    return m;
+}
+
+void GLWorldView::plan_mirrors(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from) {
+    if (!q_.reflections) return;
+    const Camera by = camera_of(eye);
+    if (by.ortho > 0.0f) return;
+    std::vector<MirrorPlane>& planes = mirror_plans_[path];
+    planes = mirror_planes(world, by, aspect, seen);
+    // Each mirror's view, seen from the eye mirrored in it, where the mirror
+    // is drawn (turned left for right, as its picture is): its doorways
+    // views as any eye's, the one the eye came in by among them.
+    for (std::size_t i = 0; i < planes.size(); ++i) {
+        const Rect& r = planes[i].seen;
+        view_through(world, mirrored_eye(eye, by, planes[i]), aspect, depth, path + "~m" + std::to_string(i), Rect{-r.x1, r.y0, -r.x0, r.y1}, from,
+                     Key{}, &path, true);
+    }
+}
+
+void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect, Rect within) {
+    // (Once a frame, from the eye's own view: the views gone from sight let
+    // their mirrors go a second or so after.)
+    if (path_.empty())
+        for (auto it = mirror_sets_.begin(); it != mirror_sets_.end();)
+            it = it->second.used + 90 < frame_count_ ? mirror_sets_.erase(it) : std::next(it);
+    MirrorSet& set = mirror_sets_[path_];
+    set.used = frame_count_;
+    set.count = 0;
+    if (!q_.reflections || rooms.empty() || !rooms.front().room || eye.ortho > 0.0f) return;
+    const Spatial3D& room = *rooms.front().room;
+    // As planned with the views (whose doorways the mirrors' views go on
+    // through), or - a view drawn with none planned - found now.
+    const auto planned = mirror_plans_.find(path_);
+    const std::vector<MirrorPlane> planes = planned != mirror_plans_.end() ? planned->second : mirror_planes(room, eye, aspect, within);
     const float scale = std::clamp(q_.reflection_scale, 0.1f, 1.0f);
-    mirror_eye_vp_ = projection_of(eye, aspect, kNear, static_cast<float>(room.params().num(Key{"far"}, 120.0))) *
-                     gl::Mat4::look_at(eye.eye, eye.eye + eye.forward, eye.up);
+    const bool eyes_own = path_.empty();
+    if (eyes_own)
+        mirror_eye_vp_ = projection_of(eye, aspect, kNear, static_cast<float>(room.params().num(Key{"far"}, 120.0))) *
+                         gl::Mat4::look_at(eye.eye, eye.eye + eye.forward, eye.up);
     const int full_w = target_w_, full_h = target_h_;
-    for (const Plane& p : planes) {
-        if (mirror_count_ >= kMirrors) break;
-        Mirror& mr = mirrors_[mirror_count_];
+    for (const MirrorPlane& p : planes) {
+        if (set.count >= kMirrors) break;
+        Mirror& mr = set.at[set.count];
         // The eye mirrored in the plane; seen through it the picture is
         // turned left for right, so its part of the screen is too.
         Camera cam = eye;
@@ -135,6 +189,16 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
         for (const PlacedRoom& placed : rooms)
             if (placed.room) of = (of ^ placed.room->data_version()) * 1099511628211ULL, of = (of ^ reinterpret_cast<std::uintptr_t>(placed.room)) * 1099511628211ULL;
         of = (of ^ static_cast<uint64_t>(full_w) << 20 ^ static_cast<uint64_t>(full_h)) * 1099511628211ULL;
+        // And as the views seen through its doorways are: drawn again this
+        // frame, it shows them as they are now.
+        {
+            const std::string mine = path_ + "~m" + std::to_string(set.count) + "/";
+            for (const auto& [key, at] : slot_)
+                if (key.compare(0, mine.size(), mine) == 0 && pool_[at].frame == frame_count_) {
+                    of = (of ^ frame_count_) * 1099511628211ULL;
+                    break;
+                }
+        }
         // At a part of the screen's pixels, only where it is on the screen (a
         // few sizes, grown, never made again for a pixel) - as many pixels as
         // `reflection_scale` gives the whole screen, so a mirror that covers
@@ -154,32 +218,44 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
         }
         if (mr.of != of) {
             mr.of = of;
+            // (Drawn as a view of its own: what the view it is in is cut to -
+            // the pyramid through a doorway, the air on this side of one -
+            // is not what the mirror sees.)
             const Rect sub_was = sub_, cut_was = cut_;
             const std::string path_was = path_;
+            std::vector<spatial::HalfSpace> cull_was;
+            cull_was.swap(cull_);
+            const HostAir air_was = host_air_;
+            host_air_.on = false;
             target_w_ = w, target_h_ = h;
             sub_ = drawn;
             cut_ = Rect{-1, -1, 1, 1};
-            path_ = "~mirror" + std::to_string(mirror_count_);
+            path_ = path_was + "~m" + std::to_string(set.count);
             mirroring_ = true;
+            mirroring_eye_ = eyes_own;
             draw_world(rooms, cam, aspect, mr.target, /*depth=*/2, kNear, Key{}, above);
             mirroring_ = false;
+            mirroring_eye_ = false;
             mr.fx = vp_w_ / static_cast<float>(mr.target.width());
             mr.fy = vp_h_ / static_cast<float>(mr.target.height());
             target_w_ = full_w, target_h_ = full_h;
             sub_ = sub_was, cut_ = cut_was;
             path_ = path_was;
+            cull_.swap(cull_was);
+            host_air_ = air_was;
             mr.target.mipmap();
             ++times_.portal_views;
         }
         mr.normal = p.normal, mr.offset = p.offset, mr.strength = p.strength, mr.seen = seen, mr.glass = p.glass;
-        ++mirror_count_;
+        ++set.count;
     }
 }
 
 int GLWorldView::mirror_of(const Element& portal) const {
-    if (mirroring_) return 0;
-    for (int i = 0; i < mirror_count_; ++i)
-        if (mirrors_[i].glass == portal.id) return i + 1;
+    const MirrorSet* set = mirrors_now();
+    if (!set) return 0;
+    for (int i = 0; i < set->count; ++i)
+        if (set->at[i].glass == portal.id) return i + 1;
     return 0;
 }
 
@@ -188,13 +264,19 @@ void GLWorldView::mirror_uniforms(const gl::Program& p, bool use) {
     static const char* const kSeen[kMirrors] = {"uMirrorSeen[0]", "uMirrorSeen[1]"};
     static const char* const kUse[kMirrors] = {"uMirrorUse[0]", "uMirrorUse[1]"};
     static const char* const kPicture[kMirrors] = {"uMirror0", "uMirror1"};
-    const int n = use ? mirror_count_ : 0;
+    const MirrorSet* set = use ? mirrors_now() : nullptr;
+    const int n = set ? set->count : 0;
     p.set("uMirrorCount", n);
     for (int i = 0; i < kMirrors; ++i) p.set(kPicture[i], kMirrorUnit + i);
+    // Where each is on the screen, as the part of it this view is drawn
+    // into (sub_) has it: a view through a doorway fills its viewport with
+    // only the doorway's part of the screen.
+    const float cx = (sub_.x0 + sub_.x1) * 0.5f, cy = (sub_.y0 + sub_.y1) * 0.5f;
+    const float hx = std::max((sub_.x1 - sub_.x0) * 0.5f, 1e-6f), hy = std::max((sub_.y1 - sub_.y0) * 0.5f, 1e-6f);
     for (int i = 0; i < n; ++i) {
-        const Mirror& mr = mirrors_[i];
+        const Mirror& mr = set->at[i];
         p.set(kPlane[i], mr.normal.x, mr.normal.y, mr.normal.z, mr.offset);
-        p.set(kSeen[i], mr.seen.x0, mr.seen.y0, mr.seen.x1, mr.seen.y1);
+        p.set(kSeen[i], (mr.seen.x0 - cx) / hx, (mr.seen.y0 - cy) / hy, (mr.seen.x1 - cx) / hx, (mr.seen.y1 - cy) / hy);
         const float lods = std::floor(std::log2(static_cast<float>(std::max(mr.target.width(), mr.target.height()))));
         // (A window's glass says so by its strength's sign: read by it alone.)
         p.set(kUse[i], mr.glass.empty() ? mr.strength : -mr.strength, mr.fx, mr.fy, lods);

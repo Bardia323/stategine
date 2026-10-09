@@ -24,7 +24,10 @@ GLWorldView::Rect GLWorldView::screen_rect(const Spatial3D& world, const Element
     return Rect{std::max(r.x0, -1.0f), std::max(r.y0, -1.0f), std::min(r.x1, 1.0f), std::min(r.y1, 1.0f)};
 }
 
-void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back) {
+void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back,
+                               const std::string* parent, bool in_mirror) {
+    // The view's own mirrors, and what is seen through them.
+    if (!in_mirror) plan_mirrors(world, eye, aspect, depth, path, seen, from);
     // A doorway not drawn shows its world's air, so whether one is drawn must
     // change nothing on the screen: in air that takes all at last
     // (`uFogFull`) a view is left out only where the air has already taken
@@ -54,7 +57,7 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
         Element there = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye, there);
         const std::string key = path + "/" + e.id.str();
-        jobs_.push_back(ViewJob{key, &world, &e, eye, there, &it->second, depth, area, r});
+        jobs_.push_back(ViewJob{key, &world, &e, eye, there, &it->second, depth, area, r, parent ? *parent : path});
         // On through its doorways: on in the same world as deep as it says,
         // and into another, counted from there.
         const Element* next_back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
@@ -74,8 +77,7 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
     for (std::size_t i : order) {
         if (draw.size() >= most) break;
         const ViewJob& j = jobs_[i];
-        const std::string parent = j.key.substr(0, j.key.rfind('/'));
-        if (j.depth > 1 && !kept.count(parent)) continue;
+        if (j.depth > 1 && !kept.count(j.parent)) continue;
         kept[j.key] = true;
         draw.push_back(i);
     }
@@ -154,10 +156,12 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
         n.rect = Rect{px0 / W * 2 - 1, py0 / H * 2 - 1, px1 / W * 2 - 1, py1 / H * 2 - 1};
         n.fx = (px1 - px0) / static_cast<float>(n.target.width()), n.fy = (py1 - py0) / static_cast<float>(n.target.height());
         sub_ = n.rect;
+        // Its mirrors, from the eye carried there, where the doorway shows them.
+        const Camera there = camera_of(j.there);
+        draw_mirrors(seen(*j.wp->world), there, aspect, j.seen);
         host_air_ = air_of(*j.host);
         // As a view on the screen is: the near plane just short of the
         // doorway, and culled by the pyramid through it and its plane.
-        const Camera there = camera_of(j.there);
         const HalfSpace cut = portal_clip(*j.host, *j.portal, j.from, j.there);
         const Through way = back && !j.wp->back.empty() ? through(*j.portal, *j.wp->world, *back, there) : Through{};
         cull_ = way.sides;
@@ -296,7 +300,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         const bool fresh = wp.shown && wp.drawn == frame_count_;
         // In a mirror: the picture drawn through it this frame, where the eye
         // the mirror is seen from sees each point of it.
-        const bool in_mirror = mirroring_ && fresh && !deeper;
+        const bool in_mirror = mirroring_eye_ && fresh && !deeper;
         if (!in_mirror && ((depth > 0 && !deeper) || (depth == 0 && !fresh && !(wp.own_drawn && wp.own_out.valid())))) {
             const Mix far = mix(wp.world->id(), look_of(*wp.world));
             set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));

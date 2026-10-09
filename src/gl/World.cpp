@@ -472,6 +472,9 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // together and drawn once - the frame's best of them - before any
     // doorway's own view, which shows them.
     jobs_.clear();
+    mirror_plans_.clear();
+    // The eye's own mirrors, and what is seen through their doorways.
+    plan_mirrors(world, eye_of(world), aspect, 1, std::string(), Rect{-1, -1, 1, 1}, 0);
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"})) continue;
         if (e.params.num(Key{"own_look"}, 0.0) > 0.5) continue;
@@ -578,6 +581,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
                 while (t.roots.size() < root_pool_.size() && t.roots.size() < kRootViewsMost) make_root_view(t.roots.emplace_back(), t.w, t.h);
         }
         RootView& view = root_pool_[root_views++];
+        // Its mirrors, from the eye carried there, where the doorway shows them.
+        if (!screen && !e.params.has(Key{"ball"})) draw_mirrors(seen(*wp.world), guest_cam, aspect, screen_rect(world, e, eye_cam, aspect));
         host_air_ = air_of(world);
         // A ball onto a world is drawn only where the ball is on the
         // screen, at the screen's own pixels: a glass on a table costs what
@@ -619,7 +624,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
 
     // --- the room the viewer is actually standing in ------------------------
     path_.clear();
-    if (!root_) draw_mirrors(rooms, eye_cam, aspect);
+    draw_mirrors(rooms, eye_cam, aspect);
     draw_world(rooms, eye_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();

@@ -480,8 +480,15 @@ private:
     // (`views_deep`), counted from where it was come into (`from`), and only
     // those the view before leaves open (`seen`) - never back through the
     // doorway it was come in by (`back`): planned, for draw_views to draw
-    // this frame's best of.
-    void view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back);
+    // this frame's best of. Its mirrors are planned with it (plan_mirrors),
+    // each a view of the same world from the eye mirrored in its plane, whose
+    // doorways are views as any eye's are: what is seen in a mirror is seen
+    // as far, through as many doorways, as it would be in person. (`parent`:
+    // the view the views planned are seen in, when it is not `path` - a
+    // mirror's; `in_mirror`: a mirror's view, which plans no mirrors of its own.)
+    void view_through(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from, Key back,
+                      const std::string* parent = nullptr, bool in_mirror = false);
+    void plan_mirrors(const Spatial3D& world, const Element& eye, float aspect, int depth, const std::string& path, Rect seen, int from);
     // Of every view planned this frame, the biggest on the screen - as many
     // as the room in view says (`views_most`) - drawn before whatever shows it.
     void draw_views(const Spatial3D& world, float aspect);
@@ -1392,17 +1399,19 @@ private:
     std::unique_ptr<gl::Program> taa_prog_;
     bool taa_on() const { return q_.taa && !root_ && !output_ && !baking_ && surface_only_ == 0; }
     void run_taa();
-    // Mirrors (Quality::reflections; WorldMirrors.cpp): the planes the eye's
-    // room says reflect, a thing's top face (`reflects`) or its floor
-    // (`floor_reflects`), each with the room seen in it this frame - drawn
-    // from the eye mirrored in the plane, only what stands above it, only
-    // where the plane is on the screen, at `reflection_scale` of its pixels
-    // - or a window's glass (a doorway that `reflects`), over what is seen
-    // through it, as much as glass reflects from where it is seen -
-    // with the room's own shadow maps and light and no air, its doorways
-    // showing their worlds' air (as views too deep do); kept while nothing it
-    // shows has moved. Everything on one plane shares one. The eye's view
-    // reads it where a surface lies in the plane, blurred as it roughens.
+    // Mirrors (Quality::reflections; WorldMirrors.cpp): the planes a view's
+    // room says reflect - the eye's own, and every room seen through a
+    // doorway, however deep, from the eye carried there - a thing's top face
+    // (`reflects`) or its floor (`floor_reflects`), each with the room seen
+    // in it this frame - drawn from the eye mirrored in the plane, only what
+    // stands above it, only where the plane is on the screen, at
+    // `reflection_scale` of its pixels - or a window's glass (a doorway that
+    // `reflects`), over what is seen through it, as much as glass reflects
+    // from where it is seen - with the room's own shadow maps and light and
+    // no air, its doorways showing the views planned for the mirrored eye
+    // (plan_mirrors); kept while nothing it shows has moved. Everything on
+    // one plane shares one. The view reads it where a surface lies in the
+    // plane, blurred as it roughens.
     struct Mirror {
         gl::Vec3 normal{0, 1, 0};
         float offset = 0.0f, strength = 0.0f, fx = 1.0f, fy = 1.0f;
@@ -1413,16 +1422,44 @@ private:
     };
     static constexpr int kMirrors = 2, kMirrorUnit = 12;
     int mirror_of(const Element& portal) const;  // 1 + which mirror a window's glass reads, 0: none
-    Mirror mirrors_[kMirrors];
-    int mirror_count_ = 0;
+    // A view's mirrors, kept by the way the eye came to it (its path; the
+    // eye's own view: none), as its air is: a view seen again next frame
+    // keeps what it drew.
+    struct MirrorSet {
+        Mirror at[kMirrors];
+        int count = 0;
+        uint64_t used = 0;  // the frame they were last made good for
+    };
+    std::unordered_map<std::string, MirrorSet> mirror_sets_;
+    // The mirrors of the view being drawn (path_), if they were made for it this frame.
+    const MirrorSet* mirrors_now() const;
     bool mirroring_ = false;  // a mirror's view being drawn: it shows no mirror
+    bool mirroring_eye_ = false;  // ...and it is a mirror of the eye's own room
     // The eye a mirror is seen from, as it draws (unmoved): in a mirror, a
     // doorway shows the picture drawn through it for that eye this frame,
     // each point of it where the eye sees it - what is far off through a
     // window is the same seen from either side of a floor.
     gl::Mat4 mirror_eye_vp_ = gl::Mat4::identity();
     Rect seen_rect(const std::vector<gl::Vec3>& corners, const Camera& cam, float aspect) const;
-    void draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect);
+    // The mirrors of the view drawn next (path_), seen from `eye`, only
+    // where they are within `within` of the screen (a doorway's view: the
+    // doorway's part of it).
+    void draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect, Rect within = Rect{-1, -1, 1, 1});
+    // A plane a room says reflects, as `eye` sees it: where, how much, and
+    // where on the screen (within `within`); a window's glass says which.
+    struct MirrorPlane {
+        gl::Vec3 normal{0, 1, 0};
+        float offset = 0.0f, strength = 0.0f;
+        Rect seen{1, 1, -1, -1};
+        Key glass;
+    };
+    // The planes of `room` seen from `eye` that are drawn: the most of the
+    // screen first, as many as there are mirrors (kMirrors).
+    std::vector<MirrorPlane> mirror_planes(const Spatial3D& room, const Camera& eye, float aspect, Rect within) const;
+    // The eye mirrored in a plane, as a camera of the world it is in.
+    static Element mirrored_eye(const Element& eye, const Camera& seen_by, const MirrorPlane& p);
+    // This frame's planes, by the way the eye came to the view they are in.
+    std::unordered_map<std::string, std::vector<MirrorPlane>> mirror_plans_;
     void mirror_uniforms(const gl::Program& p, bool use);
     // A doorway's own view makes none of the pictures its frame works in and
     // throws away (lit, occlusion, glow): the view it is drawn for hands it
@@ -1627,6 +1664,7 @@ private:
         int depth;
         float area;
         Rect seen;  // its doorway's rect on the screen, cut by the views it is seen through
+        std::string parent;  // the view it is seen in (its path, or a mirror's view's)
     };
     std::vector<ViewJob> jobs_;  // this frame's views through doorways seen through doorways
     std::string path_;          // the way the eye came, while a view through doorways is drawn

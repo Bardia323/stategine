@@ -21,11 +21,14 @@ auto GLWorldView::air_for(const Spatial3D* world) -> Air& {
     // frame to frame whatever picture it is drawn into.
     std::unique_ptr<Air>& slot = airs_[{world, path_}];
     if (!slot) {
-        // Never more than a few: past that, the one asked for longest ago goes.
+        // Never more than a few beyond what this frame's views ask for: past
+        // that, the one asked for longest ago goes - never one asked for this
+        // frame (each view keeps its own, or it is gathered anew every frame).
         if (airs_.size() > kAirs) {
             auto oldest = airs_.end();
             for (auto it = airs_.begin(); it != airs_.end(); ++it)
-                if (it->second && (oldest == airs_.end() || it->second->used < oldest->second->used)) oldest = it;
+                if (it->second && it->second->used < frame_count_ && (oldest == airs_.end() || it->second->used < oldest->second->used))
+                    oldest = it;
             if (oldest != airs_.end()) airs_.erase(oldest);
         }
         slot = std::make_unique<Air>();

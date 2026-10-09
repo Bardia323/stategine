@@ -1,0 +1,9 @@
+# Three rooms in a row: the eye's, a middle one, a far one. These views are
+# presentation bindings for the graph's declared overlaps.
+extern state a
+extern state b
+extern state c
+seam a.pa <-> b.pb
+    name ab
+seam b.pc <-> c.pd
+    name bc
