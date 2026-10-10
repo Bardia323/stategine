@@ -238,6 +238,35 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     gl::glCullFace(gl::GL_BACK);
     const gl::Program& caster = *program_for(post_.shown(), passes::shadow);
     bool caster_ready = false;
+    // The light's view and side the casters are drawn with now, for a thing
+    // cut out of its picture, drawn with a program of its own.
+    gl::Mat4 caster_vp;
+    float caster_side[4] = {0, 0, 0, 1};
+    // A thin thing (`two_sided`) casts from either face, and one cut out of
+    // its picture (`cutout`) casts only where it is not cut away - a leaf's
+    // shadow, not its card's: each drawn on its own.
+    const auto cast_thin = [&](const Spatial3D& room, const Element& e) {
+        static const Key two{"two_sided"}, cutout{"cutout"};
+        const bool cut = cuts_out(e) && cut_caster_;
+        if (!cut && e.params.num(two, 0.0) <= 0.5) return false;
+        gl::glDisable(gl::GL_CULL_FACE);
+        const gl::Mat4 model = frame_matrix_ * box_matrix(room, e).m;
+        if (cut && bind_skin(room, e)) {
+            cut_caster_->use();
+            cut_caster_->set("uLightViewProj", caster_vp);
+            cut_caster_->set("uCasterSide", caster_side[0], caster_side[1], caster_side[2], caster_side[3]);
+            cut_caster_->set("uModel", model);
+            cut_caster_->set("uTex", 0);
+            cut_caster_->set("uCutout", static_cast<float>(std::clamp(e.params.num(cutout, 0.0), 0.0, 1.0)));
+            shape_of(room, e).draw();
+            caster.use();
+        } else {
+            caster.set("uModel", model);
+            shape_of(room, e).draw();
+        }
+        gl::glEnable(gl::GL_CULL_FACE);
+        return true;
+    };
     const auto draw_casters = [&](const std::vector<const Caster*>& list) {
         std::size_t room_now = rooms.size();
         for (const Caster* c : list) {
@@ -249,6 +278,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             const Spatial3D& room = *rooms[room_now].room;
             const Element& e = *c->element;
             if (e.kind == kinds::mesh || e.kind == kinds::wall) {
+                if (e.kind == kinds::mesh && cast_thin(room, e)) continue;
                 if (q_.instancing) {
                     batch(shape_of(room, e), box_matrix(room, e).m, {}, 0, 0, 0, 0, 0);
                     continue;
@@ -409,6 +439,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             maps.array.bind_layer(layer);
         }
         caster.set("uLightViewProj", light_vp[i]);
+        caster_vp = light_vp[i];
         // Light from beyond a doorway is kept out only by what stands on
         // this side of it - the room behind the opening's plane is the
         // other world's, and the light comes from there. (A hand's
@@ -416,9 +447,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (li.gated) {
             gl::glEnable(gl::GL_CLIP_DISTANCE0);
             caster.set("uCasterSide", li.gate_in.x, li.gate_in.y, li.gate_in.z, 0.08f - gl::dot(li.gate_in, li.gate_at));
+            caster_side[0] = li.gate_in.x, caster_side[1] = li.gate_in.y, caster_side[2] = li.gate_in.z;
+            caster_side[3] = 0.08f - gl::dot(li.gate_in, li.gate_at);
         } else {
             gl::glDisable(gl::GL_CLIP_DISTANCE0);
             caster.set("uCasterSide", 0.0f, 0.0f, 0.0f, 1.0f);
+            caster_side[0] = caster_side[1] = caster_side[2] = 0.0f, caster_side[3] = 1.0f;
         }
         if (!at_rest) {
             sees.clear();
@@ -798,7 +832,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);
             } else if (e.kind == kinds::mesh) {
-                if (is_sprite(e)) sprites.push_back(&e);
+                if (is_sprite(e) || cuts_out(e)) sprites.push_back(&e);
                 else if (e.params.num(glass_key, 0.0) > 0.0) glass.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
@@ -815,8 +849,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lap(3, part_at);
         flush_batches(*scene_, true);
         draw_straddlers(placed, room);
-        // Pictures cut out of their cards, together, with the program that
-        // may cut (cutout_of), set up for this room as the other is.
+        // Pictures cut out of their cards - and things cut out of their
+        // pictures (`cutout`: leaves) - together, with the program that may
+        // cut (cutout_of), set up for this room as the other is.
         if (!sprites.empty()) {
             const gl::Program* solid = scene_;
             const gl::Program* cut = cutout_of(*solid);
@@ -826,7 +861,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 frame_uniforms(*cut);
                 prepare(mix(room.id(), look_of(room)), shift, placed, room);
             }
-            for (const Element* e : sprites) draw_sprite(room, *e);
+            for (const Element* e : sprites) is_sprite(*e) ? draw_sprite(room, *e) : draw_crate(room, *e);
             sprites.clear();
             if (cut) {
                 scene_ = solid;

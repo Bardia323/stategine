@@ -175,6 +175,7 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     const float ev_weight = exposure_.weight;
     let_go_.held = true;
     pack_skins();
+    ready_worn(worlds);
     for (Spatial3D* w : worlds)
         if (w) render(*w, fb_w, fb_h);
     // And every screen's picture, through the screen's own view, whether or

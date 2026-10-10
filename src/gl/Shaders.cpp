@@ -560,6 +560,7 @@ in vec3 vObject;
 in vec3 vObjNormal;
 in vec3 vRoomNormal;
 in vec3 vTexScale;
+in vec4 vTangent;
 
 // Whether this point is seen is known before it is shaded: what stands in
 // front is never lit for nothing. (Not where a picture is cut out of its
@@ -590,7 +591,9 @@ uniform mat4  uSkinFrame;     // the room's frame to that thing's unit box
 uniform float uSkinOwn;       // 1: the frame is the mesh's own (drawn with others of its shape, each its own size)
 uniform float uSkinRelief;    // > 0: the skin's alpha is how high its paint stands, this many metres at 1 - the surface bent by it
 uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
-uniform float uCutout;        // 1: clear pixels are not drawn (a sprite)
+uniform float uCutout;        // > 0: pixels clearer than this are not drawn (a sprite at 0.5; a thing's `cutout` - a leaf on a card)
+uniform float uTwoSided;      // 1: thin, seen from either side - lit on the side it is seen from (`two_sided`)
+uniform float uTranslucent;   // and how much of a lamp's light behind it comes through (`translucent`: a leaf)
 uniform float uGlow;          // extra emission for an active interface
 uniform float uGlass;         // > 0: glass, this clear - what is behind it seen through it, more of it reflected at a glance (Fresnel)
 )" + lights_glsl() + R"(
@@ -712,6 +715,12 @@ uniform float uSurfaceMapOn;
 uniform sampler2D uNormalMap;
 uniform float uNormalMapOn;
 uniform float uNormalStrength;
+// A thing's own pictures read through its corners' uv (not a texture's cells:
+// uSkinFramed 0) are bound to the same two units: its surface map (`skin_surface`)
+// and normal map (`skin_normal`), the normal laid along its corners' u and v
+// (vTangent, or the screen's), green up its picture (-1, OpenGL's way: the uv's
+// v runs down it) or down (1, DirectX's: `normal_dx`).
+uniform float uNormalFlipY;
 uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
 uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
 
@@ -1427,6 +1436,9 @@ void main() {
     vec4 surface_at = vec4(-1.0);  // a worn texture's surface map here (occlusion, roughness, metal), if it has one
     bool mapped = false;           // its normal map says how the surface is bent here
     vec2 height_steps = vec2(0.0); // ... as its height's change across the screen (skin_height_steps)
+    bool uv_mapped = false;        // its own normal map, read through its uv, says so instead:
+    vec3 uv_normal = vec3(0.0, 0.0, 1.0);  // ... which way it faces, along its u and v and out
+    vec2 uv_here = vUV, uv_dx = vec2(0.0), uv_dy = vec2(0.0);
     if (uTexMix > 0.0) {
         vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
         vec2 on_screen = uSeenFrom > 0.5 ? seen_at.xy / seen_at.w * 0.5 + 0.5 : gl_FragCoord.xy / uViewport;
@@ -1438,8 +1450,24 @@ void main() {
         vec4 texel = framed_skin ? skin_texel(uTex) : texture(uTex, uv);
         if (framed_skin && uSurfaceMapOn > 0.5) surface_at = skin_texel(uSurfaceMap);
         if (framed_skin && uNormalMapOn > 0.5) mapped = true, height_steps = skin_height_steps();
+        if (!framed_skin) {
+            uv_here = uv, uv_dx = dFdx(uv), uv_dy = dFdy(uv);
+            if (uSurfaceMapOn > 0.5) surface_at = texture(uSurfaceMap, uv);
+            if (uNormalMapOn > 0.5) {
+                uv_normal = texture(uNormalMap, uv).xyz * 2.0 - 1.0;
+                uv_normal.y *= uNormalFlipY;
+                uv_normal.xy *= uNormalStrength;
+                uv_mapped = true;
+            }
+        }
 #ifdef SG_CUTOUT
-        if (uCutout > 0.5 && texel.a < 0.5) discard;
+        // A picture's alpha as it is seen: its mipmaps, taken down, average
+        // the leaf with the gaps round it and it would thin away with
+        // distance - so it is made the more solid the further down they are
+        // read (Golus's coverage), and a far tree keeps its leaves.
+        vec2 cut_px = uv * vec2(textureSize(uTex, 0));
+        float cut_lod = max(0.0, 0.5 * log2(max(dot(dFdx(cut_px), dFdx(cut_px)), dot(dFdy(cut_px), dFdy(cut_px)))));
+        if (uCutout > 0.0 && texel.a * (1.0 + cut_lod * 0.25) < uCutout) discard;
 #endif
         vec3 tex = uCRT > 0.0 ? crt_sample(uv) : texel.rgb;
         if (uSkinRelief > 0.0) relief_h = texel.a * uSkinRelief;
@@ -1512,7 +1540,29 @@ void main() {
 
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
+    // A thin thing seen from behind (a leaf) faces the eye there too.
+    if (uTwoSided > 0.5 && dot(n, uViewPos - vWorld) < 0.0) n = -n;
+    vec3 face_n = n;  // the surface's own, before any map bends it
     bool bent = false;  // whether relief or waves turned the normal from the surface's own
+    if (uv_mapped) {
+        // Its own normal map, laid along which way its corners' u and v run
+        // (as it was baked: MikkTSpace's ways, per corner) - or, a mesh that
+        // has none, as the screen sees them run here (Schüler's frame).
+        vec3 t, b;
+        if (dot(vTangent.xyz, vTangent.xyz) > 1e-6) {
+            t = normalize(vTangent.xyz - n * dot(n, vTangent.xyz));
+            b = cross(n, t) * (vTangent.w < 0.0 ? -1.0 : 1.0);
+        } else {
+            vec3 dpx = dFdx(vWorld), dpy = dFdy(vWorld);
+            vec3 px = cross(dpy, n), py = cross(n, dpx);
+            t = px * uv_dx.x + py * uv_dy.x;
+            b = px * uv_dx.y + py * uv_dy.y;
+            float k = inversesqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+            t *= k, b *= k;
+        }
+        n = normalize(t * uv_normal.x + b * uv_normal.y + n * max(uv_normal.z, 1e-3));
+        bent = true;
+    }
     if (mapped || relief_h >= 0.0) {
         // Bent by the paint's relief, from how its height changes across the
         // screen (Mikkelsen's surface gradient): no tangents, any projection.
@@ -1569,7 +1619,7 @@ void main() {
     vec3 r = reflect(-v, n);
     float horizon = 1.0;
     if (bent) {
-        horizon = clamp(1.0 + dot(r, normalize(vNormal)), 0.0, 1.0);
+        horizon = clamp(1.0 + dot(r, face_n), 0.0, 1.0);
         horizon *= horizon;
     }
     vec3 spec_k = multi * horizon;
@@ -1593,7 +1643,17 @@ void main() {
         float reach = light_reach(i, vLit, l);
         // A lamp that gives this point nothing - behind it, outside its cone,
         // too far - costs it nothing either.
-        if (reach <= 1e-5 || dot(n, l) <= 0.0) continue;
+        if (reach <= 1e-5 || (dot(n, l) <= 0.0 && uTranslucent <= 0.0)) continue;
+        if (dot(n, l) <= 0.0) {
+            // A leaf lit from behind: as much of it as comes through, scattered
+            // - shadowed as its far side is.
+            float through = -dot(n, l) * uTranslucent;
+            if (i < uShadowCount && uLightLayer[i] > -0.5 && !let_in)
+                through *= shadow_cascade(i, -n, l, uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i]);
+            if (uLightIndirect[i] > 0.5) bounced += diffuse * through * uLightColor[i] * reach;
+            else direct += diffuse * through * uLightColor[i] * reach;
+            continue;
+        }
         vec3 h = normalize(l + v);
 
         float ndl = max(dot(n, l), 0.0);

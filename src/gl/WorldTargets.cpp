@@ -16,6 +16,9 @@ void GLWorldView::ensure_resources() {
     const bool was = preparing_;
     preparing_ = true;  // the built-ins are never late
     for (Key p : passes::all()) program_for(standard_, p);
+    std::string cut_error;
+    cut_caster_ = shared_program(gl::depth_cut_vs(), gl::depth_cut_fs(), "cut caster", cut_error);
+    if (!cut_caster_) std::fprintf(stderr, "! the caster for things cut out of their pictures does not build: %s\n", cut_error.c_str());
     preparing_ = was;
     cube_.create(gl::cube_vertices());
     cylinder_.create(gl::cylinder_vertices());

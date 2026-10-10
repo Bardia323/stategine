@@ -45,7 +45,7 @@ using Read = std::vector<std::pair<std::string, Digest>>;
 
 std::string to_bytes(const sculpt::Model& m, const Read& read) {
     std::string s;
-    put<uint32_t>(s, 7);
+    put<uint32_t>(s, 8);
     put_text(s, m.errors);
     for (double v : {m.lo.x, m.lo.y, m.lo.z, m.hi.x, m.hi.y, m.hi.z}) put(s, v);
     put<uint64_t>(s, m.triangles);
@@ -53,6 +53,9 @@ std::string to_bytes(const sculpt::Model& m, const Read& read) {
     for (const sculpt::Part& p : m.parts) {
         put_text(s, p.material);
         put_text(s, p.texture);
+        put_text(s, p.normal_texture);
+        put_text(s, p.surface_texture);
+        put<uint32_t>(s, p.cutout ? 1 : 0);
         put_text(s, p.joint);
         put<uint64_t>(s, p.corners.size());
         put_bytes(s, p.corners.data(), p.corners.size() * sizeof(float));
@@ -108,7 +111,7 @@ struct Reader {
 };
 bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     Reader r{s};
-    if (r.get<uint32_t>() != 7) return false;
+    if (r.get<uint32_t>() != 8) return false;
     m.errors = r.text();
     double v[6];
     for (double& d : v) d = r.get<double>();
@@ -120,6 +123,9 @@ bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     for (sculpt::Part& p : m.parts) {
         p.material = r.text();
         p.texture = r.text();
+        p.normal_texture = r.text();
+        p.surface_texture = r.text();
+        p.cutout = r.get<uint32_t>() != 0;
         p.joint = r.text();
         const uint64_t n = r.get<uint64_t>();
         if (!r.ok || n > (s.size() - r.at) / sizeof(float)) return false;

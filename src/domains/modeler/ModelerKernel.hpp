@@ -177,8 +177,16 @@ struct Obj {
     bool ok = false;
 };
 Obj read_obj(const std::string& text);
-// A material library (.mtl): each material's picture (`map_Kd`), as written.
-std::map<std::string, std::string> read_mtl(const std::string& text);
+// A material library (.mtl): each material's pictures, as written - its
+// colour (`map_Kd`), its normal map (`norm`, or `map_Bump` / `bump`, as
+// exporters write a normal map there), its surface map (`map_ORM`: red
+// occlusion, green roughness, blue metal) - and whether its colour's alpha
+// cuts it out (`map_d`: leaves on cards).
+struct MtlMaps {
+    std::string colour, normal, surface;
+    bool cutout = false;
+};
+std::map<std::string, MtlMaps> read_mtl(const std::string& text);
 
 // --- growing ---------------------------------------------------------------------
 // A plant grown from an L-system (ModelerGrow.cpp): the axiom rewritten by its
