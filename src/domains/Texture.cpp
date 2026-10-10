@@ -1,3 +1,4 @@
+#include <chrono>
 #include "sg/domains/Texture.hpp"
 
 #include <algorithm>
@@ -358,8 +359,21 @@ bool Texture::stale() {
     // Its grid, and its files' stamps - looked at once each time it is
     // brought up to date, never as it is drawn.
     fit();
-    seen_ = look();
-    return map().params.stamp() != painted_stamp_ || seen_ != painted_files_;
+    // Its files' stamps read again when its settings move (another file
+    // named), and otherwise at most about once a second - each texture at a
+    // moment of its own, so they are not all read in one frame. A stamp read
+    // is a question to the file system (a tenth of a millisecond on some),
+    // and a room wears hundreds of textures: read for every frame it is
+    // drawn, that was most of a frame. A file changed from outside is seen
+    // within the second.
+    const uint64_t settings = map().params.stamp();
+    const auto now = std::chrono::steady_clock::now();
+    if (settings != looked_stamp_ || now >= next_look_) {
+        seen_ = look();
+        looked_stamp_ = settings;
+        next_look_ = now + std::chrono::milliseconds(800 + static_cast<int>((reinterpret_cast<std::uintptr_t>(this) >> 4) % 400));
+    }
+    return settings != painted_stamp_ || seen_ != painted_files_;
 }
 
 void Texture::paint() {

@@ -34,6 +34,7 @@ const Setting kSettings[] = {
     {"bloom_threshold", nullptr, &Quality::bloom_threshold, nullptr, "how bright a thing must be to glow (the default look's)"},
     {"exposure", nullptr, &Quality::exposure, nullptr, "how bright the picture is made (the default look's)"},
     {"instancing", nullptr, nullptr, &Quality::instancing, "things of one shape drawn together (true/false)"},
+    {"pixel", &Quality::pixel, nullptr, nullptr, "how many of the screen's pixels, each way, a pixel of the picture takes (1: the screen's own; 2, 3: an older day's)"},
     {"pack", nullptr, nullptr, &Quality::pack, "what things wear sent to the card packed, a quarter of the memory (true/false)"},
 };
 std::string trimmed(const std::string& s) {
@@ -128,6 +129,7 @@ Quality kept_to_bounds(Quality q) {
     q.bloom_threshold = std::clamp(q.bloom_threshold, 0.0f, 16.0f);
     q.exposure = std::clamp(q.exposure, 0.05f, 16.0f);
     q.reflection_scale = std::clamp(q.reflection_scale, 0.1f, 1.0f);
+    q.pixel = std::clamp(q.pixel, 1, 8);
     return q;
 }
 

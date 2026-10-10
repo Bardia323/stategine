@@ -223,6 +223,8 @@ public:
 
     // Resolve depth too: a multisampled target's depth into a plain one's.
     void blit_depth_to(const RenderTarget& dst) const;
+    // Laid on the window's own picture, `w` x `h`, each pixel a square.
+    void blit_to_screen(int w, int h) const;
 
     void bind_depth(int unit) const;
 

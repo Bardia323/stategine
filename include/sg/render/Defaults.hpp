@@ -34,6 +34,11 @@ struct Quality {
     // or so a polished floor, 1 a mirror; a window's glass as glass does).
     bool reflections=true;
     float reflection_scale=0.5f;
+    // How many of the screen's pixels, each way, one pixel of the picture
+    // takes: the view drawn at a part of the screen's size and laid on it
+    // whole, each of its pixels a hard-edged square (1: the screen's own).
+    // The look of a game of an older day - and a ninth of the shading at 3.
+    int pixel=1;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

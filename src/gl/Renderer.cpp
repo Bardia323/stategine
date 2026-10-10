@@ -356,6 +356,14 @@ void RenderTarget::blit_to(const RenderTarget& dst) const {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void RenderTarget::blit_to_screen(int w, int h) const {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, w, h);
+}
+
 void RenderTarget::blit_depth_to(const RenderTarget& dst) const {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);

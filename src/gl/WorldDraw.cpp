@@ -215,14 +215,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // goes where the eye goes keeps a set for each view.
     // (Which lights, not where they are this moment - a sun goes round with
     // the day; whether each map still holds is its own signature's to say.)
-    uint64_t lit = 1469598103934665603ULL ^ layers;
+    // (One set for a world, whichever of its lamps and of the lamps let in
+    // by its doorways cast now: each light's maps are found in it where they
+    // were laid - below - so a lamp come into sight through a doorway, or
+    // gone, costs its own map, never the room's every map again.)
+    uint64_t lit = 1469598103934665603ULL;
     bool follows_eye = false;
     for (std::size_t i = 0; i < layers; ++i) {
         const Light& l = lights[layer_light[i]];
-        lit = mix_bits(lit, l.sun ? 1.0f : l.gated ? 2.0f : 3.0f);
-        // (By the doorway it comes in by, not where that is: a doorway that
-        // moves - on a planet in its orbit - keeps its maps.)
-        if (l.gated) lit = (lit ^ l.gate) * 1099511628211ULL;
         follows_eye = follows_eye || (l.sun && !l.pinned) || near_of[layer_light[i]] >= 0.0f;
     }
     // (A view is the way the eye came to it - its path, the same from frame
@@ -236,6 +236,103 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // texel stands for them, never a set of full maps a room for nothing.
     const bool lightless = surface_only_ != 0;
     ShadowSet& maps = lightless ? lightless_maps_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
+    // Each light's maps in the layers they were last laid in, where they
+    // still hold (the same light, the same box): lights that come in another
+    // order - one more let in by a doorway, one gone - keep theirs, and only
+    // a light not laid before takes a layer of its own, the one used longest
+    // ago. (A lamp with no cone keeps its six together.)
+    std::array<bool, kShadowMaps> in_use{};
+    if (!lightless && layers > 0) {
+        std::array<uint64_t, kShadowMaps> want{};
+        std::array<bool, kShadowMaps> near_layer{};
+        for (std::size_t j = 0; j < layers; ++j) {
+            const Light& l = lights[layer_light[j]];
+            near_layer[j] = near_of[layer_light[j]] == static_cast<float>(j);
+            uint64_t id = fnv(fnv(fnv(l.sun ? 1 : 2, l.gate), near_layer[j] ? 1 : 0), l.sun ? 0 : 1);
+            if (layer_face[j] >= 0) id = fnv(id, static_cast<uint64_t>(layer_face[j]) + 7);
+            want[j] = id;
+        }
+        struct Block {
+            std::size_t from, size, to;
+        };
+        std::vector<Block> blocks;
+        for (std::size_t j = 0; j < layers;) {
+            std::size_t k = j + 1;
+            if (layer_face[j] >= 0)
+                while (k < layers && layer_light[k] == layer_light[j] && layer_face[k] >= 0) ++k;
+            blocks.push_back({j, k - j, kShadowMaps});
+            j = k;
+        }
+        std::array<bool, kShadowMaps> taken{};
+        const auto holds = [&](std::size_t s, const Block& b) {
+            if (s + b.size > kShadowMaps) return false;
+            for (std::size_t f = 0; f < b.size; ++f)
+                if (taken[s + f] || maps.sig[s + f] == 0 || maps.ident[s + f] != want[b.from + f] ||
+                    std::memcmp(maps.vp[s + f].m, light_vp[b.from + f].m, sizeof light_vp[0].m) != 0)
+                    return false;
+            return true;
+        };
+        for (Block& b : blocks)
+            for (std::size_t s = 0; s + b.size <= kShadowMaps; ++s)
+                if (holds(s, b)) {
+                    b.to = s;
+                    for (std::size_t f = 0; f < b.size; ++f) taken[s + f] = true;
+                    break;
+                }
+        // The rest where nothing wanted now was laid, used longest ago -
+        // within the layers there are, before any more are made.
+        const std::size_t have = maps.array.valid() && maps.array.size() == shadow_px ? static_cast<std::size_t>(maps.array.layers()) : 0;
+        bool fits = true;
+        for (Block& b : blocks) {
+            if (b.to != kShadowMaps) continue;
+            std::size_t best = kShadowMaps;
+            uint64_t best_age = ~uint64_t{0};
+            bool best_inside = false;
+            for (std::size_t s = 0; s + b.size <= kShadowMaps; ++s) {
+                bool free = true;
+                uint64_t age = 0;
+                for (std::size_t f = 0; f < b.size && free; ++f) free = !taken[s + f], age = std::max(age, maps.held[s + f]);
+                if (!free) continue;
+                const bool inside = s + b.size <= have;
+                if (best == kShadowMaps || (inside && !best_inside) || (inside == best_inside && age < best_age))
+                    best = s, best_age = age, best_inside = inside;
+            }
+            if (best == kShadowMaps) {
+                fits = false;
+                break;
+            }
+            b.to = best;
+            for (std::size_t f = 0; f < b.size; ++f) taken[best + f] = true;
+        }
+        if (fits) {
+            gl::Mat4 vp_at[kShadowMaps];
+            float bias_at[kShadowMaps];
+            std::fill(bias_at, bias_at + kShadowMaps, 1.0f);
+            std::array<std::size_t, kShadowMaps> light_at{};
+            std::array<int, kShadowMaps> face_at{};
+            face_at.fill(-1);
+            std::size_t top = 0;
+            for (const Block& b : blocks) {
+                for (std::size_t f = 0; f < b.size; ++f) {
+                    const std::size_t s = b.to + f, j = b.from + f;
+                    vp_at[s] = light_vp[j], bias_at[s] = bias[j], light_at[s] = layer_light[j], face_at[s] = layer_face[j];
+                    in_use[s] = true;
+                    top = std::max(top, s + 1);
+                }
+                const std::size_t li = layer_light[b.from];
+                if (near_layer[b.from]) near_of[li] = static_cast<float>(b.to);
+                else first_layer[li] = static_cast<float>(b.to);
+            }
+            std::copy(vp_at, vp_at + kShadowMaps, light_vp);
+            std::copy(bias_at, bias_at + kShadowMaps, bias);
+            layer_light = light_at, layer_face = face_at;
+            layers = top;
+        } else {
+            for (std::size_t j = 0; j < layers; ++j) in_use[j] = true;
+        }
+        for (std::size_t s = 0; s < layers; ++s)
+            if (in_use[s]) maps.held[s] = frame_count_;
+    }
     if (lightless ? maps.array.ensure(1, 1) : fit_shadows(maps.array, shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
     // Which rooms' casters these maps are laid from (their lists, and where
     // each room stands, which is part of the key of each).
@@ -336,6 +433,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     for (std::size_t n = 0; n < layers; ++n) order[n] = (n + frame_count_) % layers;
     if (depth >= 1 && layers > 1) {
         const auto far_of = [&](std::size_t k) {
+            if (!in_use[k]) return 1e30f;
             const Light& l = lights[layer_light[k]];
             if (l.sun) return 0.0f;
             const gl::Vec3 d = l.pos - cam.eye;
@@ -357,6 +455,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     };
     for (std::size_t n = 0; n < (lightless ? 0 : layers); ++n) {
         const std::size_t i = order[n];
+        if (!in_use[i]) continue;  // (a layer kept for a light not lit now)
         const Light& li = lights[layer_light[i]];
         // Which light this layer holds now, as far as a depth map goes: a map
         // is that light's, and one that was another's (the lights came in

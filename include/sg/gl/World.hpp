@@ -181,6 +181,7 @@ public:
         int shadow_casters = 0;        // and the casters they were drawn with, summed
         double signature = 0;          // ms spent seeing whether anything that casts has moved
         double lights_ms = 0, layers_ms = 0;
+        double mirrors_ms = 0;  // the eye's own mirrors (and what their pictures took)
         double part[6] = {};
         // Work a frame did that a still world needs only once: lights read,
         // casters listed, visibility indices built, a look's uniforms found by
@@ -477,7 +478,7 @@ private:
         // `own_look`: the far side drawn whole, in its own look, from the
         // carried eye - as it will be seen once through (its picture, and
         // the view that draws it).
-        std::unique_ptr<GLWorldView> own;
+        GLWorldView* own = nullptr;  // (own_views_'s, for its world)
         gl::RenderTarget own_out;
         bool own_drawn = false;
     };
@@ -527,7 +528,7 @@ private:
     // so (`closed`, carried there from whatever hangs in it) and the eye is
     // not in the doorway's own thickness - walking through a shut leaf, what
     // is beyond is what is seen.
-    static bool shut_to(const Element& portal, const Vec3d& eye);
+    bool shut_to(const Element& portal, const Vec3d& eye) const;
     // How far either side of its plane a doorway is a wall's thickness.
     static double slab_of(const Element& portal);
     // A view through the doorway `portal`, seen on its far side through
@@ -1288,6 +1289,7 @@ private:
         bool base[kShadowMaps] = {};  // `still` holds what stands still, for this map
         int mrect[kShadowMaps][4] = {};  // the pixels of the map what moves was drawn on
         uint32_t waits[kShadowMaps] = {};  // frames each has stood out of date
+        uint64_t held[kShadowMaps] = {};   // the frame a light last had its map in each layer
         uint64_t used = 0;  // the frame a view last asked for it
         void forget();  // every map to be laid again
     };
@@ -1502,6 +1504,12 @@ private:
         uint64_t used = 0;  // the frame they were last made good for
     };
     std::unordered_map<std::string, MirrorSet> mirror_sets_;
+    // Mirrors' pictures not in use: a view gone from sight gives its back,
+    // and a view come into sight takes one - never makes one in the middle
+    // of a frame (tens of milliseconds, the first time a polished floor is
+    // seen through a doorway). `warm` leaves a few ready.
+    std::vector<gl::RenderTarget> mirror_spares_;
+    static constexpr std::size_t kMirrorSpares = 6;
     // The mirrors of the view being drawn (path_), if they were made for it this frame.
     const MirrorSet* mirrors_now() const;
     bool mirroring_ = false;  // a mirror's view being drawn: it shows no mirror
@@ -1538,10 +1546,23 @@ private:
     // in them only after. (Its scene and depth it keeps: a still view is
     // developed again from them, not drawn again.)
     bool scratch_lent_ = false;
+    bool warming_ = false;  // `warm` is drawing: doorways shut now are seen through
+    // The views that draw a far world whole in its own look (`own_look`
+    // doorways): one for each such world, however many doorways show it -
+    // a view is a renderer of its own (its programs, its targets), and made
+    // the first time a doorway onto it came into sight it stopped the frame
+    // for a tenth of a second. Made by `warm`, before anything is walked.
+    std::unordered_map<const Spatial3D*, std::unique_ptr<GLWorldView>> own_views_;
+    GLWorldView& own_view_of(const Spatial3D* world);
+    void draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h);
     void trade_scratch(GLWorldView& with);
     void make_scratch(int w, int h);
     // Where the composite writes: the screen, or a feed's picture.
     const gl::RenderTarget* output_ = nullptr;
+    // The picture at a part of the screen's size (Quality::pixel), laid on
+    // the screen whole.
+    gl::RenderTarget pixel_out_;
+    std::unique_ptr<gl::Program> pixel_prog_;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
     // Seen through a window or doorway by another view: its film is the
     // viewer's, laid over the whole picture - its own grain would be a second

@@ -7,6 +7,7 @@
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 
@@ -147,11 +148,24 @@ void GLWorldView::plan_mirrors(const Spatial3D& world, const Element& eye, float
 }
 
 void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camera& eye, float aspect, Rect within) {
+    const auto from = std::chrono::steady_clock::now();
+    struct Spent {
+        FrameTimes& t;
+        std::chrono::steady_clock::time_point at;
+        ~Spent() { t.mirrors_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - at).count(); }
+    } spent{times_, from};
     // (Once a frame, from the eye's own view: the views gone from sight let
     // their mirrors go a second or so after.)
     if (path_.empty())
-        for (auto it = mirror_sets_.begin(); it != mirror_sets_.end();)
-            it = it->second.used + 90 < frame_count_ ? mirror_sets_.erase(it) : std::next(it);
+        for (auto it = mirror_sets_.begin(); it != mirror_sets_.end();) {
+            if (it->second.used + 90 >= frame_count_) {
+                ++it;
+                continue;
+            }
+            for (Mirror& m : it->second.at)
+                if (m.target.valid()) mirror_spares_.push_back(std::move(m.target));
+            it = mirror_sets_.erase(it);
+        }
     MirrorSet& set = mirror_sets_[path_];
     set.used = frame_count_;
     set.count = 0;
@@ -211,9 +225,23 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
         const int need_w = std::max(1, static_cast<int>(std::ceil(w * (seen.x1 - seen.x0) * 0.5f))),
                   need_h = std::max(1, static_cast<int>(std::ceil(h * (seen.y1 - seen.y0) * 0.5f)));
         const auto step = [](int v, int most) { return std::min(most, (v + 127) / 128 * 128); };
+        // (Made once at the most it could take - the screen's pixels - never
+        // grown as a mirror comes further into sight: a target made in the
+        // middle of a frame stops it for tens of milliseconds.)
         if (!mr.target.valid() || mr.target.width() < need_w || mr.target.height() < need_h) {
-            mr.target.create(std::max(step(need_w, w), mr.target.valid() ? mr.target.width() : 0),
-                             std::max(step(need_h, h), mr.target.valid() ? mr.target.height() : 0), gl::GL_RGBA16F, 0, true);
+            for (std::size_t k = 0; k < mirror_spares_.size(); ++k)
+                if (mirror_spares_[k].width() >= std::max(need_w, full_w) && mirror_spares_[k].height() >= std::max(need_h, full_h)) {
+                    gl::RenderTarget took = std::move(mirror_spares_[k]);
+                    mirror_spares_.erase(mirror_spares_.begin() + static_cast<std::ptrdiff_t>(k));
+                    if (mr.target.valid()) mirror_spares_.push_back(std::move(mr.target));
+                    mr.target = std::move(took);
+                    mr.of = 0;
+                    break;
+                }
+        }
+        if (!mr.target.valid() || mr.target.width() < need_w || mr.target.height() < need_h) {
+            mr.target.create(std::max({step(need_w, w), full_w, mr.target.valid() ? mr.target.width() : 0}),
+                             std::max({step(need_h, h), full_h, mr.target.valid() ? mr.target.height() : 0}), gl::GL_RGBA16F, 0, true);
             mr.of = 0;
         }
         if (mr.of != of) {

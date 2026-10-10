@@ -72,8 +72,11 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         std::ofstream(f, std::ios::trunc) << "blue";
         fs::last_write_time(f, fs::last_write_time(f) + std::chrono::seconds(2));
+        // (Its files' stamps are read at most about once a second, not as
+        // it is drawn: the change is seen within that.)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1300));
         t.raster();
-        check(t.pixel(5, 5)[2] == 255 && t.pixel(5, 5)[0] == 0, "painted again outside, it follows the file");
+        check(t.pixel(5, 5)[2] == 255 && t.pixel(5, 5)[0] == 0, "painted again outside, it follows the file - within the second");
         fs::remove(f);
         sg::Texture::set_reader({});
     }

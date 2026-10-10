@@ -61,6 +61,7 @@
 // in other textures.
 #pragma once
 
+#include <chrono>
 #include <array>
 #include <functional>
 #include <string>
@@ -162,6 +163,9 @@ private:
 
     uint64_t painted_stamp_ = ~uint64_t{0};
     Stamps painted_files_{}, seen_{};
+    // When its files' stamps were last read, and what its settings were then.
+    uint64_t looked_stamp_ = ~uint64_t{0};
+    std::chrono::steady_clock::time_point next_look_{};
     bool keyed_ = false;
     std::vector<unsigned char> surface_px_;
     uint64_t surface_made_ = ~uint64_t{0}, surface_revision_ = 0;

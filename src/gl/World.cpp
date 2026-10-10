@@ -179,12 +179,70 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     const bool ev_known = exposure_.known, ev_settle = exposure_.settle;
     const float ev_weight = exposure_.weight;
     let_go_.held = true;
+    warming_ = true;
     ready_skins();
     ready_worn(worlds);
     for (Spatial3D* w : worlds)
         if (w) {
             render(*w, fb_w, fb_h);
             gl::answer();
+        }
+    // And each world from just inside each doorway walked through it,
+    // looking through - an eye of warming's own; the world is not touched:
+    // the shadow maps of its lamps and of the lamps let in by its doorways,
+    // the views beyond and their air, laid now, never the first time someone
+    // walks up to the doorway (a tenth of a second's stop at a threshold).
+    for (Spatial3D* w : worlds) {
+        if (!w) continue;
+        for (const Element& e : w->elements()) {
+            if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"}) ||
+                e.params.num(Key{"walk"}, 1.0) <= 0.5 || !worlds_.count(e.id))
+                continue;
+            const Vec3d at = world_position(*w, e), n = heading(e.params.num(keys::yaw));
+            for (double side : {1.0, -1.0}) {
+                const Vec3d from{at.x + n.x * 1.6 * side, at.y + 0.55, at.z + n.z * 1.6 * side};
+                if (!opens_from(e, from)) continue;
+                Element eye = w->camera();
+                for (const Key& k : {Key{"stand_w"}, Key{"stand_x"}, Key{"stand_y"}, Key{"stand_z"}}) eye.params.erase(k);
+                eye.params.set(keys::x, from.x).set(keys::y, from.y).set(keys::z, from.z);
+                eye.params.set(keys::yaw, std::atan2(at.z - from.z, at.x - from.x)).set(keys::pitch, 0.0);
+                eye_override_ = &eye;
+                render(*w, fb_w, fb_h);
+                // And turned round, into the room, a little down: its
+                // mirrors (a polished floor) and what they show.
+                eye.params.set(keys::yaw, std::atan2(from.z - at.z, from.x - at.x)).set(keys::pitch, -0.3);
+                render(*w, fb_w, fb_h);
+                eye_override_ = nullptr;
+                gl::answer();
+                break;
+            }
+        }
+    }
+    // And the views of the worlds seen whole through `own_look` doorways
+    // (a city out of a window), each drawn once from the world's own eye:
+    // made now, not when the window first comes into sight.
+    for (Spatial3D* w : worlds)
+        if (w)
+            for (const Element& e : w->elements()) {
+                if (e.kind != kinds::portal || !e.alive || e.params.num(Key{"own_look"}, 0.0) <= 0.5) continue;
+                auto it = worlds_.find(e.id);
+                if (it == worlds_.end() || !it->second.world) continue;
+                Element eye = it->second.world->camera();
+                draw_own(*w, e, it->second, eye, fb_w, fb_h);
+                gl::answer();
+            }
+    // And mirrors' pictures ready for the views that will show a mirror,
+    // if any world drawn has one: made now, not as one comes into sight.
+    if (!mirror_sets_.empty())
+        while (mirror_spares_.size() < kMirrorSpares) {
+            gl::RenderTarget t;
+            t.create(target_w_, target_h_, gl::GL_RGBA16F, 0, true);
+            // (Drawn into once: a card makes a picture's memory only when
+            // it is first used.)
+            t.bind();
+            gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+            t.mipmap();
+            mirror_spares_.push_back(std::move(t));
         }
     // And every screen's picture, through the screen's own view, whether or
     // not it was in sight from any of those eyes: a painting or a set first
@@ -202,6 +260,7 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     exposure_.weight = ev_weight;
     exposure_.asked[0] = exposure_.asked[1] = false;
     let_go_.held = false;
+    warming_ = false;
 }
 
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
@@ -251,13 +310,85 @@ void GLWorldView::set_quality(const GLQuality& to) {
             q.shadow_size = std::min(q_.shadow_size, 1024);
             f.view->set_quality(q);
         }
-    for (auto& [id, wp] : worlds_)
-        if (wp.own) wp.own->set_quality(q_);
+    for (auto& [w, own] : own_views_)
+        if (own) own->set_quality(q_);
     for (auto* v : {&baker_, &lamp_seer_, &sun_seer_})
         if (*v) (*v)->set_quality(q_);
 }
 
+GLWorldView& GLWorldView::own_view_of(const Spatial3D* world) {
+    std::unique_ptr<GLWorldView>& v = own_views_[world];
+    if (!v) {
+        v = std::make_unique<GLWorldView>(q_);
+        v->set_fixed_step(fixed_step_);
+        v->scratch_lent_ = true;
+    }
+    return *v;
+}
+
+void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h) {
+    wp.own = &own_view_of(wp.world);
+    if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
+        wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
+    wp.own->graph_ = graph_;
+    wp.own->root_ = root_ ? root_ : this;
+    wp.own->output_ = &wp.own_out;
+    wp.own->eye_override_ = &eye;
+    wp.own->film_of_viewer_ = true;
+    wp.own->lent_scene_ = &scene_ms();
+    // Cut as any view through a doorway is: nothing between the
+    // carried eye and the far doorway, and that doorway's own view
+    // left out - right at the threshold the eye stands in its frame.
+    const Element* own_back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
+    wp.own->own_clips_ = {far_side(world, e, eye)};
+    wp.own->own_skip_ = own_back ? own_back->id.key() : Key{};
+    // (Its working pictures, this view's, lent while it is drawn:
+    // the same size - both are the screen's.)
+    const bool lend = target_w_ == fb_w && target_h_ == fb_h;
+    if (lend) wp.own->trade_scratch(*this);
+    else if (wp.own->scratch_lent_) wp.own->scratch_lent_ = false, wp.own->make_scratch(fb_w, fb_h);
+    // (Moved as this view is: it is shown at the screen's pixels.)
+    wp.own->jitter_x_ = jitter_x_, wp.own->jitter_y_ = jitter_y_;
+    wp.own->render(*wp.world, fb_w, fb_h);
+    if (lend) wp.own->trade_scratch(*this);
+    wp.own->lent_scene_ = nullptr;
+    wp.own->own_clips_.clear();
+    wp.own->own_skip_ = Key{};
+    wp.own->output_ = nullptr;
+    wp.own->eye_override_ = nullptr;
+}
+
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    // Drawn at a part of the screen's size, and laid on it in squares: the
+    // eye's own view only (a view drawn for another is that one's size).
+    if (q_.pixel > 1 && !root_ && !output_ && !baking_ && surface_only_ == 0 && fb_w > 0 && fb_h > 0) {
+        const int w = std::max(1, (fb_w + q_.pixel / 2) / q_.pixel), h = std::max(1, (fb_h + q_.pixel / 2) / q_.pixel);
+        if (!pixel_out_.valid() || pixel_out_.width() != w || pixel_out_.height() != h) pixel_out_.create(w, h, gl::GL_RGBA8, 0, false);
+        output_ = &pixel_out_;
+        render(requested, w, h);
+        output_ = nullptr;
+        // Laid on the screen in squares (drawn, not copied: the window's
+        // own picture may be of several samples, which no copy scales into).
+        if (!pixel_prog_)
+            pixel_prog_ = std::make_unique<gl::Program>(gl::post_vs(), R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uPicture;
+void main() {
+    ivec2 size = textureSize(uPicture, 0);
+    FragColor = texelFetch(uPicture, clamp(ivec2(vUV * vec2(size)), ivec2(0), size - 1), 0);
+}
+)", "pixel");
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+        gl::glViewport(0, 0, fb_w, fb_h);
+        gl::glDisable(gl::GL_DEPTH_TEST);
+        gl::glDisable(gl::GL_BLEND);
+        pixel_prog_->use();
+        pixel_out_.bind_color(0);
+        pixel_prog_->set("uPicture", 0);
+        screen_.draw();
+        return;
+    }
     let_go_.now();
     // How things are drawn, as the state that says so says now.
     if (graphics_ && graphics_->stamp() != graphics_stamp_) {
@@ -530,39 +661,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             // composite too - from the carried eye, at the size of the
             // screen: what is seen through the doorway is what will be
             // seen once through it, pixel for pixel.
-            if (!wp.own) {
-                wp.own = std::make_unique<GLWorldView>(q_);
-                wp.own->set_fixed_step(fixed_step_);
-                wp.own->scratch_lent_ = true;
-            }
-            if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
-                wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
-            wp.own->graph_ = graph_;
-            wp.own->root_ = root_ ? root_ : this;
-            wp.own->output_ = &wp.own_out;
-            wp.own->eye_override_ = &eye;
-            wp.own->film_of_viewer_ = true;
-            wp.own->lent_scene_ = &scene_ms();
-            // Cut as any view through a doorway is: nothing between the
-            // carried eye and the far doorway, and that doorway's own view
-            // left out - right at the threshold the eye stands in its frame.
-            const Element* own_back = !wp.back.empty() ? wp.world->find(wp.back) : back_portal(*wp.world, world);
-            wp.own->own_clips_ = {far_side(world, e, eye)};
-            wp.own->own_skip_ = own_back ? own_back->id.key() : Key{};
-            // (Its working pictures, this view's, lent while it is drawn:
-            // the same size - both are the screen's.)
-            const bool lend = target_w_ == fb_w && target_h_ == fb_h;
-            if (lend) wp.own->trade_scratch(*this);
-            else if (wp.own->scratch_lent_) wp.own->scratch_lent_ = false, wp.own->make_scratch(fb_w, fb_h);
-            // (Moved as this view is: it is shown at the screen's pixels.)
-            wp.own->jitter_x_ = jitter_x_, wp.own->jitter_y_ = jitter_y_;
-            wp.own->render(*wp.world, fb_w, fb_h);
-            if (lend) wp.own->trade_scratch(*this);
-            wp.own->lent_scene_ = nullptr;
-            wp.own->own_clips_.clear();
-            wp.own->own_skip_ = Key{};
-            wp.own->output_ = nullptr;
-            wp.own->eye_override_ = nullptr;
+            draw_own(world, e, wp, eye, fb_w, fb_h);
             wp.own_drawn = true;
             own_shown_now_.push_back(wp.world);
             ++times_.portal_views;
