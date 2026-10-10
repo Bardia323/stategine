@@ -123,6 +123,25 @@ long long stamp_of(const std::string& path) {
 
 int to_byte(double c) { return static_cast<int>(std::lround(std::clamp(c, 0.0, 1.0) * 255.0)); }
 
+// A picture file (`lw` x `lh`, RGBA) laid over `px` (`W` x `H`, cells of `c`
+// pixels): stretched over the whole of it, or - `per_cell` - whole in every
+// cell, as one tile of a material is. Each pixel goes as far toward it as its
+// alpha times `mix` says; `flip_green` turns a DirectX normal map's green.
+void lay_over(std::vector<unsigned char>& px, int W, int H, int c, const std::vector<unsigned char>& over, int lw, int lh, bool per_cell,
+              double mix, bool flip_green = false) {
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const int sx = per_cell ? (x % c) * lw / c : x * lw / W, sy = per_cell ? (y % c) * lh / c : y * lh / H;
+            const unsigned char* l = &over[(static_cast<std::size_t>(sy) * lw + static_cast<std::size_t>(sx)) * 4];
+            const double a = l[3] / 255.0 * mix;
+            unsigned char* p = &px[(static_cast<std::size_t>(y) * W + x) * 4];
+            for (int k = 0; k < 3; ++k) {
+                const int to = k == 1 && flip_green ? 255 - l[k] : l[k];
+                p[k] = static_cast<unsigned char>(std::lround(p[k] + (to - p[k]) * a));
+            }
+        }
+}
+
 }  // namespace
 
 void Texture::define(const std::string& name, Generator g) {
@@ -174,15 +193,68 @@ const std::vector<unsigned char>& Texture::surface_raster() {
     int lw = 0, lh = 0;
     std::vector<unsigned char> over;
     if (!layer.empty() && reader() && reader()(layer, lw, lh, over) && lw > 0 && lh > 0)
-        for (int y = 0; y < H; ++y)
-            for (int x = 0; x < W; ++x) {
-                const unsigned char* l = &over[(static_cast<std::size_t>(y * lh / H) * lw + static_cast<std::size_t>(x * lw / W)) * 4];
-                const double a = l[3] / 255.0;
-                unsigned char* p = &surface_px_[(static_cast<std::size_t>(y) * W + x) * 4];
-                for (int k = 0; k < 3; ++k) p[k] = static_cast<unsigned char>(std::lround(p[k] + (l[k] - p[k]) * a));
-            }
+        lay_over(surface_px_, W, H, c, over, lw, lh, m.params.num("per_cell", 0.0) > 0.5, 1.0);
     ++surface_revision_;
     return surface_px_;
+}
+
+bool Texture::has_normals() const {
+    const Element& m = map();
+    return m.params.num("normals", 0.0) > 0.5 || !m.params.get_or<std::string>("normal_layer", "").empty();
+}
+
+const std::vector<unsigned char>& Texture::normal_raster() {
+    const Element& m = map();
+    const std::string layer = m.params.get_or<std::string>("normal_layer", "");
+    const long long t = layer.empty() ? 0 : stamp_of(layer);
+    if (!has_normals()) {
+        if (!normal_px_.empty()) std::vector<unsigned char>{}.swap(normal_px_), ++normal_revision_;
+        return normal_px_;
+    }
+    if (!normal_px_.empty() && m.params.stamp() == normal_stamp_ && t == normal_layer_time_) return normal_px_;
+    normal_stamp_ = m.params.stamp();
+    normal_layer_time_ = t;
+    const int c = cell(), W = px_w(), H = px_h();
+    normal_px_.assign(static_cast<std::size_t>(W) * H * 4, 255);
+    // Flat unless it is made from the height: straight out of every cell.
+    for (std::size_t i = 0; i < normal_px_.size(); i += 4) normal_px_[i] = normal_px_[i + 1] = 128;
+    if (m.params.num("normals", 0.0) > 0.5) {
+        // Made from the height as the generator says it, not as its picture
+        // rounds it to 256 steps: the slope across half a pixel each way, in
+        // metres of height (`relief` at full) a metre across (`tile` a cell;
+        // a cell a metre where it does not tile).
+        const std::string name = m.params.get_or<std::string>("generator", "plain");
+        const auto mat = materials().find(name);
+        const auto gen = generators().find(name);
+        const auto height = [&](int cl, double u, double v) {
+            if (mat != materials().end()) return mat->second(m.params, cl, u, v).height;
+            return gen != generators().end() ? gen->second(m.params, cl, u, v)[3] : 1.0;
+        };
+        const double tile = m.params.num("tile", 0.0), relief = m.params.num("relief", 0.0);
+        const double across = tile > 0.0 ? tile : 1.0, e = 0.5 / c;
+        const auto at = [&](double s) { return tile > 0.0 ? s : std::clamp(s, 0.0, 1.0); };
+        for (int cl = 0; cl < 6; ++cl) {
+            const int x0 = (cl % 3) * c, y0 = (cl / 3) * c;
+            for (int y = 0; y < c; ++y)
+                for (int x = 0; x < c; ++x) {
+                    const double u = (x + 0.5) / c, v = 1.0 - (y + 0.5) / c;
+                    const double du = (height(cl, at(u + e), v) - height(cl, at(u - e), v)) / (at(u + e) - at(u - e));
+                    const double dv = (height(cl, u, at(v + e)) - height(cl, u, at(v - e))) / (at(v + e) - at(v - e));
+                    const double sx = -relief * du / across, sy = -relief * dv / across, len = std::sqrt(sx * sx + sy * sy + 1.0);
+                    unsigned char* p = &normal_px_[(static_cast<std::size_t>(y0 + y) * W + (x0 + x)) * 4];
+                    p[0] = static_cast<unsigned char>(to_byte(0.5 + 0.5 * sx / len));
+                    p[1] = static_cast<unsigned char>(to_byte(0.5 + 0.5 * sy / len));
+                    p[2] = static_cast<unsigned char>(to_byte(0.5 + 0.5 / len));
+                }
+        }
+    }
+    // A normal map read from a file, over the made one.
+    int lw = 0, lh = 0;
+    std::vector<unsigned char> over;
+    if (!layer.empty() && reader() && reader()(layer, lw, lh, over) && lw > 0 && lh > 0)
+        lay_over(normal_px_, W, H, c, over, lw, lh, m.params.num("per_cell", 0.0) > 0.5, 1.0, m.params.num("normal_dx", 0.0) > 0.5);
+    ++normal_revision_;
+    return normal_px_;
 }
 
 Texture::Texture(Key id, int cell_px) : Surface2D(id, 3, 2, cell_px) {
@@ -229,17 +301,8 @@ void Texture::paint() {
     // The layer painted over it, stretched to the map if it is another size.
     int lw = 0, lh = 0;
     std::vector<unsigned char> layer;
-    if (!layer_path_.empty() && reader() && reader()(layer_path_, lw, lh, layer) && lw > 0 && lh > 0) {
-        const double mix = std::clamp(m.params.num("layer_mix", 1.0), 0.0, 1.0);
-        const int H = px_h();
-        for (int y = 0; y < H; ++y)
-            for (int x = 0; x < W; ++x) {
-                const unsigned char* l = &layer[(static_cast<std::size_t>(y * lh / H) * lw + static_cast<std::size_t>(x * lw / W)) * 4];
-                const double a = l[3] / 255.0 * mix;
-                unsigned char* p = &px[(static_cast<std::size_t>(y) * W + x) * 4];
-                for (int k = 0; k < 3; ++k) p[k] = static_cast<unsigned char>(std::lround(p[k] + (l[k] - p[k]) * a));
-            }
-    }
+    if (!layer_path_.empty() && reader() && reader()(layer_path_, lw, lh, layer) && lw > 0 && lh > 0)
+        lay_over(px, W, px_h(), c, layer, lw, lh, m.params.num("per_cell", 0.0) > 0.5, std::clamp(m.params.num("layer_mix", 1.0), 0.0, 1.0));
 }
 
 std::vector<float> unit_shape(const std::string& shape) {

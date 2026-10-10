@@ -706,6 +706,12 @@ float mRoughness, mSurface, mEmissive, mHighlight, mMirror, mMetal;
 // what the thing is there, in place of its own roughness and metal.
 uniform sampler2D uSurfaceMap;
 uniform float uSurfaceMapOn;
+// A worn texture's normal map (Texture::normal_raster): which way its surface
+// faces on each cell, x along the cell's u, y up its v (OpenGL's way), z out
+// - drawn in place of the screen's guess from its relief; how strongly.
+uniform sampler2D uNormalMap;
+uniform float uNormalMapOn;
+uniform float uNormalStrength;
 uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
 uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
 
@@ -856,25 +862,66 @@ vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     return textureGrad(t, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);
 }
 
+// Where a point of a thing wearing a skin is on it: the thing's size, the
+// cells of the three ways it faces (x, y, z) and how much each counts, the
+// point on each cell and how that moves across the screen.
+struct SkinAt {
+    vec3 size, w, cell;
+    vec2 u[3], dx[3], dy[3];
+};
+SkinAt skin_here() {
+    SkinAt s;
+    // In the unit box of the thing that wears it, facing as it truly faces
+    // there (its normal scaled back out of the box).
+    s.size = uSkinOwn > 0.5 ? vTexScale : uSkinSize;
+    vec3 p = uSkinOwn > 0.5 ? vLocal : (uSkinFrame * vec4(vRoom, 1.0)).xyz;
+    vec3 n = normalize(uSkinOwn > 0.5 ? vObjNormal / max(s.size, vec3(1e-4)) : uSkinSize * (mat3(uSkinFrame) * vRoomNormal)), a = abs(n);
+    s.cell = vec3(n.x > 0.0 ? 0.0 : 1.0, n.y > 0.0 ? 4.0 : 5.0, n.z > 0.0 ? 2.0 : 3.0);
+    for (int i = 0; i < 3; ++i) {
+        s.u[i] = skin_at(s.cell[i], p, s.size);
+        s.dx[i] = dFdx(s.u[i]), s.dy[i] = dFdy(s.u[i]);
+    }
+    vec3 w = pow(a, vec3(mix(24.0, 2.0, clamp(uSkinBlend, 0.0, 1.0))));
+    if (uSkinBlend <= 0.0) w = a.x >= a.y && a.x >= a.z ? vec3(1, 0, 0) : (a.z >= a.y ? vec3(0, 0, 1) : vec3(0, 1, 0));
+    s.w = w / max(w.x + w.y + w.z, 1e-5);
+    return s;
+}
+
 // A skin worn by any shape: each point from the cell of the way it most
 // faces, or (uSkinBlend) from those of the ways it half faces, weighted.
 vec4 skin_texel(sampler2D t) {
-    // In the unit box of the thing that wears it, facing as it truly faces
-    // there (its normal scaled back out of the box).
-    vec3 size = uSkinOwn > 0.5 ? vTexScale : uSkinSize;
-    vec3 p = uSkinOwn > 0.5 ? vLocal : (uSkinFrame * vec4(vRoom, 1.0)).xyz;
-    vec3 n = normalize(uSkinOwn > 0.5 ? vObjNormal / max(size, vec3(1e-4)) : uSkinSize * (mat3(uSkinFrame) * vRoomNormal)), a = abs(n);
-    float cx = n.x > 0.0 ? 0.0 : 1.0, cy = n.y > 0.0 ? 4.0 : 5.0, cz = n.z > 0.0 ? 2.0 : 3.0;
-    vec2 ux = skin_at(cx, p, size), uy = skin_at(cy, p, size), uz = skin_at(cz, p, size);
-    vec2 dxx = dFdx(ux), dyx = dFdy(ux), dxy = dFdx(uy), dyy = dFdy(uy), dxz = dFdx(uz), dyz = dFdy(uz);
-    vec3 w = pow(a, vec3(mix(24.0, 2.0, clamp(uSkinBlend, 0.0, 1.0))));
-    if (uSkinBlend <= 0.0) w = a.x >= a.y && a.x >= a.z ? vec3(1, 0, 0) : (a.z >= a.y ? vec3(0, 0, 1) : vec3(0, 1, 0));
-    w /= max(w.x + w.y + w.z, 1e-5);
+    SkinAt s = skin_here();
     vec4 c = vec4(0.0);
-    if (w.x > 0.001) c += w.x * skin_sample(t, cx, ux, dxx, dyx);
-    if (w.y > 0.001) c += w.y * skin_sample(t, cy, uy, dxy, dyy);
-    if (w.z > 0.001) c += w.z * skin_sample(t, cz, uz, dxz, dyz);
+    for (int i = 0; i < 3; ++i)
+        if (s.w[i] > 0.001) c += s.w[i] * skin_sample(t, s.cell[i], s.u[i], s.dx[i], s.dy[i]);
     return c;
+}
+
+// The metres of the thing a cell's u and v go across from 0 to 1: the tile
+// when it tiles, else the face it is laid on (as skin_at lays them).
+vec2 cell_metres(float cell, vec3 size) {
+    if (uSkinTile > 0.0) return vec2(uSkinTile);
+    if (cell < 1.5) return vec2(size.z, size.y);
+    if (cell < 3.5) return vec2(size.x, size.y);
+    return vec2(size.x, size.z);
+}
+
+// A skin's normal map as how its height changes from one pixel to the next
+// across the screen (x, y), in metres: each cell's normal a slope - metres
+// of height a metre across - carried onto the screen by how its place on the
+// cell moves there, and the cells weighed as their colours are. A height's
+// change is what the surface gradient bends a normal by (main), so no
+// tangents are needed: any shape, any projection, each face its own way up.
+vec2 skin_height_steps() {
+    SkinAt s = skin_here();
+    vec2 steps = vec2(0.0);
+    for (int i = 0; i < 3; ++i) {
+        if (s.w[i] <= 0.001) continue;
+        vec3 t = skin_sample(uNormalMap, s.cell[i], s.u[i], s.dx[i], s.dy[i]).xyz * 2.0 - 1.0;
+        vec2 per_uv = -t.xy / max(t.z, 0.1) * cell_metres(s.cell[i], s.size) * uNormalStrength;
+        steps += s.w[i] * vec2(dot(per_uv, s.dx[i]), dot(per_uv, s.dy[i]));
+    }
+    return steps;
 }
 
 // A picture tiled over the world, as a wall or a floor wears it: laid on
@@ -1378,6 +1425,8 @@ void main() {
     vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
     float relief_h = -1.0;  // how high a skin's paint stands here, if it says
     vec4 surface_at = vec4(-1.0);  // a worn texture's surface map here (occlusion, roughness, metal), if it has one
+    bool mapped = false;           // its normal map says how the surface is bent here
+    vec2 height_steps = vec2(0.0); // ... as its height's change across the screen (skin_height_steps)
     if (uTexMix > 0.0) {
         vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
         vec2 on_screen = uSeenFrom > 0.5 ? seen_at.xy / seen_at.w * 0.5 + 0.5 : gl_FragCoord.xy / uViewport;
@@ -1388,6 +1437,7 @@ void main() {
         bool framed_skin = uSkin > 0.5 && uSkin < 1.5 && uSkinFramed > 0.5;
         vec4 texel = framed_skin ? skin_texel(uTex) : texture(uTex, uv);
         if (framed_skin && uSurfaceMapOn > 0.5) surface_at = skin_texel(uSurfaceMap);
+        if (framed_skin && uNormalMapOn > 0.5) mapped = true, height_steps = skin_height_steps();
 #ifdef SG_CUTOUT
         if (uCutout > 0.5 && texel.a < 0.5) discard;
 #endif
@@ -1463,13 +1513,16 @@ void main() {
     vec3 n = normalize(vNormal);
     vec3 v = normalize(uViewPos - vWorld);
     bool bent = false;  // whether relief or waves turned the normal from the surface's own
-    if (relief_h >= 0.0) {
+    if (mapped || relief_h >= 0.0) {
         // Bent by the paint's relief, from how its height changes across the
         // screen (Mikkelsen's surface gradient): no tangents, any projection.
+        // A normal map says that change itself, as finely as it was made; the
+        // relief alone, only as the screen sees the height step from pixel to pixel.
         vec3 dpx = dFdx(vWorld), dpy = dFdy(vWorld);
         vec3 r1 = cross(dpy, n), r2 = cross(n, dpx);
         float det = dot(dpx, r1);
-        vec3 grad = sign(det) * (dFdx(relief_h) * r1 + dFdy(relief_h) * r2);
+        vec2 dh = mapped ? height_steps : vec2(dFdx(relief_h), dFdy(relief_h));
+        vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
         n = normalize(abs(det) * n - grad);
         bent = true;
     }

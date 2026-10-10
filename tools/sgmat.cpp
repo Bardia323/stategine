@@ -9,6 +9,7 @@
 //   sgmat --set r=0.6 --set roughness=0.3  a material said on the line (sgmat.studio.png)
 //   sgmat rust.mat -e "roughness=0.8; texture.relief=0.004"   the file, changed for one look
 //   sgmat rust.mat -o out.png -w 1920 -h 1080 --frames 30
+//   sgmat rust.mat --view ball             close on one specimen (ball, cube, slab)
 //
 // A material file is `key = value`, one a line, `#` a remark (docs/materials.md
 // is the contract). A key is set on each specimen as it is said - `r g b
@@ -173,7 +174,7 @@ bool project(const sg::render::ViewCamera& c, const sg::Vec3d& p, int W, int H, 
     return true;
 }
 
-Shot shoot(const Material& m, const std::string& preset, int W, int H, int frames, int cell) {
+Shot shoot(const Material& m, const std::string& preset, const std::string& look_at, int W, int H, int frames, int cell) {
     Shot shot;
     sg::StateGraph g;
     sg::dsl::Bindings bindings;
@@ -193,8 +194,27 @@ Shot shoot(const Material& m, const std::string& preset, int W, int H, int frame
     for (sg::Element& e : stage.elements())
         if (e.kind == sg::kinds::light && e.params.has(sg::Key{preset})) e.params.set(sg::keys::intensity, e.params.num(sg::Key{preset}));
     sg::set_look(stage, sg::Key{"stage." + preset});
+    // A close look at one specimen: the eye where it stands, turned to it,
+    // its lens narrowed until the thing fills the picture.
+    if (!look_at.empty()) {
+        sg::Element& eye = stage.element(sg::Key{"camera"});
+        const sg::Element& thing = stage.element(sg::Key{look_at});
+        const double sy = thing.params.num(sg::keys::sy, 1), sx = thing.params.num(sg::keys::sx, 1);
+        const double dx = thing.params.num(sg::keys::x) - eye.params.num(sg::keys::x),
+                     dy = thing.params.num(sg::keys::y) + sy * 0.5 - eye.params.num(sg::keys::y),
+                     dz = thing.params.num(sg::keys::z) - eye.params.num(sg::keys::z);
+        const double flat = std::hypot(dx, dz), far = std::hypot(flat, dy);
+        eye.params.set(sg::keys::yaw, std::atan2(dz, dx)).set(sg::keys::pitch, std::atan2(dy, flat));
+        eye.params.set(sg::keys::fov, 2.0 * std::atan(std::max(sx, sy) * 0.62 / far) * 180.0 / 3.14159265358979);
+    }
 
     for (const auto& p : g.validate(false)) shot.notes.push_back("! " + p);
+    // A layer file that cannot be read is left out without a word by the
+    // texture (the reader says no): said here, where it was asked for.
+    for (const auto& [k, v] : m.map)
+        if (k.size() >= 5 && k.compare(k.size() - 5, 5, "layer") == 0 && std::holds_alternative<std::string>(v) &&
+            !std::get<std::string>(v).empty() && !fs::exists(std::get<std::string>(v)))
+            shot.notes.push_back("! texture." + k + ": no file " + std::get<std::string>(v));
     const sg::LawReport laws = sg::verify(g);
     if (!laws.ok()) shot.notes.push_back("! laws: " + laws.str());
 
@@ -263,7 +283,7 @@ void write_png(const std::string& path, const std::vector<unsigned char>& rgb, i
 
 int main(int argc, char** argv) {
     Material m;
-    std::string file, out, preset = "studio";
+    std::string file, out, preset = "studio", look_at;
     int W = 1280, H = 720, frames = 12, cell = 256;
     bool ok = true;
     std::vector<std::string> sets;
@@ -276,6 +296,7 @@ int main(int argc, char** argv) {
         else if (a == "--frames") frames = std::max(1, std::atoi(next().c_str()));
         else if (a == "--cell") cell = std::clamp(std::atoi(next().c_str()), 16, 2048);
         else if (a == "--preset") preset = next();
+        else if (a == "--view") look_at = next();
         else if (a == "--set") sets.push_back(next());
         else if (a == "-e") {
             std::string e = next();
@@ -291,7 +312,7 @@ int main(int argc, char** argv) {
     }
     if (!ok || (file.empty() && sets.empty())) {
         std::fprintf(stderr, "sgmat <material.mat> [--set key=value ...] [-e \"key=value; ...\"] [--preset studio|lamp|soft|all] "
-                             "[-o out.png] [-w px -h px] [--frames n] [--cell px]\n");
+                             "[-o out.png] [-w px -h px] [--view ball|cube|slab] [--frames n] [--cell px]\n");
         return 1;
     }
     std::string name = "sgmat";
@@ -308,6 +329,8 @@ int main(int argc, char** argv) {
         if (!say(m, s, dir, why)) std::fprintf(stderr, "--set %s: %s\n", s.c_str(), why.c_str()), ok = false;
     }
     if (!ok) return 1;
+    if (!look_at.empty() && std::find(std::begin(kSpecimens), std::end(kSpecimens), look_at) == std::end(kSpecimens))
+        return std::fprintf(stderr, "no specimen %s (ball, cube, slab)\n", look_at.c_str()), 1;
     std::vector<std::string> presets;
     if (preset == "all") presets.assign(std::begin(kPresets), std::end(kPresets));
     else if (std::find(std::begin(kPresets), std::end(kPresets), preset) != std::end(kPresets)) presets.push_back(preset);
@@ -326,7 +349,7 @@ int main(int argc, char** argv) {
     std::vector<Shot> shots;
     bool problems = false;  // any `!` line: the picture is not to be trusted
     for (const auto& p : presets) {
-        shots.push_back(shoot(m, p, W, H, frames, cell));
+        shots.push_back(shoot(m, p, look_at, W, H, frames, cell));
         for (const auto& n : shots.back().notes) {
             std::printf("%s\n", n.c_str());
             problems = problems || n.rfind("! ", 0) == 0;

@@ -24,6 +24,13 @@
 //               surface bent by it, so what is painted thick catches the light
 //   surface_layer  a file of what the surface is (its red occlusion, green
 //               roughness, blue metal), read as `layer` is, over the material's
+//   normals     1: a normal map made from its height, as finely as its
+//               generator says it (`relief` metres high, `tile` metres a cell)
+//   normal_layer  a file of a normal map (OpenGL's way: green up its cells;
+//               `normal_dx` 1 for DirectX's, green down), over the made one
+//   normal_strength  how strongly the normal map bends the surface (1)
+//   per_cell    1: each layer file is one tile, laid whole in every cell (a
+//               photographed material); 0, stretched over the six (a painting)
 //
 // What the surface is beside its colour - how occluded its hollows are, how
 // rough, how metal - is a second picture of the same six cells, its surface
@@ -31,6 +38,11 @@
 // (`define_material`, every channel at once) or a `surface_layer`. A thing
 // wearing a texture with a surface map takes its roughness and metal from
 // it, and its occlusion dims the light it is given from all round.
+//
+// Which way its surface faces at every point is a third picture of the same
+// cells, its normal map: x along a cell's u, y up its v, z out of it, made
+// from the height (`normals`) or read (`normal_layer`). A thing wearing it is
+// bent by it, in place of what the screen can tell from its relief.
 //
 //   map --set--> map   texture.set {key: value ...}: whichever are given
 //
@@ -98,6 +110,14 @@ public:
     // Which surface map `surface_raster` last made: it moves when it changes.
     uint64_t surface_revision() const { return surface_revision_; }
 
+    // Whether it has a normal map: it says `normals`, or a `normal_layer`.
+    bool has_normals() const;
+    // Its normal map, RGBA rows of the picture's size (each direction 0..1 as
+    // 0.5 + 0.5 x; linear), made when asked and again only when the map's
+    // params or the normal layer's file change; empty without one.
+    const std::vector<unsigned char>& normal_raster();
+    uint64_t normal_revision() const { return normal_revision_; }
+
 protected:
     void paint() override;
     // Memoised on the map's params and on the layer file's stamp.
@@ -110,6 +130,9 @@ private:
     std::vector<unsigned char> surface_px_;
     uint64_t surface_stamp_ = 0, surface_revision_ = 0;
     long long surface_layer_time_ = 0;
+    std::vector<unsigned char> normal_px_;
+    uint64_t normal_stamp_ = 0, normal_revision_ = 0;
+    long long normal_layer_time_ = 0;
 };
 
 // The six views of a thing, cell by cell as a texture's map has them - its

@@ -397,10 +397,17 @@ private:
         // its own, and which of the texture's surface maps it holds.
         gl::Texture surface_map;
         uint64_t surface_revision = ~uint64_t{0};
+        // And its normal map, the same way.
+        gl::Texture normal_map;
+        uint64_t normal_revision = ~uint64_t{0};
     };
     // The surface map of what `bound` shows bound to unit 9, current, when it
     // has one: true then, and the scene's `uSurfaceMapOn` is the caller's to set.
     bool bind_surface_map(BoundSurface& bound);
+    // Its normal map bound to unit 10 the same way (`uNormalMapOn`, `uNormalStrength`).
+    bool bind_normal_map(BoundSurface& bound);
+    // Both maps of a worn texture on the scene program, or both off.
+    void set_skin_maps(const gl::Program& p, BoundSurface* bound);
     // Each packed picture on the card once, however many surfaces show it.
     struct PackedOnCard {
         std::shared_ptr<render::Packed> keep;

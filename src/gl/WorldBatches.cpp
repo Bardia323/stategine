@@ -199,6 +199,31 @@ bool GLWorldView::bind_surface_map(BoundSurface& bound) {
     return true;
 }
 
+bool GLWorldView::bind_normal_map(BoundSurface& bound) {
+    auto* tex = dynamic_cast<Texture*>(bound.surface);
+    if (!tex || !tex->has_normals()) return false;
+    const std::vector<unsigned char>& px = tex->normal_raster();
+    if (px.empty()) return false;
+    if (!bound.normal_map.valid() || bound.normal_map.width() != tex->px_w() || bound.normal_map.height() != tex->px_h()) {
+        bound.normal_map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
+        bound.normal_revision = ~uint64_t{0};
+    }
+    if (bound.normal_revision != tex->normal_revision()) {
+        bound.normal_map.upload(px);
+        bound.normal_revision = tex->normal_revision();
+    }
+    bound.normal_map.bind(10);
+    return true;
+}
+
+void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
+    const auto* tex = bound ? dynamic_cast<const Texture*>(bound->surface) : nullptr;
+    p.set("uSurfaceMapOn", tex && bind_surface_map(*bound) ? 1.0f : 0.0f);
+    const bool normals = tex && bind_normal_map(*bound);
+    p.set("uNormalMapOn", normals ? 1.0f : 0.0f);
+    p.set("uNormalStrength", normals ? static_cast<float>(tex->map().params.num("normal_strength", 1.0)) : 1.0f);
+}
+
 void GLWorldView::pack_skins() {
     // (Unpacked, every texture's picture is made now all the same, each on
     // a core of its own - a texture paints only itself - not one after
@@ -389,11 +414,11 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             p.set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
             p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
-            p.set("uSurfaceMapOn", bind_surface_map(*b.skin) ? 1.0f : 0.0f);
+            set_skin_maps(p, b.skin);
         }
         b.mesh->draw_instanced(stream, n, first);
         first += static_cast<std::size_t>(n);
-        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), p.set("uSurfaceMapOn", 0.0f);
+        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
     }

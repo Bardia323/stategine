@@ -182,10 +182,10 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             scene_->set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
             scene_->set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
-            scene_->set("uSurfaceMapOn", bind_surface_map(bound) ? 1.0f : 0.0f);
+            set_skin_maps(*scene_, &bound);
         }
         shape_of(st, e).draw();
-        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), scene_->set("uSurfaceMapOn", 0.0f);
+        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

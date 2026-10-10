@@ -675,6 +675,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uTex", 0);
         p.set("uSurfaceMap", 9);  // a worn texture's occlusion, roughness, metal (bind_surface_map)
         p.set("uSurfaceMapOn", 0.0f);
+        p.set("uNormalMap", 10);  // and its normal map (bind_normal_map)
+        p.set("uNormalMapOn", 0.0f);
         p.set("uEnv", 7);
         p.set("uEnvMix", 0.0f);
         p.set("uCRT", 0.0f);

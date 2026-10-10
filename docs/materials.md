@@ -99,6 +99,10 @@ Its one element, `map`:
 | `tint_r` `tint_g` `tint_b` | multiplied over its colour - the material's colour |
 | `layer`, `layer_mix` | a picture file painted over it, followed as it changes; read by the program's `Texture::set_reader` (the engine reads no image format) |
 | `surface_layer` | a picture file of the surface map (red occlusion, green roughness, blue metal - glTF's ORM order), over what the material says; read as `layer` is |
+| `normals` | 1: a normal map made from its height (below) |
+| `normal_layer` | a picture file of a normal map, OpenGL's way (green up), over the made one; `normal_dx` 1 for DirectX's (green down) |
+| `normal_strength` | how strongly its normal map bends the surface: 1 as made or drawn, 2 twice as steep | 
+| `per_cell` | 1: each layer file is one tile, laid whole in every cell - a photographed, tileable material; 0 (unless said), stretched over all six cells - a painting over the projection guide |
 | `tile` | metres of the thing one cell covers, its pattern going on round it from face to face; 0, each face the whole cell |
 | `blend` | 0 each face its own cell; 1 curves shade softly between the cells of the ways they face |
 | `relief` | metres its paint stands at full height: the map's alpha is height, and the surface is bent by it so raised paint catches the light |
@@ -126,6 +130,32 @@ there is a `surface_layer`. Without one, the thing's own `roughness` and
 `metal` hold. This is what makes a surface read as real: painted steel
 whose paint is satin, whose bare chips shine as metal, whose rust is rough
 and dull - on one thing, point by point.
+
+### The normal map: which way the surface faces, point by point
+
+A third picture of the same cells says which way the surface faces at every
+point: x along a cell's u, y up its v, z out of it (OpenGL's way, as most
+tools and Poly Haven write them). A thing wearing it is lit as bent by it -
+grain, flakes, scratches, weave, stitching, rivets - finer and smoother than
+`relief` alone, which the screen can only tell from how the height steps
+between pixels (it comes out blocky close up).
+
+- **Made from the height** (`normals` = 1): from the generator's own height,
+  at full precision - not the picture's 256 steps - `relief` metres high at
+  full, `tile` metres a cell (a cell a metre where it does not tile). Every
+  material with a height should say it; `relief` alone is for a painting.
+- **Read from a file** (`normal_layer`): a photographed material's normal
+  map, with `per_cell` 1 to lay its one tile in every cell. `normal_dx` 1
+  turns a DirectX one (green down) the right way up - a map whose bumps look
+  like dents is the other way.
+- `normal_strength` makes it steeper or flatter.
+
+There are no tangents and none are needed: each normal is turned into how
+fast the height climbs across the cell, carried onto the screen by how the
+cell's place moves there, and the three ways a point half faces weighed as
+their colours are (Mikkelsen's surface gradient, `skin_height_steps` in the
+scene shader). So it holds on any shape, any face, either way up. The map is
+linear and its own texture on the card, made only when something says it.
 
 ### Writing a generator or a material
 
@@ -165,13 +195,14 @@ The scene shader is physically based (metal/roughness, as glTF): GGX
 highlights, Schlick's Fresnel from F0 (0.04 white for every dielectric; the
 albedo for metal, which scatters none), Karis's split-sum fit for light from
 all round, energy kept (a rough metal goes darker), the surface bent by a
-texture's height (`relief`).
+texture's normal map or, without one, its height (`relief`).
 
-Not yet: a normal map of its own (detail finer than the height's pixels),
-an emission map, clearcoat, sheen, subsurface and anisotropy. Light from all round comes from the look (`uAmbient`, `uSky`,
-`uGround`) and from the room's light probes (bounce, relit as lamps change;
-README *Light probes*). So an albedo above about 0.9 or below 0.02 looks
-wrong in any light: almost nothing real is either.
+Light from all round comes from the look (`uAmbient`, `uSky`, `uGround`) and
+from the room's light probes (bounce, relit as lamps change; README *Light
+probes*). So an albedo above about 0.9 or below 0.02 looks wrong in any
+light: almost nothing real is either.
+
+Not yet: an emission map, clearcoat, sheen, subsurface and anisotropy.
 
 ## Real albedos and roughness
 
@@ -224,12 +255,13 @@ cd build
 ./sgmat --set r=0.95 --set g=0.64 --set b=0.54 --set metal=1 --set roughness=0.3   # copper
 ./sgmat ../tools/materials/rusted_steel.mat --preset all                           # a material: every channel
 ./sgmat stone.mat -e "roughness=0.6; texture.relief=0.008"   # a change tried without editing the file
+./sgmat rusted_steel.mat --view cube                         # close on one specimen: ball, cube, slab
 ```
 
 A material file is `key = value`, one a line, `#` a remark. A key is set on
 each specimen as said (section 1); `texture.<key>` on the map of a texture the
 specimens then wear (section 3), with `texture.srgb = 0` for a texture of
-linear values, and `texture.layer` / `texture.surface_layer` binary PPMs (P6)
+linear values, and `texture.layer` / `texture.surface_layer` / `texture.normal_layer` binary PPMs (P6)
 beside the file. Examples to start from: `tools/materials/` (`rusted_steel`
 uses every channel).
 
