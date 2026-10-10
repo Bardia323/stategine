@@ -94,6 +94,13 @@ bool inside(const Box& b, V3 p, double r) {
     const V3 c{std::clamp(q.x, -b.half.x, b.half.x), std::clamp(q.y, -b.half.y, b.half.y), std::clamp(q.z, -b.half.z, b.half.z)};
     return spatial::length(q - c) < r;
 }
+// Whether a ball meets a solid other than by resting on its top - a foot on
+// a floor, a hand on a table stands on it, and is no reason to wake.
+bool meets_not_on(const Box& b, V3 p, double r) {
+    if (!inside(b, p, r)) return false;
+    const V3 q = spatial::transpose(b.turn) * (p - b.centre);
+    return q.y < b.half.y - r;
+}
 
 // The smallest turn taking direction a to direction b.
 M3 turn_between(V3 a, V3 b) {
@@ -661,7 +668,15 @@ bool Ragdoll::disturbed() const {
     const bool full = self.params.num("full") > 0.5;
     std::vector<Box> solids;
     for (const Element& c : elements())
-        if (c.kind == kCollider && c.alive) solids.push_back(box_in(c, self));
+        if (c.kind == kCollider && c.alive) {
+            // (Not the floor: what has its top at the being's feet or under
+            // them is ground it stands on.)
+            const Box s = box_in(c, self);
+            const V3 up = spatial::transpose(s.turn) * V3{0, 1, 0};
+            const double top = s.centre.y + std::fabs(up.x) * s.half.x + std::fabs(up.y) * s.half.y + std::fabs(up.z) * s.half.z;
+            if (top <= 0.02) continue;
+            solids.push_back(s);
+        }
     for (const Element& b : elements()) {
         if (b.kind != kBone || b.params.num("rides") > 0.5 || (!full && no_parent(b))) continue;
         const V3 at = vec(b, "tx", "ty", "tz");
@@ -671,7 +686,7 @@ bool Ragdoll::disturbed() const {
         const V3 end = at + t * (block ? (vec(b, "hix", "hiy", "hiz") + vec(b, "lox", "loy", "loz")) * 0.5 : vec(b, "ex", "ey", "ez"));
         for (V3 q : {at, end}) {
             for (const Box& s : solids)
-                if (inside(s, q, r)) return true;
+                if (meets_not_on(s, q, r)) return true;
         }
     }
     return false;
@@ -743,6 +758,25 @@ void Ragdoll::build(rigid::World& w) const {
 void Ragdoll::step(double dt) {
     if (dt <= 0) return;
     Element& self = element(self_id());
+    // Asleep and settled - its strength and every bone's back, each bone
+    // where the being means it and still, nothing knocking - a step changes
+    // nothing: so nothing is written (a write would carry it to whatever
+    // follows it, every frame, for a body standing still).
+    if (self.params.num("awake") < 0.5 && self.params.num("fallen") < 0.5 && self.params.num("lead") == 0.0 &&
+        std::fabs(self.params.num("strength", 1.0) - 1.0) < 1e-6 && !disturbed()) {
+        bool settled = true;
+        for (const Element& b : elements()) {
+            if (b.kind != kBone) continue;
+            if (std::fabs(b.params.num("weak", 1.0) - 1.0) > 1e-6 || b.params.num("knock_n") != b.params.num("knock_seen") ||
+                b.params.num("x") != b.params.num("tx") || b.params.num("y") != b.params.num("ty") || b.params.num("z") != b.params.num("tz") ||
+                b.params.num("vx") != 0.0 || b.params.num("vy") != 0.0 || b.params.num("vz") != 0.0 || b.params.num("wx") != 0.0 ||
+                b.params.num("wy") != 0.0 || b.params.num("wz") != 0.0 || turn_of(b, "q").a != turn_of(b, "aim").a) {
+                settled = false;
+                break;
+            }
+        }
+        if (settled) return;
+    }
     const double strength = self.params.num("strength", 1.0);
     // Fallen, its strength ebbs (half a second); else it comes back.
     if (self.params.num("fallen") > 0.5) self.params.set("strength", strength * std::exp(-0.69 * dt));

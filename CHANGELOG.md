@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A ragdoll standing still sleeps, and asleep costs nothing. The ground it stands on no longer wakes it (a solid whose top is at the being's feet or under them is not met - as `disturbed` always said, and did not do: a body meaning its bones a little into the floor was woken every step), what it rests on top of is not met either, and asleep and settled - every bone where the being means it, still, its strength back - a step writes nothing. Three people standing in a game cost 3.7 ms a frame; now nothing.
+
 - Start-up: a photographed material is cheap. A `Texture` that is one photographed tile over a plain ground (`per_cell`, generator `plain`) is kept as that one tile (`one_tile`: one cell, not six), and its colour, surface map and normal map are named by what made them - its settings, its files' stamps, the code's digest (`pixels_digest`, `surface_digest`, `normal_digest`, `name_now`) - so a renderer keeps them packed on disk (sg::cache) and a warm start reads them back. A game with nineteen of them drew its first frame in 16 s on every start; now 0.2 s.
 - A window is black from the moment it is shown, never white, and answers while the engine works long with it waiting: a renderer's prepare, warm and bakes take its events now and then (`gl::answer`); `Window::pump()` for a program's own long work after the window is open.
 - A lamp that flickers keeps its place among the lamps that cast shadows: lamps are ranked by the most they have given lately (`standing_of`), not by what they give this frame, so a stuttering tube no longer hands its shadow map to another lamp and back - shadows no longer pop in and out.
