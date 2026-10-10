@@ -2,6 +2,9 @@
 // which drawn, and each portal drawn with what it shows.
 #include "sg/gl/World.hpp"
 
+#include <cmath>
+#include <tuple>
+
 namespace sg::render {
 
 GLWorldView::Rect GLWorldView::screen_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
@@ -426,8 +429,13 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // it; a bare sheet's face sits just off its own body.
     const gl::Vec3 face = panel_normal(pose, e);
     const float lift = framed(e) ? 0.08f : sheet_thickness(e) * 0.5f + 0.0015f;
+    // A tube's face that bulges (`bulge`, metres, a `crt` panel's): drawn as a
+    // dome at its size, the picture laid over the curve - the glass the
+    // tube's case is made round, not a flat pane standing off it.
+    const float bulge = static_cast<float>(e.params.num(Key{"bulge"}, 0.0));
+    const bool domed = bulge > 0.0005f && e.params.num(Key{"crt"}, 0.0) > 0.0;
     set_model(room_local(gl::Mat4::translate(pos + face * lift) * panel_turn(pose, e) *
-              gl::Mat4::scale({1.0f, h, w})));
+              (domed ? gl::Mat4::scale({1.0f, 1.0f, 1.0f}) : gl::Mat4::scale({1.0f, h, w}))));
     // `glow` is how much the panel lights itself - a screen more than a
     // map, paper not at all; an open panel that does not say glows at
     // least as a map does. A stated glow is kept: a blackboard or a
@@ -449,7 +457,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
     scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
     scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
-    quad_.draw();
+    if (domed) dome_of(w, h, bulge).draw();
+    else quad_.draw();
     scene_->set("uTexFlip", 0.0f);
     scene_->set("uUntone", 0.0f);
     scene_->set("uTexMix", 0.0f);
@@ -457,6 +466,45 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     scene_->set("uCRT", 0.0f);
     scene_->set("uHalo", 0.0f);
     scene_->set("uFlat", 0.0f);
+}
+
+const gl::Mesh& GLWorldView::dome_of(float w, float h, float bulge) {
+    // By the millimetre: panels of one size share one dome.
+    const auto key = std::make_tuple(static_cast<int>(std::lround(w * 1000)), static_cast<int>(std::lround(h * 1000)),
+                                     static_cast<int>(std::lround(bulge * 1000)));
+    auto it = domes_.find(key);
+    if (it != domes_.end()) return it->second;
+    // The quad's layout (render::quad_vertices: the face in y and z, out along
+    // x; u from z, v down y) as a grid, each point lifted out by the dome
+    // (a tube's face: highest in the middle, meeting the case at its edges),
+    // its way out as the dome leans there.
+    constexpr int kCols = 24, kRows = 18;
+    const auto at = [&](double u, double v, float out[8]) {
+        const double y = (0.5 - v) * h, z = (0.5 - u) * w;
+        const double a = 2.0 * y / h, b = 2.0 * z / w;  // -1..1 across
+        const double fa = 1.0 - a * a, fb = 1.0 - b * b;
+        const double x = bulge * fa * fb;
+        // How fast it falls away along y and z: the normal leans against it.
+        const double dy = bulge * (-4.0 * y / (h * h)) * fb, dz = bulge * fa * (-4.0 * z / (w * w));
+        double nx = 1.0, ny = -dy, nz = -dz;
+        const double l = std::sqrt(nx * nx + ny * ny + nz * nz);
+        out[0] = static_cast<float>(x), out[1] = static_cast<float>(y), out[2] = static_cast<float>(z);
+        out[3] = static_cast<float>(nx / l), out[4] = static_cast<float>(ny / l), out[5] = static_cast<float>(nz / l);
+        out[6] = static_cast<float>(u), out[7] = static_cast<float>(v);
+    };
+    std::vector<float> verts;
+    verts.reserve(static_cast<std::size_t>(kCols * kRows * 6 * 8));
+    for (int j = 0; j < kRows; ++j)
+        for (int i = 0; i < kCols; ++i) {
+            const double u0 = static_cast<double>(i) / kCols, u1 = static_cast<double>(i + 1) / kCols;
+            const double v0 = static_cast<double>(j) / kRows, v1 = static_cast<double>(j + 1) / kRows;
+            float c[4][8];
+            at(u0, v1, c[0]), at(u1, v1, c[1]), at(u1, v0, c[2]), at(u0, v0, c[3]);
+            for (int k : {0, 1, 2, 0, 2, 3}) verts.insert(verts.end(), c[k], c[k] + 8);
+        }
+    gl::Mesh& m = domes_[key];
+    m.create(verts);
+    return m;
 }
 
 }  // namespace sg::render

@@ -1218,6 +1218,10 @@ private:
     double fixed_step_ = 0.0;
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
+    // A tube's face, domed (a crt panel's `bulge`, metres): the panel's quad
+    // as a grid lifted to a dome at its size, made once a size.
+    std::map<std::tuple<int, int, int>, gl::Mesh> domes_;
+    const gl::Mesh& dome_of(float w, float h, float bulge);
     mutable std::unordered_map<std::string, gl::Mesh> shaped_;  // bevelled and tapered, by size
     // Each model a state keeps, as a mesh: by the state and the model's
     // name, made again when the model is (by its making, `model_revision`).
