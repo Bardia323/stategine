@@ -97,7 +97,7 @@ Its one element, `map`:
 | `generator` | what paints it, by name: `plain`, `noise` (`scale` cells across, `seed`; four octaves, 0.55..1), `checks` (`count`), or a material: `rust` (below) |
 | `seed` | whatever a generator reads for its variety |
 | `tint_r` `tint_g` `tint_b` | multiplied over its colour - the material's colour |
-| `layer`, `layer_mix` | a picture file painted over it, followed as it changes; read by the program's `Texture::set_reader` (the engine reads no image format) |
+| `layer`, `layer_mix` | a picture file painted over it, followed as it changes; read by the program's `Texture::set_reader` - the engine reads no image format; `sg::pictures::read` (`stategine::pictures`) reads PNG, JPEG, TGA, BMP and PPM |
 | `surface_layer` | a picture file of the surface map (red occlusion, green roughness, blue metal - glTF's ORM order), over what the material says; read as `layer` is |
 | `normals` | 1: a normal map made from its height (below) |
 | `normal_layer` | a picture file of a normal map, OpenGL's way (green up), over the made one; `normal_dx` 1 for DirectX's (green down) |
@@ -261,7 +261,7 @@ cd build
 A material file is `key = value`, one a line, `#` a remark. A key is set on
 each specimen as said (section 1); `texture.<key>` on the map of a texture the
 specimens then wear (section 3), with `texture.srgb = 0` for a texture of
-linear values, and `texture.layer` / `texture.surface_layer` / `texture.normal_layer` binary PPMs (P6)
+linear values, and `texture.layer` / `texture.surface_layer` / `texture.normal_layer` PNG, JPEG, TGA, BMP or PPM files
 beside the file. Examples to start from: `tools/materials/` (`rusted_steel`
 uses every channel).
 
@@ -288,6 +288,23 @@ the material.
 4. When it is right, put it where it will be used: its params in the `.sg`
    that declares the thing, its texture as a `Texture` state the thing wears.
    The `.mat` is a sketch for `sgmat`, not a format the engine reads.
+
+### A photographed material (Poly Haven, ambientCG, ...)
+
+Their maps go straight in - each one tile, laid whole in every cell
+(`per_cell` = 1), `tile` the metres it covers (the site says; about 1-2 m):
+
+| Their map | Here |
+| --- | --- |
+| diffuse / albedo / base colour (JPG is fine) | `texture.layer` |
+| normal, **OpenGL** (`nor_gl`) - PNG, not JPG | `texture.normal_layer` (a DirectX one, `nor_dx`: and `normal_dx = 1`) |
+| ARM / ORM (occlusion, roughness, metal packed) - PNG | `texture.surface_layer`, as it is |
+| separate AO, roughness, metal maps | pack them first: red AO, green roughness, blue metal |
+| displacement / height | not read: bake its normals into the normal map instead |
+
+`tools/materials/photographed.mat` is the template. `--cell 1024` lets a
+1K map keep its detail (a cell is 256 pixels unless said). The program that
+draws gives the reader once: `Texture::set_reader(sg::pictures::read)`.
 
 A new `surface` kind or generator is tried the same way: build the engine
 with it, then `sgmat --set surface=<n>` or `texture.generator=<name>` (a

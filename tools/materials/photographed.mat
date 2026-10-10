@@ -1,0 +1,11 @@
+# A photographed material (Poly Haven, ambientCG, ...): its files beside this
+# one, each one tile laid whole in every cell. Rename to your files; delete
+# a line for a map you do not have. docs/materials.md, "A photographed material".
+texture.layer = name_diff_1k.jpg            # colour
+texture.normal_layer = name_nor_gl_1k.png   # normal map, OpenGL's (green up)
+# texture.normal_dx = 1                     # ... if it is DirectX's (nor_dx)
+texture.surface_layer = name_arm_1k.png     # AO, roughness, metal (ARM/ORM)
+texture.per_cell = 1                        # one tile in every cell
+texture.tile = 1.0                          # metres one tile covers
+texture.blend = 1                           # curves shade softly between faces
+# Run: sgmat photographed.mat --cell 1024 --preset all

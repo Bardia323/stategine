@@ -121,6 +121,15 @@ add_library(stategine_audio STATIC ${_sg_audio_sources})
 add_library(stategine::audio ALIAS stategine_audio)
 target_link_libraries(stategine_audio PUBLIC stategine)
 
+# Pictures (sg/pictures): a picture file read as pixels, for a program to
+# hand the engine (Texture::set_reader) - the engine reads no image format of
+# its own. Beside it, knowing nothing of states: PNG, JPEG, TGA, BMP and PNM
+# by stb_image (third_party/stb, public domain or MIT; its commit in COMMIT).
+add_library(stategine_pictures STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/pictures/Pictures.cpp)
+add_library(stategine::pictures ALIAS stategine_pictures)
+target_include_directories(stategine_pictures PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb)
+
 # A game's modules, built the same way: stategine_module(), and
 # stategine_check_modules() to hold them to it.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineModules.cmake)
@@ -231,7 +240,7 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
   # colour references, by the renderer itself (docs/materials.md).
   if(SG_BUILD_DSL)
     add_executable(sgmat tools/sgmat.cpp)
-    target_link_libraries(sgmat PRIVATE stategine_dev stategine_dsl glfw)
+    target_link_libraries(sgmat PRIVATE stategine_dev stategine_dsl stategine_pictures glfw)
     stategine_compile_dsl(sgmat NAME sgmat SOURCES tools/sgmat.sg)
     stategine_compile_dsl(sgmat NAME sgmat_worn SOURCES tools/sgmat_worn.sg)
     if(WIN32)
@@ -447,6 +456,10 @@ if(SG_BUILD_TESTS)
   add_executable(sg_texture tests/test_texture.cpp)
   target_link_libraries(sg_texture PRIVATE stategine_dev)
   add_test(NAME sg_texture COMMAND sg_texture)
+  # A picture file read back as it was written (stategine::pictures).
+  add_executable(sg_pictures tests/test_pictures.cpp)
+  target_link_libraries(sg_pictures PRIVATE stategine_dev stategine_pictures)
+  add_test(NAME sg_pictures COMMAND sg_pictures)
   # A picture packed for the card: the picture, within a level, every time.
   add_executable(sg_pack tests/test_pack.cpp)
   target_link_libraries(sg_pack PRIVATE stategine_dev)
@@ -569,7 +582,10 @@ if(SG_BUILD_TESTS)
   # Sound, held to the same rules.
   set_property(GLOBAL APPEND PROPERTY STATEGINE_MODULES
     "sg/audio=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/audio:sg/core,sg/domains,sg/spatial"
-    "sg/audio=${CMAKE_CURRENT_SOURCE_DIR}/src/audio:sg/core,sg/domains,sg/spatial")
+    "sg/audio=${CMAKE_CURRENT_SOURCE_DIR}/src/audio:sg/core,sg/domains,sg/spatial"
+    # Pictures read as pixels: beside the engine, knowing nothing of it.
+    "sg/pictures=${CMAKE_CURRENT_SOURCE_DIR}/include/sg/pictures:"
+    "sg/pictures=${CMAKE_CURRENT_SOURCE_DIR}/src/pictures:")
   stategine_check_modules(NAME sg_shape)
   set_property(GLOBAL PROPERTY STATEGINE_MODULES "")
 

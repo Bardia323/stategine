@@ -1062,6 +1062,9 @@ include/sg/
   render/    Ascii, Visibility, ViewPlan, Geometry, Defaults
     (uses core, domains, spatial; no GPU or window dependency)
   gl/        native OpenGL executor (World.hpp; uses render)
+  pictures/  a picture file read as pixels (PNG, JPEG, TGA, BMP, PPM) for a
+    program to hand the engine (Texture::set_reader); uses nothing of the
+    engine, built as stategine::pictures (stb_image in third_party/stb)
   web/       browser WebGPU, WebRTC and DOM adapters (uses render/net/DSL)
   dsl/       parse, kinds, compile/lower, plan, emit, apply, facts, natives,
     compiler state (uses core, domains; built as stategine::dsl)

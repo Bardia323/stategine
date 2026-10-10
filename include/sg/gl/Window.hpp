@@ -1,7 +1,9 @@
 // Stategine - GLFW window plus a frame-by-frame input snapshot.
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -16,6 +18,11 @@ namespace sg::gl {
 
 // A window and its GL context, by GLFW. inline: GLFW is the project's, so
 // this stays a header, built where GLFW is.
+//
+// `SG_WINDOW_MONITOR` says where it opens, for tests and tools run beside
+// someone at work: `other` on a monitor that is not the main one, or a
+// monitor's number (0 the main one) - in the middle of it, shown without
+// taking the keyboard from what has it. Unset, it opens as the system likes.
 class Window {
 public:
     Window(int w, int h, const std::string& title) {
@@ -24,10 +31,23 @@ public:
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_SAMPLES, 4);
+        GLFWmonitor* const on = asked_monitor();
+        if (on) {
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+        }
         win_ = glfwCreateWindow(w, h, title.c_str(), nullptr, nullptr);
+        glfwDefaultWindowHints();
         if (!win_) {
             glfwTerminate();
             throw std::runtime_error("window creation failed (needs OpenGL 3.3)");
+        }
+        if (on) {
+            int x = 0, y = 0, aw = 0, ah = 0;
+            glfwGetMonitorWorkarea(on, &x, &y, &aw, &ah);
+            glfwSetWindowPos(win_, x + std::max(0, (aw - w) / 2), y + std::max(0, (ah - h) / 2));
+            glfwShowWindow(win_);
         }
         glfwMakeContextCurrent(win_);
         glfwSwapInterval(1);
@@ -102,6 +122,24 @@ public:
 
 private:
     static bool valid(int key) { return key >= 0 && key <= GLFW_KEY_LAST; }
+
+    // The monitor `SG_WINDOW_MONITOR` names, or none: unset, or no such one
+    // (one monitor only: `other` has nowhere to go, and it opens as ever).
+    static GLFWmonitor* asked_monitor() {
+        const char* say = std::getenv("SG_WINDOW_MONITOR");
+        if (!say || !*say) return nullptr;
+        int n = 0;
+        GLFWmonitor** all = glfwGetMonitors(&n);
+        if (!all || n == 0) return nullptr;
+        if (std::string(say) == "other") {
+            GLFWmonitor* const main = glfwGetPrimaryMonitor();
+            for (int i = 0; i < n; ++i)
+                if (all[i] != main) return all[i];
+            return nullptr;
+        }
+        const int i = std::atoi(say);
+        return i >= 0 && i < n ? all[i] : nullptr;
+    }
 
     GLFWwindow* win_ = nullptr;
     std::array<bool, GLFW_KEY_LAST + 1> now_{};

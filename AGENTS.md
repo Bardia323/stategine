@@ -196,6 +196,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `ConsoleState` (`domains/Console.hpp`) | scrollback, an input line, `submit` and `clear` | your own log buffer or command line |
 | `Atlas` / `Cover` (`domains/Atlas.hpp`, `core/Sheaf.hpp`) | charts glued by doorways; local pieces that must agree to glue | rooms placed by absolute coordinates; agreement checked by hand |
 | `TextStore` (`core/Store.hpp`) | texts kept in files, read once, re-read only when the stamp moves | file reads and writes of your own |
+| `sg::pictures::read` (`pictures/Pictures.hpp`, `stategine::pictures`) | a picture file as pixels - PNG (16-bit too), JPEG, TGA, BMP, PPM - for `Texture::set_reader`; beside the engine, never in it | an image loader of your own, a picture format read inside the engine |
 | `Assets` (`core/Assets.hpp`) | files in `<root>/<owner>/`, with owner/path checks and legacy adoption | loose files or private asset paths; runs use `<build>/out/<state>/` |
 | `cache` (`core/Cache.hpp`) | derived data kept on disk by a digest of what made it (inputs and code), written atomically, damaged files a miss; never a source of truth | remaking costly pure data every start; a cache keyed on a hand-kept version alone |
 | `spatial` (`spatial/Math.hpp`, `Geometry.hpp`, `Index.hpp`) | pure transforms, bounds, rays, convex volumes, finite-surface projection and BVH | duplicated geometry or semantic ownership in a query cache |
@@ -476,6 +477,14 @@ logs in `logs/`, and Wasm in `build/wasm`. Do not add nested packaging layers.
 cmake --build build && ctest --test-dir build        # the fast tier: laws, graph watch, defaults, text, the DSL, every domain
 ctest --test-dir build -C full                       # everything: also the networking process runs (pong, peers)
 ```
+**Windows go on the second monitor.** Whoever you work for is at their own
+screen - perhaps in a game - while tests and tools open windows (the GL
+tests, `sgmat`, `sgland`, a shot run). Before running any of them, set
+`SG_WINDOW_MONITOR=other` (`export` it once in the shell that runs them, so
+ctest's children have it too): every `sg::gl::Window` then opens in the
+middle of a monitor that is not the main one, without taking the keyboard
+from what has it. With one monitor it opens as ever. A number picks a
+monitor instead (0 the main one).
 Run the full tier when the networking acceptance path changes and before a
 release; a test that guards only a settled path goes in it (`CONFIGURATIONS
 full` on its `add_test`, and its name in `_sg_full_tests`), never deleted.

@@ -16,7 +16,9 @@
 // roughness surface emissive mirror glass` and whatever else a thing reads;
 // a key `texture.<k>` is set on the map of a Texture the specimens wear
 // (`texture.generator`, `texture.seed`, `texture.tile`, `texture.relief`,
-// `texture.layer` and `texture.surface_layer` - binary PPMs beside the file;
+// `texture.layer`, `texture.surface_layer` and `texture.normal_layer` -
+// PNG, JPEG, TGA, BMP or PPM files beside it (`texture.per_cell = 1` for one
+// tile of a material in every cell);
 // `texture.srgb = 0` when its colours are linear values, not colours as seen
 // on a screen, which a texture's are unless it says).
 //
@@ -40,6 +42,7 @@
 
 #include "sg/domains/Modeler.hpp"
 #include "sg/domains/Texture.hpp"
+#include "sg/pictures/Pictures.hpp"
 #include "sg/dsl/Natives.hpp"
 #include "sg/dsl/Runtime.hpp"
 #include "sg/gl/Window.hpp"
@@ -95,7 +98,7 @@ bool say(Material& m, const std::string& line, const fs::path& dir, std::string&
             m.srgb = std::holds_alternative<double>(v) && std::get<double>(v) != 0.0 ? 1 : 0;
             return true;
         }
-        if (k == "layer" && std::holds_alternative<std::string>(v)) {
+        if (k.size() >= 5 && k.compare(k.size() - 5, 5, "layer") == 0 && std::holds_alternative<std::string>(v)) {
             const fs::path p = std::get<std::string>(v);
             v = (p.is_absolute() ? p : dir / p).string();
         }
@@ -127,28 +130,6 @@ bool read(Material& m, const std::string& text, const fs::path& dir, const std::
         if (!say(m, line, dir, why)) std::fprintf(stderr, "%s:%zu: %s: %s\n", from.c_str(), n, why.c_str(), trim(line).c_str()), ok = false;
     }
     return ok;
-}
-
-// A binary PPM (P6, 8 bits) as RGBA rows, top first: the one picture format
-// this tool reads (the engine reads none of its own) - any image program
-// writes it.
-bool read_ppm(const std::string& path, int& w, int& h, std::vector<unsigned char>& rgba) {
-    std::ifstream in(path, std::ios::binary);
-    std::string magic;
-    int max = 0;
-    if (!(in >> magic) || magic != "P6") return false;
-    const auto number = [&](int& out) {
-        for (in >> std::ws; in.peek() == '#'; in >> std::ws) in.ignore(1 << 20, '\n');
-        return static_cast<bool>(in >> out);
-    };
-    if (!number(w) || !number(h) || !number(max) || max != 255 || w <= 0 || h <= 0) return false;
-    in.get();
-    std::vector<unsigned char> rgb(static_cast<std::size_t>(w) * h * 3);
-    if (!in.read(reinterpret_cast<char*>(rgb.data()), static_cast<std::streamsize>(rgb.size()))) return false;
-    rgba.resize(static_cast<std::size_t>(w) * h * 4);
-    for (std::size_t i = 0, n = static_cast<std::size_t>(w) * h; i < n; ++i)
-        rgba[i * 4] = rgb[i * 3], rgba[i * 4 + 1] = rgb[i * 3 + 1], rgba[i * 4 + 2] = rgb[i * 3 + 2], rgba[i * 4 + 3] = 255;
-    return true;
 }
 
 std::string slurp(const fs::path& p) {
@@ -335,7 +316,7 @@ int main(int argc, char** argv) {
     if (preset == "all") presets.assign(std::begin(kPresets), std::end(kPresets));
     else if (std::find(std::begin(kPresets), std::end(kPresets), preset) != std::end(kPresets)) presets.push_back(preset);
     else return std::fprintf(stderr, "no preset %s (studio, lamp, soft, all)\n", preset.c_str()), 1;
-    sg::Texture::set_reader(read_ppm);
+    sg::Texture::set_reader(sg::pictures::read);
 
     // Each preset's picture: `-o` itself for one; beside it, named by preset, for several.
     std::string base = name;
