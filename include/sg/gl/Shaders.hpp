@@ -28,6 +28,11 @@ layout(location=8) in vec4 iMat1;
 // Its depth layer (x): steps nearer the eye it is drawn, past its size's
 // (`depth_layer`); how metal it is (y).
 layout(location=9) in vec4 iMat2;
+// Which way the corner's u runs on its surface, and which side its v (w):
+// a model's own normal map is laid along them (gl::Mesh::set_tangents);
+// (0, 0, 0, 1) where a mesh has none, and the scene finds them on the screen.
+layout(location=10) in vec4 aTangent;
+out vec4 vTangent;
 uniform float uDepthLayer;
 uniform int uInstanced;
 uniform mat4 uFrame;
@@ -85,6 +90,8 @@ void main() {
     vRoomNormal = mat3(texModel) * (aNormal / max(texScale * texScale, vec3(1e-8)));
     vNormal = normalize(mat3(model) * aNormal);
     vUV = aUV;
+    // (Turned over - a model mirrored - its v runs the other side of its u.)
+    vTangent = vec4(mat3(model) * aTangent.xyz, aTangent.w * (determinant(mat3(model)) < 0.0 ? -1.0 : 1.0));
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
@@ -207,6 +214,39 @@ void main() {
 inline const char* depth_fs() {
     return R"(#version 330 core
 void main() {})";
+}
+
+// The same, for a thing cut out of its picture (`cutout`: a leaf on a card):
+// what is cut away casts nothing, so its shadow is the leaf's. Its own program,
+// so every other caster keeps the depth test before its (empty) shading.
+inline const char* depth_cut_vs() {
+    return R"(#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
+uniform mat4 uModel;
+uniform mat4 uLightViewProj;
+uniform vec4 uCasterSide;
+out float gl_ClipDistance[1];
+out vec2 vUV;
+void main() {
+    vec4 world = uModel * vec4(aPos, 1.0);
+    gl_ClipDistance[0] = dot(uCasterSide.xyz, world.xyz) + uCasterSide.w;
+    vUV = aUV;
+    gl_Position = uLightViewProj * world;
+})";
+}
+
+inline const char* depth_cut_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uCutout;  // what alpha is kept: at least this
+void main() {
+    // As the scene cuts it (scene_fs: cut_alpha), so the shadow is of what is seen.
+    vec2 px = vUV * vec2(textureSize(uTex, 0));
+    float lod = max(0.0, 0.5 * log2(max(dot(dFdx(px), dFdx(px)), dot(dFdy(px), dFdy(px)))));
+    if (texture(uTex, vUV).a * (1.0 + lod * 0.25) < uCutout) discard;
+})";
 }
 
 // --- post ---------------------------------------------------------------------

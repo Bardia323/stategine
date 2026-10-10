@@ -245,7 +245,7 @@ public:
     std::vector<std::string> imports;
     std::set<std::string> used_;  // libraries already in (use)
     std::vector<std::string> mats_;
-    std::map<int, std::string> textures_;  // a material's picture, as an import's library names it
+    std::map<int, MtlMaps> textures_;  // a material's pictures, as an import's library names them
     std::set<std::string> defined_by_library;
 
 private:
@@ -585,7 +585,7 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         // Its materials' pictures, from the library beside it: each a file
         // beside the library, for whoever shows the model to read (the
         // modeller reads no picture).
-        std::map<std::string, std::string> pictures;
+        std::map<std::string, MtlMaps> pictures;
         if (!ob.mtllib.empty()) {
             const std::string& file = a.pos[0];
             const std::size_t cut = file.find_last_of("/\\");
@@ -593,7 +593,11 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
             std::string lib;
             if (files_->read(dir + ob.mtllib, lib)) {
                 imports.push_back(dir + ob.mtllib);
-                for (const auto& [name, pic] : read_mtl(lib)) pictures[name] = dir + pic;
+                const auto beside = [&](const std::string& pic) { return pic.empty() ? pic : dir + pic; };
+                for (auto [name, pic] : read_mtl(lib)) {
+                    pic.colour = beside(pic.colour), pic.normal = beside(pic.normal), pic.surface = beside(pic.surface);
+                    pictures[name] = std::move(pic);
+                }
             }
         }
         for (int& f : g->mat) {
@@ -1071,7 +1075,12 @@ Model build(const std::string& recipe, const Options& options, const Files* file
         part.material = m < in.mats_.size() ? in.mats_[m] : "";
         if (const std::size_t at = part.material.find('@'); at != std::string::npos)
             part.joint = part.material.substr(at + 1), part.material.resize(at);
-        if (auto it = in.textures_.find(int(m)); it != in.textures_.end()) part.texture = it->second;
+        if (auto it = in.textures_.find(int(m)); it != in.textures_.end()) {
+            part.texture = it->second.colour;
+            part.normal_texture = it->second.normal;
+            part.surface_texture = it->second.surface;
+            part.cutout = it->second.cutout;
+        }
         part.corners = std::move(by[m]);
         for (std::size_t i = 0; i + 7 < part.corners.size(); i += 8) bb.grow(V3{part.corners[i], part.corners[i + 1], part.corners[i + 2]});
         out.triangles += part.corners.size() / 24;

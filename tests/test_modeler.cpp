@@ -211,6 +211,8 @@ int main() {
         }
         check(kept, "and its corners keep their places on it");
         check(std::find(m.imports.begin(), m.imports.end(), "kit/quad.mtl") != m.imports.end(), "its library is among what it read");
+        check(m.parts.size() == 1 && m.parts[0].normal_texture.empty() && m.parts[0].surface_texture.empty() && !m.parts[0].cutout,
+              "a material that names only its colour has no other maps");
         const Model flipped = sculpt::build("import kit/quad.obj mats=1 scale=-1,1,1", {}, &f);
         bool still = !flipped.parts.empty();
         if (still) {
@@ -218,6 +220,32 @@ int main() {
             for (std::size_t i = 0; i + 7 < c.size(); i += 8) still = still && std::abs(c[i + 6] + c[i]) < 1e-5;
         }
         check(still, "mirrored, each corner keeps its own place");
+    }
+    {
+        // A photographed material's maps, as a converter writes them: a normal
+        // map (`norm`; `map_Bump -bm` as exporters write one), a surface map
+        // (`map_ORM`), and a colour whose alpha cuts the leaf out (`map_d`).
+        const std::string obj =
+            "mtllib leaf.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nvt 0 0\nvt 1 0\nvt 1 1\n"
+            "usemtl bark\nf 1/1 2/2 3/3\nusemtl leaf\nf 3/3 2/2 1/1\n";
+        const std::string mtl =
+            "newmtl bark\nmap_Kd bark_diff.jpg\nmap_Bump -bm 1.0 bark_nor_gl.png\nmap_ORM bark_arm.png\n"
+            "newmtl leaf\nmap_Kd leaf.png\nmap_d leaf.png\nnorm leaf_nor_gl.png\nmap_Bump leaf_height.png\n";
+        sculpt::Files f;
+        f.read = [&](const std::string& p, std::string& out) {
+            out = p.find(".mtl") != std::string::npos ? mtl : obj;
+            return true;
+        };
+        f.stamp = [](const std::string&) { return 1LL; };
+        const Model m = sculpt::build("import plant/leaf.obj mats=1", {}, &f);
+        const sculpt::Part* bark = nullptr;
+        const sculpt::Part* leaf = nullptr;
+        for (const sculpt::Part& p : m.parts) (p.material == "bark" ? bark : leaf) = &p;
+        check(bark && bark->texture == "plant/bark_diff.jpg" && bark->normal_texture == "plant/bark_nor_gl.png" &&
+                  bark->surface_texture == "plant/bark_arm.png" && !bark->cutout,
+              "a material's normal and surface maps, beside its library");
+        check(leaf && leaf->normal_texture == "plant/leaf_nor_gl.png" && leaf->surface_texture.empty() && leaf->cutout,
+              "`norm` is the normal map over a `map_Bump`, and `map_d` cuts the colour out");
     }
     {
         const std::string castle =

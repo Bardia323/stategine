@@ -422,8 +422,8 @@ Obj read_obj(const std::string& text) {
     return o;
 }
 
-std::map<std::string, std::string> read_mtl(const std::string& text) {
-    std::map<std::string, std::string> out;
+std::map<std::string, MtlMaps> read_mtl(const std::string& text) {
+    std::map<std::string, MtlMaps> out;
     std::istringstream in(text);
     std::string line, cur;
     while (std::getline(in, line)) {
@@ -432,11 +432,18 @@ std::map<std::string, std::string> read_mtl(const std::string& text) {
         std::string w;
         ls >> w;
         if (w == "newmtl") ls >> cur;
-        else if (w == "map_Kd" && !cur.empty()) {
-            // The file is the last word: options (-s, -o ...) come before it.
+        else if (!cur.empty() && (w == "map_Kd" || w == "norm" || w == "map_Bump" || w == "bump" || w == "map_ORM" || w == "map_d")) {
+            // The file is the last word: options (-s, -o, -bm ...) come before it.
             std::string word, last;
             while (ls >> word) last = word;
-            out[cur] = last;
+            if (last.empty()) continue;
+            MtlMaps& m = out[cur];
+            if (w == "map_Kd") m.colour = last;
+            else if (w == "norm") m.normal = last;
+            else if (w == "map_Bump" || w == "bump") {
+                if (m.normal.empty()) m.normal = last;
+            } else if (w == "map_ORM") m.surface = last;
+            else m.cutout = true;
         }
     }
     return out;

@@ -92,6 +92,15 @@ struct Part {
     // a file path beside it - for whoever shows the model to read and give
     // to a thing (`skin` = the picture, `uv` = 1). Empty: none.
     std::string texture;
+    // And the pictures that go with it, read the same way and given to the
+    // same thing: its normal map (`norm` / `map_Bump` of the .mtl - OpenGL's
+    // way, green up; `skin_normal`) and its surface map (`map_ORM` - red
+    // occlusion, green roughness, blue metal, glTF's order; `skin_surface`).
+    // Empty: none.
+    std::string normal_texture, surface_texture;
+    // Its colour picture's alpha cuts it out (`map_d` of the .mtl): a leaf
+    // on a card, drawn only where the leaf is (`cutout`, `two_sided`).
+    bool cutout = false;
     // The joint its faces move with (`moves`), by name; empty: they stand still.
     std::string joint;
 };

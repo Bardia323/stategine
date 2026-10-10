@@ -86,6 +86,9 @@ public:
     static bool packs();
 
     void bind(int unit = 0) const;
+    // Its picture laid again past its edges (a uv beyond 0..1 wraps round),
+    // as a model's own uv may ask; made, it stops at them.
+    void repeat();
 
     int width() const { return w_; }
     int height() const { return h_; }
@@ -126,10 +129,28 @@ public:
 
     bool valid() const { return vao_ != 0; }
 
+    // Which way each corner's u and v run on its surface (4 floats a corner,
+    // render::tangents), at attribute 10: what a normal map read through the
+    // corners' own uv is laid along. Derived from the corners, so made for
+    // the mesh as it is (`made` since it was last changed) by whoever has
+    // them, once; a mesh changed since has none until given them again (the
+    // scene then takes its ways from the screen). Without them attribute 10
+    // reads as none (0, 0, 0, 1).
+    // (Given ways of another count - none - it has none, and is not asked again
+    // until it is changed: tangents_made says it was given them, whatever they were.)
+    void set_tangents(const std::vector<float>& tangents) const;
+    bool tangents_made() const { return tangents_for_ == made_; }
+
 private:
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
     GLsizei count_ = 0;
+    // Which making of its corners it holds (each update another), and the
+    // ways' buffer and which making they were made for: derived data on the
+    // card, kept beside the corners as the divisors below are.
+    uint64_t made_ = 0;
+    mutable GLuint tangents_ = 0;
+    mutable uint64_t tangents_for_ = ~uint64_t{0};
     // The vertex array whose instance attributes step once an instance
     // (their divisors are its own state, set once, kept while it stands).
     mutable GLuint divided_ = 0;

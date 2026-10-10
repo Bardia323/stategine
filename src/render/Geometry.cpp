@@ -1,6 +1,7 @@
 #include "sg/render/Geometry.hpp"
 #include "sg/spatial/Projection.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 namespace sg::render {
@@ -33,6 +34,61 @@ Indexed indexed(const std::vector<float>& corners) {
                                       corners.begin() + static_cast<std::ptrdiff_t>(i * 8 + 8));
         out.index.push_back(it->second);
     }
+    return out;
+}
+
+std::vector<float> tangents(const std::vector<float>& corners) {
+    const Indexed ix = indexed(corners);
+    const std::size_t corners_n = ix.index.size(), unique = ix.corners.size() / 8;
+    std::vector<double> t(unique * 3, 0.0), b(unique * 3, 0.0);
+    const auto at = [&](uint32_t k, int c) { return static_cast<double>(ix.corners[k * 8 + static_cast<std::size_t>(c)]); };
+    for (std::size_t f = 0; f + 2 < corners_n; f += 3) {
+        const uint32_t k[3] = {ix.index[f], ix.index[f + 1], ix.index[f + 2]};
+        const double e1[3] = {at(k[1], 0) - at(k[0], 0), at(k[1], 1) - at(k[0], 1), at(k[1], 2) - at(k[0], 2)};
+        const double e2[3] = {at(k[2], 0) - at(k[0], 0), at(k[2], 1) - at(k[0], 1), at(k[2], 2) - at(k[0], 2)};
+        const double du1 = at(k[1], 6) - at(k[0], 6), dv1 = at(k[1], 7) - at(k[0], 7);
+        const double du2 = at(k[2], 6) - at(k[0], 6), dv2 = at(k[2], 7) - at(k[0], 7);
+        const double r = du1 * dv2 - du2 * dv1;
+        if (std::abs(r) < 1e-14) continue;
+        double ft[3], fb[3];
+        for (int i = 0; i < 3; ++i) ft[i] = (e1[i] * dv2 - e2[i] * dv1) / r, fb[i] = (e2[i] * du1 - e1[i] * du2) / r;
+        const double lt = std::sqrt(ft[0] * ft[0] + ft[1] * ft[1] + ft[2] * ft[2]);
+        const double lb = std::sqrt(fb[0] * fb[0] + fb[1] * fb[1] + fb[2] * fb[2]);
+        if (lt < 1e-20 || lb < 1e-20) continue;
+        for (int c = 0; c < 3; ++c) {
+            // The face's angle at this corner.
+            const uint32_t a = k[c], p = k[(c + 1) % 3], q = k[(c + 2) % 3];
+            double u[3], v[3];
+            for (int i = 0; i < 3; ++i) u[i] = at(p, i) - at(a, i), v[i] = at(q, i) - at(a, i);
+            const double lu = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]), lv = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (lu < 1e-20 || lv < 1e-20) continue;
+            const double w = std::acos(std::clamp((u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (lu * lv), -1.0, 1.0));
+            for (int i = 0; i < 3; ++i) t[a * 3 + static_cast<std::size_t>(i)] += ft[i] / lt * w, b[a * 3 + static_cast<std::size_t>(i)] += fb[i] / lb * w;
+        }
+    }
+    std::vector<float> per(unique * 4);
+    for (std::size_t k = 0; k < unique; ++k) {
+        double n[3] = {ix.corners[k * 8 + 3], ix.corners[k * 8 + 4], ix.corners[k * 8 + 5]};
+        const double ln = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (ln > 1e-20) n[0] /= ln, n[1] /= ln, n[2] /= ln;
+        double* tk = &t[k * 3];
+        const double d = tk[0] * n[0] + tk[1] * n[1] + tk[2] * n[2];
+        double o[3] = {tk[0] - n[0] * d, tk[1] - n[1] * d, tk[2] - n[2] * d};
+        double lo = std::sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
+        if (lo < 1e-12) {
+            // No way of its own: any square to its normal.
+            const double a[3] = {std::abs(n[0]) < 0.9 ? 1.0 : 0.0, std::abs(n[0]) < 0.9 ? 0.0 : 1.0, 0.0};
+            const double e = a[0] * n[0] + a[1] * n[1];
+            o[0] = a[0] - n[0] * e, o[1] = a[1] - n[1] * e, o[2] = -n[2] * e;
+            lo = std::sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
+        }
+        const double c[3] = {n[1] * o[2] - n[2] * o[1], n[2] * o[0] - n[0] * o[2], n[0] * o[1] - n[1] * o[0]};
+        const double* bk = &b[k * 3];
+        per[k * 4 + 0] = static_cast<float>(o[0] / lo), per[k * 4 + 1] = static_cast<float>(o[1] / lo), per[k * 4 + 2] = static_cast<float>(o[2] / lo);
+        per[k * 4 + 3] = c[0] * bk[0] + c[1] * bk[1] + c[2] * bk[2] < 0.0 ? -1.0f : 1.0f;
+    }
+    std::vector<float> out(corners_n * 4);
+    for (std::size_t i = 0; i < corners_n; ++i) std::copy_n(&per[ix.index[i] * 4], 4, &out[i * 4]);
     return out;
 }
 

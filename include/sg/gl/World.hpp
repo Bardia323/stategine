@@ -1030,6 +1030,22 @@ private:
     // One of its state's pictures, made current on unit 0 - false if it keeps
     // none by that name.
     bool bind_picture(const State& st, const std::string& name, bool data = false);
+    // One of its pictures worn through a model's own uv as a photograph is:
+    // smooth, mipmapped, packed where the quality packs, laid again past its
+    // edges - its colour (sRGB) or a map of it (linear: a normal or surface
+    // map), made current on `unit`. False if the state keeps none by that name.
+    bool bind_worn(const State& st, const std::string& name, bool srgb, int unit);
+    // What a thing with `skin` wears, made current on unit 0: a picture
+    // tiled as pixel art, or worn through its uv - smoothly where it says it
+    // is a photograph (`smooth`, or it has a normal or surface map of its own).
+    bool bind_skin(const State& st, const Element& e);
+    // A thing cut out of its picture (`cutout` > 0, with a `skin`), drawn
+    // after the rest with the program that may cut (cutout_of), as a sprite is.
+    static bool cuts_out(const Element& e);
+    // Every picture the things of `worlds` wear through their uv as
+    // photographs, packed on every core (kept on disk by their pixels) and
+    // made on the card before any is drawn (warm): none is made in a frame.
+    void ready_worn(const std::vector<Spatial3D*>& worlds);
     // A sprite: its picture on a flat card at its place, turned to the eye -
     // round about the upright, or (`face`) wholly, to lie square to the view.
     void draw_sprite(const State& st, const Element& e);
@@ -1237,6 +1253,11 @@ private:
     // A picture as pixel art (sampled nearest, in colour), and as data (a
     // land's shares or depths: smooth, linear) - two textures of one picture.
     std::unordered_map<const Spatial3D::Picture*, PictureTexture> picture_textures_, data_textures_;
+    // ... and as a photograph worn through a model's uv: its colour (sRGB)
+    // and its maps (linear) - by the picture and which.
+    std::map<std::pair<const Spatial3D::Picture*, bool>, PictureTexture> worn_textures_;
+    // The caster for a thing cut out of its picture (gl::depth_cut_vs/fs).
+    const gl::Program* cut_caster_ = nullptr;
     gl::Vec3 cam_forward_{0, 0, -1}, cam_up_{0, 1, 0};  // and which way it looks
     gl::FullscreenTriangle screen_;
     // Shadow maps, a set for each world drawn, and what each was drawn of.

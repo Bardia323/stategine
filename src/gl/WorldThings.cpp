@@ -3,8 +3,13 @@
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <set>
+#include <thread>
 
 #include "sg/domains/Texture.hpp"
+#include "sg/render/Geometry.hpp"
+#include "sg/render/Pack.hpp"
 
 namespace sg::render {
 
@@ -28,6 +33,97 @@ bool GLWorldView::bind_picture(const State& st, const std::string& name, bool da
     }
     t.texture.bind(0);
     return true;
+}
+
+bool GLWorldView::bind_worn(const State& st, const std::string& name, bool srgb, int unit) {
+    const auto* space = dynamic_cast<const Spatial3D*>(&st);
+    const Spatial3D::Picture* pic = space ? space->picture(Key{name}) : nullptr;
+    if (!pic || pic->w <= 0 || pic->h <= 0) return false;
+    PictureTexture& t = worn_textures_[{pic, srgb}];
+    if (t.revision != pic->revision || !t.texture.valid()) {
+        // Packed where the quality packs (and the card takes it), kept on
+        // disk by its pixels: a photograph is a quarter of the memory so.
+        if (q_.pack && gl::Texture::packs() && render::packable(pic->w, pic->h)) {
+            t.texture.create_packed(render::pack_kept(pic->rgba.data(), pic->w, pic->h, srgb));
+        } else {
+            t.texture.create(pic->w, pic->h, /*mipmaps=*/true, srgb, /*pixel=*/false);
+            t.texture.upload(pic->rgba);
+        }
+        t.texture.repeat();
+        t.revision = pic->revision;
+    }
+    t.texture.bind(unit);
+    return true;
+}
+
+bool GLWorldView::bind_skin(const State& st, const Element& e) {
+    static const Key skin{"skin"}, uv{"uv"}, smooth{"smooth"}, normal{"skin_normal"}, surface{"skin_surface"};
+    const std::string name = e.params.get_or<std::string>(skin, "");
+    const bool photo = e.params.num(uv, 0.0) > 0.5 && (e.params.num(smooth, 0.0) > 0.5 || e.params.has(normal) || e.params.has(surface));
+    return photo ? bind_worn(st, name, true, 0) : bind_picture(st, name);
+}
+
+bool GLWorldView::cuts_out(const Element& e) {
+    static const Key cutout{"cutout"}, skin{"skin"};
+    return e.params.num(cutout, 0.0) > 0.0 && e.params.has(skin);
+}
+
+void GLWorldView::ready_worn(const std::vector<Spatial3D*>& worlds) {
+    static const Key skin{"skin"}, uv{"uv"}, smooth{"smooth"}, normal{"skin_normal"}, surface{"skin_surface"};
+    // Each picture once (colour or map), with the state that keeps it.
+    struct Job {
+        const Spatial3D* world;
+        std::string name;
+        bool srgb;
+        const Spatial3D::Picture* pic;
+        render::Packed packed;
+    };
+    std::vector<Job> jobs;
+    std::set<std::pair<const Spatial3D::Picture*, bool>> seen;
+    const auto want = [&](const Spatial3D& w, const std::string* name, bool srgb) {
+        if (!name || name->empty()) return;
+        const Spatial3D::Picture* pic = w.picture(Key{*name});
+        if (!pic || pic->w <= 0 || pic->h <= 0 || !seen.insert({pic, srgb}).second) return;
+        const auto at = worn_textures_.find({pic, srgb});
+        if (at != worn_textures_.end() && at->second.revision == pic->revision && at->second.texture.valid()) return;
+        jobs.push_back(Job{&w, *name, srgb, pic, {}});
+    };
+    for (const Spatial3D* w : worlds) {
+        if (!w) continue;
+        for (const Element& e : w->elements()) {
+            if (e.kind != kinds::mesh || e.params.num(uv, 0.0) <= 0.5 || !e.params.has(skin)) continue;
+            const bool photo = e.params.num(smooth, 0.0) > 0.5 || e.params.has(normal) || e.params.has(surface);
+            if (photo) want(*w, e.params.text(skin), true);
+            want(*w, e.params.text(normal), false);
+            want(*w, e.params.text(surface), false);
+        }
+    }
+    if (jobs.empty()) return;
+    const bool pack = q_.pack && gl::Texture::packs();
+    if (pack) {
+        std::atomic<std::size_t> next{0};
+        const auto hand = [&] {
+            for (std::size_t k; (k = next.fetch_add(1)) < jobs.size();) {
+                Job& j = jobs[k];
+                if (render::packable(j.pic->w, j.pic->h)) j.packed = render::pack_kept(j.pic->rgba.data(), j.pic->w, j.pic->h, j.srgb);
+            }
+        };
+        std::vector<std::thread> hands;
+        const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), jobs.size());
+        for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+        hand();
+        for (std::thread& t : hands) t.join();
+    }
+    for (Job& j : jobs) {
+        PictureTexture& t = worn_textures_[{j.pic, j.srgb}];
+        if (!j.packed.levels.empty()) {
+            t.texture.create_packed(j.packed);
+            t.texture.repeat();
+            t.revision = j.pic->revision;
+        } else {
+            bind_worn(*j.world, j.name, j.srgb, 0);
+        }
+    }
 }
 
 void GLWorldView::draw_sprite(const State& st, const Element& e) {
@@ -56,7 +152,7 @@ void GLWorldView::draw_sprite(const State& st, const Element& e) {
     const float frames = static_cast<float>(std::max(1.0, e.params.num(Key{"frames"}, 1.0)));
     const float frame = std::fmod(std::max(0.0f, std::floor(static_cast<float>(e.params.num(Key{"frame"}, 0.0)))), frames);
     scene_->set("uUVRect", frame / frames, 0.0f, 1.0f / frames, 1.0f);
-    scene_->set("uCutout", 1.0f);
+    scene_->set("uCutout", 0.5f);
     scene_->set("uAlbedo", gl::Vec3{1, 1, 1});
     scene_->set("uRoughness", 1.0f);
     scene_->set("uSurface", 0.0f);
@@ -144,14 +240,50 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         return;
     }
     // A picture of its state's, tiled over the world - or, if it says `uv`,
-    // worn by its faces' own places on it (a model made with them).
-    if (e.params.has(Key{"skin"}) && bind_picture(st, e.params.get_or<std::string>(Key{"skin"}, ""))) {
+    // worn by its faces' own places on it (a model made with them), with
+    // the maps that go with it read the same way: its normal map
+    // (`skin_normal`) and surface map (`skin_surface`); cut out where its
+    // alpha is clear (`cutout`), lit from whichever side it is seen
+    // (`two_sided`), and letting light through (`translucent`).
+    static const Key skin_key{"skin"}, uv_key{"uv"}, normal_key{"skin_normal"}, surface_key{"skin_surface"}, cutout_key{"cutout"},
+        two_key{"two_sided"}, through_key{"translucent"}, dx_key{"normal_dx"}, strength_key{"normal_strength"};
+    if (e.params.has(skin_key) && bind_skin(st, e)) {
+        const bool uv = e.params.num(uv_key, 0.0) > 0.5;
         scene_->set("uTexMix", 1.0f);
-        scene_->set("uSkin", e.params.num(Key{"uv"}, 0.0) > 0.5 ? 0.0f : 2.0f);
+        scene_->set("uSkin", uv ? 0.0f : 2.0f);
         scene_->set("uTile", static_cast<float>(e.params.num(Key{"tile"}, 1.0)));
         scene_->set("uScreenUV", 0.0f);
         scene_->set("uCRT", 0.0f);
-        shape_of(st, e).draw();
+        const float cut = static_cast<float>(std::clamp(e.params.num(cutout_key, 0.0), 0.0, 1.0));
+        const float two = e.params.num(two_key, 0.0) > 0.5 ? 1.0f : 0.0f;
+        const float through = two > 0.0f ? static_cast<float>(std::clamp(e.params.num(through_key, 0.0), 0.0, 1.0)) : 0.0f;
+        const std::string* nmap = uv ? e.params.text(normal_key) : nullptr;
+        const std::string* smap = uv ? e.params.text(surface_key) : nullptr;
+        const bool normals = nmap && bind_worn(st, *nmap, false, 10);
+        const bool surface = smap && bind_worn(st, *smap, false, 9);
+        const gl::Mesh& mesh = shape_of(st, e);
+        if (normals && !mesh.tangents_made()) {
+            // Its corners' ways, made once for the mesh as it is (a model's:
+            // any other shape's are found on the screen).
+            const auto* space = dynamic_cast<const Spatial3D*>(&st);
+            const std::vector<float>* corners =
+                space && e.params.is(Key{"shape"}, "model") ? space->model(Key{e.params.get_or<std::string>(Key{"model"}, "")}) : nullptr;
+            mesh.set_tangents(corners ? render::tangents(*corners) : std::vector<float>{});
+        }
+        scene_->set("uCutout", cut);
+        scene_->set("uTwoSided", two);
+        scene_->set("uTranslucent", through);
+        scene_->set("uNormalMapOn", normals ? 1.0f : 0.0f);
+        scene_->set("uSurfaceMapOn", surface ? 1.0f : 0.0f);
+        if (normals) {
+            scene_->set("uNormalStrength", static_cast<float>(e.params.num(strength_key, 1.0)));
+            scene_->set("uNormalFlipY", e.params.num(dx_key, 0.0) > 0.5 ? 1.0f : -1.0f);
+        }
+        mesh.draw();
+        if (cut > 0.0f) scene_->set("uCutout", 0.0f);
+        if (two > 0.0f) scene_->set("uTwoSided", 0.0f), scene_->set("uTranslucent", 0.0f);
+        if (normals) scene_->set("uNormalMapOn", 0.0f), scene_->set("uNormalStrength", 1.0f);
+        if (surface) scene_->set("uSurfaceMapOn", 0.0f);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

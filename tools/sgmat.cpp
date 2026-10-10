@@ -10,6 +10,8 @@
 //   sgmat rust.mat -e "roughness=0.8; texture.relief=0.004"   the file, changed for one look
 //   sgmat rust.mat -o out.png -w 1920 -h 1080 --frames 30
 //   sgmat rust.mat --view ball             close on one specimen (ball, cube, slab)
+//   sgmat --model chair.obj                a model in their place, wearing its own maps
+//   sgmat --model palm.obj --fit 1.6 --turn 30 --view model
 //
 // A material file is `key = value`, one a line, `#` a remark (docs/materials.md
 // is the contract). A key is set on each specimen as it is said - `r g b
@@ -21,6 +23,16 @@
 // tile of a material in every cell);
 // `texture.srgb = 0` when its colours are linear values, not colours as seen
 // on a screen, which a texture's are unless it says).
+//
+// `--model <file.obj>` stands an imported model where the specimens stood
+// (they are put away), `--fit` metres tall (1.1; 0 as made), turned `--turn`
+// degrees: each of its materials a thing wearing the pictures its .mtl
+// names, through its own uv - `map_Kd` its colour (`skin`), `norm` /
+// `map_Bump` its normal map (`skin_normal`), `map_ORM` its surface map
+// (`skin_surface`), and `map_d` cut out of its colour's alpha (`cutout`,
+// `two_sided`, `translucent`: a leaf on a card). What the material file
+// says is set on every one of them too (`skin_normal = none` to see it
+// without its normal map). The model is measured as `model`.
 //
 // The stage is tools/sgmat.sg (and sgmat_worn.sg, the specimens wearing a
 // texture); this program only sets what the material says on the specimens
@@ -41,6 +53,7 @@
 #include <vector>
 
 #include "sg/domains/Modeler.hpp"
+#include "sg/domains/Shapes.hpp"
 #include "sg/domains/Texture.hpp"
 #include "sg/pictures/Pictures.hpp"
 #include "sg/dsl/Natives.hpp"
@@ -60,7 +73,7 @@ namespace fs = std::filesystem;
 namespace {
 
 const char* const kSpecimens[] = {"ball", "cube", "slab"};
-const char* const kMeasured[] = {"ball", "cube", "slab", "grey", "chrome", "white", "mid", "black", "red", "green", "blue"};
+const char* const kMeasured[] = {"ball", "cube", "slab", "model", "grey", "chrome", "white", "mid", "black", "red", "green", "blue"};
 const char* const kPresets[] = {"studio", "lamp", "soft"};
 
 // What a material says: what is set on the specimens, and on their texture's map.
@@ -68,6 +81,12 @@ struct Material {
     std::vector<std::pair<std::string, sg::Value>> things, map;
     int srgb = -1;  // -1: as a texture is (sRGB)
     bool worn() const { return !map.empty() || srgb >= 0; }
+};
+
+// A model stood in the specimens' place (`--model`).
+struct ModelSpec {
+    std::string file;
+    double fit = 1.1, turn = 0.0;
 };
 
 std::string trim(const std::string& s) {
@@ -155,7 +174,63 @@ bool project(const sg::render::ViewCamera& c, const sg::Vec3d& p, int W, int H, 
     return true;
 }
 
-Shot shoot(const Material& m, const std::string& preset, const std::string& look_at, int W, int H, int frames, int cell) {
+// The model, read from disk with the pictures its parts name: each part a
+// thing of the stage where the cube stood, wearing them through its own uv.
+// What could not be read is said (`! ...`).
+void stand_model(sg::Spatial3D& stage, const ModelSpec& spec, const Material& m, std::vector<std::string>& notes) {
+    sg::sculpt::Files files;
+    files.read = [](const std::string& path, std::string& text) {
+        if (!fs::exists(path)) return false;
+        text = slurp(path);
+        return true;
+    };
+    files.stamp = [](const std::string& path) -> long long {
+        std::error_code ec;
+        return fs::exists(path, ec) ? static_cast<long long>(fs::last_write_time(path, ec).time_since_epoch().count()) : 0;
+    };
+    char opts[96];
+    std::snprintf(opts, sizeof opts, " mats=1 base=1%s", spec.fit > 0 ? (" fit=" + std::to_string(spec.fit)).c_str() : "");
+    const sg::sculpt::Model model = sg::sculpt::build("import " + fs::path(spec.file).generic_string() + opts + "\n", {}, &files);
+    if (!model.errors.empty()) notes.push_back("! model: " + model.errors);
+    if (model.parts.empty()) return notes.push_back("! model: no faces in " + spec.file);
+    // The specimens put away: the model stands where they did.
+    for (const char* id : kSpecimens) stage.element(sg::Key{id}).params.set("unseen", 1.0).set("cast", 0.0);
+    const auto picture = [&](const std::string& path) -> std::string {
+        if (path.empty()) return {};
+        if (stage.picture(sg::Key{path})) return path;
+        int w = 0, h = 0;
+        std::vector<unsigned char> rgba;
+        if (!sg::pictures::read(path, w, h, rgba)) return notes.push_back("! model: cannot read " + path + " (" + sg::pictures::last_error() + ")"), std::string();
+        stage.picture(sg::Key{path}, w, h, std::move(rgba));
+        return path;
+    };
+    const double yaw = spec.turn * 3.14159265358979 / 180.0;
+    for (std::size_t i = 0; i < model.parts.size(); ++i) {
+        const sg::sculpt::Part& part = model.parts[i];
+        const sg::Key mesh{"model.mesh." + std::to_string(i)};
+        sg::Vec3d size;
+        stage.model(mesh, sg::shapes::fit(part.corners, size, model.lo, model.hi));
+        sg::Element& e = stage.fixture(i == 0 ? sg::Key{"model"} : sg::Key{"model." + std::to_string(i)}, 5.0, 0.0, 3.2);
+        e.params.set(sg::keys::sx, size.x).set(sg::keys::sy, size.y).set(sg::keys::sz, size.z).set(sg::keys::yaw, yaw);
+        e.params.set("shape", std::string("model")).set("model", mesh.str()).set("surface", 0.0).set("roughness", 0.6);
+        e.params.set("depth_layer", 3.0 * static_cast<double>(i));
+        if (const std::string pic = picture(part.texture); !pic.empty())
+            e.params.set("skin", pic).set("uv", 1.0).set("smooth", 1.0).set(sg::keys::r, 1.0).set(sg::keys::g, 1.0).set(sg::keys::b, 1.0);
+        else e.params.set(sg::keys::r, 0.6).set(sg::keys::g, 0.6).set(sg::keys::b, 0.6);
+        if (const std::string pic = picture(part.normal_texture); !pic.empty()) e.params.set("skin_normal", pic);
+        if (const std::string pic = picture(part.surface_texture); !pic.empty()) e.params.set("skin_surface", pic);
+        if (part.cutout) e.params.set("cutout", 0.5).set("two_sided", 1.0).set("translucent", 0.35);
+        for (const auto& [k, v] : m.things) e.params.set(sg::Key{k}, v);
+        char line[256];
+        std::snprintf(line, sizeof line, "  part %-14s %7zu faces  colour %s  normal %s  surface %s%s", part.material.c_str(), part.corners.size() / 24,
+                      part.texture.empty() ? "-" : fs::path(part.texture).filename().string().c_str(),
+                      part.normal_texture.empty() ? "-" : fs::path(part.normal_texture).filename().string().c_str(),
+                      part.surface_texture.empty() ? "-" : fs::path(part.surface_texture).filename().string().c_str(), part.cutout ? "  cut out" : "");
+        notes.emplace_back(line);
+    }
+}
+
+Shot shoot(const Material& m, const ModelSpec& spec, const std::string& preset, const std::string& look_at, int W, int H, int frames, int cell) {
     Shot shot;
     sg::StateGraph g;
     sg::dsl::Bindings bindings;
@@ -165,6 +240,7 @@ Shot shoot(const Material& m, const std::string& preset, const std::string& look
     // What the material says, on each specimen - before anything is drawn.
     for (const char* id : kSpecimens)
         for (const auto& [k, v] : m.things) stage.element(sg::Key{id}).params.set(sg::Key{k}, v);
+    if (!spec.file.empty()) stand_model(stage, spec, m, shot.notes);
     if (m.worn()) {
         auto& swatch = g.add<sg::Texture>(sg::Key{"swatch"}, cell);
         if (m.srgb >= 0) swatch.set_srgb(m.srgb == 1);
@@ -223,7 +299,9 @@ Shot shoot(const Material& m, const std::string& preset, const std::string& look
     const sg::render::ViewCamera cam = sg::render::view_camera(stage.element(sg::Key{"camera"}));
     std::vector<std::pair<std::string, std::array<double, 3>>> seen;
     for (const char* id : kMeasured) {
-        const sg::Element& e = stage.element(sg::Key{id});
+        const sg::Element* found = stage.find(sg::Key{id});
+        if (!found || found->params.num(sg::Key{"unseen"}, 0.0) > 0.5) continue;
+        const sg::Element& e = *found;
         const double sy = e.params.num(sg::keys::sy, 1), sx = e.params.num(sg::keys::sx, 1);
         const sg::Vec3d at{e.params.num(sg::keys::x), e.params.num(sg::keys::y) + sy * 0.5, e.params.num(sg::keys::z)};
         double x = 0, y = 0, depth = 0;
@@ -264,6 +342,7 @@ void write_png(const std::string& path, const std::vector<unsigned char>& rgb, i
 
 int main(int argc, char** argv) {
     Material m;
+    ModelSpec spec;
     std::string file, out, preset = "studio", look_at;
     int W = 1280, H = 720, frames = 12, cell = 256;
     bool ok = true;
@@ -278,6 +357,9 @@ int main(int argc, char** argv) {
         else if (a == "--cell") cell = std::clamp(std::atoi(next().c_str()), 16, 2048);
         else if (a == "--preset") preset = next();
         else if (a == "--view") look_at = next();
+        else if (a == "--model") spec.file = next();
+        else if (a == "--fit") spec.fit = std::atof(next().c_str());
+        else if (a == "--turn") spec.turn = std::atof(next().c_str());
         else if (a == "--set") sets.push_back(next());
         else if (a == "-e") {
             std::string e = next();
@@ -291,12 +373,13 @@ int main(int argc, char** argv) {
             ok = false;
         } else file = a;
     }
-    if (!ok || (file.empty() && sets.empty())) {
+    if (!ok || (file.empty() && sets.empty() && spec.file.empty())) {
         std::fprintf(stderr, "sgmat <material.mat> [--set key=value ...] [-e \"key=value; ...\"] [--preset studio|lamp|soft|all] "
-                             "[-o out.png] [-w px -h px] [--view ball|cube|slab] [--frames n] [--cell px]\n");
+                             "[-o out.png] [-w px -h px] [--view ball|cube|slab|model] [--frames n] [--cell px] "
+                             "[--model file.obj [--fit m] [--turn deg]]\n");
         return 1;
     }
-    std::string name = "sgmat";
+    std::string name = spec.file.empty() ? "sgmat" : fs::path(spec.file).stem().string();
     fs::path dir = ".";
     if (!file.empty()) {
         if (!fs::exists(file)) return std::fprintf(stderr, "no file %s\n", file.c_str()), 1;
@@ -310,8 +393,10 @@ int main(int argc, char** argv) {
         if (!say(m, s, dir, why)) std::fprintf(stderr, "--set %s: %s\n", s.c_str(), why.c_str()), ok = false;
     }
     if (!ok) return 1;
-    if (!look_at.empty() && std::find(std::begin(kSpecimens), std::end(kSpecimens), look_at) == std::end(kSpecimens))
-        return std::fprintf(stderr, "no specimen %s (ball, cube, slab)\n", look_at.c_str()), 1;
+    if (!look_at.empty() && std::find(std::begin(kSpecimens), std::end(kSpecimens), look_at) == std::end(kSpecimens) &&
+        !(look_at == "model" && !spec.file.empty()))
+        return std::fprintf(stderr, "no specimen %s (ball, cube, slab; model with --model)\n", look_at.c_str()), 1;
+    if (!spec.file.empty() && !fs::exists(spec.file)) return std::fprintf(stderr, "no model %s\n", spec.file.c_str()), 1;
     std::vector<std::string> presets;
     if (preset == "all") presets.assign(std::begin(kPresets), std::end(kPresets));
     else if (std::find(std::begin(kPresets), std::end(kPresets), preset) != std::end(kPresets)) presets.push_back(preset);
@@ -330,7 +415,7 @@ int main(int argc, char** argv) {
     std::vector<Shot> shots;
     bool problems = false;  // any `!` line: the picture is not to be trusted
     for (const auto& p : presets) {
-        shots.push_back(shoot(m, p, look_at, W, H, frames, cell));
+        shots.push_back(shoot(m, spec, p, look_at, W, H, frames, cell));
         for (const auto& n : shots.back().notes) {
             std::printf("%s\n", n.c_str());
             problems = problems || n.rfind("! ", 0) == 0;

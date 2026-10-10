@@ -12,6 +12,17 @@ struct Indexed {
 };
 Indexed indexed(const std::vector<float>& corners);
 
+// Which way each corner's u runs along its surface, and which way its v
+// (4 floats a corner: the u way, unit and square to the corner's normal; and
+// +1 or -1, which side of it v runs - the corner's normal crossed with the u
+// way, times this, is the v way): what a normal map drawn on the corners' own
+// uv is laid along. Each face's ways from how its uv runs over it, shared by
+// the faces round a corner they share, weighed by the corner's angle in each
+// (as MikkTSpace weighs them, which is what bakers write normal maps in). A
+// face whose uv does not run (all its corners at one place on the picture)
+// gives none; a corner with none is given a way square to its normal. Pure.
+std::vector<float> tangents(const std::vector<float>& corners);
+
 std::vector<float> cube_vertices();
 
 // A cylinder standing on y, radius 0.5 and height 1, centred like the cube, so

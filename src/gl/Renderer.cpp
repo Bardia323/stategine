@@ -185,6 +185,12 @@ void Texture::bind(int unit) const {
     glBindTexture(GL_TEXTURE_2D, id_);
 }
 
+void Texture::repeat() {
+    glBindTexture(GL_TEXTURE_2D, id_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+}
+
 void Mesh::create(const std::vector<float>& verts) {
     count_ = static_cast<GLsizei>(verts.size() / 8);
     glGenVertexArrays(1, &vao_);
@@ -211,9 +217,29 @@ void Mesh::update(const std::vector<float>& verts) {
         return;
     }
     count_ = static_cast<GLsizei>(verts.size() / 8);
+    ++made_;
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                  verts.data(), GL_DYNAMIC_DRAW);
+    // (Its ways were the old corners': none until given again.)
+    if (tangents_) {
+        glBindVertexArray(vao_);
+        glDisableVertexAttribArray(10);
+        glBindVertexArray(0);
+    }
+}
+
+void Mesh::set_tangents(const std::vector<float>& tangents) const {
+    if (!valid()) return;
+    tangents_for_ = made_;
+    if (tangents.size() != static_cast<std::size_t>(count_) * 4) return;
+    if (!tangents_) glGenBuffers(1, &tangents_);
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, tangents_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(tangents.size() * sizeof(float)), tangents.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(10, 4, GL_FLOAT, 0, 4 * sizeof(float), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(10);
+    glBindVertexArray(0);
 }
 
 void Mesh::draw_instanced(GLuint buffer, GLsizei instances, std::size_t first) const {
