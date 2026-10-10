@@ -585,6 +585,7 @@ uniform float uTile;          // with uSkin 2: the metres of the world one pictu
 uniform float uSkinTile;      // with uSkin 1: metres of the thing a cell covers, its pattern going on round it; 0: a face the whole cell
 uniform vec3  uSkinSize;      // with uSkinTile: the thing's size
 uniform float uSkinBlend;     // with uSkin 1: 0 a face its own cell; 1 a curve soft between the cells of the ways it faces
+uniform float uSkinOne;       // with uSkin 1: the texture is one tile, the same for every way (Texture::one_tile), not six cells
 uniform float uSkinFramed;    // 1: projected in the frame of what wears it (uSkinFrame) - the thing, all its parts as one
 uniform mat4  uSkinFrame;     // the room's frame to that thing's unit box
 uniform float uSkinOwn;       // 1: the frame is the mesh's own (drawn with others of its shape, each its own size)
@@ -824,6 +825,7 @@ vec2 skin_uv() {
     }
     u = clamp(u, 0.002, 0.998);
     v = clamp(v, 0.002, 0.998);
+    if (uSkinOne > 0.5) return vec2(u, 1.0 - v);
     float col = mod(cell, 3.0), row = floor(cell / 3.0);
     return vec2((col + u) / 3.0, (row + 1.0 - v) / 2.0);
 }
@@ -857,6 +859,8 @@ vec2 skin_at(float cell, vec3 p, vec3 size) {
 // seam where a tiling wraps).
 vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     vec2 f = clamp(uSkinTile > 0.0 ? fract(uv) : uv, 0.002, 0.998);
+    // One tile, every way's (Texture::one_tile): the whole picture is the cell.
+    if (uSkinOne > 0.5) return textureGrad(t, vec2(f.x, 1.0 - f.y), dx * vec2(1.0, -1.0), dy * vec2(1.0, -1.0));
     float col = mod(cell, 3.0), row = floor(cell / 3.0);
     vec2 k = vec2(1.0 / 3.0, -0.5);
     return textureGrad(t, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);

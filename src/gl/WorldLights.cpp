@@ -64,9 +64,31 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
             continue;
         }
         if (l.power <= 0.0f) continue;  // switched off
+        l.rank = standing_of(room, e, l);
         out.push_back(l);
     }
     return out;
+}
+
+float GLWorldView::standing_of(const State& room, const Element& e, const Light& l) const {
+    if (l.sun || l.indirect) return l.power;
+    uint64_t key = fnv(1469598103934665603ULL, reinterpret_cast<std::uintptr_t>(&room));
+    key = fnv(key, std::hash<Key>{}(e.id));
+    // Where it hangs and which way it shines: moved, it is another lamp.
+    uint64_t where = 1469598103934665603ULL;
+    for (float f : {l.pos.x, l.pos.y, l.pos.z, l.dir.x, l.dir.y, l.dir.z, l.inner, l.outer}) where = mix_bits(where, f);
+    Standing& s = standing_[key];
+    const uint64_t now = root_ ? root_->frame_count_ : frame_count_;
+    if (s.where != where || s.peak <= 0.0f) {
+        s.where = where, s.peak = l.power, s.frame = now;
+        return l.power;
+    }
+    // Let down by the frames since it was last asked (each frame a little),
+    // never below what it gives now.
+    if (now > s.frame) s.peak *= std::pow(0.9998f, static_cast<float>(std::min<uint64_t>(now - s.frame, 100000)));
+    s.frame = now;
+    s.peak = std::max(s.peak, l.power);
+    return s.peak;
 }
 
 auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Light> {
@@ -137,10 +159,16 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
         }
         lamps.erase(std::remove_if(lamps.begin(), lamps.end(), [](const Light& l) { return !light_meets_gate(l); }),
                     lamps.end());
+        // The strongest by standing, and of equals by where they hang (as
+        // read_lights orders them): never this moment's flicker.
         std::sort(lamps.begin(), lamps.end(), [](const Light& a, const Light& b) {
             if (a.indirect != b.indirect) return b.indirect;
             if (a.sun != b.sun) return a.sun;
-            return a.power > b.power;
+            const float ra = a.rank >= 0.0f ? a.rank : a.power, rb = b.rank >= 0.0f ? b.rank : b.power;
+            if (ra != rb) return ra > rb;
+            if (a.pos.x != b.pos.x) return a.pos.x < b.pos.x;
+            if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
+            return a.pos.y < b.pos.y;
         });
         std::size_t real = 0;
         for (Light& l : lamps)
@@ -335,10 +363,13 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
     // the viewer walks, and shadows vanish a step further off.
     // Bounce light stands in for light from all round and casts no
     // shadow worth a map: it comes after every real lamp.
-    std::sort(out.begin(), out.end(), [](const Light& a, const Light& b) {
+    // (By its standing, not this moment's power: a lamp that flickers keeps
+    // its place, and its map.)
+    const auto rank = [](const Light& l) { return l.rank >= 0.0f ? l.rank : l.power; };
+    std::sort(out.begin(), out.end(), [&](const Light& a, const Light& b) {
         if (a.indirect != b.indirect) return b.indirect;
         if (a.sun != b.sun) return a.sun;
-        if (a.power != b.power) return a.power > b.power;
+        if (rank(a) != rank(b)) return rank(a) > rank(b);
         if (a.pos.x != b.pos.x) return a.pos.x < b.pos.x;
         if (a.pos.z != b.pos.z) return a.pos.z < b.pos.z;
         return a.pos.y < b.pos.y;

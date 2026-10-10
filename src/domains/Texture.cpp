@@ -5,6 +5,9 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
+
+#include "SG_TEXTURE_CODE.hpp"
 
 namespace sg {
 
@@ -17,6 +20,14 @@ std::map<std::string, Texture::Generator>& generators() {
 
 std::map<std::string, Texture::Material>& materials() {
     static std::map<std::string, Texture::Material> all;
+    return all;
+}
+
+// The generators whose code is this file's: what they paint is named by
+// their name and this code's digest. One a program defines (or defines
+// again) is code no digest knows.
+std::set<std::string>& own_code() {
+    static std::set<std::string> all{"plain", "noise", "checks", "rust"};
     return all;
 }
 
@@ -146,11 +157,13 @@ void lay_over(std::vector<unsigned char>& px, int W, int H, int c, const std::ve
 
 void Texture::define(const std::string& name, Generator g) {
     builtins();
+    own_code().erase(name);
     generators()[name] = std::move(g);
 }
 
 void Texture::define_material(const std::string& name, Material m) {
     builtins();
+    own_code().erase(name);
     generators()[name] = colour_of(m);
     materials()[name] = std::move(m);
 }
@@ -164,22 +177,23 @@ bool Texture::has_surface() const {
 }
 
 const std::vector<unsigned char>& Texture::surface_raster() {
+    // (Of the picture as it is now: brought up to date first, which costs
+    // nothing when nothing changed.)
+    catch_up();
     const Element& m = map();
     const std::string layer = m.params.get_or<std::string>("surface_layer", "");
-    const long long t = layer.empty() ? 0 : stamp_of(layer);
     if (!has_surface()) {
         if (!surface_px_.empty()) std::vector<unsigned char>{}.swap(surface_px_), ++surface_revision_;
         return surface_px_;
     }
-    if (!surface_px_.empty() && m.params.stamp() == surface_stamp_ && t == surface_layer_time_) return surface_px_;
-    surface_stamp_ = m.params.stamp();
-    surface_layer_time_ = t;
-    const int c = cell(), W = px_w(), H = px_h();
+    if (!surface_px_.empty() && surface_made_ == revision()) return surface_px_;
+    surface_made_ = revision();
+    const int c = cell(), W = px_w(), H = px_h(), wide = cols();
     surface_px_.assign(static_cast<std::size_t>(W) * H * 4, 255);
     // Unless a material says, a surface as a thing is: open, 0.6 rough, not metal.
     const auto it = materials().find(m.params.get_or<std::string>("generator", "plain"));
-    for (int cl = 0; cl < 6; ++cl) {
-        const int x0 = (cl % 3) * c, y0 = (cl / 3) * c;
+    for (int cl = 0; cl < wide * rows(); ++cl) {
+        const int x0 = (cl % wide) * c, y0 = (cl / wide) * c;
         for (int y = 0; y < c; ++y)
             for (int x = 0; x < c; ++x) {
                 const Channels ch = it != materials().end() ? it->second(m.params, cl, (x + 0.5) / c, 1.0 - (y + 0.5) / c) : Channels{};
@@ -204,17 +218,16 @@ bool Texture::has_normals() const {
 }
 
 const std::vector<unsigned char>& Texture::normal_raster() {
+    catch_up();
     const Element& m = map();
     const std::string layer = m.params.get_or<std::string>("normal_layer", "");
-    const long long t = layer.empty() ? 0 : stamp_of(layer);
     if (!has_normals()) {
         if (!normal_px_.empty()) std::vector<unsigned char>{}.swap(normal_px_), ++normal_revision_;
         return normal_px_;
     }
-    if (!normal_px_.empty() && m.params.stamp() == normal_stamp_ && t == normal_layer_time_) return normal_px_;
-    normal_stamp_ = m.params.stamp();
-    normal_layer_time_ = t;
-    const int c = cell(), W = px_w(), H = px_h();
+    if (!normal_px_.empty() && normal_made_ == revision()) return normal_px_;
+    normal_made_ = revision();
+    const int c = cell(), W = px_w(), H = px_h(), wide = cols();
     normal_px_.assign(static_cast<std::size_t>(W) * H * 4, 255);
     // Flat unless it is made from the height: straight out of every cell.
     for (std::size_t i = 0; i < normal_px_.size(); i += 4) normal_px_[i] = normal_px_[i + 1] = 128;
@@ -233,8 +246,8 @@ const std::vector<unsigned char>& Texture::normal_raster() {
         const double tile = m.params.num("tile", 0.0), relief = m.params.num("relief", 0.0);
         const double across = tile > 0.0 ? tile : 1.0, e = 0.5 / c;
         const auto at = [&](double s) { return tile > 0.0 ? s : std::clamp(s, 0.0, 1.0); };
-        for (int cl = 0; cl < 6; ++cl) {
-            const int x0 = (cl % 3) * c, y0 = (cl / 3) * c;
+        for (int cl = 0; cl < wide * rows(); ++cl) {
+            const int x0 = (cl % wide) * c, y0 = (cl / wide) * c;
             for (int y = 0; y < c; ++y)
                 for (int x = 0; x < c; ++x) {
                     const double u = (x + 0.5) / c, v = 1.0 - (y + 0.5) / c;
@@ -269,25 +282,92 @@ Texture::Texture(Key id, int cell_px) : Surface2D(id, 3, 2, cell_px) {
     });
 }
 
+bool Texture::one_tile() const {
+    const Params& p = map().params;
+    return p.num("per_cell", 0.0) > 0.5 && p.is(Key{"generator"}, "plain") && own_code().count("plain") > 0;
+}
+
+void Texture::fit() {
+    const bool one = one_tile();
+    if (one ? (cols() != 1 || rows() != 1) : (cols() != 3 || rows() != 2)) resize(one ? 1 : 3, one ? 1 : 2);
+}
+
+Texture::Stamps Texture::look() const {
+    const Params& p = map().params;
+    Stamps s{};
+    const char* files[3] = {"layer", "surface_layer", "normal_layer"};
+    for (std::size_t i = 0; i < 3; ++i)
+        if (const std::string* f = p.text(Key{files[i]}); f && !f->empty()) s[i] = stamp_of(*f);
+    return s;
+}
+
+bool Texture::namable() const {
+    const std::string* g = map().params.text(Key{"generator"});
+    return own_code().count(g ? *g : std::string("plain")) > 0;
+}
+
+Digest Texture::made_of(const char* which) const {
+    Hasher h;
+    h.text("sg.texture").text(which).text(SG_TEXTURE_CODE).integer(cell()).integer(cols()).integer(rows()).integer(srgb() ? 1 : 0);
+    // Its settings, in the order of their names (not the order they were set).
+    std::vector<const std::pair<Key, Value>*> all;
+    for (const auto& e : map().params) all.push_back(&e);
+    std::sort(all.begin(), all.end(), [](const auto* a, const auto* b) { return a->first.str() < b->first.str(); });
+    for (const auto* e : all) h.text(e->first.str()).integer(static_cast<int64_t>(e->second.index())).text(to_string(e->second));
+    // And its files, where they stand: written again, they are other files.
+    for (long long t : painted_files_) h.integer(t);
+    return h.digest();
+}
+
+void Texture::named() {
+    painted_stamp_ = map().params.stamp();
+    painted_files_ = seen_;
+    keyed_ = namable();
+}
+
+bool Texture::pixels_digest(Digest& out) const {
+    if (!keyed_) return false;
+    out = made_of("colour");
+    return true;
+}
+
+bool Texture::surface_digest(Digest& out) const {
+    if (!keyed_ || !has_surface()) return false;
+    out = made_of("surface");
+    return true;
+}
+
+bool Texture::normal_digest(Digest& out) const {
+    if (!keyed_ || !has_normals()) return false;
+    out = made_of("normal");
+    return true;
+}
+
+bool Texture::name_now() {
+    if (!namable()) return false;
+    named();
+    return true;
+}
+
 bool Texture::stale() {
-    const Element& m = map();
-    const std::string layer = m.params.get_or<std::string>("layer", "");
-    const long long t = layer.empty() ? 0 : stamp_of(layer);
-    return m.params.stamp() != painted_stamp_ || layer != layer_path_ || t != layer_time_;
+    // Its grid, and its files' stamps - looked at once each time it is
+    // brought up to date, never as it is drawn.
+    fit();
+    seen_ = look();
+    return map().params.stamp() != painted_stamp_ || seen_ != painted_files_;
 }
 
 void Texture::paint() {
     const Element& m = map();
-    painted_stamp_ = m.params.stamp();
-    layer_path_ = m.params.get_or<std::string>("layer", "");
-    layer_time_ = layer_path_.empty() ? 0 : stamp_of(layer_path_);
+    named();
+    const std::string layer_path = m.params.get_or<std::string>("layer", "");
     auto& px = pixels();
-    const int c = cell(), W = px_w();
+    const int c = cell(), W = px_w(), wide = cols();
     const auto it = generators().find(m.params.get_or<std::string>("generator", "plain"));
     const Generator& gen = it != generators().end() ? it->second : generators()["plain"];
     const double tr = m.params.num("tint_r", 1.0), tg = m.params.num("tint_g", 1.0), tb = m.params.num("tint_b", 1.0);
-    for (int cl = 0; cl < 6; ++cl) {
-        const int x0 = (cl % 3) * c, y0 = (cl / 3) * c;
+    for (int cl = 0; cl < wide * rows(); ++cl) {
+        const int x0 = (cl % wide) * c, y0 = (cl / wide) * c;
         for (int y = 0; y < c; ++y)
             for (int x = 0; x < c; ++x) {
                 const auto rgba = gen(m.params, cl, (x + 0.5) / c, 1.0 - (y + 0.5) / c);
@@ -301,7 +381,7 @@ void Texture::paint() {
     // The layer painted over it, stretched to the map if it is another size.
     int lw = 0, lh = 0;
     std::vector<unsigned char> layer;
-    if (!layer_path_.empty() && reader() && reader()(layer_path_, lw, lh, layer) && lw > 0 && lh > 0)
+    if (!layer_path.empty() && reader() && reader()(layer_path, lw, lh, layer) && lw > 0 && lh > 0)
         lay_over(px, W, px_h(), c, layer, lw, lh, m.params.num("per_cell", 0.0) > 0.5, std::clamp(m.params.num("layer_mix", 1.0), 0.0, 1.0));
 }
 

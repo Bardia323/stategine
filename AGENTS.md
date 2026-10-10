@@ -153,6 +153,14 @@ when that moves. A still world's frame does none of it (`FrameTimes` counts,
 `sg_culling_gl` holds it); never key a cache on where something is when it can
 be keyed on what it is (a moving doorway once made new shadow maps every frame).
 
+Lamps are a budget, not a decoration: the renderer gives shadow maps to the
+strongest lamps of a room (six) out of 24 layers in all, and a lamp with no
+cone takes six of them. Fills, glows and spills say `indirect` = 1 (no
+shadow, sorted last); every lamp says its `range`, so lamps where it reaches
+no room drawn do not compete. A photographed material is one tile kept on
+disk by what made it; a window is black and answering from the moment it
+opens (`Window::pump()` during a program's own long work).
+
 The engine keeps to one rule for this: **strictness in the model, checking in
 the tools, dispatch compiled.** What is true of the model is refused when it is
 declared (a duplicate name, a functor renamed under its graph) - once, and in

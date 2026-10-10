@@ -238,6 +238,10 @@ public:
     // frame. What comes back is what is wrong, as counterexamples; a look
     // whose shader fails is shown with the built-in one instead.
     std::vector<std::string> prepare(const StateGraph& g);
+    // (prepare also makes the pictures of every texture bound by then -
+    // colour, surface and normal maps - on every core, packed and kept on
+    // disk where the quality says (as warm does), and sends them to the card:
+    // none is made in a frame. Bind what things wear before calling it.)
 
     // Attach a 2D state to a portal element: its raster becomes the texture.
     void bind_surface(Key portal_element, Surface2D* surface) {
@@ -393,14 +397,27 @@ private:
         // by every surface that packs to the same (`packed_on_card_`): not its
         // own to make again or let go.
         bool shared = false;
-        // A texture's surface map (occlusion, roughness, metal), linear and
-        // its own, and which of the texture's surface maps it holds.
+        // A texture's surface map (occlusion, roughness, metal), linear, and
+        // which of the texture's pictures (its revision) it holds; packed with
+        // the colour (packed_revision), and then the card's one copy (shared).
         gl::Texture surface_map;
         uint64_t surface_revision = ~uint64_t{0};
+        std::shared_ptr<render::Packed> packed_surface;
+        bool surface_shared = false;
         // And its normal map, the same way.
         gl::Texture normal_map;
         uint64_t normal_revision = ~uint64_t{0};
+        std::shared_ptr<render::Packed> packed_normal;
+        bool normal_shared = false;
     };
+    // The card's one copy of a packed picture, made the first time it is asked for.
+    const gl::Texture& on_card(const std::shared_ptr<render::Packed>& packed);
+    // `own` shows `card` from now on (its own texture, if it had one, let go),
+    // or has a texture of its own again.
+    static void share(gl::Texture& own, bool& shared, const gl::Texture& card);
+    static void unshare(gl::Texture& own, bool& shared);
+    // A worn texture's surface map (normals false) or normal map, current, bound.
+    bool bind_map(BoundSurface& bound, bool normals);
     // The surface map of what `bound` shows bound to unit 9, current, when it
     // has one: true then, and the scene's `uSurfaceMapOn` is the caller's to set.
     bool bind_surface_map(BoundSurface& bound);
@@ -571,6 +588,16 @@ private:
 
     // One room's own lamps, placed as the room is.
     std::vector<Light> own_lights(const Spatial3D& room, const Pose& pose) const;
+    // Each lamp's standing (DrawLight::rank): the most it has given while it
+    // hangs where it hangs, let down slowly (by half in some three thousand
+    // frames), so a flicker, a stutter or a spell of dimness moves no shadow
+    // map from lamp to lamp; one turned down for good gives way in time.
+    struct Standing {
+        float peak = 0.0f;
+        uint64_t where = 0, frame = 0;
+    };
+    mutable std::unordered_map<uint64_t, Standing> standing_;
+    float standing_of(const State& room, const Element& e, const Light& l) const;
 
     // What comes in through the doorways of `placed`: the lamps of each world
     // a doorway opens onto, and a glow of its sky, carried into this room by
@@ -966,6 +993,11 @@ private:
     void refresh(BoundSurface& bound);
     // Every texture bound, packed (warm).
     void pack_skins();
+    // `hand` run on every core, `jobs` the most that are worth one each,
+    // this thread answering the window meanwhile.
+    static void on_hands(const std::function<void()>& hand, std::size_t jobs);
+    // ... and every one made on the card, its maps too (prepare, warm).
+    void ready_skins();
     // A thing is drawn with the others of its shape unless it wears a skin (a
     // surface bound to it) or is being pointed at.
     bool instanceable(const Element& e) const;

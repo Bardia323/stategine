@@ -139,26 +139,38 @@ GLWorldView::LetGo::~LetGo() {
     if (freeing.joinable()) freeing.join();
 }
 
+const gl::Texture& GLWorldView::on_card(const std::shared_ptr<render::Packed>& packed) {
+    // The card's one copy of that picture, made the first time.
+    PackedOnCard& on = packed_on_card_[packed.get()];
+    if (!on.texture.valid()) {
+        on.keep = packed;
+        on.texture.create_packed(*packed);
+        // Its blocks are the card's now, and never sent again (every
+        // surface that shows it shows this texture): not kept twice.
+        let_go_.blocks.push_back(std::exchange(on.keep->bytes, {}));
+    }
+    return on.texture;
+}
+
+void GLWorldView::share(gl::Texture& own, bool& shared, const gl::Texture& card) {
+    if (!shared && own.valid() && own.id() != card.id()) {
+        const gl::GLuint was = own.id();  // (its own, from before: let go)
+        gl::glDeleteTextures(1, &was);
+    }
+    own = card;
+    shared = true;
+}
+
+void GLWorldView::unshare(gl::Texture& own, bool& shared) {
+    if (shared) own = gl::Texture{}, shared = false;
+}
+
 void GLWorldView::refresh(BoundSurface& bound) {
     Surface2D& surf = *bound.surface;
     surf.catch_up();
     if (bound.packed && bound.packed_revision == surf.revision()) {
         if (!bound.texture.packed() || bound.revision != surf.revision()) {
-            // The card's one copy of that picture, made the first time.
-            PackedOnCard& on = packed_on_card_[bound.packed.get()];
-            if (!on.texture.valid()) {
-                on.keep = bound.packed;
-                on.texture.create_packed(*bound.packed);
-                // Its blocks are the card's now, and never sent again (every
-                // surface that shows it shows this texture): not kept twice.
-                let_go_.blocks.push_back(std::exchange(on.keep->bytes, {}));
-            }
-            if (!bound.shared && bound.texture.valid()) {
-                const gl::GLuint was = bound.texture.id();  // (its own, from before: let go)
-                gl::glDeleteTextures(1, &was);
-            }
-            bound.texture = on.texture;
-            bound.shared = true;
+            share(bound.texture, bound.shared, on_card(bound.packed));
             bound.revision = surf.revision();
             // Its picture is on the card: its pixels are not wanted here
             // until it changes, and are had again from the kept ones if they
@@ -182,42 +194,40 @@ void GLWorldView::refresh(BoundSurface& bound) {
     }
 }
 
-bool GLWorldView::bind_surface_map(BoundSurface& bound) {
+bool GLWorldView::bind_map(BoundSurface& bound, bool normals) {
     auto* tex = dynamic_cast<Texture*>(bound.surface);
-    if (!tex || !tex->has_surface()) return false;
-    const std::vector<unsigned char>& px = tex->surface_raster();
-    if (px.empty()) return false;
-    if (!bound.surface_map.valid() || bound.surface_map.width() != tex->px_w() || bound.surface_map.height() != tex->px_h()) {
-        bound.surface_map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
-        bound.surface_revision = ~uint64_t{0};
+    if (!tex || !(normals ? tex->has_normals() : tex->has_surface())) return false;
+    gl::Texture& map = normals ? bound.normal_map : bound.surface_map;
+    bool& shared = normals ? bound.normal_shared : bound.surface_shared;
+    uint64_t& made = normals ? bound.normal_revision : bound.surface_revision;
+    // Of the picture as it was brought up to date this frame (upload_skin,
+    // before anything wearing it is drawn): looked at again only when its
+    // revision moved - never a file's stamp read for every draw.
+    if (made != tex->revision() || !map.valid()) {
+        const std::shared_ptr<render::Packed>& packed = normals ? bound.packed_normal : bound.packed_surface;
+        if (packed && bound.packed_revision == tex->revision()) {
+            share(map, shared, on_card(packed));
+        } else {
+            const std::vector<unsigned char>& px = normals ? tex->normal_raster() : tex->surface_raster();
+            if (px.empty()) return false;
+            unshare(map, shared);
+            if (!map.valid() || map.packed() || map.width() != tex->px_w() || map.height() != tex->px_h())
+                map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
+            map.upload(px);
+        }
+        made = tex->revision();
     }
-    if (bound.surface_revision != tex->surface_revision()) {
-        bound.surface_map.upload(px);
-        bound.surface_revision = tex->surface_revision();
-    }
-    bound.surface_map.bind(9);
+    map.bind(normals ? 10 : 9);
     return true;
 }
 
-bool GLWorldView::bind_normal_map(BoundSurface& bound) {
-    auto* tex = dynamic_cast<Texture*>(bound.surface);
-    if (!tex || !tex->has_normals()) return false;
-    const std::vector<unsigned char>& px = tex->normal_raster();
-    if (px.empty()) return false;
-    if (!bound.normal_map.valid() || bound.normal_map.width() != tex->px_w() || bound.normal_map.height() != tex->px_h()) {
-        bound.normal_map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
-        bound.normal_revision = ~uint64_t{0};
-    }
-    if (bound.normal_revision != tex->normal_revision()) {
-        bound.normal_map.upload(px);
-        bound.normal_revision = tex->normal_revision();
-    }
-    bound.normal_map.bind(10);
-    return true;
-}
+bool GLWorldView::bind_surface_map(BoundSurface& bound) { return bind_map(bound, false); }
+bool GLWorldView::bind_normal_map(BoundSurface& bound) { return bind_map(bound, true); }
 
 void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
     const auto* tex = bound ? dynamic_cast<const Texture*>(bound->surface) : nullptr;
+    // One tile for every way of the thing (Texture::one_tile), or six cells.
+    p.set("uSkinOne", tex && tex->cols() == 1 && tex->rows() == 1 ? 1.0f : 0.0f);
     p.set("uSurfaceMapOn", tex && bind_surface_map(*bound) ? 1.0f : 0.0f);
     const bool normals = tex && bind_normal_map(*bound);
     p.set("uNormalMapOn", normals ? 1.0f : 0.0f);
@@ -236,13 +246,14 @@ void GLWorldView::pack_skins() {
                 all.push_back(bound.surface);
         std::atomic<std::size_t> next{0};
         const auto hand = [&] {
-            for (std::size_t k; (k = next.fetch_add(1)) < all.size();) all[k]->raster();
+            for (std::size_t k; (k = next.fetch_add(1)) < all.size();) {
+                all[k]->raster();
+                auto* t = static_cast<Texture*>(all[k]);
+                if (t->has_surface()) t->surface_raster();
+                if (t->has_normals()) t->normal_raster();
+            }
         };
-        std::vector<std::thread> hands;
-        const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), all.size());
-        for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
-        hand();
-        for (std::thread& t : hands) t.join();
+        on_hands(hand, all.size());
         return;
     }
     // Each texture once, however many things it is bound to. One that can
@@ -253,7 +264,7 @@ void GLWorldView::pack_skins() {
     struct Job {
         Surface2D* surface;
         uint64_t revision;
-        std::shared_ptr<render::Packed> packed;
+        std::shared_ptr<render::Packed> packed, surface_map, normal_map;
     };
     std::vector<Job> jobs;
     std::unordered_map<const Surface2D*, std::size_t> job_of;
@@ -273,6 +284,8 @@ void GLWorldView::pack_skins() {
         Surface2D* s = bound.surface;
         if (!s || !dynamic_cast<const Texture*>(s) || job_of.count(s)) continue;
         s->catch_up();
+        // (Packed already, as it is: nothing to do.)
+        if (bound.packed && bound.packed_revision == s->revision()) continue;
         if (!render::packable(s->px_w(), s->px_h())) continue;
         Digest made;
         if (s->pixels_digest(made)) {
@@ -308,20 +321,68 @@ void GLWorldView::pack_skins() {
                 *packed = render::pack_kept(s.raster().data(), s.px_w(), s.px_h(), s.srgb());
             }
             j.packed = std::move(packed);
+            // And a texture's surface and normal maps, linear, the same way:
+            // by what names them, read back with none of their pixels made.
+            auto& t = static_cast<Texture&>(s);
+            for (const bool normals : {false, true}) {
+                if (!(normals ? t.has_normals() : t.has_surface())) continue;
+                auto map = std::make_shared<render::Packed>();
+                const auto pixels = [&] { return (normals ? t.normal_raster() : t.surface_raster()).data(); };
+                Digest named;
+                if (normals ? t.normal_digest(named) : t.surface_digest(named)) {
+                    if (!render::packed_kept(s.px_w(), s.px_h(), false, named, *map))
+                        *map = render::pack_kept(pixels(), s.px_w(), s.px_h(), false, named);
+                } else {
+                    *map = render::pack_kept(pixels(), s.px_w(), s.px_h(), false);
+                }
+                (normals ? j.normal_map : j.surface_map) = std::move(map);
+            }
         }
     };
-    std::vector<std::thread> hands;
-    const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), jobs.size());
-    for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
-    hand();
-    for (std::thread& t : hands) t.join();
+    on_hands(hand, jobs.size());
     for (auto& [id, bound] : surfaces_) {
         const auto it = bound.surface ? job_of.find(bound.surface) : job_of.end();
         if (it == job_of.end()) continue;
         bound.packed = jobs[it->second].packed;
+        bound.packed_surface = jobs[it->second].surface_map;
+        bound.packed_normal = jobs[it->second].normal_map;
         // (Its own surface's revision: a surface that shares another's picture
         // shows it while it is still the picture it was packed as.)
         bound.packed_revision = bound.surface->revision();
+    }
+}
+
+void GLWorldView::on_hands(const std::function<void()>& hand, std::size_t jobs) {
+    // Every core a hand; this thread - the window's - only waits, and
+    // answers the window while it does (gl::answer): a cold start packing
+    // for seconds is never "not responding".
+    const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), jobs);
+    if (n <= 1) {
+        hand();
+        return;
+    }
+    std::atomic<std::size_t> left{n};
+    std::vector<std::thread> hands;
+    for (std::size_t t = 0; t < n; ++t)
+        hands.emplace_back([&] {
+            hand();
+            left.fetch_sub(1, std::memory_order_acq_rel);
+        });
+    while (left.load(std::memory_order_acquire) > 0) {
+        gl::answer();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    for (std::thread& t : hands) t.join();
+}
+
+void GLWorldView::ready_skins() {
+    if (surfaces_.empty()) return;
+    pack_skins();
+    for (auto& [id, bound] : surfaces_) {
+        if (!bound.surface) continue;
+        upload_skin(bound);
+        bind_surface_map(bound);
+        bind_normal_map(bound);
     }
 }
 

@@ -13,9 +13,14 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
         for (Key id : g.ids()) reach.insert(id);
     preparing_ = true;
     for (Key id : reach)
-        if (const auto* look = dynamic_cast<const LookState*>(g.find(id)))
+        if (const auto* look = dynamic_cast<const LookState*>(g.find(id))) {
             check_look(*look, out);
+            gl::answer();  // (a shader compiled: the window answers)
+        }
     preparing_ = false;
+    // What things wear, made now and on the card: never in the frame it is
+    // first seen, through a doorway or round a corner.
+    ready_skins();
     return out;
 }
 
@@ -174,9 +179,12 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
     const bool ev_known = exposure_.known, ev_settle = exposure_.settle;
     const float ev_weight = exposure_.weight;
     let_go_.held = true;
-    pack_skins();
+    ready_skins();
     for (Spatial3D* w : worlds)
-        if (w) render(*w, fb_w, fb_h);
+        if (w) {
+            render(*w, fb_w, fb_h);
+            gl::answer();
+        }
     // And every screen's picture, through the screen's own view, whether or
     // not it was in sight from any of those eyes: a painting or a set first
     // turned to is not where its view is made (a world's first picture in a
@@ -186,11 +194,6 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
             f.drawn = true;
             draw_feed(f);
         }
-    // And every picture a thing wears, made on the card now: one first seen
-    // through a doorway, or round a corner, is not made in the frame it is
-    // seen (a painted floor's maps take tens of milliseconds to upload).
-    for (auto& [id, bound] : surfaces_)
-        if (bound.surface) upload_skin(bound);
     gl::glFinish();
     fader_ = fader;
     post_ = post;
@@ -237,7 +240,7 @@ void GLWorldView::set_quality(const GLQuality& to) {
     if (was.pack != q_.pack) {
         if (q_.pack) pack_skins();
         else
-            for (auto& [id, bound] : surfaces_) bound.packed.reset();
+            for (auto& [id, bound] : surfaces_) bound.packed.reset(), bound.packed_surface.reset(), bound.packed_normal.reset();
     }
     // The views drawn for this one draw as it does (a screen's shadow maps
     // no finer than 1024, as when it was made).

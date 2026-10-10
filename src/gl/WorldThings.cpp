@@ -164,7 +164,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     if (skin != surfaces_.end()) {
         BoundSurface& bound = skin->second;
         Surface2D& surf = *bound.surface;
-        refresh(bound);
+        upload_skin(bound);
         bound.texture.bind(0);
         scene_->set("uTexMix", 1.0f);
         scene_->set("uSkin", 1.0f);

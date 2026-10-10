@@ -23,6 +23,12 @@ namespace sg::gl {
 // someone at work: `other` on a monitor that is not the main one, or a
 // monitor's number (0 the main one) - in the middle of it, shown without
 // taking the keyboard from what has it. Unset, it opens as the system likes.
+//
+// It is black from the moment it is shown, never white, and it answers while
+// the engine works long with it waiting (gl::answer: a renderer's prepare,
+// warm and bakes take its events now and then). A program's own long work
+// after the window is open does the same: `pump()` now and then, or open the
+// window after it.
 class Window {
 public:
     Window(int w, int h, const std::string& title) {
@@ -52,12 +58,21 @@ public:
         glfwMakeContextCurrent(win_);
         glfwSwapInterval(1);
         load(reinterpret_cast<ProcLoader>(glfwGetProcAddress));
+        // Black at once, both buffers, not the white of a window nobody drew.
+        for (int i = 0; i < 2; ++i) {
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glfwSwapBuffers(win_);
+        }
+        glfwPollEvents();
+        answer_hook = [] { glfwPollEvents(); };
         glfwGetCursorPos(win_, &mx_, &my_);
         prev_.fill(false);
         now_.fill(false);
     }
 
     ~Window() {
+        answer_hook = nullptr;
         if (win_) glfwDestroyWindow(win_);
         glfwTerminate();
     }
@@ -85,6 +100,10 @@ public:
         const int h = height();
         return h > 0 ? static_cast<float>(width()) / static_cast<float>(h) : 1.0f;
     }
+
+    // Its events taken, and nothing else: for long work between frames, so
+    // the window keeps answering (what gl::answer does for the engine).
+    void pump() { glfwPollEvents(); }
 
     // Call once per frame, before reading input.
     void poll() {

@@ -82,6 +82,11 @@ struct DrawLight {
         // reaches as far. 0: it goes on for ever, as lamps did before they
         // said - a sun's never ends.
         float range = 0.0f;
+        // How strong it stands among the lamps when the strongest are chosen
+        // to cast (< 0: its power): a renderer ranks a lamp by the most it
+        // has given lately, not this moment's - a lamp that flickers keeps
+        // its shadow map through a stutter, and hands it to no other.
+        float rank = -1.0f;
     };
 
 

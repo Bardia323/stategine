@@ -72,6 +72,9 @@ list(SORT _sg_terrain_code)
 stategine_code_digest(stategine SG_TERRAIN_CODE ${_sg_terrain_code})
 # And a being's clips read from glTF, their keys reduced, by the code that reads them.
 stategine_code_digest(stategine SG_BEING_CLIP_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/BeingGltf.cpp)
+# And a texture's pictures, by its settings, its files and the code that paints them.
+stategine_code_digest(stategine SG_TEXTURE_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Texture.cpp
+                      ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Texture.hpp)
 
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.

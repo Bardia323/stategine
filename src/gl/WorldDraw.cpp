@@ -1,3 +1,6 @@
+#include <map>
+#include <cstdio>
+#include <cstdlib>
 // The GL view drawing a room: its shadow maps, its air, and its scene
 // (GLWorldView::draw_world).
 #include "sg/gl/World.hpp"
@@ -135,6 +138,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             }
             cube_extra += static_cast<std::size_t>(faces - 1);
         }
+    }
+    if (std::getenv("SG_SHADOW_PICK")) {
+        std::string pick;
+        char buf[96];
+        for (std::size_t i = 0; i < shadowed; ++i) {
+            std::snprintf(buf, sizeof buf, " [%.1f %.1f %.1f%s%s]", lights[i].pos.x, lights[i].pos.y, lights[i].pos.z, lights[i].gated ? " g" : "", shadow_faces(lights[i]) > 1 ? " o" : "");
+            pick += buf;
+        }
+        std::fprintf(stderr, "pick f%llu d%d %s n%zu sh%zu L%zu:%s\n", (unsigned long long)frame_count_, depth, rooms.front().room->id().str().c_str(), lights.size(), shadowed, layers, pick.c_str());
     }
     // A sun whose map reaches far gets a second, small one round the viewer
     // (in the layers after the lamps'): close up, a texel is a centimetre,
@@ -375,6 +387,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             maps.waits[i] = 0;
         }
         ++times_.shadow_maps;
+        if (std::getenv("SG_SHADOW_WHY")) {
+            const bool vp_same = std::memcmp(maps.vp[i].m, light_vp[i].m, sizeof light_vp[i].m) == 0;
+            std::fprintf(stderr, "map f%llu d%d set%p L%zu/%zu pos %.2f %.2f %.2f gated%d sun%d | rest%d still%llu ident%d layout%d vp%d sig%d movers%d n%zu\n",
+                (unsigned long long)frame_count_, depth, (void*)&maps, i, layers, li.pos.x, li.pos.y, li.pos.z, li.gated ? 1 : 0, li.sun ? 1 : 0,
+                at_rest ? 1 : 0, (unsigned long long)maps.still_at[i], maps.ident[i] == ident, maps.layout[i] == layout, vp_same, maps.sig[i] != 0, maps.movers[i] == movers_sig, movers_in.size());
+        }
         if (!caster_ready) {
             caster.use();
             apply_uniforms(caster, post_, passes::shadow);
@@ -537,6 +555,23 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                         static_cast<float>(clip.normal.z), static_cast<float>(clip.offset), a.near, a.far,
                         static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(steps), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
             of = mix_bits(of, f);
+        if (std::getenv("SG_AIR_WHY")) {
+            static std::map<const void*, std::array<uint64_t, 4>> was;
+            std::array<uint64_t, 4> h{1, 1, 1, 1};
+            for (float f : view_proj.m) h[0] = mix_bits(h[0], f);
+            for (const Light& l : lights)
+                for (float f : {l.pos.x, l.pos.y, l.pos.z, l.dir.x, l.dir.y, l.dir.z, l.color.x, l.color.y, l.color.z, l.power, l.open}) h[1] = mix_bits(h[1], f);
+            for (std::size_t i = 0; i < layers; ++i) {
+                h[2] = fnv(fnv(h[2], maps.layout[i]), maps.still_at[i] != 0 ? maps.still_at[i] : maps.sig[i]);
+                for (float f : light_vp[i].m) h[2] = mix_bits(h[2], f);
+            }
+            auto& w = was[&a];
+            std::string power;
+            char buf[48];
+            for (const Light& l : lights) { std::snprintf(buf, sizeof buf, " %.2f/%.2f", l.power, l.open); power += buf; }
+            std::fprintf(stderr, "air f%llu d%d %s view%d lights%d maps%d |%s\n", (unsigned long long)frame_count_, depth, rooms.front().room->id().str().c_str(), w[0] != h[0], w[1] != h[1], w[2] != h[2], w[1] != h[1] ? power.c_str() : "");
+            w = h;
+        }
         // (Each slice's own light laid eight to a row, a pixel a cell.)
         constexpr int group = gl::LayerArray::kGroup;
         bool made = a.light.ensure(gx, gy, kAirSlices, /*volume=*/true);

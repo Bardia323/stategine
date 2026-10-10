@@ -225,6 +225,16 @@ inline void load(ProcLoader loader) {
     glClipControl = reinterpret_cast<void (*)(GLenum, GLenum)>(loader("glClipControl"));
 }
 
+// What keeps a window answering while the engine works long with it waiting
+// (a prepare, a warm, a bake): its events taken, so the system never calls it
+// "not responding" and paints it white. The window sets it (Window does, as
+// it is made); the renderer calls `answer()` now and then, on the thread the
+// context is current on. Unset, nothing is done.
+inline void (*answer_hook)() = nullptr;
+inline void answer() {  // inline: one line of the loader's own header
+    if (answer_hook) answer_hook();
+}
+
 // Cheap guard used after each pipeline stage while bringing a scene up.
 // inline: GL.hpp is the loader's own header, macros and all.
 inline void check(const char* where) {

@@ -32,6 +32,15 @@
 //   per_cell    1: each layer file is one tile, laid whole in every cell (a
 //               photographed material); 0, stretched over the six (a painting)
 //
+// A photographed material over a plain ground (`per_cell`, generator
+// `plain`) is the same picture in every cell, so it is kept as that one tile
+// (`one_tile`: one cell, not six - a sixth of the pixels to make, pack, send
+// and hold), and every way of the thing reads it. Its pictures - colour,
+// surface map, normal map - are named by what they are made from (its
+// settings, its files' stamps, this code: `pixels_digest`, `surface_digest`,
+// `normal_digest`), so a renderer keeps them packed on disk by those names
+// (sg::cache) and a warm start reads them back without one pixel made.
+//
 // What the surface is beside its colour - how occluded its hollows are, how
 // rough, how metal - is a second picture of the same six cells, its surface
 // map (red, green, blue), made only when something says it: a material
@@ -100,12 +109,29 @@ public:
 
     const Element& map() const { return element(map_id()); }
 
+    // Whether every cell is one picture - a tile of a photographed material
+    // on a plain ground (`per_cell`, generator `plain`): it is then kept as
+    // that one cell (px_w = px_h = cell), and worn by every way of a thing.
+    bool one_tile() const;
+
+    // Its picture named by what it is made from (Surface2D::pixels_digest):
+    // its settings, its files where they stand, and this code - while its
+    // generator is the engine's own (a generator defined by a program is
+    // code no digest knows: it is known only by its pixels).
+    bool pixels_digest(Digest& out) const override;
+    bool name_now() override;
+    // Its surface map and its normal map named the same way, for the picture
+    // as last brought up to date (catch_up): false when they cannot be.
+    bool surface_digest(Digest& out) const;
+    bool normal_digest(Digest& out) const;
+
     // Whether it has a surface map: its generator is a material, or it says a
     // `surface_layer`.
     bool has_surface() const;
     // Its surface map, RGBA rows of the picture's size (red occlusion, green
     // roughness, blue metal; linear), made when asked and again only when the
-    // map's params or the surface layer's file change; empty without one.
+    // picture's revision moves (its params or a file changed, as catch_up
+    // finds); empty without one.
     const std::vector<unsigned char>& surface_raster();
     // Which surface map `surface_raster` last made: it moves when it changes.
     uint64_t surface_revision() const { return surface_revision_; }
@@ -113,8 +139,8 @@ public:
     // Whether it has a normal map: it says `normals`, or a `normal_layer`.
     bool has_normals() const;
     // Its normal map, RGBA rows of the picture's size (each direction 0..1 as
-    // 0.5 + 0.5 x; linear), made when asked and again only when the map's
-    // params or the normal layer's file change; empty without one.
+    // 0.5 + 0.5 x; linear), made when asked and again only when the
+    // picture's revision moves; empty without one.
     const std::vector<unsigned char>& normal_raster();
     uint64_t normal_revision() const { return normal_revision_; }
 
@@ -124,15 +150,23 @@ protected:
     bool stale() override;
 
 private:
-    uint64_t painted_stamp_ = 0;
-    long long layer_time_ = 0;
-    std::string layer_path_;
+    using Stamps = std::array<long long, 3>;  // its three files' (layer, surface_layer, normal_layer)
+    // Its grid as its settings say: one cell (one_tile) or six.
+    void fit();
+    // Its files' stamps as they are now (read once a catch_up, not a draw).
+    Stamps look() const;
+    // Whether what it is made from is all named: the engine's own generator.
+    bool namable() const;
+    Digest made_of(const char* which) const;
+    void named();  // what it is now taken as painted from, and its names
+
+    uint64_t painted_stamp_ = ~uint64_t{0};
+    Stamps painted_files_{}, seen_{};
+    bool keyed_ = false;
     std::vector<unsigned char> surface_px_;
-    uint64_t surface_stamp_ = 0, surface_revision_ = 0;
-    long long surface_layer_time_ = 0;
+    uint64_t surface_made_ = ~uint64_t{0}, surface_revision_ = 0;
     std::vector<unsigned char> normal_px_;
-    uint64_t normal_stamp_ = 0, normal_revision_ = 0;
-    long long normal_layer_time_ = 0;
+    uint64_t normal_made_ = ~uint64_t{0}, normal_revision_ = 0;
 };
 
 // The six views of a thing, cell by cell as a texture's map has them - its
