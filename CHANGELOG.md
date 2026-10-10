@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- A kind of texture of a program's own (one that paints itself, overriding `paint`) is never named by a Texture's settings: what it paints is its code's, known only by its pixels - two such textures alike in settings had been handed one packed picture from the cache (a wall of notes all showing one note's words).
+
 - A ragdoll standing still sleeps, and asleep costs nothing. The ground it stands on no longer wakes it (a solid whose top is at the being's feet or under them is not met - as `disturbed` always said, and did not do: a body meaning its bones a little into the floor was woken every step), what it rests on top of is not met either, and asleep and settled - every bone where the being means it, still, its strength back - a step writes nothing. Three people standing in a game cost 3.7 ms a frame; now nothing.
 
 - Start-up: a photographed material is cheap. A `Texture` that is one photographed tile over a plain ground (`per_cell`, generator `plain`) is kept as that one tile (`one_tile`: one cell, not six), and its colour, surface map and normal map are named by what made them - its settings, its files' stamps, the code's digest (`pixels_digest`, `surface_digest`, `normal_digest`, `name_now`) - so a renderer keeps them packed on disk (sg::cache) and a warm start reads them back. A game with nineteen of them drew its first frame in 16 s on every start; now 0.2 s.

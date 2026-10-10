@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <typeinfo>
 
 #include "SG_TEXTURE_CODE.hpp"
 
@@ -302,6 +303,10 @@ Texture::Stamps Texture::look() const {
 }
 
 bool Texture::namable() const {
+    // A kind of texture of a program's own paints with its own code (it
+    // overrides paint): what it paints is known only by its pixels, never by
+    // a Texture's settings - two of them alike in settings are not alike.
+    if (typeid(*this) != typeid(Texture)) return false;
     const std::string* g = map().params.text(Key{"generator"});
     return own_code().count(g ? *g : std::string("plain")) > 0;
 }
