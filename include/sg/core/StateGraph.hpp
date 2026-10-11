@@ -164,11 +164,12 @@ struct Drive {
     bool additive = false;
     Key line;  // the clock's timeline this state's time is kept on; the state's name when empty
     Keeps keeps = Keeps::WhileActive;
-    // Where its steps are done, when the engine steps it unentered (Always,
-    // WhileShown): 0 on the engine's own thread, in turn with the rest; any
-    // other number a lane of its own - states on different lanes step at
-    // once, on the machine's other hands (sg/core/Work.hpp), those on one
-    // lane one after another. Only its own arrows run there (and its
+    // Where its steps are done: 0 on the engine's own thread, in turn with the
+    // rest; any other number a lane of its own - every state on a lane that a
+    // frame will step (a guest open under the state one is in, a state kept
+    // always; never the one entered) steps at the frame's start, those on
+    // different lanes at once on the machine's hands (sg/core/Work.hpp),
+    // those on one lane one after another. Only its own arrows run there (and its
     // on_update, on_render: a state given a lane must touch only itself in
     // them); what it says, what it carries to its hosts and what its
     // listeners hear is taken afterwards on the engine's thread, in the

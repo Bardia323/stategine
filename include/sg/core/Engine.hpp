@@ -120,6 +120,13 @@ public:
     void set_watch_updates(bool on) { watch_updates_ = on; }
     void set_watch_hooks(bool on) { watch_updates_ = on; }
     void set_watch_interval(double seconds) { watch_interval_ = seconds; }
+    // How long each state's steps took (its arrows, on_update, on_render), in
+    // milliseconds summed since timing was turned on or last cleared: where a
+    // frame's time goes, and so which states are worth a lane of their own
+    // (Drive::lane). Off, nothing is timed.
+    void set_timing(bool on) { timing_ = on; }
+    const std::unordered_map<Key, double>& step_ms() const { return step_ms_; }
+    void clear_step_ms() { step_ms_.clear(); }
     // How much of a frame the watch may take, in milliseconds. Checking the
     // graph again is a seam at a time (validate, then each seam's overlap), a
     // few at a frame, so a graph that moved in play costs the frame a slice
@@ -375,8 +382,19 @@ private:
         int lane;
         bool had;
     };
-    std::vector<Due> keeping_;
     std::vector<std::vector<State*>> lanes_;
+    std::vector<int> lane_names_;
+    void step_on_lanes(std::vector<Due>& due, const Tick& t);
+    int lane_of(const State& s);
+    void step_early(State& here, const Tick& t);
+    bool take_early(State& s);
+    void take_the_rest_early();
+    std::vector<Due> early_order_;                        // stepped early this frame, on lanes
+    std::unordered_map<const State*, std::size_t> early_;  // where each is in early_order_
+    bool any_lane_ = false;
+    std::vector<std::vector<double>> lane_ms_;  // each laned state's step, timed where it ran
+    bool timing_ = false;
+    std::unordered_map<Key, double> step_ms_;
     std::unordered_map<Key, Functor::Memo> kept_memos_;
     std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
     // Every embedding, with where its portal is and the stamp of the portal's

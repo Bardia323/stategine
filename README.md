@@ -1050,19 +1050,26 @@ than half. A graph verified again unchanged costs about 45% of a fresh check.
 The machine has many cores, and a frame need not wait on one. There is one
 set of hands for a whole program (`sg/core/Work.hpp`), and two ways to use it:
 
-* **A state on a lane.** A drive kept `Always` or `WhileShown` may say a
-  `lane` (`sg::drive(g, clock, state, trigger, additive, keeps, lane)`,
+* **A state on a lane.** A drive may say a `lane` (`sg::drive(g, clock, state, trigger, additive, keeps, lane)`,
   `graph.set_lane(drive, n)`, or `drive time -> desert keeps always lane 2`
   in the notation). Lane 0 - the default - is the engine's own thread, in
-  turn. States on different lanes step at once, on different hands; states
-  on one lane one after another. Only the state's own step runs there - its
+  turn. Every state on a lane that the frame will step - a guest open under
+  the state one is in (a room's physics, someone's ragdoll), or one kept
+  always - steps at the frame's start, all at once, states on different
+  lanes on different hands and those on one lane one after another; each is
+  then taken at its own turn in the frame. The state one is in stays on the
+  engine's thread. Only the state's own step runs there - its
   arrows on its own elements, its `on_update` and `on_render` - which is all
   that rule 3 lets them touch anyway. Its clock is moved first, on the
   engine's thread (a clock is one state); what it says, what its functors
   and Live embeddings carry, and what its listeners hear are taken
   afterwards on the engine's thread, in the drives' order. So a frame comes
   out the same - bit for bit - on one hand or many (`sg_lanes`: six worlds,
-  11.5 ms a frame in turn, 3.9 ms on three lanes).
+  11.5 ms a frame in turn, 3.9 ms on three lanes; four guests, 7.7 ms and
+  3.9 ms on two). A guest stepped early is shown what its host shows it at
+  the frame's start (its View `in`), not after its siblings' steps.
+* **Where the time goes.** `engine.set_timing(true)` and `engine.step_ms()`:
+  each state's steps, in milliseconds - the states worth a lane.
 * **Work shared out by a state.** Inside its own arrow, a state with many
   elements shares their work out: `sg::work::each(n, [&](std::size_t i) {
   ... })`, every piece writing only its own element or slot. The caller

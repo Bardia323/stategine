@@ -239,8 +239,12 @@ The engine steps states on many cores, and states share their own work out
   `beside`), never a `std::thread` per job or a pool of a module's own: two
   pools fight over the machine. (Start-up work in the renderer that spawns
   its own threads predates it, and moves to it when touched.)
-- **A lane is a state's, by its drive.** A state stepped unentered (`Always`,
-  `WhileShown`) may say `lane N`; states on different lanes step at once.
+- **A lane is a state's, by its drive.** Any driven state but the one
+  entered may say `lane N` - a guest open in the room (its physics, a
+  ragdoll), a state kept always; every one the frame will step steps at the
+  frame's start, at once with the other lanes. Find which are worth it with
+  `Engine::set_timing` / `step_ms()`; a lane for a state that costs little
+  buys nothing.
   Give a lane only to a state whose step touches nothing but itself - its
   arrows do by rule; its `on_update` and `on_render`, if it has any, must
   too (no renderer, sound device, global cache or other state from there).

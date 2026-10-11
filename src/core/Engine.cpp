@@ -271,6 +271,7 @@ void Engine::tick(double dt) {
         // Edits made in an open Live guest since the last frame land in the
         // host before it updates, so the two never disagree within a frame.
         sync_live_out(*c);
+        step_early(*c, t);
         const Params before = c->passage();
         drive(*c, dt);
         step(*c, t);
@@ -281,6 +282,7 @@ void Engine::tick(double dt) {
         if (c) look_across(*c);
     }
     keep_time(t);
+    take_the_rest_early();
     stepped_.clear();
     // What any state said this frame - one the engine stepped, or one a
     // listener-free hand (an edit, the host) sent something to - is
@@ -373,67 +375,68 @@ void Engine::drive(State& s, double dt) {
 
 void Engine::keep_time(const Tick& t) {
     if (drive_revision_ != graph_.topology()) index_drives();
-    keeping_.clear();
-    bool laned = false;
     for (const Drive* d : always_) {
         State* s = graph_.find(d->state);
         if (!s || stepped_.count(s)) continue;
         if (d->keeps == Keeps::WhileShown && !shown(s->id())) continue;
         stepped_.insert(s);
-        keeping_.push_back({s, d->lane, false});
-        laned = laned || d->lane != 0;
-    }
-    if (!laned || work::hands() <= 1) {
-        for (const Due& k : keeping_) {
-            drive(*k.s, t.dt);
-            step(*k.s, t);
-            step_embeddings_in(*k.s, t);  // and what is open in it, as anywhere
-            carry_to_hosts(*k.s);
+        if (!take_early(*s)) {
+            drive(*s, t.dt);
+            step(*s, t);
         }
-        return;
+        step_embeddings_in(*s, t);  // and what is open in it, as anywhere
+        carry_to_hosts(*s);
     }
-    // States on lanes step at once, each lane on a hand of its own: their
-    // clocks moved first, here (a clock is one state, moved on one thread),
-    // and their listeners held, to hear on this thread afterwards.
+}
+
+// States on lanes step at once, each lane on a hand of its own: their clocks
+// moved first, here (a clock is one state, moved on one thread), and their
+// listeners held, to hear on this thread afterwards (`let_go`, by whoever
+// takes what they said, in order).
+void Engine::step_on_lanes(std::vector<Due>& due, const Tick& t) {
     lanes_.clear();
-    std::vector<int> lane_of;
-    for (Due& k : keeping_) {
+    lane_names_.clear();
+    for (Due& k : due) {
         if (k.lane == 0) continue;
         drive(*k.s, t.dt);
         k.had = k.s->wrote_in_update();
         k.s->bus().hold();
-        const auto at = std::find(lane_of.begin(), lane_of.end(), k.lane);
-        if (at == lane_of.end()) {
-            lane_of.push_back(k.lane);
+        const auto at = std::find(lane_names_.begin(), lane_names_.end(), k.lane);
+        if (at == lane_names_.end()) {
+            lane_names_.push_back(k.lane);
             lanes_.push_back({k.s});
         } else {
-            lanes_[static_cast<std::size_t>(at - lane_of.begin())].push_back(k.s);
+            lanes_[static_cast<std::size_t>(at - lane_names_.begin())].push_back(k.s);
         }
     }
+    if (lanes_.empty()) return;
     try {
+        lane_ms_.resize(lanes_.size());
         work::each(lanes_.size(), [this, &t](std::size_t i) {
-            for (State* s : lanes_[i]) s->step(t, watch_updates_);
+            lane_ms_[i].assign(lanes_[i].size(), 0.0);
+            for (std::size_t k = 0; k < lanes_[i].size(); ++k) {
+                const auto t0 = Clock::now();
+                lanes_[i][k]->step(t, watch_updates_);
+                if (timing_) lane_ms_[i][k] = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            }
         });
+        if (timing_)
+            for (std::size_t i = 0; i < lanes_.size(); ++i)
+                for (std::size_t k = 0; k < lanes_[i].size(); ++k) step_ms_[lanes_[i][k]->id()] += lane_ms_[i][k];
     } catch (...) {
-        for (Due& k : keeping_)
+        for (Due& k : due)
             if (k.lane != 0) k.s->bus().let_go();
         throw;
     }
-    // Then, on this thread and in the drives' order, what each said, what it
-    // carries to its hosts and what is open in it - and the states with no
-    // lane, stepped as ever: a frame comes out as it would on one hand.
-    for (const Due& k : keeping_) {
-        if (k.lane == 0) {
-            drive(*k.s, t.dt);
-            step(*k.s, t);
-        } else {
-            k.s->bus().let_go();
-            noticed(*k.s, k.had);
-            heard_from(*k.s);
-        }
-        step_embeddings_in(*k.s, t);
-        carry_to_hosts(*k.s);
-    }
+}
+
+int Engine::lane_of(const State& s) {
+    if (drive_revision_ != graph_.topology()) index_drives();
+    auto it = drive_index_.find(s.id());
+    if (it == drive_index_.end()) return 0;
+    for (const Drive* d : it->second)
+        if (d->lane != 0) return d->lane;
+    return 0;
 }
 
 void Engine::carry_kept() {
@@ -545,9 +548,11 @@ bool Engine::shown(Key id) const {
 
 void Engine::index_drives() {
     drive_index_.clear();
+    any_lane_ = false;
     always_.clear();
     for (const Drive& d : graph_.drives()) {
         drive_index_[d.state].push_back(&d);
+        any_lane_ = any_lane_ || d.lane != 0;
         if ((d.keeps == Keeps::Always || d.keeps == Keeps::WhileShown) &&
             std::none_of(always_.begin(), always_.end(), [&](const Drive* o) { return o->state == d.state; }))
             always_.push_back(&d);
@@ -558,7 +563,13 @@ void Engine::index_drives() {
 
 void Engine::step(State& s, const Tick& t) {
     const bool had = s.wrote_in_update();
-    s.step(t, watch_updates_);
+    if (timing_) {
+        const auto t0 = Clock::now();
+        s.step(t, watch_updates_);
+        step_ms_[s.id()] += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    } else {
+        s.step(t, watch_updates_);
+    }
     noticed(s, had);
     heard_from(s);
 }
@@ -723,10 +734,12 @@ void Engine::step_embeddings_in(State& host, const Tick& t) {
     for (Key name : names) {
         Route* r = route(name);
         if (!r || !r->e->open) continue;
-        if (r->e->sync == EmbedSync::View && r->in) carry(*r->in, *r->subject, *r->guest, r->in_memo, *r->e);
         State* guest = r->guest;
+        // (One stepped early, on its lane, was shown what its host shows it then.)
+        const bool early = early_.count(guest) > 0;
+        if (r->e->sync == EmbedSync::View && r->in && !early) carry(*r->in, *r->subject, *r->guest, r->in_memo, *r->e);
         const bool first = stepped_.insert(guest).second;
-        if (first) {
+        if (first && !take_early(*guest)) {
             drive(*guest, t.dt);
             step(*guest, t);
         }
@@ -743,6 +756,64 @@ void Engine::step_embeddings_in(State& host, const Tick& t) {
         if (first) inner.push_back(guest);
     }
     for (State* g : inner) step_embeddings_in(*g, t);
+}
+
+// Every state on a lane that this frame will step - a guest open anywhere
+// under the state one is in (its physics, someone's body), a state kept
+// always - steps at the frame's start, all at once, each lane on a hand of
+// its own. Each is then taken at its turn, in the frame's own order, on this
+// thread (take_early): what it said, carried and is heard by its listeners.
+// So the frame is the same on one hand or many; only who did the stepping,
+// and when, differs.
+void Engine::step_early(State& here, const Tick& t) {
+    early_.clear();
+    early_order_.clear();
+    if (drive_revision_ != graph_.topology()) index_drives();
+    if (!any_lane_) return;
+    std::unordered_set<const State*> seen{&here};
+    const std::function<void(State&)> visit = [&](State& host) {
+        std::vector<State*> next;
+        for (Route& r : routes_of(host)) {
+            if (!r.e->open || !r.guest || !seen.insert(r.guest).second) continue;
+            if (const int lane = lane_of(*r.guest)) {
+                if (r.e->sync == EmbedSync::View && r.in) carry(*r.in, *r.subject, *r.guest, r.in_memo, *r.e);
+                early_order_.push_back({r.guest, lane, false});
+            }
+            next.push_back(r.guest);
+        }
+        for (State* g : next) visit(*g);
+    };
+    visit(here);
+    for (const Drive* d : always_) {
+        State* s = graph_.find(d->state);
+        if (!s || !seen.insert(s).second) continue;
+        if (d->keeps == Keeps::WhileShown && !shown(s->id())) continue;
+        if (d->lane != 0) early_order_.push_back({s, d->lane, false});
+        visit(*s);
+    }
+    if (early_order_.empty()) return;
+    step_on_lanes(early_order_, t);
+    for (std::size_t i = 0; i < early_order_.size(); ++i) early_[early_order_[i].s] = i;
+}
+
+bool Engine::take_early(State& s) {
+    auto it = early_.find(&s);
+    if (it == early_.end()) return false;
+    Due& k = early_order_[it->second];
+    if (k.s->bus().held()) {
+        k.s->bus().let_go();
+        noticed(*k.s, k.had);
+        heard_from(*k.s);
+    }
+    return true;
+}
+
+// One stepped early whose turn did not come (its embedding closed by a step
+// before it): stepped, so what it said is taken all the same.
+void Engine::take_the_rest_early() {
+    for (Due& k : early_order_) take_early(*k.s);
+    early_.clear();
+    early_order_.clear();
 }
 
 void Engine::apply_edits() {

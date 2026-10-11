@@ -605,6 +605,7 @@ public:
     // thread) is watched from the thread that watches everything else.
     void hold() { holding_ = true; }
     void let_go();
+    bool held() const { return holding_; }
 
     bool empty() const { return queue_.empty(); }
     void clear() { queue_.clear(); }

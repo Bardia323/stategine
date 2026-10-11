@@ -119,6 +119,61 @@ void test_lanes_are_one_frame() {
     check(alone.v == ref.v, "one hand: lanes are stepped in turn, and the same");
 }
 
+// Guests open in the room one is in (its physics, someone's body) are the
+// usual weight of a frame: on lanes they step at once, and what they carry
+// back to the room is carried in the routes' order.
+Run run_guests(bool lanes, int work, int frames) {
+    sg::StateGraph g;
+    auto& clock = g.add<sg::Temporal>("clock");
+    auto& room = g.add<sg::State>("room");
+    room.add_element("floor", "n");
+    room.loop("idle", "floor", "room.tick", [](sg::State&, sg::Element&, sg::Element*, const sg::Event&) {});
+    sg::drive(g, clock, "room", "room.tick");
+    g.set_initial("room");
+    for (int k = 0; k < 4; ++k) {
+        const std::string id = "guest" + std::to_string(k);
+        room.add_element(sg::Key{"at" + std::to_string(k)}, "portal").params.set("v", 0.0);
+        auto& s = g.add<sg::State>(id);
+        s.add_element("x", "n").params.set("v", 1.0 + k);
+        s.loop("turn", "x", sg::Key{id + ".tick"}, [work](sg::State&, sg::Element& e, sg::Element*, const sg::Event& ev) {
+            const double dt = ev.args.num("dt");
+            if (dt == 0.0) return;
+            double v = e.params.num("v"), w = v;
+            for (int i = 0; i < work; ++i) w = std::sin(w) * 0.999 + dt;
+            e.params.set("v", v + dt * w);
+        });
+        sg::drive(g, clock, sg::Key{id}, sg::Key{id + ".tick"}, false, sg::Keeps::WhileActive, lanes ? 1 + k % 2 : 0);
+        const std::string at = "at" + std::to_string(k);
+        g.add_functor(sg::Key{id + ".out"}, sg::Key{id}, "room").on_object("x", sg::Key{at}, [](const sg::Element& s, sg::Element& d) {
+            d.params.set("v", s.params.num("v"));
+        });
+        g.embed(sg::Key{id}, "room", sg::Key{at}, sg::Key{id}, sg::Key{}, sg::Key{id + ".out"}, sg::EmbedSync::Live);
+    }
+    Run r;
+    sg::Engine e(g);
+    e.start();
+    for (int k = 0; k < 4; ++k) e.open_embed(sg::Key{"guest" + std::to_string(k)});
+    const auto t0 = std::chrono::steady_clock::now();
+    e.run_fixed(1.0 / 60.0, static_cast<uint64_t>(frames));
+    r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / frames;
+    for (int k = 0; k < 4; ++k) r.v.push_back(room.element(sg::Key{"at" + std::to_string(k)}).params.num("v"));
+    return r;
+}
+
+void test_guests_on_lanes() {
+    const int work = 200000, frames = 20;
+    const Run one = run_guests(false, work, frames);
+    const Run many = run_guests(true, work, frames);
+    check(one.v == many.v && many.v[0] != 0.0, "guests on lanes step at once, and carry to their room exactly as in turn");
+    std::printf("     a frame of four guests: %.2f ms in turn, %.2f ms on two lanes\n", one.ms, many.ms);
+    if (sg::work::hands() >= 4) check(many.ms < one.ms * 0.8, "two lanes of guests take less time than all in turn");
+    sg::work::set_hands(1);
+    const Run alone = run_guests(true, work, 3);
+    sg::work::set_hands(0);
+    const Run ref = run_guests(true, work, 3);
+    check(alone.v == ref.v, "guests on lanes: the same on one hand as on many");
+}
+
 void test_work_shared_out() {
     std::vector<double> out(10000, 0.0);
     sg::work::each(out.size(), [&](std::size_t i) { out[i] = std::sqrt(static_cast<double>(i)); });
@@ -152,6 +207,7 @@ void test_work_shared_out() {
 int main() {
     test_work_shared_out();
     test_lanes_are_one_frame();
+    test_guests_on_lanes();
     std::printf("%s\n", failures ? "FAILED" : "all lanes ok");
     return failures ? 1 : 0;
 }
