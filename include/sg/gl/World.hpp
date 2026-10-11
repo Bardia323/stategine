@@ -1309,6 +1309,7 @@ private:
         // and how many there have been in all (each samples other points).
         int gathered = 0;
         uint32_t spin = 0;
+        int cells_x = 0, cells_y = 0;  // its cells across and up: only ever more
     };
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way (fewer in a small view: 120 cells across)

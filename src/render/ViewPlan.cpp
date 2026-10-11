@@ -495,6 +495,11 @@ struct SurfaceIndex {
     std::unordered_set<const State *> states;
     std::unordered_map<uint64_t, std::vector<Key>> by_portal, by_object;
     std::unordered_map<Key, std::vector<Key>> by_name, next;
+    // Whether a surface is reached from a state along `next`, as found once
+    // this revision - every thing sharing that state asks it again for
+    // nothing (a room first drawn after the graph moved asked it once a
+    // thing, walking the graph each time).
+    mutable std::unordered_map<uint64_t, bool> reaches;
 };
 uint64_t pair_key(Key a, Key b) { return std::hash<Key>{}(a) * 1099511628211ULL ^ std::hash<Key>{}(b); }
 const SurfaceIndex &surface_index(const StateGraph &g) {
@@ -533,25 +538,41 @@ bool declared_surface(const StateGraph &g, const Element &p, const Surface2D &su
     const State *owner = own == ix.owner.end() ? nullptr : own->second;
     if (!owner || !p.alive || !ix.states.count(&surface))
         return false;
-    std::vector<Key> pending, seen;
-    const auto add = [&](const auto &map, const auto &key) {
+    std::vector<Key> seeds;
+    const auto add = [&](std::vector<Key> &to, const auto &map, const auto &key) {
         if (const auto it = map.find(key); it != map.end())
-            pending.insert(pending.end(), it->second.begin(), it->second.end());
+            to.insert(to.end(), it->second.begin(), it->second.end());
     };
-    add(ix.by_portal, pair_key(owner->id(), signal_of(g, p)));
+    add(seeds, ix.by_portal, pair_key(owner->id(), signal_of(g, p)));
     if (p.params.has("shows"))
-        add(ix.by_name, Key{p.params.get_or<std::string>("shows", {})});
-    add(ix.by_object, pair_key(owner->id(), p.id));
-    while (!pending.empty()) {
-        const Key id = pending.back();
-        pending.pop_back();
-        if (id == surface.id())
+        add(seeds, ix.by_name, Key{p.params.get_or<std::string>("shows", {})});
+    add(seeds, ix.by_object, pair_key(owner->id(), p.id));
+    // From each state it is shown by, whether the surface is reached - found
+    // once a revision for that state and that surface.
+    const auto reached = [&](Key from) {
+        const uint64_t k = pair_key(from, surface.id());
+        if (const auto it = ix.reaches.find(k); it != ix.reaches.end())
+            return it->second;
+        std::vector<Key> pending{from};
+        std::unordered_set<Key> seen;
+        bool found = false;
+        while (!pending.empty() && !found) {
+            const Key id = pending.back();
+            pending.pop_back();
+            if (id == surface.id()) {
+                found = true;
+                break;
+            }
+            if (!seen.insert(id).second)
+                continue;
+            add(pending, ix.next, id);
+        }
+        ix.reaches.emplace(k, found);
+        return found;
+    };
+    for (Key from : seeds)
+        if (reached(from))
             return true;
-        if (std::find(seen.begin(), seen.end(), id) != seen.end())
-            continue;
-        seen.push_back(id);
-        add(ix.next, id);
-    }
     return false;
 }
 double semantic_time(const StateGraph *g, const State &state) {

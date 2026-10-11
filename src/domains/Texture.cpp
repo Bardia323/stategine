@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <chrono>
 #include "sg/domains/Texture.hpp"
 
@@ -366,9 +367,17 @@ bool Texture::stale() {
     // and a room wears hundreds of textures: read for every frame it is
     // drawn, that was most of a frame. A file changed from outside is seen
     // within the second.
+    // And never many in one moment, whatever textures come due together (a
+    // room seen again after a while, all of its pictures at once): a few
+    // reads every few milliseconds, the rest at their next turn.
     const uint64_t settings = map().params.stamp();
     const auto now = std::chrono::steady_clock::now();
-    if (settings != looked_stamp_ || now >= next_look_) {
+    static std::chrono::steady_clock::time_point window;
+    static int reads = 0;
+    if (now - window > std::chrono::milliseconds(4)) window = now, reads = 0;
+    const bool asked = settings != looked_stamp_;
+    if (asked || (now >= next_look_ && reads < 4)) {
+        if (!asked) ++reads;
         seen_ = look();
         looked_stamp_ = settings;
         next_look_ = now + std::chrono::milliseconds(800 + static_cast<int>((reinterpret_cast<std::uintptr_t>(this) >> 4) % 400));

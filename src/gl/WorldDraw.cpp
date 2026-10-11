@@ -289,7 +289,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 }
         // The rest where nothing wanted now was laid, used longest ago -
         // within the layers there are, before any more are made.
-        const std::size_t have = maps.array.valid() && maps.array.size() == shadow_px ? static_cast<std::size_t>(maps.array.layers()) : 0;
+        const std::size_t have = kShadowMaps;
         bool fits = true;
         for (Block& b : blocks) {
             if (b.to != kShadowMaps) continue;
@@ -341,7 +341,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         for (std::size_t s = 0; s < layers; ++s)
             if (in_use[s]) maps.held[s] = frame_count_;
     }
-    if (lightless ? maps.array.ensure(1, 1) : fit_shadows(maps.array, shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
+    if (lightless ? maps.array.ensure(1, 1) : fit_shadows(maps.array, shadow_px, static_cast<int>(kShadowMaps))) maps.forget();  // (made whole: a set that grew laid every map of it again, the frame a lamp came into sight)
     // Which rooms' casters these maps are laid from (their lists, and where
     // each room stands, which is part of the key of each).
     // (Whatever order they are drawn in: the same rooms are the same layout.)
@@ -461,7 +461,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // grown with the maps: grown, they are empty, and the maps that had
     // something laid in them lay it again when they next change.
     const auto keep_still = [&](std::size_t i) {
-        if (fit_shadows(maps.still, shadow_px, layer_count))
+        if (fit_shadows(maps.still, shadow_px, static_cast<int>(kShadowMaps)))
             for (std::size_t j = 0; j < kShadowMaps; ++j)
                 if (j != i) maps.base[j] = false, maps.still_at[j] = 0;
     };
@@ -718,8 +718,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // A look may ask for finer cells, or coarser (`scatter.cell`, pixels).
         const int fit = std::clamp(static_cast<int>(vp_w_) / 120, 4, kAirTile);
         const int tile = std::clamp(static_cast<int>(setting(first, passes::scene, "scatter.cell", fit)), 2, 64);
-        const int gx = std::max(1, (static_cast<int>(vp_w_) + tile - 1) / tile);
-        const int gy = std::max(1, (static_cast<int>(vp_h_) + tile - 1) / tile);
+        // (Its cells only ever more, and by sixteen at a time: a doorway
+        // neared grows on the screen every frame, and air made again at each
+        // new size stopped the card every frame. More cells than the view
+        // needs are only finer air.)
+        const auto cells = [](int need, int& have) {
+            have = std::max(have, (std::max(1, need) + 15) / 16 * 16);
+            return have;
+        };
+        const int gx = cells((static_cast<int>(vp_w_) + tile - 1) / tile, a.cells_x);
+        const int gy = cells((static_cast<int>(vp_h_) + tile - 1) / tile, a.cells_y);
         const float ahead = static_cast<float>(setting(first, passes::scene, "scatter.ahead", 0.5));
         // How many points of each cell are lit, through its depth (`scatter.steps`).
         const int steps = std::clamp(static_cast<int>(setting(first, passes::scene, "scatter.steps", 1.0)), 1, 16);
