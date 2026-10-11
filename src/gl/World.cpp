@@ -678,6 +678,8 @@ void main() {
     // doorway's own view, which shows them.
     jobs_.clear();
     mirror_plans_.clear();
+    // (Drawn in its own look this frame, or not: said again as it is planned.)
+    for (auto& [id, wp] : worlds_) wp.own_drawn = false;
     // The eye's own mirrors, and what is seen through their doorways.
     plan_mirrors(world, eye_of(world), aspect, 1, std::string(), Rect{-1, -1, 1, 1}, 0);
     const auto glued = [&](const Element& e) {

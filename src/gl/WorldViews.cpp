@@ -59,6 +59,18 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
         if (r.empty() || area < kLeastView) continue;
         Element there = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye, there);
+        // A window onto a world in its own look is drawn as it is from the
+        // room it is in - by that world's own view, from the eye carried
+        // through every doorway come by - however many doorways off it is
+        // seen: what is seen of it from the corridor is what is seen once
+        // in the room, and stepping in changes nothing in it.
+        if (e.params.num(Key{"own_look"}, 0.0) > 0.5 && !root_ && !in_mirror) {
+            draw_own(world, e, it->second, there, target_w_, target_h_);
+            it->second.own_drawn = true;
+            own_shown_now_.push_back(it->second.world);
+            ++times_.portal_views;
+            continue;
+        }
         const std::string key = path + "/" + e.id.str();
         jobs_.push_back(ViewJob{key, &world, &e, eye, there, &it->second, depth, area, r, parent ? *parent : path});
         // On through its doorways: on in the same world as deep as it says,
@@ -304,7 +316,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // In a mirror: the picture drawn through it this frame, where the eye
         // the mirror is seen from sees each point of it.
         const bool in_mirror = mirroring_eye_ && fresh && !deeper;
-        if (!in_mirror && ((depth > 0 && !deeper) || (depth == 0 && !fresh && !(wp.own_drawn && wp.own_out.valid())))) {
+        const bool own_ready = wp.own_drawn && wp.own_out.valid();
+        if (!in_mirror && ((depth > 0 && !deeper && !own_ready) || (depth == 0 && !fresh && !own_ready))) {
             const Mix far = mix(wp.world->id(), look_of(*wp.world));
             set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
             scene_->set("uAlbedo", gl::Vec3{static_cast<float>(setting(far, passes::scene, "clear.x", 0.012)),
