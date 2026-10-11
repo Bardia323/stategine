@@ -697,6 +697,39 @@ frame is read back and written as `<name>.png`; after the last, `sheet.png`
 holds them all at half size. In the frame loop, `before(run)` before the tick
 and `after(w, h)` before the swap; `done()` ends the run.
 
+### Directing: a scene staged
+
+A cutscene, a trailer, a shot that moves on its own: a **director**
+(`sg/domains/Director.hpp`), a state that stages others without being part
+of any. Its board is a shot list, as text:
+
+```
+# the camera set low, pushed in and turned on whoever stands there
+0    cam  x=1 y=0.4 z=2 aim_x=3 aim_y=1.5 aim_z=2 fov=50
+4    cam  x=2.2 ease=smooth
+1    bruce x=3 z=2
+3    bruce z=3.5 ease=in
+3.5  say lights_out
+```
+
+Each key of each mark is a track of its own, eased from its key before
+(`linear smooth in out cut`), saying nothing before its first and holding
+after its last. Played to its own line on a Temporal (`sg::drive(g, clock,
+"director", d.tick_event())`), the director sets its marks and says the
+cues it passes. It meets what it stages only through the graph:
+
+* `sg::bind(g, d, "cam", "room", "camera")`: a functor carries the mark onto
+  the room's camera, with the word the director says when the mark moves.
+  The script done with it, the mark says nothing, and the camera is the
+  room's again.
+* `sg::cue(g, d, "lights_out", "room", "room.dark")`: the word carried to the
+  room's own event, and the room's arrow puts the lights out.
+* `sg::action(g, d, "room", "room.entered")`: the world rolls the scene (from
+  its top) by a word of its own - which is how the director is reached.
+
+A mark with `aim_x aim_y aim_z` looks there from its `x y z` (`yaw`, `pitch`).
+What a script gets wrong is the director's `faults`.
+
 ### Looks
 
 How a room is shown is a state too. A `LookState` has one element per pass
