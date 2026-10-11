@@ -30,7 +30,13 @@ void GLWorldView::ensure_resources() {
 
 void GLWorldView::ensure_targets(int w, int h) {
     if (w == target_w_ && h == target_h_) return;
-    if (keeps_sizes_) {
+    // The eye's own view keeps the set of the size it was last drawn at
+    // besides its own: a picture drawn coarser while walked and finer while
+    // read changes size and back, and every set made again at each change
+    // stopped that frame (fifteen milliseconds at 1440 lines). One other
+    // size only: a window sized by hand passes through many.
+    const bool eyes = !root_ && !keeps_sizes_;
+    if (keeps_sizes_ || eyes) {
         // The set that was drawn into is put by, and the one of this size
         // taken (or made: the first time only).
         if (target_w_ > 0) {
@@ -40,13 +46,23 @@ void GLWorldView::ensure_targets(int w, int h) {
             parked_.push_back(std::move(old));
         }
         const auto at = std::find_if(parked_.begin(), parked_.end(), [&](const Targets& t) { return t.w == w && t.h == h; });
-        if (at != parked_.end()) {
+        const bool kept = at != parked_.end();
+        if (kept) {
             swap_targets(*at);
             parked_.erase(at);
             target_w_ = w;
             target_h_ = h;
-            return;
         }
+        if (eyes)
+            while (parked_.size() > 1) {
+                Targets& t = parked_.front();
+                for (gl::RenderTarget* r : {&t.scene, &t.resolve, &t.depth, &t.lit, &t.ao_a, &t.ao_b, &t.bloom_a, &t.bloom_b, &t.post}) r->destroy();
+                for (gl::RenderTarget& r : t.chain) r.destroy();
+                for (RootView& v : t.roots) v.target.destroy();
+                for (Nested& n : t.nested) n.target.destroy();
+                parked_.erase(parked_.begin());
+            }
+        if (kept) return;
     }
     make_targets(w, h);
 }
