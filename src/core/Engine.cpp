@@ -1,5 +1,6 @@
 #include "sg/core/Engine.hpp"
 #include "sg/core/Laws.hpp"
+#include "sg/core/Work.hpp"
 
 namespace sg {
 
@@ -372,15 +373,66 @@ void Engine::drive(State& s, double dt) {
 
 void Engine::keep_time(const Tick& t) {
     if (drive_revision_ != graph_.topology()) index_drives();
+    keeping_.clear();
+    bool laned = false;
     for (const Drive* d : always_) {
         State* s = graph_.find(d->state);
         if (!s || stepped_.count(s)) continue;
         if (d->keeps == Keeps::WhileShown && !shown(s->id())) continue;
         stepped_.insert(s);
-        drive(*s, t.dt);
-        step(*s, t);
-        step_embeddings_in(*s, t);  // and what is open in it, as anywhere
-        carry_to_hosts(*s);
+        keeping_.push_back({s, d->lane, false});
+        laned = laned || d->lane != 0;
+    }
+    if (!laned || work::hands() <= 1) {
+        for (const Due& k : keeping_) {
+            drive(*k.s, t.dt);
+            step(*k.s, t);
+            step_embeddings_in(*k.s, t);  // and what is open in it, as anywhere
+            carry_to_hosts(*k.s);
+        }
+        return;
+    }
+    // States on lanes step at once, each lane on a hand of its own: their
+    // clocks moved first, here (a clock is one state, moved on one thread),
+    // and their listeners held, to hear on this thread afterwards.
+    lanes_.clear();
+    std::vector<int> lane_of;
+    for (Due& k : keeping_) {
+        if (k.lane == 0) continue;
+        drive(*k.s, t.dt);
+        k.had = k.s->wrote_in_update();
+        k.s->bus().hold();
+        const auto at = std::find(lane_of.begin(), lane_of.end(), k.lane);
+        if (at == lane_of.end()) {
+            lane_of.push_back(k.lane);
+            lanes_.push_back({k.s});
+        } else {
+            lanes_[static_cast<std::size_t>(at - lane_of.begin())].push_back(k.s);
+        }
+    }
+    try {
+        work::each(lanes_.size(), [this, &t](std::size_t i) {
+            for (State* s : lanes_[i]) s->step(t, watch_updates_);
+        });
+    } catch (...) {
+        for (Due& k : keeping_)
+            if (k.lane != 0) k.s->bus().let_go();
+        throw;
+    }
+    // Then, on this thread and in the drives' order, what each said, what it
+    // carries to its hosts and what is open in it - and the states with no
+    // lane, stepped as ever: a frame comes out as it would on one hand.
+    for (const Due& k : keeping_) {
+        if (k.lane == 0) {
+            drive(*k.s, t.dt);
+            step(*k.s, t);
+        } else {
+            k.s->bus().let_go();
+            noticed(*k.s, k.had);
+            heard_from(*k.s);
+        }
+        step_embeddings_in(*k.s, t);
+        carry_to_hosts(*k.s);
     }
 }
 

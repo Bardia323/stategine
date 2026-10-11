@@ -324,6 +324,17 @@ const Drive& StateGraph::drive(Key name, Key clock, Key state, Key trigger, bool
     return drive(Drive{name, clock, state, trigger, additive, Key{}, Keeps::WhileActive});
 }
 
+bool StateGraph::set_lane(Key name, int lane) {
+    for (Drive& d : drives_)
+        if (d.name == name) {
+            if (d.lane == lane) return true;
+            rev_.rewired("set_lane");
+            d.lane = lane;
+            return true;
+        }
+    return false;
+}
+
 void StateGraph::drop_drive(Key name) {
     rev_.rewired("drop_drive");
     for (auto it = drives_.begin(); it != drives_.end(); ++it)

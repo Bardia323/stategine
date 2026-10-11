@@ -101,7 +101,8 @@ std::string drive_fact(const Drive& d) {
     const char* keeps = d.keeps == Keeps::Always ? "always" : d.keeps == Keeps::WhileShown ? "shown" : d.keeps == Keeps::WhileFocused ? "focused"
                         : d.keeps == Keeps::WhileEntered ? "entered" : "active";
     return "drive " + d.name.str() + " clock=" + d.clock.str() + " state=" + d.state.str() + " trigger=" + d.trigger.str() +
-           " additive=" + (d.additive ? "1" : "0") + " line=" + dash(d.line) + " keeps=" + keeps;
+           " additive=" + (d.additive ? "1" : "0") + " line=" + dash(d.line) + " keeps=" + keeps +
+           (d.lane ? " lane=" + std::to_string(d.lane) : std::string());
 }
 
 std::string arrow_fact(Key state, Key name, Key from, Key to, Key trigger, const std::string& body) {

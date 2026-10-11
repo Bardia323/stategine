@@ -888,6 +888,7 @@ private:
             dr.state = Key{state};
             dr.trigger = Key{event};
             dr.additive = d.additive;
+            dr.lane = d.lane;
             dr.line = Key{state};
             dr.name = Key{d.clock + ">" + state};
             const std::string keeps = d.keeps.empty() ? "active" : d.keeps;

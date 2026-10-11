@@ -217,6 +217,7 @@ struct DriveAst {
     Loc at;
     std::string clock, target, event, keeps;
     bool additive = false;
+    int lane = 0;
 };
 
 struct PortAst {

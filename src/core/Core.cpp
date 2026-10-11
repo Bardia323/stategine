@@ -127,11 +127,33 @@ void EventBus::drain_into(std::vector<Event>& out) {
     out.clear();
     out.swap(queue_);
     if (listeners_.empty() || detail::trials() > 0) return;
+    if (holding_) {
+        for (const auto& e : out)
+            if (listeners_.count(e.name)) held_.push_back(e);
+        return;
+    }
     struct Observing {
         Observing() { ++detail::observing(); }
         ~Observing() { --detail::observing(); }
     };
     for (const auto& e : out) {
+        auto it = listeners_.find(e.name);
+        if (it == listeners_.end()) continue;
+        Observing watching;
+        for (const auto& fn : it->second) fn(e);
+    }
+}
+
+void EventBus::let_go() {
+    holding_ = false;
+    if (held_.empty()) return;
+    std::vector<Event> heard;
+    heard.swap(held_);
+    struct Observing {
+        Observing() { ++detail::observing(); }
+        ~Observing() { --detail::observing(); }
+    };
+    for (const auto& e : heard) {
         auto it = listeners_.find(e.name);
         if (it == listeners_.end()) continue;
         Observing watching;

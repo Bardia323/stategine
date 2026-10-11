@@ -368,6 +368,15 @@ private:
     // Which drives move which state, found again when the interfaces change.
     std::unordered_map<Key, std::vector<const Drive*>> drive_index_;
     std::vector<const Drive*> always_;  // one per state that keeps its time always
+    // This frame's states kept always, in the drives' order, and the lane each
+    // steps on (keep_time); `had` is whether it had written outside an arrow.
+    struct Due {
+        State* s;
+        int lane;
+        bool had;
+    };
+    std::vector<Due> keeping_;
+    std::vector<std::vector<State*>> lanes_;
     std::unordered_map<Key, Functor::Memo> kept_memos_;
     std::vector<Key> looked_;  // the rooms seen into this frame (look_across)
     // Every embedding, with where its portal is and the stamp of the portal's

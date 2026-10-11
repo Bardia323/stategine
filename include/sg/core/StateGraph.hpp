@@ -164,6 +164,17 @@ struct Drive {
     bool additive = false;
     Key line;  // the clock's timeline this state's time is kept on; the state's name when empty
     Keeps keeps = Keeps::WhileActive;
+    // Where its steps are done, when the engine steps it unentered (Always,
+    // WhileShown): 0 on the engine's own thread, in turn with the rest; any
+    // other number a lane of its own - states on different lanes step at
+    // once, on the machine's other hands (sg/core/Work.hpp), those on one
+    // lane one after another. Only its own arrows run there (and its
+    // on_update, on_render: a state given a lane must touch only itself in
+    // them); what it says, what it carries to its hosts and what its
+    // listeners hear is taken afterwards on the engine's thread, in the
+    // order of the drives - so a frame comes out the same however the
+    // hands fall. Execution, not meaning: a lane is not a clock.
+    int lane = 0;
 };
 
 class StateGraph;
@@ -424,6 +435,8 @@ public:
     const Drive& drive(Drive d);
     const Drive& drive(Key name, Key clock, Key state, Key trigger, bool additive = false);
     void drop_drive(Key name);
+    // Puts a drive's state on a lane (see Drive::lane); false if there is no such drive.
+    bool set_lane(Key drive, int lane);
     const std::deque<Drive>& drives() const { return drives_; }
 
     // --- ports ------------------------------------------------------------------

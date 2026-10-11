@@ -301,6 +301,9 @@ drive time -> a
         const auto s = compile("state time : temporal\nstate desert { element d\n d -> d : day(dt) on desert.day { x = x + vx * dt } }\ndrive time -> desert.day keeps always");
         check(s.ok() && lists(sg::dsl::facts(s.plan), "drive time>desert clock=time state=desert trigger=desert.day additive=0 line=desert keeps=always"),
               "drive time -> desert.day is the same drive, the state and its event as named: " + s.report());
+        const auto l = compile("state time : temporal\nstate desert { element d\n d -> d : day(dt) on desert.day { x = x + vx * dt } }\ndrive time -> desert.day keeps always lane 2");
+        check(l.ok() && lists(sg::dsl::facts(l.plan), "drive time>desert clock=time state=desert trigger=desert.day additive=0 line=desert keeps=always lane=2"),
+              "lane 2 puts the drive's state on a lane of its own, and the facts keep it: " + l.report());
 
         // State built elsewhere: named, not made. Its relations are declared, and the graph checks them.
         const auto e = compile(R"(

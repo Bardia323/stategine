@@ -30,10 +30,10 @@ bool Temporal::has_timeline(Key line) const {
     return e && e->kind == timeline_kind();
 }
 
-const Drive& drive(StateGraph& g, Temporal& clock, Key state, Key trigger, bool additive, Keeps keeps) {
+const Drive& drive(StateGraph& g, Temporal& clock, Key state, Key trigger, bool additive, Keeps keeps, int lane) {
     clock.timeline(state);
     return g.drive(Drive{Key{clock.id().str() + ">" + state.str()}, clock.id(), state, trigger,
-                         additive, state, keeps});
+                         additive, state, keeps, lane});
 }
 
 Event drive_event(const Drive& d, double dt, double time, int64_t frame) {

@@ -600,12 +600,20 @@ public:
     // Swaps the pending queue into `out` so handlers may emit freely.
     void drain_into(std::vector<Event>& out);
 
+    // While held, what listeners would hear is kept, and heard when let go
+    // (`let_go`), in order: a state stepped on a lane of its own (another
+    // thread) is watched from the thread that watches everything else.
+    void hold() { holding_ = true; }
+    void let_go();
+
     bool empty() const { return queue_.empty(); }
     void clear() { queue_.clear(); }
 
 private:
     std::vector<Event> queue_;
     std::unordered_map<Key, std::vector<Listener>> listeners_;
+    std::vector<Event> held_;
+    bool holding_ = false;
 };
 
 // ---------------------------------------------------------------------------

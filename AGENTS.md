@@ -188,6 +188,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 
 | State or machinery (header) | It is | Use it instead of |
 | --- | --- | --- |
+| `sg::work`, a drive's `lane` (`core/Work.hpp`) | the machine's cores, one set of hands for the program: states on different lanes step at once, a state shares its own elements' work out (`each`, `beside`); a frame the same on one hand or many | `std::thread` or a pool of a module's own, a state stepped on a thread by hand, a lock in an arrow |
 | `Temporal` (`core/Temporal.hpp`) | time, a state of its own: a line for each state it drives, `time` and `frame` as params, one arrow that advances a line by `dt` - no line governs another | one clock every state must follow, a state reading another's time, a second clock beside its own line (a timer or a sum of `dt` in its params), `std::chrono`, `on_update`'s `dt` - a state that changes with time is **driven** (`sg::drive(graph, clock, state, trigger)`) and reads `{dt, time, frame}` from its own line |
 | `Spatial2D` / `Spatial3D` (`domains/Spatial.hpp`) | things with a pose that integrate; a 3D room, its `fixture`s and `mesh`es, `model`s | your own position / velocity / integrator |
 | `walk`, `fields_of`, `ray` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops | a walker, gravity or collision of your own; y-up assumptions |
@@ -228,6 +229,35 @@ field support and render visibility keep separate derived indices. Field edits
 affecting sleeping bodies must wake them through an owning arrow. See
 [fields-and-views.md](docs/fields-and-views.md) and README's *Layout* for the
 current APIs and layers.
+
+## Threads: lanes and hands
+
+The engine steps states on many cores, and states share their own work out
+(README *Threads: lanes and hands*, `sg/core/Work.hpp`). Rules:
+
+- **One set of hands.** Parallel work goes through `sg::work` (`each`,
+  `beside`), never a `std::thread` per job or a pool of a module's own: two
+  pools fight over the machine. (Start-up work in the renderer that spawns
+  its own threads predates it, and moves to it when touched.)
+- **A lane is a state's, by its drive.** A state stepped unentered (`Always`,
+  `WhileShown`) may say `lane N`; states on different lanes step at once.
+  Give a lane only to a state whose step touches nothing but itself - its
+  arrows do by rule; its `on_update` and `on_render`, if it has any, must
+  too (no renderer, sound device, global cache or other state from there).
+  What it says, carries and is heard by its listeners is taken afterwards on
+  the engine's thread, in the drives' order: never work around that.
+- **Same frame, any number of hands.** A frame on lanes must come out bit for
+  bit as on one hand (`sg_lanes` holds it). Nothing may depend on which hand
+  finishes first: no shared counters read for meaning, no order taken from
+  timing. Stamps are atomic and only say whether to look again.
+- **Inside a state: pieces write their own.** `sg::work::each(n, fn)` in an
+  arrow, each piece writing only its own element or result slot; gather what
+  must be summed in a fixed order after it returns. No locks in arrows.
+- **The entered state and lane 0 stay on the engine's thread**, as do the
+  graph, edits, transitions, embeddings opening and closing, and every
+  listener. GL calls only on the thread that owns the context.
+- **Lanes are execution, not meaning:** not a clock, not an order between
+  states, never a way for one state to reach another.
 
 ## Spaces made one (sheafified)
 

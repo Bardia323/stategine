@@ -192,7 +192,7 @@ public:
     void make(const plan::Embed& e) { g_.embed(e.e); }
     void make(const plan::Glue& gl) { glue_doorway(g_, gl.name, gl.a, gl.pa, gl.b, gl.pb, gl.also, gl.wraps); }
     void make(const plan::Drive& d) {
-        sg::drive(g_, clock(g_, d.d.clock.str()), d.d.state, d.d.trigger, d.d.additive, d.d.keeps);
+        sg::drive(g_, clock(g_, d.d.clock.str()), d.d.state, d.d.trigger, d.d.additive, d.d.keeps, d.d.lane);
     }
     void make(const plan::Port& p) { g_.port(p.state, p.event); }
     void make(const plan::Keep& k) { g_.keep(k.functor); }

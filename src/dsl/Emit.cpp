@@ -266,7 +266,8 @@ private:
     }
     void step(std::ostream& o, const plan::Drive& d) {
         o << I() << "sg::drive(graph, sg::dsl::clock(graph, " << lit(d.d.clock) << "), " << lit(d.d.state) << ", " << lit(d.d.trigger) << ", "
-          << (d.d.additive ? "true" : "false") << ", " << keeps_name(d.d.keeps) << ");\n";
+          << (d.d.additive ? "true" : "false") << ", " << keeps_name(d.d.keeps)
+          << (d.d.lane ? ", " + std::to_string(d.d.lane) : std::string()) << ");\n";
     }
     void step(std::ostream& o, const plan::Port& p) { o << I() << "graph.port(" << lit(p.state) << ", " << lit(p.event) << ");\n"; }
     void step(std::ostream& o, const plan::Keep& k) { o << I() << "graph.keep(" << lit(k.functor) << ");\n"; }

@@ -791,6 +791,12 @@ struct Parser {
             if (accept_word("event")) d.event = name("an event");
             else if (accept_word("keeps")) d.keeps = name("always, active, shown, focused or entered");
             else if (accept_word("additive")) d.additive = true;
+            else if (accept_word("lane")) {
+                if (cur().t != T::Num || cur().num < 0 || cur().num != static_cast<double>(static_cast<int>(cur().num)))
+                    fail("expected a lane, a whole number");
+                d.lane = static_cast<int>(cur().num);
+                ++p;
+            }
             else break;
         }
         prog.drives.push_back(std::move(d));
