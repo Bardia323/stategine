@@ -1041,6 +1041,8 @@ private:
     // tiled as pixel art, or worn through its uv - smoothly where it says it
     // is a photograph (`smooth`, or it has a normal or surface map of its own).
     bool bind_skin(const State& st, const Element& e);
+    // The ways along a thing's faces its normal map is laid by.
+    static std::vector<float> tangents_of(const State& st, const Element& e);
     // A thing cut out of its picture (`cutout` > 0, with a `skin`), drawn
     // after the rest with the program that may cut (cutout_of), as a sprite is.
     static bool cuts_out(const Element& e);
@@ -1262,6 +1264,8 @@ private:
     // ... and as a photograph worn through a model's uv: its colour (sRGB)
     // and its maps (linear) - by the picture and which.
     std::map<std::pair<const Spatial3D::Picture*, bool>, PictureTexture> worn_textures_;
+    // The view whose pictures every view it made wears (the first).
+    GLWorldView& pictures_home();
     // The caster for a thing cut out of its picture (gl::depth_cut_vs/fs).
     const gl::Program* cut_caster_ = nullptr;
     gl::Vec3 cam_forward_{0, 0, -1}, cam_up_{0, 1, 0};  // and which way it looks

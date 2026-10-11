@@ -18,11 +18,20 @@ bool GLWorldView::is_sprite(const Element& e) {
     return e.params.is(shape, "sprite");
 }
 
+// Pictures are sent to the card once, for every view of the world: the views
+// a view makes (through doorways, in mirrors, on screens) wear its.
+GLWorldView& GLWorldView::pictures_home() {
+    GLWorldView* v = this;
+    while (v->root_) v = v->root_;
+    return *v;
+}
+
 bool GLWorldView::bind_picture(const State& st, const std::string& name, bool data) {
     const auto* space = dynamic_cast<const Spatial3D*>(&st);
     const Spatial3D::Picture* pic = space ? space->picture(Key{name}) : nullptr;
     if (!pic || pic->w <= 0 || pic->h <= 0) return false;
-    PictureTexture& t = (data ? data_textures_ : picture_textures_)[pic];
+    GLWorldView& home = pictures_home();
+    PictureTexture& t = (data ? home.data_textures_ : home.picture_textures_)[pic];
     if (!t.texture.valid() || t.texture.width() != pic->w || t.texture.height() != pic->h) {
         t.texture.create(pic->w, pic->h, /*mipmaps=*/false, /*srgb=*/!data, /*pixel=*/!data);
         t.revision = ~uint64_t{0};
@@ -39,7 +48,7 @@ bool GLWorldView::bind_worn(const State& st, const std::string& name, bool srgb,
     const auto* space = dynamic_cast<const Spatial3D*>(&st);
     const Spatial3D::Picture* pic = space ? space->picture(Key{name}) : nullptr;
     if (!pic || pic->w <= 0 || pic->h <= 0) return false;
-    PictureTexture& t = worn_textures_[{pic, srgb}];
+    PictureTexture& t = pictures_home().worn_textures_[{pic, srgb}];
     if (t.revision != pic->revision || !t.texture.valid()) {
         // Packed where the quality packs (and the card takes it), kept on
         // disk by its pixels: a photograph is a quarter of the memory so.
@@ -54,6 +63,15 @@ bool GLWorldView::bind_worn(const State& st, const std::string& name, bool srgb,
     }
     t.texture.bind(unit);
     return true;
+}
+
+// Its corners' ways, for the mesh as it is (a model's: any other shape's are
+// found on the screen).
+std::vector<float> GLWorldView::tangents_of(const State& st, const Element& e) {
+    const auto* space = dynamic_cast<const Spatial3D*>(&st);
+    const std::vector<float>* corners =
+        space && e.params.is(Key{"shape"}, "model") ? space->model(Key{e.params.get_or<std::string>(Key{"model"}, "")}) : nullptr;
+    return corners ? render::tangents(*corners) : std::vector<float>{};
 }
 
 bool GLWorldView::bind_skin(const State& st, const Element& e) {
@@ -84,8 +102,9 @@ void GLWorldView::ready_worn(const std::vector<Spatial3D*>& worlds) {
         if (!name || name->empty()) return;
         const Spatial3D::Picture* pic = w.picture(Key{*name});
         if (!pic || pic->w <= 0 || pic->h <= 0 || !seen.insert({pic, srgb}).second) return;
-        const auto at = worn_textures_.find({pic, srgb});
-        if (at != worn_textures_.end() && at->second.revision == pic->revision && at->second.texture.valid()) return;
+        const auto& worn = pictures_home().worn_textures_;
+        const auto at = worn.find({pic, srgb});
+        if (at != worn.end() && at->second.revision == pic->revision && at->second.texture.valid()) return;
         jobs.push_back(Job{&w, *name, srgb, pic, {}});
     };
     for (const Spatial3D* w : worlds) {
@@ -115,7 +134,7 @@ void GLWorldView::ready_worn(const std::vector<Spatial3D*>& worlds) {
         for (std::thread& t : hands) t.join();
     }
     for (Job& j : jobs) {
-        PictureTexture& t = worn_textures_[{j.pic, j.srgb}];
+        PictureTexture& t = pictures_home().worn_textures_[{j.pic, j.srgb}];
         if (!j.packed.levels.empty()) {
             t.texture.create_packed(j.packed);
             t.texture.repeat();
@@ -262,14 +281,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         const bool normals = nmap && bind_worn(st, *nmap, false, 10);
         const bool surface = smap && bind_worn(st, *smap, false, 9);
         const gl::Mesh& mesh = shape_of(st, e);
-        if (normals && !mesh.tangents_made()) {
-            // Its corners' ways, made once for the mesh as it is (a model's:
-            // any other shape's are found on the screen).
-            const auto* space = dynamic_cast<const Spatial3D*>(&st);
-            const std::vector<float>* corners =
-                space && e.params.is(Key{"shape"}, "model") ? space->model(Key{e.params.get_or<std::string>(Key{"model"}, "")}) : nullptr;
-            mesh.set_tangents(corners ? render::tangents(*corners) : std::vector<float>{});
-        }
+        if (normals && !mesh.tangents_made()) mesh.set_tangents(tangents_of(st, e));
         scene_->set("uCutout", cut);
         scene_->set("uTwoSided", two);
         scene_->set("uTranslucent", through);

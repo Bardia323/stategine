@@ -113,13 +113,13 @@ void GLWorldView::LetGo::now() {
     // the card) that is felt; spread out, it is not.
     busy = true;
     freeing = std::thread([this, p = std::move(pixels), b = std::move(blocks)]() mutable {
-        constexpr std::size_t kPiece = std::size_t{64} << 20;
+        constexpr std::size_t kPiece = std::size_t{8} << 20;  // (a little: a big piece given back stopped a frame of a game just begun)
         std::size_t given = 0;
         const auto rest = [&](std::size_t bytes) {
             given += bytes;
             if (given < kPiece || hurry.load(std::memory_order_relaxed)) return;
             given = 0;
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
         };
         for (auto& v : p) {
             const std::size_t n = v.capacity();

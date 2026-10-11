@@ -2,6 +2,9 @@
 
 #include "sg/domains/Atlas.hpp"
 
+#include <atomic>
+#include <thread>
+
 namespace sg::render {
 
 std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
@@ -225,10 +228,41 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
         if (bound.surface) upload_skin(bound);
     // And every thing's shape made, seen or not from those eyes - a mesh
     // made the first time its thing comes into sight stops that frame.
+    // And the ways its normal map is laid by, for a thing that wears one
+    // (tens of milliseconds a model, worked out on every core at once).
+    struct Ways {
+        const gl::Mesh* mesh;
+        const Spatial3D* world;
+        const Element* e;
+        std::vector<float> made;
+    };
+    std::vector<Ways> ways;
     for (Spatial3D* w : worlds)
         if (w)
             for (const Element& e : w->elements())
-                if (e.alive && e.kind == kinds::mesh) shape_of(*w, e);
+                if (e.alive && e.kind == kinds::mesh) {
+                    const gl::Mesh& mesh = shape_of(*w, e);
+                    // (Its picture too, sent to the card now: the first draw
+                    // of a thing in a picture of its own stops its frame.)
+                    if (e.params.has(Key{"skin"})) bind_skin(*w, e);
+                    if (is_sprite(e)) bind_picture(*w, e.params.get_or<std::string>(Key{"picture"}, ""));
+                    const std::string* nmap = e.params.num(Key{"uv"}, 0.0) > 0.5 ? e.params.text(Key{"skin_normal"}) : nullptr;
+                    if (nmap && w->picture(Key{*nmap}) && !mesh.tangents_made() &&
+                        std::none_of(ways.begin(), ways.end(), [&](const Ways& x) { return x.mesh == &mesh; }))
+                        ways.push_back(Ways{&mesh, w, &e, {}});
+                }
+    {
+        std::atomic<std::size_t> next{0};
+        const auto hand = [&] {
+            for (std::size_t k; (k = next.fetch_add(1)) < ways.size();) ways[k].made = tangents_of(*ways[k].world, *ways[k].e);
+        };
+        std::vector<std::thread> hands;
+        const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), ways.size());
+        for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+        hand();
+        for (std::thread& t : hands) t.join();
+    }
+    for (Ways& x : ways) x.mesh->set_tangents(x.made);
     // And the views of the worlds seen whole through `own_look` doorways
     // (a city out of a window), each drawn once from the world's own eye:
     // made now, not when the window first comes into sight.
