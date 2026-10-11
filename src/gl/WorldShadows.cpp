@@ -203,7 +203,6 @@ auto GLWorldView::casters_in(const PlacedRoom& placed, std::size_t r) -> RoomCas
     // room stands (its pose is part of where things are) and which of the
     // rooms drawn it is.
     uint64_t key = fnv(1469598103934665603ULL, reinterpret_cast<std::uintptr_t>(placed.room));
-    key = fnv(key, r);
     for (double v : {placed.pose.position.x, placed.pose.position.y, placed.pose.position.z, placed.pose.yaw, placed.pose.pitch, placed.pose.roll}) key = fnv(key, bits_of(v));
     auto& slot = room_casters_[key];
     if (!slot) {
@@ -215,6 +214,12 @@ auto GLWorldView::casters_in(const PlacedRoom& placed, std::size_t r) -> RoomCas
                 it = (it->second && it->second != slot && it->second->used + 600 < frame_count_) ? room_casters_.erase(it) : std::next(it);
     }
     slot->used = frame_count_;
+    // (Which of this frame's rooms it is: the order may change, the room does not.)
+    if (slot->room != r) {
+        slot->room = r;
+        for (Caster& c : slot->list) c.room = r;
+        for (Caster& c : slot->extras) c.room = r;
+    }
     refresh_casters(*slot, placed);
     return *slot;
 }

@@ -193,6 +193,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `walk`, `fields_of`, `ray` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops | a walker, gravity or collision of your own; y-up assumptions |
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
 | `Seam::wraps`, `nests`, `period_x/y/z` | a space glued to itself (torus, portal pair, genus two); worlds inside worlds by a ball; a space that wraps in an axis | rings excused by hand; planets in one coordinate frame; tiled copies placed by hand |
+| `glue_rooms`, `glue_space`, `Quality::glue` (`domains/Atlas.hpp`) | rooms that agree at their doorways glued into one Cartesian space - each room a presheaf, the glued space their section - and drawn there, their doorways openings (README *One space, glued*) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space |
 | `Room` (`domains/Room.hpp`) | a room: a floor plan of any shape (`sg::plan`), openings as data on its walls, walls laid round them by one rule (shell, face, skirting, filler), and what hangs on an opening going with it | walls, openings or floor plans of your own; cutting walls round doors by hand |
 | `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
 | `Texture` (`domains/Texture.hpp`) | a picture things wear, a state of its own: six cells, the thing seen from each way of each axis (no unwrap); generated (`define`), photographed or painted over (`layer`, followed); worn by being embedded in a mesh or a thing of parts; `projection_guide` is the map to paint over | UVs, a texture path or colour in a mesh's params, a picture per part, an unwrap |
@@ -227,6 +228,30 @@ field support and render visibility keep separate derived indices. Field edits
 affecting sleeping bodies must wake them through an owning arrow. See
 [fields-and-views.md](docs/fields-and-views.md) and README's *Layout* for the
 current APIs and layers.
+
+## Spaces glued into one
+
+Rooms meet at seams; where two agree they can be drawn as one space
+(`Quality::glue`, README *One space, glued*). Rules that keep it inside the
+ontology:
+
+- **Derived, never kept.** The glued space is worked out from the rooms and
+  the doorways they share, each time it is asked; nothing is written to a
+  state, and no list of "levels" or global placement is kept. A room added
+  later and glued by an ordinary doorway is in it with nothing done.
+- **Local, no authority.** Two rooms glue from what they say of their own
+  doorway (`glue_rooms`, no graph); a space grows from the eye's room through
+  the doorways it shares. Never partition the whole graph to decide it: the
+  graph links states, it does not rule them.
+- **Holonomy is shape.** A ring that does not close is never folded: a room
+  that would stand where another stands stays beyond its doorway. Never
+  "fix" a monodromy by gluing over it.
+- **Same kind only.** A ball, a screen, a world in its own look, a seam of
+  another scale or one that says it `differs` is a view, never glued.
+- **Seamless both ways.** A glued crossing is held to the same picture as
+  the doorway's view (`sg_crossings_gl`; a game's `crossings` with `glue`).
+  Lights reach a glued room as they would through the doorway: its own lamps
+  and those its doorways let in, never a neighbour's through a wall.
 
 ## Networking is derived machinery above core
 

@@ -35,6 +35,7 @@ const Setting kSettings[] = {
     {"exposure", nullptr, &Quality::exposure, nullptr, "how bright the picture is made (the default look's)"},
     {"instancing", nullptr, nullptr, &Quality::instancing, "things of one shape drawn together (true/false)"},
     {"pixel", &Quality::pixel, nullptr, nullptr, "how many of the screen's pixels, each way, a pixel of the picture takes (1: the screen's own; 2, 3: an older day's)"},
+    {"glue", nullptr, nullptr, &Quality::glue, "rooms that agree drawn as one space, their doorways openings, not views (true/false)"},
     {"pack", nullptr, nullptr, &Quality::pack, "what things wear sent to the card packed, a quarter of the memory (true/false)"},
 };
 std::string trimmed(const std::string& s) {

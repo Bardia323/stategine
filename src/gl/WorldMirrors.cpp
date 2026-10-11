@@ -174,7 +174,31 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
     // As planned with the views (whose doorways the mirrors' views go on
     // through), or - a view drawn with none planned - found now.
     const auto planned = mirror_plans_.find(path_);
-    const std::vector<MirrorPlane> planes = planned != mirror_plans_.end() ? planned->second : mirror_planes(room, eye, aspect, within);
+    const Pose& at0 = rooms.front().pose;
+    const bool placed0 = at0.position.x != 0.0 || at0.position.y != 0.0 || at0.position.z != 0.0 || at0.yaw != 0.0;
+    std::vector<MirrorPlane> planes = placed0 ? std::vector<MirrorPlane>{} : planned != mirror_plans_.end() ? planned->second : mirror_planes(room, eye, aspect, within);
+    // And those of the rooms glued to it into one space (sg::glue_space),
+    // found in each room's own frame and carried into this one's.
+    for (std::size_t r = placed0 ? 0 : 1; r < rooms.size() && planes.size() < static_cast<std::size_t>(kMirrors); ++r) {
+        const PlacedRoom& placed = rooms[r];
+        if (!placed.room || placed.image || (r > 0 && placed.doorways.empty())) continue;
+        const Pose& at = placed.pose;
+        const auto in_room = [&](const gl::Vec3& v, bool point) {
+            const Vec3d d{v.x, v.y, v.z};
+            return to_vec3(point ? local_of(at, d) : rotate_xz(d, -at.yaw));
+        };
+        Camera local = eye;
+        local.eye = in_room(eye.eye, true), local.forward = in_room(eye.forward, false), local.up = in_room(eye.up, false);
+        for (MirrorPlane p : mirror_planes(*placed.room, local, aspect, within)) {
+            const gl::Vec3 on = p.normal * -p.offset;  // a point of it, in its room's frame
+            const Vec3d n = rotate_xz({p.normal.x, p.normal.y, p.normal.z}, at.yaw);
+            const Vec3d w = at.position + rotate_xz({on.x, on.y, on.z}, at.yaw);
+            p.normal = to_vec3(n);
+            p.offset = static_cast<float>(-(n.x * w.x + n.y * w.y + n.z * w.z));
+            planes.push_back(p);
+            if (planes.size() >= static_cast<std::size_t>(kMirrors)) break;
+        }
+    }
     const float scale = std::clamp(q_.reflection_scale, 0.1f, 1.0f);
     const bool eyes_own = path_.empty();
     if (eyes_own)

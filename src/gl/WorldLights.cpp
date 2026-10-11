@@ -314,9 +314,14 @@ float GLWorldView::covered(const Spatial3D& room,const Element& portal,const Pos
 
 auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t& shadowed) -> std::vector<Light> {
     std::vector<Light> out;
-    for (const PlacedRoom& placed : rooms)
+    for (std::size_t r = 0; r < rooms.size(); ++r) {
+        const PlacedRoom& placed = rooms[r];
         if (placed.room && !placed.image)
-            for (const Light& l : own_lights(*placed.room, placed.pose)) out.push_back(l);
+            for (Light l : own_lights(*placed.room, placed.pose)) {
+                l.room = static_cast<int>(r);
+                out.push_back(l);
+            }
+    }
     // A lamp whose light ends (its `range`) before it reaches any room drawn
     // lights nothing here: it is left out before the strongest are chosen,
     // so it takes no place from one that does. Which rooms are drawn, not
@@ -377,22 +382,59 @@ auto GLWorldView::read_lights(const std::vector<PlacedRoom>& rooms, std::size_t&
     // (Lamps, not layers: a lamp with no cone takes six layers of the maps,
     // one a face of a cube round it - while the array holds them.)
     std::size_t own = 0, faces = 0;
-    while (own < std::min(out.size(), kOwnShadows) && faces + shadow_faces(out[own]) <= kShadowMaps)
-        faces += static_cast<std::size_t>(shadow_faces(out[own])), ++own;
+    // Rooms glued into one space (more than one drawn, each its own lamps):
+    // each casts its strongest in turn, the eye's room first - so a room
+    // beside the eye's keeps its shadows - as many in all as there are maps.
+    std::vector<int> lit_rooms;
+    for (const Light& l : out)
+        if (!l.indirect && !l.sun && l.room >= 0 && std::find(lit_rooms.begin(), lit_rooms.end(), l.room) == lit_rooms.end()) lit_rooms.push_back(l.room);
+    if (lit_rooms.size() > 1) {
+        std::sort(lit_rooms.begin(), lit_rooms.end());
+        std::vector<bool> taken(out.size(), false);
+        std::vector<Light> first;
+        for (std::size_t i = 0; i < out.size(); ++i)
+            if (out[i].sun) first.push_back(out[i]), taken[i] = true, faces += static_cast<std::size_t>(shadow_faces(out[i]));
+        const std::size_t most = std::min(out.size(), kShadowLights);
+        for (bool more = true; more && first.size() < most;) {
+            more = false;
+            for (int r : lit_rooms) {
+                if (first.size() >= most) break;
+                for (std::size_t i = 0; i < out.size(); ++i) {
+                    if (taken[i] || out[i].room != r || out[i].indirect) continue;
+                    if (faces + shadow_faces(out[i]) > kShadowMaps) break;
+                    first.push_back(out[i]), taken[i] = true, faces += static_cast<std::size_t>(shadow_faces(out[i]));
+                    more = true;
+                    break;
+                }
+            }
+        }
+        own = first.size();
+        for (std::size_t i = 0; i < out.size(); ++i)
+            if (!taken[i]) first.push_back(out[i]);
+        out.swap(first);
+    } else {
+        while (own < std::min(out.size(), kOwnShadows) && faces + shadow_faces(out[own]) <= kShadowMaps)
+            faces += static_cast<std::size_t>(shadow_faces(out[own])), ++own;
+    }
     // What comes through a doorway, shut or not - the same lights in the
     // same places, only what they reach told by the door (hung_only) - gets
     // a shadow map of its own while there are maps: then what stands in the
     // opening - a door ajar, the frame - throws its own shadow. Past that,
     // it is let in by how much of the opening is clear.
     std::vector<Light> in;
-    for (const PlacedRoom& placed : rooms)
-        if (!placed.image)
-            for (const Light& l : through_doorways(placed)) in.push_back(l);
+    for (std::size_t r = 0; r < rooms.size(); ++r)
+        if (!rooms[r].image)
+            for (Light l : through_doorways(rooms[r])) {
+                l.room = static_cast<int>(r);
+                in.push_back(l);
+            }
     shadowed = std::min({own + in.size(), std::max(kShadowLights, own), own + (kShadowMaps - faces)});
     for (std::size_t k = 0; k < shadowed - own && k < in.size(); ++k) in[k].open = 1.0f;
     out.insert(out.begin() + static_cast<std::ptrdiff_t>(own), in.begin(), in.end());
     shadowed = std::min(shadowed, out.size());
-    if (out.size() > kMaxLights) out.resize(kMaxLights);
+    // (As many as reach the rooms drawn; each room is lit by the ones that
+    // reach it, as many as a draw takes - kMaxLights.)
+    if (out.size() > kAllLights) out.resize(kAllLights);
     if (out.empty()) {
         Light none;
         none.power = 0.0f;  // everything off: ambient only, and the shadow map unused

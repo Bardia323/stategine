@@ -29,9 +29,20 @@ auto GLWorldView::air_for(const Spatial3D* world) -> Air& {
             for (auto it = airs_.begin(); it != airs_.end(); ++it)
                 if (it->second && it->second->used < frame_count_ && (oldest == airs_.end() || it->second->used < oldest->second->used))
                     oldest = it;
-            if (oldest != airs_.end()) airs_.erase(oldest);
+            if (oldest != airs_.end()) {
+                air_spares_.push_back(std::move(oldest->second));
+                airs_.erase(oldest);
+            }
         }
-        slot = std::make_unique<Air>();
+        // (One gone from sight gives its pictures to the next: a view's air
+        // made in the middle of a frame stops it, the card making memory.)
+        if (!air_spares_.empty()) {
+            slot = std::move(air_spares_.back());
+            air_spares_.pop_back();
+            slot->of = 0, slot->gathered = 0;
+        } else {
+            slot = std::make_unique<Air>();
+        }
     }
     slot->used = frame_count_;
     return *slot;

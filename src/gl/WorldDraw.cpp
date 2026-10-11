@@ -235,7 +235,15 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // what of the light) lights nothing, and so lays no maps: one set of a
     // texel stands for them, never a set of full maps a room for nothing.
     const bool lightless = surface_only_ != 0;
-    ShadowSet& maps = lightless ? lightless_maps_ : shadows_for(rooms.front().room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
+    // (A space glued into one keeps its maps by the room its frame is - the
+    // one placed where the frame is - whichever of its rooms the eye is in.)
+    const void* frame_room = rooms.front().room;
+    for (const PlacedRoom& pr : rooms)
+        if (pr.room && !pr.image && pr.pose.position.x == 0.0 && pr.pose.position.y == 0.0 && pr.pose.position.z == 0.0 && pr.pose.yaw == 0.0) {
+            frame_room = pr.room;
+            break;
+        }
+    ShadowSet& maps = lightless ? lightless_maps_ : shadows_for(frame_room, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(lit)));
     // Each light's maps in the layers they were last laid in, where they
     // still hold (the same light, the same box): lights that come in another
     // order - one more let in by a doorway, one gone - keep theirs, and only
@@ -336,9 +344,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     if (lightless ? maps.array.ensure(1, 1) : fit_shadows(maps.array, shadow_px, static_cast<int>(std::max<std::size_t>(layers, 1)))) maps.forget();
     // Which rooms' casters these maps are laid from (their lists, and where
     // each room stands, which is part of the key of each).
-    uint64_t layout_now = 1469598103934665603ULL;
+    // (Whatever order they are drawn in: the same rooms are the same layout.)
+    std::vector<std::uintptr_t> laid;
     for (const RoomCasters* rc : entries)
-        if (rc) layout_now = fnv(layout_now, reinterpret_cast<std::uintptr_t>(rc));
+        if (rc) laid.push_back(reinterpret_cast<std::uintptr_t>(rc));
+    std::sort(laid.begin(), laid.end());
+    uint64_t layout_now = 1469598103934665603ULL;
+    for (std::uintptr_t a : laid) layout_now = fnv(layout_now, a);
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glEnable(gl::GL_CULL_FACE);
     // Faces towards the lamp: the shadow starts where the thing does (its
@@ -431,7 +443,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // be lit by every lamp, never a frame to be lit by them all.
     std::array<std::size_t, kShadowMaps> order{};
     for (std::size_t n = 0; n < layers; ++n) order[n] = (n + frame_count_) % layers;
-    if (depth >= 1 && layers > 1) {
+    if (layers > 1) {
         const auto far_of = [&](std::size_t k) {
             if (!in_use[k]) return 1e30f;
             const Light& l = lights[layer_light[k]];
@@ -499,7 +511,20 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         if (at_rest && maps.sig[i] != 0 && maps.movers[i] == movers_sig) continue;
         if (!at_rest) {
-            if (depth >= 1) {
+            if (depth == 0 && !mirroring_) {
+                // The eye's own room lays as many as a frame can carry
+                // (eye_shadow_budget_); the rest stand as last drawn, with
+                // their own boxes, a frame or two - a door swung, a lamp
+                // switched, never the frame stopping for every lamp at once.
+                const bool first = maps.sig[i] == 0;
+                const bool may_wait = !first && maps.ident[i] == ident && maps.waits[i] < kShadowWaits;
+                if (may_wait && eye_shadow_budget_ <= 0) {
+                    ++maps.waits[i];
+                    light_vp[i] = maps.vp[i];
+                    continue;
+                }
+                --eye_shadow_budget_;
+            } else if (depth >= 1) {
                 // A map that is out of date waits its turn, standing as last
                 // drawn, with its own box: the box of a sun that goes with
                 // the eye is moved in whole texels, so what stands in its
@@ -614,18 +639,40 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // The first room is the one this view is taken from; its look clears.
     const Mix first = mix(rooms.front().room->id(), look_of(*rooms.front().room));
     // The lights, as every pass that lights reads them (lights_glsl).
-    const auto light_uniforms = [&](const gl::Program& p) {
+    // Each room drawn is lit by the lamps that reach it (more than one room
+    // drawn: glued into one space), as many as a draw takes - its own and its
+    // neighbours', strongest first; one room, by all of them.
+    std::vector<std::vector<std::size_t>> lit_by;
+    if (std::count_if(rooms.begin(), rooms.end(), [](const PlacedRoom& r) { return r.room && !r.image; }) > 1) {
+        lit_by.resize(rooms.size());
+        for (std::size_t r = 0; r < rooms.size(); ++r) {
+            if (!rooms[r].room) continue;
+            // Its own, and its neighbours' let in by its doorways (read as
+            // seen through them: gated, its shadow where there are maps) -
+            // never a neighbour's lamp through the wall between them.
+            for (std::size_t i = 0; i < lights.size() && lit_by[r].size() < kMaxLights; ++i)
+                if (lights[i].room == static_cast<int>(r) || lights[i].sun) lit_by[r].push_back(i);
+        }
+    }
+    std::vector<std::size_t> air_lit;
+    if (!lit_by.empty())
+        for (std::size_t i = 0; i < lights.size() && air_lit.size() < kMaxLights; ++i)
+            if (!lights[i].gated) air_lit.push_back(i);
+    const auto light_uniforms = [&](const gl::Program& p, const std::vector<std::size_t>* only = nullptr) {
+        if (!only && !lit_by.empty()) only = &lit_by.front();
         for (std::size_t i = 0; i < kShadowMaps; ++i) {
             p.set(shadow_uniform(i, 0), light_vp[i]);
             p.set(shadow_uniform(i, 1), bias[i]);
         }
-        p.set("uLightCount", static_cast<int>(lights.size()));
-        p.set("uShadowCount", unshadowed ? 0 : static_cast<int>(shadowed));
-        for (std::size_t i = 0; i < lights.size(); ++i) {
-            lamp_to(p, i, lights[i]);
-            p.set(light_uniform(i, 12), unshadowed ? -1.0f : near_of[i]);
-            p.set(light_uniform(i, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
-            p.set(light_uniform(i, 18), cube_of[i]);
+        const std::size_t n = only ? only->size() : std::min(lights.size(), kMaxLights);
+        p.set("uLightCount", static_cast<int>(n));
+        p.set("uShadowCount", unshadowed ? 0 : static_cast<int>(only ? n : std::min(shadowed, n)));
+        for (std::size_t k = 0; k < n; ++k) {
+            const std::size_t i = only ? (*only)[k] : k;
+            lamp_to(p, k, lights[i]);
+            p.set(light_uniform(k, 12), unshadowed ? -1.0f : near_of[i]);
+            p.set(light_uniform(k, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
+            p.set(light_uniform(k, 18), cube_of[i]);
         }
         p.set("uShadowMaps", 1);
     };
@@ -730,7 +777,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             gl::glDisable(gl::GL_BLEND);
             gl::glDisable(gl::GL_SCISSOR_TEST);
             p.use();
-            light_uniforms(p);
+            // (A space glued into one has one air: lit by the lamps of every
+            // room of it - gathered along each ray only as far as what it
+            // meets, so no lamp glows through a wall - not the eye's room's
+            // alone, which would light the air beyond a doorway only once
+            // the eye is through it.)
+            if (!air_lit.empty()) light_uniforms(p, &air_lit);
+            else light_uniforms(p);
             maps.array.bind_depth(1);
             p.set("uAir", a.near, a.far, static_cast<float>(kAirSlices), 1.0f);
             p.set("uAirUnproject", view_proj.inverse());
@@ -893,6 +946,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         clip_count_ = n;
         doors_to_program(placed);
         probes_to_program(placed);
+        if (!lit_by.empty()) {
+            const std::size_t r = static_cast<std::size_t>(&placed - rooms.data());
+            if (r < lit_by.size()) light_uniforms(*scene_, &lit_by[r]);
+        }
         if (baking_) {
             // A probe's bake: only its lamp's light, nothing of its own.
             scene_->set("uAmbient", 0.0f);
@@ -957,8 +1014,23 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         const gl::Vec3 moved = shift * -1.0f;
         static const Key unseen_key{"unseen"}, glass_key{"glass"}, surface_key{"surface"};
+        // What fills an opening onto nothing (`<opening>.blank`) where the
+        // opening is a glued doorway: there is something beyond it now.
+        std::vector<std::pair<Vec3d, double>> openings;
+        for (Key d : placed.doorways)
+            if (const Element* pe = room.find(d)) openings.push_back({world_position(room, *pe), 0.5 * pe->params.num(keys::w, 1.0) + 0.3});
+        const auto fills_opening = [&](const Element& e) {
+            if (openings.empty()) return false;
+            const std::string& n = e.id.str();
+            if (n.size() < 6 || n.compare(n.size() - 6, 6, ".blank") != 0) return false;
+            const Vec3d at = world_position(room, e) + Vec3d{0, e.params.num(keys::sy, 0.0) * 0.5, 0};
+            for (const auto& [o, reach] : openings)
+                if (std::hypot(at.x - o.x, at.z - o.z) < reach) return true;
+            return false;
+        };
         for (const auto i : plan_draws(room, view, placed.image ? &moved : nullptr)) {
             const auto& e=room.elements()[i];
+            if (e.kind == kinds::wall && fills_opening(e)) continue;
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
             // own body, seen from inside it).
             if (e.params.num(unseen_key, 0.0) > 0.5) continue;
@@ -1007,10 +1079,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         batch_frames_ = q_.instancing;
         for (const auto i : draw_plans_.at(&room).portals) {
             const auto& e=room.elements()[i];
+            // (Glued: its frame, but no view - what is beyond it is drawn where it stands.)
+            const bool opening = std::find(placed.doorways.begin(), placed.doorways.end(), e.id.key()) != placed.doorways.end();
             // The doorway being looked through keeps its frame; only its
             // view is left out - seen from its own far side it would fill
             // the whole picture.
-            draw_portal(room, e, depth, target, placed.image || (!skip_portal.empty() && e.id == skip_portal));
+            draw_portal(room, e, depth, target, placed.image || opening || (!skip_portal.empty() && e.id == skip_portal));
         }
         if (batch_frames_) flush_batches(*scene_, true);
         batch_frames_ = false;
@@ -1018,7 +1092,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // it and all that hangs on them (its pictures, its doorways' frames
         // and views): they are behind everything, and where something hides
         // them they are refused by depth, not shaded.
-        if (room.params().num(Key{"sky"}, 0.0) <= 0.5) draw_room(room);
+        // (Glued into one space, a room that does not say how big it is is
+        // bounded by its own walls: a box of the default size round it would
+        // stand in the rooms beside it.)
+        if (room.params().num(Key{"sky"}, 0.0) <= 0.5 && !(placed.glued && !room.params().has(Key{"room_w"}))) draw_room(room);
         // (Asked what surfaces are, glass is none: it is seen through.)
         if (surface_only_) glass.clear();
         if (!glass.empty()) {

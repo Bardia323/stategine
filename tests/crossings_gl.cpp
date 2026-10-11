@@ -5,6 +5,7 @@
 // quarter, a room glued to itself - and every crossing walked and seen
 // (check_crossings): none may jump or flicker. And a doorway shown from the
 // wrong eye is caught, so the check is one that can fail.
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -96,6 +97,81 @@ int main() {
         sg::walkway(g, "round", "loop", "loop.door", "loop", "loop.far", {}, /*wraps=*/true);
         sg::render::GLWorldView view;
         check(walk(view, g).empty(), "through a room glued to itself, both ways: one picture");
+    }
+    {
+        // Glued into one space (Quality::glue): the hall and the annex are
+        // two presheaves that agree at their doorway; glued, the annex
+        // stands where the doorway puts it, drawn there, not as a view - and
+        // walking through is still one picture, the same picture as seen
+        // through the doorway.
+        sg::StateGraph g;
+        auto& hall = room(g, "hall", 8, 6, 2, 4.0, 0.8);
+        auto& annex = room(g, "wing", 5, 7, 0, 2.5, 0.2);
+        g.set_initial("hall");
+        sg::walkway(g, "door", "hall", "hall.door", "wing", "wing.door");
+        // The two rooms alone say where one stands in the other: no graph.
+        sg::Pose b_in_a;
+        const bool glues = sg::glue_rooms(hall, hall.element("hall.door"), annex, annex.element("wing.door"), b_in_a);
+        sg::Element there = annex.element("wing.door");
+        const sg::Pose door_there = sg::compose_pose(b_in_a, sg::world_pose(annex, there));
+        const sg::Pose door_here = sg::world_pose(hall, hall.element("hall.door"));
+        check(glues && sg::distance(door_there.position, door_here.position) < 1e-6,
+              "two rooms glued at their doorway, from the rooms alone: the far doorway lands on the near one");
+        const auto space = sg::glue_space(g, sg::Key{"wing"});
+        check(space.size() == 2 && space.front().room == &annex && !space.front().doorways.empty(),
+              "the space round the annex: both rooms, the annex first, glued by its doorway");
+        const auto from_hall = sg::glue_space(g, sg::Key{"hall"});
+        const auto pose_of = [](const std::vector<sg::PlacedRoom>& v, const sg::Spatial3D* r) {
+            for (const auto& p : v)
+                if (p.room == r) return p.pose;
+            return sg::Pose{};
+        };
+        check(sg::distance(pose_of(space, &annex).position, pose_of(from_hall, &annex).position) < 1e-9 &&
+                  sg::distance(pose_of(space, &hall).position, pose_of(from_hall, &hall).position) < 1e-9,
+              "one frame for the space, whichever of its rooms it is asked from");
+        sg::render::GLQuality q;
+        q.glue = true;
+        sg::render::GLWorldView glued(q);
+        check(walk(glued, g).empty(), "glued into one space, through the doorway both ways: one picture");
+        // (Both fresh, both made ready the same way.)
+        sg::render::GLWorldView glued_fresh(q), seen_fresh;
+        glued_fresh.prepare(g), seen_fresh.prepare(g);
+        hall.camera().params.set(sg::keys::x, 4.0).set(sg::keys::y, 1.6).set(sg::keys::z, 3.0).set(sg::keys::yaw, 1.5707963).set(sg::keys::pitch, 0.0);
+        const auto picture = [&](sg::render::GLWorldView& v) {
+            for (int i = 0; i < 4; ++i) v.render(hall, 160, 90);
+            std::vector<unsigned char> px(160 * 90 * 3);
+            sg::gl::glBindFramebuffer(sg::gl::GL_FRAMEBUFFER, 0);
+            sg::gl::glReadPixels(0, 0, 160, 90, sg::gl::GL_RGB, sg::gl::GL_UNSIGNED_BYTE, px.data());
+            return px;
+        };
+        const auto a = picture(glued_fresh), b = picture(seen_fresh);
+        if (const char* d = std::getenv("SG_GLUE_DUMP")) {
+            for (int k = 0; k < 2; ++k) {
+                FILE* f = std::fopen((std::string(d) + (k ? "/seen.ppm" : "/glued.ppm")).c_str(), "wb");
+                if (!f) continue;
+                std::fprintf(f, "P6 160 90 255 ");
+                const auto& px = k ? b : a;
+                for (int y = 89; y >= 0; --y) std::fwrite(&px[static_cast<std::size_t>(y) * 160 * 3], 1, 160 * 3, f);
+                std::fclose(f);
+            }
+        }
+        double diff = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) diff += std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
+        diff /= static_cast<double>(a.size());
+        std::printf("    (glued against seen through the doorway: %.2f levels apart on average)\n", diff);
+        check(diff < 4.0, "the space glued is the picture seen through the doorway");
+    }
+    {
+        // A room glued to itself (a ring that does not close) is never
+        // folded onto itself: its doorway stays a doorway.
+        sg::StateGraph g;
+        auto& r = room(g, "loop", 6, 6, 1, 3.0, 0.5);
+        r.add_opening("far", 3, 3.0, 1.0, 2.1, 0.0, true);
+        r.lay_walls();
+        g.set_initial("loop");
+        sg::walkway(g, "round", "loop", "loop.door", "loop", "loop.far", {}, /*wraps=*/true);
+        const auto space = sg::glue_space(g, sg::Key{"loop"});
+        check(space.size() == 1 && space.front().doorways.empty(), "a room glued to itself stays one room, its doorway a doorway");
     }
     {
         // Shown from the wrong eye - a metre off - the view through the

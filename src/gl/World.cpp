@@ -218,6 +218,17 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
             }
         }
     }
+    // And every picture worn or shown sent to the card, seen or not from
+    // those eyes - a hundred books' skins sent the frame a bookcase comes
+    // into sight stop it.
+    for (auto& [id, bound] : surfaces_)
+        if (bound.surface) upload_skin(bound);
+    // And every thing's shape made, seen or not from those eyes - a mesh
+    // made the first time its thing comes into sight stops that frame.
+    for (Spatial3D* w : worlds)
+        if (w)
+            for (const Element& e : w->elements())
+                if (e.alive && e.kind == kinds::mesh) shape_of(*w, e);
     // And the views of the worlds seen whole through `own_look` doorways
     // (a city out of a window), each drawn once from the world's own eye:
     // made now, not when the window first comes into sight.
@@ -266,6 +277,19 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
 void GLWorldView::render(const Spatial3D& world, int fb_w, int fb_h) {
     const PlacedRoom one{&world, Pose{}, {}};
     render(std::vector<PlacedRoom>{one}, fb_w, fb_h);
+}
+
+GLWorldView::Camera GLWorldView::placed_camera(const Camera& c, const Pose& at) {
+    if (at.position.x == 0.0 && at.position.y == 0.0 && at.position.z == 0.0 && at.yaw == 0.0 && at.pitch == 0.0 && at.roll == 0.0) return c;
+    const gl::Mat4 m = gl::Mat4::translate({static_cast<float>(at.position.x), static_cast<float>(at.position.y), static_cast<float>(at.position.z)}) *
+                       gl::Mat4::rotate_y(static_cast<float>(at.yaw)) * gl::Mat4::rotate_z(static_cast<float>(at.pitch)) *
+                       gl::Mat4::rotate_x(static_cast<float>(at.roll));
+    const gl::Vec3 o = m.transform_point({0, 0, 0});
+    Camera out = c;
+    out.eye = m.transform_point(c.eye);
+    out.forward = m.transform_point(c.forward) - o;
+    out.up = m.transform_point(c.up) - o;
+    return out;
 }
 
 std::vector<PlacedRoom> GLWorldView::seen(const Spatial3D& world) const {
@@ -402,6 +426,17 @@ void main() {
         for (const PlacedRoom& p : seen(*rooms.front().room))
             if (std::none_of(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == p.room; })) rooms.push_back(p);
     const StateGraph* declared=graph_?graph_:(root_?root_->graph_:nullptr);
+    // Glued: the rooms that agree round the eye's, in its frame - drawn where
+    // they stand, their doorways openings (sg::glue_space).
+    if (q_.glue && !root_ && declared && !rooms.empty() && rooms.front().room && rooms.front().pose.position.x == 0.0 && rooms.front().pose.position.y == 0.0 && rooms.front().pose.position.z == 0.0 &&
+        rooms.front().pose.yaw == 0.0) {
+        const auto glued = glue_space(*declared, rooms.front().room->id(), 6, kAllLights);
+        rooms.front().pose = glued.front().pose;
+        rooms.front().glued = glued.front().glued;
+        rooms.front().doorways = glued.front().doorways;
+        for (std::size_t i = 1; i < glued.size(); ++i)
+            if (std::none_of(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == glued[i].room; })) rooms.push_back(glued[i]);
+    }
     if(rooms.size()>1){
         if(!declared)rooms.resize(1);
         else if(rooms.front().room){
@@ -584,6 +619,7 @@ void main() {
         jitter_x_ = jitter_y_ = 0.0f;
     }
     shadow_budget_ = kNestedShadowMaps;
+    eye_shadow_budget_ = kEyeShadowMaps;
     times_ = FrameTimes{};
     times_.feeds = feeds_ms;
     times_.feed_views = feed_views;
@@ -610,8 +646,13 @@ void main() {
     mirror_plans_.clear();
     // The eye's own mirrors, and what is seen through their doorways.
     plan_mirrors(world, eye_of(world), aspect, 1, std::string(), Rect{-1, -1, 1, 1}, 0);
+    const auto glued = [&](const Element& e) {
+        const auto& d = rooms.front().doorways;
+        return std::find(d.begin(), d.end(), e.id.key()) != d.end();
+    };
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"})) continue;
+        if (glued(e)) continue;  // (an opening: what is beyond it is drawn where it stands)
         if (e.params.num(Key{"own_look"}, 0.0) > 0.5) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
@@ -626,6 +667,7 @@ void main() {
     bool views_drawn = false;
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || (e.params.has(Key{"ball"}) && !ball_window(e))) continue;
+        if (glued(e)) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         WorldPortal& wp = it->second;
@@ -727,8 +769,11 @@ void main() {
 
     // --- the room the viewer is actually standing in ------------------------
     path_.clear();
-    draw_mirrors(rooms, eye_cam, aspect);
-    draw_world(rooms, eye_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
+    // (Seen in the frame the rooms are placed in: the eye's room's own, or
+    // the anchor's of a space glued into one.)
+    const Camera drawn_cam = placed_camera(eye_cam, rooms.front().pose);
+    draw_mirrors(rooms, drawn_cam, aspect);
+    draw_world(rooms, drawn_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();
     times_.scene = since(t0);

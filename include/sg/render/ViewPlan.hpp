@@ -87,6 +87,9 @@ struct DrawLight {
         // has given lately, not this moment's - a lamp that flickers keeps
         // its shadow map through a stutter, and hands it to no other.
         float rank = -1.0f;
+        // Which of the rooms drawn it hangs in, or comes into through a
+        // doorway (their order as drawn; -1: not said).
+        int room = -1;
     };
 
 

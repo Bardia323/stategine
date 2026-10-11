@@ -151,7 +151,8 @@ using GLQuality = Quality;
 
 class GLWorldView {
 public:
-    static constexpr std::size_t kMaxLights = 24;   // matches the scene shader
+    static constexpr std::size_t kMaxLights = 24;   // matches the scene shader: lamps one draw is lit by
+    static constexpr std::size_t kAllLights = 64;   // lamps a frame keeps, over every room it draws
     static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
     static constexpr std::size_t kShadowLights = 10;  // lights with maps, and suns' close-up maps: a lamp with no cone counts once for its six layers
     static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
@@ -1312,8 +1313,9 @@ private:
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way (fewer in a small view: 120 cells across)
     static constexpr int kAirSlices = 64;   // slices out from the eye, each sampled once at a point jittered within it
-    static constexpr std::size_t kAirs = 6;  // views' airs kept at once
+    static constexpr std::size_t kAirs = 16;  // views' airs kept at once
     std::map<std::pair<const void*, std::string>, std::unique_ptr<Air>> airs_;
+    std::vector<std::unique_ptr<Air>> air_spares_;  // airs let go, their pictures kept for the next
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
     Air& air_for(const Spatial3D* world);
 
@@ -1327,6 +1329,8 @@ private:
     static constexpr int kNestedShadowMaps = 6;
     static constexpr uint32_t kShadowWaits = 3;  // frames a map may stand out of date, in a view through a doorway
     int shadow_budget_ = kNestedShadowMaps;
+    static constexpr int kEyeShadowMaps = 6;  // maps the eye's own room lays again in a frame, before the rest wait
+    int eye_shadow_budget_ = kEyeShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
     ShadowSet& shadows_for(const void* world, const void* view);
     // The card's room for shadow maps (Quality::shadow_budget_mb), kept to:
@@ -1554,6 +1558,8 @@ private:
     // for a tenth of a second. Made by `warm`, before anything is walked.
     std::unordered_map<const Spatial3D*, std::unique_ptr<GLWorldView>> own_views_;
     GLWorldView& own_view_of(const Spatial3D* world);
+    // A camera of a room, seen from the frame the room is placed in.
+    static Camera placed_camera(const Camera& c, const Pose& at);
     void draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h);
     void trade_scratch(GLWorldView& with);
     void make_scratch(int w, int h);

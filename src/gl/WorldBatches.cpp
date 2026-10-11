@@ -1,5 +1,7 @@
 // The GL view's batches: things of one shape drawn together, nearest
 // first, and the skins (textures) they wear.
+#include <cstdlib>
+#include <cstdio>
 #include "sg/gl/World.hpp"
 
 #include "sg/domains/Texture.hpp"

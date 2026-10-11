@@ -159,6 +159,40 @@ into the other's wall. `descent_defects` names it:
 seam: hall.e_a reaches 0.150000 m past doorway doorway, into the room on the other side
 ```
 
+### One space, glued (`glue`)
+
+Each room is a presheaf: its own local section, in its own frame. Where two
+of them meet at a doorway and agree, they glue - the sheaf's section over
+both is one Cartesian frame, and the renderer can draw them there, where they
+stand, instead of each through its doorway as a view of its own. Optional,
+at will: `glue = true` in render.conf (`Quality::glue`).
+
+* **`sg::glue_rooms(a, pa, b, pb, b_in_a)`** - two rooms and the doorway each
+  has: where `b` stands in `a`'s frame, if they are the same kind of space
+  there (a plain walked opening - no ball, no screen, no world in its own
+  look, no change of scale, nothing said to `differ` - both under a sky or
+  both walled). What the two rooms say of their doorway and nothing else: no
+  graph is asked, so no graph is an authority over it.
+* **`sg::glue_space(graph, root)`** - the rooms round `root` glued room by
+  room through the doorways each shares (glue_rooms), a room joining when
+  every way to it agrees and it stands clear of the rooms already placed
+  (its walls' box, more than two walls' breadth in). A ring that does not
+  close - a holonomy, `Cover::monodromy` - is never folded onto itself: there
+  the doorway stays a doorway. Placed in the frame of the first of them by
+  name, so crossing among them the frame does not move; `root` first.
+* The renderer (`glue`) draws them as one: the glued doorways are openings
+  (`PlacedRoom::doorways`; no view made, the filler of the opening left out,
+  each room still bounded at its doorway's plane), each room lit by its own
+  lamps and those its doorways let in (as through a portal, never a
+  neighbour's lamp through a wall), the air lit by every room's lamps, one
+  set of shadow maps for the space. Doorways that do not glue are views, as
+  ever.
+
+It is derived, never kept: nothing is written to any state, and the rooms
+it places are where the seams' own carries put them. `sg_crossings_gl`
+walks a glued pair and holds the glued picture to the one seen through the
+doorway.
+
 Every image here is reproducible:
 `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north|alert|crossing>`.
 Shots advance fades by a fixed 1/60 s per frame, so a mid-fade frame is the same
