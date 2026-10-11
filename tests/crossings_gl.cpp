@@ -99,11 +99,11 @@ int main() {
         check(walk(view, g).empty(), "through a room glued to itself, both ways: one picture");
     }
     {
-        // Glued into one space (Quality::glue): the hall and the annex are
-        // two presheaves that agree at their doorway; glued, the annex
+        // Sheafified (the doorway says `sheaf`): the hall and the annex are
+        // two presheaves that agree at their doorway; made one, the annex
         // stands where the doorway puts it, drawn there, not as a view - and
         // walking through is still one picture, the same picture as seen
-        // through the doorway.
+        // through the doorway. Glued and not said to be one, each is its own.
         sg::StateGraph g;
         auto& hall = room(g, "hall", 8, 6, 2, 4.0, 0.8);
         auto& annex = room(g, "wing", 5, 7, 0, 2.5, 0.2);
@@ -111,16 +111,24 @@ int main() {
         sg::walkway(g, "door", "hall", "hall.door", "wing", "wing.door");
         // The two rooms alone say where one stands in the other: no graph.
         sg::Pose b_in_a;
-        const bool glues = sg::glue_rooms(hall, hall.element("hall.door"), annex, annex.element("wing.door"), b_in_a);
+        check(!sg::sheafable(hall, hall.element("hall.door"), annex, annex.element("wing.door"), b_in_a) &&
+                  sg::sheafify(g, sg::Key{"wing"}).size() == 1,
+              "glued is not one: a seam whose doorways do not say `sheaf` leaves each room its own");
+        const auto say_sheaf = [&](double on) {
+            hall.element("hall.door").params.set("sheaf", on);
+            annex.element("wing.door").params.set("sheaf", on);
+        };
+        say_sheaf(1.0);
+        const bool glues = sg::sheafable(hall, hall.element("hall.door"), annex, annex.element("wing.door"), b_in_a);
         sg::Element there = annex.element("wing.door");
         const sg::Pose door_there = sg::compose_pose(b_in_a, sg::world_pose(annex, there));
         const sg::Pose door_here = sg::world_pose(hall, hall.element("hall.door"));
         check(glues && sg::distance(door_there.position, door_here.position) < 1e-6,
-              "two rooms glued at their doorway, from the rooms alone: the far doorway lands on the near one");
-        const auto space = sg::glue_space(g, sg::Key{"wing"});
+              "two rooms made one at their doorway, from the rooms alone: the far doorway lands on the near one");
+        const auto space = sg::sheafify(g, sg::Key{"wing"});
         check(space.size() == 2 && space.front().room == &annex && !space.front().doorways.empty(),
-              "the space round the annex: both rooms, the annex first, glued by its doorway");
-        const auto from_hall = sg::glue_space(g, sg::Key{"hall"});
+              "the space round the annex: both rooms, the annex first, one by its doorway");
+        const auto from_hall = sg::sheafify(g, sg::Key{"hall"});
         const auto pose_of = [](const std::vector<sg::PlacedRoom>& v, const sg::Spatial3D* r) {
             for (const auto& p : v)
                 if (p.room == r) return p.pose;
@@ -129,12 +137,10 @@ int main() {
         check(sg::distance(pose_of(space, &annex).position, pose_of(from_hall, &annex).position) < 1e-9 &&
                   sg::distance(pose_of(space, &hall).position, pose_of(from_hall, &hall).position) < 1e-9,
               "one frame for the space, whichever of its rooms it is asked from");
-        sg::render::GLQuality q;
-        q.glue = true;
-        sg::render::GLWorldView glued(q);
-        check(walk(glued, g).empty(), "glued into one space, through the doorway both ways: one picture");
+        sg::render::GLWorldView glued;
+        check(walk(glued, g).empty(), "made one space, through the doorway both ways: one picture");
         // (Both fresh, both made ready the same way.)
-        sg::render::GLWorldView glued_fresh(q), seen_fresh;
+        sg::render::GLWorldView glued_fresh, seen_fresh;
         glued_fresh.prepare(g), seen_fresh.prepare(g);
         hall.camera().params.set(sg::keys::x, 4.0).set(sg::keys::y, 1.6).set(sg::keys::z, 3.0).set(sg::keys::yaw, 1.5707963).set(sg::keys::pitch, 0.0);
         const auto picture = [&](sg::render::GLWorldView& v) {
@@ -144,7 +150,10 @@ int main() {
             sg::gl::glReadPixels(0, 0, 160, 90, sg::gl::GL_RGB, sg::gl::GL_UNSIGNED_BYTE, px.data());
             return px;
         };
-        const auto a = picture(glued_fresh), b = picture(seen_fresh);
+        const auto a = picture(glued_fresh);
+        say_sheaf(0.0);
+        const auto b = picture(seen_fresh);
+        say_sheaf(1.0);
         if (const char* d = std::getenv("SG_GLUE_DUMP")) {
             for (int k = 0; k < 2; ++k) {
                 FILE* f = std::fopen((std::string(d) + (k ? "/seen.ppm" : "/glued.ppm")).c_str(), "wb");
@@ -158,8 +167,32 @@ int main() {
         double diff = 0;
         for (std::size_t i = 0; i < a.size(); ++i) diff += std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
         diff /= static_cast<double>(a.size());
-        std::printf("    (glued against seen through the doorway: %.2f levels apart on average)\n", diff);
-        check(diff < 4.0, "the space glued is the picture seen through the doorway");
+        std::printf("    (one space against seen through the doorway: %.2f levels apart on average)\n", diff);
+        check(diff < 4.0, "the space made one is the picture seen through the doorway");
+        // A thing of the annex that has rolled out through the doorway into
+        // the hall is where it stands, in the one space: drawn there, not cut
+        // at the annex's side of the doorway. (Glued only, it would be in
+        // neither picture: the hall's has no such thing, the doorway's view
+        // cuts what is on the near side of it.)
+        {
+            const sg::Pose in_annex = sg::compose_pose(sg::inverse(b_in_a), sg::Pose{sg::Vec3d{4.0, 0.0, 4.6}});
+            // (Stood in the annex first, then rolled out: how a thing comes to
+            // be past a doorway.)
+            sg::Element& ball = annex.add_element(sg::Key{"wing.rolled"}, sg::kinds::mesh);
+            ball.params.set(sg::keys::x, 2.5).set(sg::keys::y, 0.0).set(sg::keys::z, 5.0);
+            ball.params.set(sg::keys::sx, 0.5).set(sg::keys::sy, 1.4).set(sg::keys::sz, 0.5).set(sg::keys::r, 1.0).set(sg::keys::g, 0.05).set(sg::keys::b, 0.05);
+            sg::render::GLWorldView with_thing;
+            with_thing.prepare(g);
+            picture(with_thing);
+            annex.element("wing.rolled").params.set(sg::keys::x, in_annex.position.x).set(sg::keys::z, in_annex.position.z);
+            const auto c = picture(with_thing);
+            double moved = 0;
+            for (std::size_t i = 0; i < c.size(); ++i) moved += std::abs(static_cast<int>(c[i]) - static_cast<int>(a[i]));
+            moved /= static_cast<double>(c.size());
+            std::printf("    (a thing of the annex standing in the hall: %.2f levels on average)\n", moved);
+            check(moved > 4.0, "made one, a thing rolled out through the doorway is seen where it stands");
+            annex.element("wing.rolled").alive = false;
+        }
     }
     {
         // A room glued to itself (a ring that does not close) is never
@@ -170,7 +203,9 @@ int main() {
         r.lay_walls();
         g.set_initial("loop");
         sg::walkway(g, "round", "loop", "loop.door", "loop", "loop.far", {}, /*wraps=*/true);
-        const auto space = sg::glue_space(g, sg::Key{"loop"});
+        r.element("loop.door").params.set("sheaf", 1.0);
+        r.element("loop.far").params.set("sheaf", 1.0);
+        const auto space = sg::sheafify(g, sg::Key{"loop"});
         check(space.size() == 1 && space.front().doorways.empty(), "a room glued to itself stays one room, its doorway a doorway");
     }
     {

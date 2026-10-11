@@ -46,6 +46,32 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     };
     auto part_at = part_from;
     std::vector<PlacedRoom> rooms = given;
+    // A room of a space made one is drawn whole only where it is seen into
+    // from here: a doorway of it made one in sight and not shut (the room
+    // the view is of is always) - and then only what is seen through those
+    // doorways (`through`: the part of the screen they cover), as a view
+    // through a doorway is. Elsewhere only what moves in it is drawn: the
+    // space costs what is seen of it, in every view.
+    std::vector<Rect> through(rooms.size(), Rect{-1, -1, 1, 1});
+    for (std::size_t i = 1; i < rooms.size(); ++i) {
+        PlacedRoom& placed = rooms[i];
+        if (!placed.sheafed || !placed.room || placed.image) continue;
+        const Camera cam_here = placed_camera(cam, inverse(placed.pose));
+        const Vec3d eye_here{cam_here.eye.x, cam_here.eye.y, cam_here.eye.z};
+        bool seen = false, inside = false;
+        Rect r{1, 1, -1, -1};
+        for (Key d : placed.doorways) {
+            const Element* pe = placed.room->find(d);
+            if (!pe || !in_view(*placed.room, *pe, cam_here, aspect) || shut_to(*pe, eye_here)) continue;
+            seen = true;
+            // (Standing in the doorway, or nearly: all of the screen.)
+            if (distance(eye_here, world_position(*placed.room, *pe)) < 0.5 * pe->params.num(keys::w, 1.0) + 0.6) inside = true;
+            const Rect s = screen_rect(*placed.room, *pe, cam_here, aspect);
+            r = Rect{std::min(r.x0, s.x0), std::min(r.y0, s.y0), std::max(r.x1, s.x1), std::max(r.y1, s.y1)};
+        }
+        placed.things_only = !seen;
+        if (seen && !inside) through[i] = r.cut(Rect{-1, -1, 1, 1});
+    }
     for (std::size_t r = 0, own = given.size(); r < own; ++r) {
         if (!given[r].room) continue;
         const Spatial3D& room = *given[r].room;
@@ -1049,8 +1075,44 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 if (std::hypot(at.x - o.x, at.z - o.z) < reach) return true;
             return false;
         };
-        for (const auto i : plan_draws(room, view, placed.image ? &moved : nullptr)) {
+        // Glued into one space, what stands in a room is where it stands: a
+        // thing rolled out through a glued doorway is in the room beyond, and
+        // is not cut at the doorway - only the room's own shell keeps to its
+        // side (whatever the caller cuts away, it still is).
+        const bool whole = !placed.doorways.empty() && !placed.image;
+        std::vector<const Element*> uncut;
+        static const Key laid_key{"laid"};
+        // (Seen through its doorways only: what is in the pyramid through
+        // them, and what moves wherever it is - a thing rolled into the room
+        // the eye is in is seen there.)
+        const std::size_t r_at = static_cast<std::size_t>(&placed - rooms.data());
+        const Rect& seen_by = through[r_at < through.size() ? r_at : 0];
+        std::vector<std::size_t> planned;
+        if (seen_by.x0 > -1.0f || seen_by.y0 > -1.0f || seen_by.x1 < 1.0f || seen_by.y1 < 1.0f) {
+            if (seen_by.empty()) {
+                planned.clear();
+            } else {
+                const float hx = (seen_by.x1 - seen_by.x0) * 0.5f, hy = (seen_by.y1 - seen_by.y0) * 0.5f;
+                const gl::Mat4 to_part = gl::Mat4::scale({1.0f / hx, 1.0f / hy, 1.0f}) *
+                                         gl::Mat4::translate({-(seen_by.x0 + seen_by.x1) * 0.5f, -(seen_by.y0 + seen_by.y1) * 0.5f, 0.0f});
+                planned = plan_draws(room, frustum_of(to_part * view_proj));
+            }
+            const std::vector<std::size_t> all = plan_draws(room, view);
+            const auto& moved_here = draw_plans_.at(&room).mover;
+            for (const auto i : all)
+                if (i < moved_here.size() && moved_here[i] && !std::binary_search(planned.begin(), planned.end(), i)) planned.push_back(i);
+            std::sort(planned.begin(), planned.end());
+        } else {
+            planned = plan_draws(room, view, placed.image ? &moved : nullptr);
+        }
+        // What has moved since its room was laid out (a thing knocked, thrown,
+        // carried): only such a thing can stand outside its own room.
+        const auto& has_moved = draw_plans_.at(&room).mover;
+        const auto moved_one = [&](std::size_t i) { return i < has_moved.size() && has_moved[i] != 0; };
+        for (const auto i : planned) {
             const auto& e=room.elements()[i];
+            if (placed.things_only && !(e.kind == kinds::mesh && moved_one(i) && !is_sprite(e) && !cuts_out(e) && e.params.num(glass_key, 0.0) <= 0.0))
+                continue;
             if (e.kind == kinds::wall && fills_opening(e)) continue;
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
             // own body, seen from inside it).
@@ -1058,6 +1120,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             if (hidden_ && hidden_->count(e.id.key())) continue;  // (moving: not what the probes see)
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);
+            } else if (e.kind == kinds::mesh && whole && moved_one(i) && !e.params.has(laid_key) && !is_sprite(e) && !cuts_out(e) &&
+                       e.params.num(glass_key, 0.0) <= 0.0) {
+                uncut.push_back(&e);
             } else if (e.kind == kinds::mesh) {
                 if (is_sprite(e) || cuts_out(e)) sprites.push_back(&e);
                 else if (e.params.num(glass_key, 0.0) > 0.0) glass.push_back(&e);
@@ -1075,6 +1140,18 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(3, part_at);
         flush_batches(*scene_, true);
+        if (!uncut.empty()) {
+            const int own = std::min(static_cast<int>(clips.size()), kMaxBounds);
+            scene_->set("uClipCount", own);
+            clip_count_ = own;
+            for (const Element* e : uncut)
+                if (instanceable(*e)) batch_crate(room, *e);
+                else if (!batch_skinned(room, *e)) draw_crate(room, *e);
+            flush_batches(*scene_, true);
+            scene_->set("uClipCount", bounds);
+            clip_count_ = bounds;
+        }
+        if (placed.things_only) continue;  // (nothing else of it is seen)
         draw_straddlers(placed, room);
         // Pictures cut out of their cards - and things cut out of their
         // pictures (`cutout`: leaves) - together, with the program that may
@@ -1116,7 +1193,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (Glued into one space, a room that does not say how big it is is
         // bounded by its own walls: a box of the default size round it would
         // stand in the rooms beside it.)
-        if (room.params().num(Key{"sky"}, 0.0) <= 0.5 && !(placed.glued && !room.params().has(Key{"room_w"}))) draw_room(room);
+        if (room.params().num(Key{"sky"}, 0.0) <= 0.5 && !(placed.sheafed && !room.params().has(Key{"room_w"}))) draw_room(room);
         // (Asked what surfaces are, glass is none: it is seen through.)
         if (surface_only_) glass.clear();
         if (!glass.empty()) {

@@ -150,25 +150,33 @@ std::vector<PlacedRoom> place_rooms(StateGraph& g, const Atlas& atlas, Key root,
 // a picture, but there, where they are. The root itself is not among them.
 std::vector<PlacedRoom> nests(const StateGraph& g, Key root, int max_depth = 3);
 
-// Two rooms glued at a doorway each has, into one space: where `b` stands
-// in `a`'s frame (`b_in_a`) - if they are the same kind of space there (two
-// rooms of three dimensions met by a rigid motion: a plain walked opening -
-// no ball, no screen, no world in its own look, no change of scale, nothing
-// said to differ - under a sky both or walled both). What the two rooms say
-// of their doorway, and nothing else: no graph is asked.
-bool glue_rooms(const Spatial3D& a, const Element& pa, const Spatial3D& b, const Element& pb, Pose& b_in_a);
+// Glued is not one. A seam glues two rooms - each stays its own chart, its
+// own frame, its own physics and look; the seam says how to carry things
+// across. Sheafified, the cover is made one: where the rooms' sections agree
+// on the overlap, they are one section - one frame, drawn as one space,
+// with one physics. Only a doorway that says so (`sheaf` = 1, on both
+// sides) is sheafified (or every doorway that agrees, with `every`), and
+// only where the two are one kind of space there:
 
-// The rooms round `root` glued into one space: each presheaf - a room, its
-// own frame - glued to the next where they agree (glue_rooms), along the
-// doorways `root` shares and theirs, room by room from it; their section
-// over those rooms is one Cartesian frame, in which each room stands where
-// every way to it puts it. A room joins when the ways to it agree and it
-// stands clear of every room already placed - so a ring that does not close
-// (a holonomy) is never folded onto itself: there the doorway stays a
-// doorway. Each placed room lists the doorways it is glued by
+// Whether two rooms, at a doorway each has, are one space - two rooms of
+// three dimensions met by a rigid motion: a plain walked opening (no ball,
+// no screen, no world in its own look, no change of scale, nothing said to
+// differ), under a sky both or walled both, both doorways saying `sheaf` -
+// and where `b` stands in `a`'s frame (`b_in_a`). What the two rooms say
+// of their doorway, and nothing else: no graph is asked.
+bool sheafable(const Spatial3D& a, const Element& pa, const Spatial3D& b, const Element& pb, Pose& b_in_a, bool every = false);
+
+// The space round `root` made one: each room a presheaf, its own frame;
+// joined to the next where they are one (sheafable), along the doorways
+// `root` shares and theirs, room by room from it; their section over those
+// rooms is one Cartesian frame, in which each room stands where every way to
+// it puts it. A room joins when the ways to it agree and it stands clear of
+// every room already placed - so a ring that does not close (a holonomy) is
+// never folded onto itself: there the doorway stays a doorway. Each placed
+// room lists the doorways it is one with its neighbours by
 // (`PlacedRoom::doorways`). At most `most` rooms, and lamps (`lamps`: what
 // the renderer lights a frame with). Placed in the frame of the first of
-// them by name, `root` first.
-std::vector<PlacedRoom> glue_space(const StateGraph& g, Key root, std::size_t most = 6, std::size_t lamps = 24);
+// them by name, `root` first. Derived each time it is asked; never kept.
+std::vector<PlacedRoom> sheafify(const StateGraph& g, Key root, std::size_t most = 6, std::size_t lamps = 24, bool every = false);
 
 }  // namespace sg

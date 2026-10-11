@@ -193,7 +193,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `walk`, `fields_of`, `ray` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops | a walker, gravity or collision of your own; y-up assumptions |
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
 | `Seam::wraps`, `nests`, `period_x/y/z` | a space glued to itself (torus, portal pair, genus two); worlds inside worlds by a ball; a space that wraps in an axis | rings excused by hand; planets in one coordinate frame; tiled copies placed by hand |
-| `glue_rooms`, `glue_space`, `Quality::glue` (`domains/Atlas.hpp`) | rooms that agree at their doorways glued into one Cartesian space - each room a presheaf, the glued space their section - and drawn there, their doorways openings (README *One space, glued*) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space |
+| `sheafable`, `sheafify`, a doorway's `sheaf` (`domains/Atlas.hpp`) | rooms made one space where their doorways say `sheaf` and they agree - each room a presheaf, the space their section - drawn there, their doorways openings, and one physics over them (README *One space, sheafified*) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space, one physics per room where they are one |
 | `Room` (`domains/Room.hpp`) | a room: a floor plan of any shape (`sg::plan`), openings as data on its walls, walls laid round them by one rule (shell, face, skirting, filler), and what hangs on an opening going with it | walls, openings or floor plans of your own; cutting walls round doors by hand |
 | `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
 | `Texture` (`domains/Texture.hpp`) | a picture things wear, a state of its own: six cells, the thing seen from each way of each axis (no unwrap); generated (`define`), photographed or painted over (`layer`, followed); worn by being embedded in a mesh or a thing of parts; `projection_guide` is the map to paint over | UVs, a texture path or colour in a mesh's params, a picture per part, an unwrap |
@@ -229,29 +229,44 @@ affecting sleeping bodies must wake them through an owning arrow. See
 [fields-and-views.md](docs/fields-and-views.md) and README's *Layout* for the
 current APIs and layers.
 
-## Spaces glued into one
+## Spaces made one (sheafified)
 
-Rooms meet at seams; where two agree they can be drawn as one space
-(`Quality::glue`, README *One space, glued*). Rules that keep it inside the
-ontology:
+Rooms meet at seams, and glued so each is its own. Where a world asks
+(both sides of a doorway say `sheaf`) and the rooms agree, they are made one
+space: drawn as one, and one physics over them (README *One space,
+sheafified*). Rules that keep it inside the ontology:
 
-- **Derived, never kept.** The glued space is worked out from the rooms and
-  the doorways they share, each time it is asked; nothing is written to a
-  state, and no list of "levels" or global placement is kept. A room added
-  later and glued by an ordinary doorway is in it with nothing done.
-- **Local, no authority.** Two rooms glue from what they say of their own
-  doorway (`glue_rooms`, no graph); a space grows from the eye's room through
-  the doorways it shares. Never partition the whole graph to decide it: the
-  graph links states, it does not rule them.
-- **Holonomy is shape.** A ring that does not close is never folded: a room
-  that would stand where another stands stays beyond its doorway. Never
-  "fix" a monodromy by gluing over it.
+- **Glued is not one.** A seam glues; sheafifying makes the cover one. It
+  is asked for, doorway by doorway, for consistency where a world wants it
+  - never assumed of every doorway (`every`, `Quality::sheafify`, only to
+  try). Unasked, rooms keep their own frame, look and physics.
 - **Same kind only.** A ball, a screen, a world in its own look, a seam of
-  another scale or one that says it `differs` is a view, never glued.
-- **Seamless both ways.** A glued crossing is held to the same picture as
-  the doorway's view (`sg_crossings_gl`; a game's `crossings` with `glue`).
-  Lights reach a glued room as they would through the doorway: its own lamps
-  and those its doorways let in, never a neighbour's through a wall.
+  another scale or one that says it `differs` is never made one - whatever
+  it says. Spaces of different kinds (a hyperbolic room and a Cartesian one)
+  are glued, never sheafified.
+- **A section, not a choice.** A state shared by several rooms (one physics
+  for every sheet of a room) is made one with a neighbour only if every
+  sheet meets the same neighbour, the same way: single-valued from both
+  sides. Where a room's neighbour differs by the way round (a holonomy), its
+  doorway is not `sheaf`: a thing thrown through would have nowhere to be.
+- **Derived, never kept.** The space is worked out from the rooms and the
+  doorways they share, each time it is asked; nothing is written to a state,
+  and no list of "levels" or global placement is kept.
+- **Local, no authority.** Two rooms agree from what they say of their own
+  doorway (`sheafable`, no graph); a space grows from a room through the
+  doorways it shares. Never partition the whole graph to decide it.
+- **Holonomy is shape.** A ring that does not close is never folded: a room
+  that would stand where another stands stays beyond its doorway.
+- **One, in every way.** Made one, it is one for drawing and for physics
+  alike (the lab's `physics::lay_space`: floors, walls and plugs from the
+  rooms where they stand, `shell` 0); a doorway one but not the other is a
+  seam in the world.
+- **Seamless both ways, and cheap.** A crossing of a space made one is held
+  to the same picture as the doorway's view (`sg_crossings_gl`; a game's
+  `crossings`). A room of it costs what is seen of it: drawn whole only
+  where it is seen into, through its doorways; elsewhere only what has moved
+  in it. Lights reach a room as they would through the doorway, never a
+  neighbour's through a wall.
 
 ## Networking is derived machinery above core
 

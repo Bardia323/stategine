@@ -326,11 +326,13 @@ std::vector<PlacedRoom> nests(const StateGraph& g, Key root, int max_depth) {
 }
 
 namespace {
-// A doorway two rooms of one kind meet at, to be glued: walked, a plain
-// opening - not a ball, a screen, a world in its own look, a seam that says
-// it differs.
-bool gluable(const Element& p) {
+// A doorway two rooms of one kind meet at, to be made one space: walked, a
+// plain opening - not a ball, a screen, a world in its own look, a seam that
+// says it differs - and said to be (`sheaf`), unless every doorway that
+// agrees is asked for.
+bool sheaf_door(const Element& p, bool every) {
     if (p.kind != kinds::portal || !p.alive) return false;
+    if (!every && p.params.num(Key{"sheaf"}, 0.0) <= 0.5) return false;
     if (p.params.has(Key{"ball"}) || p.params.num(Key{"feed"}, 0.0) > 0.5 || p.params.num(Key{"crt"}, 0.0) > 0.5) return false;
     if (p.params.num(Key{"own_look"}, 0.0) > 0.5 || p.params.num(Key{"walk"}, 1.0) <= 0.5) return false;
     const std::string* differs = p.params.text(Key{"differs"});
@@ -387,10 +389,10 @@ bool same_pose(const Pose& a, const Pose& b) {
 }
 }  // namespace
 
-bool glue_rooms(const Spatial3D& a, const Element& pa, const Spatial3D& b, const Element& pb, Pose& b_in_a) {
+bool sheafable(const Spatial3D& a, const Element& pa, const Spatial3D& b, const Element& pb, Pose& b_in_a, bool every) {
     // Two rooms of one kind, at a doorway each has: a plain walked opening,
     // under a sky both or walled both, met by a rigid motion.
-    if (!gluable(pa) || !gluable(pb)) return false;
+    if (!sheaf_door(pa, every) || !sheaf_door(pb, every)) return false;
     if ((a.params().num(Key{"sky"}, 0.0) > 0.5) != (b.params().num(Key{"sky"}, 0.0) > 0.5)) return false;
     if (std::fabs(seam_scale(pa, pb) - 1.0) > 1e-9) return false;
     // Where the far room's origin is, carried back across the doorway into
@@ -401,8 +403,8 @@ bool glue_rooms(const Spatial3D& a, const Element& pa, const Spatial3D& b, const
 }
 
 namespace {
-// One glued space grown from `seed` (its frame the seed's).
-std::vector<PlacedRoom> grow(const StateGraph& g, const Spatial3D& seed, std::size_t most, std::size_t lamps) {
+// One space grown from `seed` (its frame the seed's).
+std::vector<PlacedRoom> grow(const StateGraph& g, const Spatial3D& seed, std::size_t most, std::size_t lamps, bool every) {
     const auto lamps_of = [](const Spatial3D& s) {
         std::size_t n = 0;
         for (const Element& e : s.elements()) n += e.alive && e.kind == kinds::light ? 1 : 0;
@@ -424,19 +426,23 @@ std::vector<PlacedRoom> grow(const StateGraph& g, const Spatial3D& seed, std::si
             const Element* hp = here.find(forward ? s.boundary_a[0] : s.boundary_b[0]);
             const Element* tp = there ? there->find(forward ? s.boundary_b[0] : s.boundary_a[0]) : nullptr;
             Pose across;
-            if (!there || !hp || !tp || !glue_rooms(here, *hp, *there, *tp, across)) continue;
+            if (!there || !hp || !tp || !sheafable(here, *hp, *there, *tp, across, every)) continue;
             Pose placed = compose_pose(at, across);
             placed.yaw = std::remainder(placed.yaw, 6.283185307179586);
             const auto known = std::find_if(out.begin(), out.end(), [&](const PlacedRoom& p) { return p.room == there; });
             if (known != out.end()) {
-                // Reached again: glued here too only if this way puts it where
+                // Reached again: one with it here too only if this way puts it where
                 // the other did.
                 if (!same_pose(known->pose, placed)) continue;
                 if (std::find(out[i].doorways.begin(), out[i].doorways.end(), hp->id) == out[i].doorways.end()) out[i].doorways.push_back(hp->id);
                 if (std::find(known->doorways.begin(), known->doorways.end(), tp->id) == known->doorways.end()) known->doorways.push_back(tp->id);
                 continue;
             }
-            if (out.size() >= most || lit + lamps_of(*there) > lamps) continue;
+            // (A doorway said to be one is one, however many rooms and lamps
+            // it brings: what a world says it is is not cut to a budget.
+            // Only the rooms that merely agree are.)
+            const bool said = hp->params.num(Key{"sheaf"}, 0.0) > 0.5 && tp->params.num(Key{"sheaf"}, 0.0) > 0.5;
+            if (!said && (out.size() >= most || lit + lamps_of(*there) > lamps)) continue;
             const Box box = placed_box(bounds_of(*there), placed);
             if (!box.empty() && std::any_of(boxes.begin(), boxes.end(), [&](const Box& b) { return !b.empty() && overlap(b, box, 0.6); })) continue;  // (more than two walls' breadth)
             out[i].doorways.push_back(hp->id);
@@ -450,16 +456,16 @@ std::vector<PlacedRoom> grow(const StateGraph& g, const Spatial3D& seed, std::si
 
 }  // namespace
 
-std::vector<PlacedRoom> glue_space(const StateGraph& g, Key root, std::size_t most, std::size_t lamps) {
+std::vector<PlacedRoom> sheafify(const StateGraph& g, Key root, std::size_t most, std::size_t lamps, bool every) {
     // Grown from `root` through the doorways it shares, room by room - what
-    // the rooms say of each other, no more (glue_rooms) - and placed in the
+    // the rooms say of each other, no more (sheafable) - and placed in the
     // frame of the first of them by name: so crossing among them, the frame
     // they are drawn in stays as it was.
     std::vector<PlacedRoom> out;
     const auto* r = dynamic_cast<const Spatial3D*>(g.find(root));
     if (!r) return out;
-    out = grow(g, *r, most, lamps);
-    for (PlacedRoom& p : out) p.glued = out.size() > 1;
+    out = grow(g, *r, most, lamps, every);
+    for (PlacedRoom& p : out) p.sheafed = out.size() > 1;
     if (out.size() > 1) {
         const auto anchor = std::min_element(out.begin(), out.end(), [](const PlacedRoom& x, const PlacedRoom& y) { return x.room->id().str() < y.room->id().str(); });
         // (Rooms stand upright: the inverse of a turn about the vertical and a move.)

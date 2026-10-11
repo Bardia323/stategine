@@ -159,39 +159,51 @@ into the other's wall. `descent_defects` names it:
 seam: hall.e_a reaches 0.150000 m past doorway doorway, into the room on the other side
 ```
 
-### One space, glued (`glue`)
+### One space, sheafified (`sheaf`)
 
-Each room is a presheaf: its own local section, in its own frame. Where two
-of them meet at a doorway and agree, they glue - the sheaf's section over
-both is one Cartesian frame, and the renderer can draw them there, where they
-stand, instead of each through its doorway as a view of its own. Optional,
-at will: `glue = true` in render.conf (`Quality::glue`).
+Glued is not one. A seam glues two rooms: each stays a presheaf - its own
+local section, in its own frame, with its own look and its own physics - and
+the seam says how whoever crosses is carried. Sheafified, the cover is made
+one: where the rooms' sections agree on the overlap they are one section,
+one Cartesian frame, and the rooms are drawn there, where they stand, as one
+space - and a project's physics over them is one (the lab's
+`physics::lay_space`). It is asked for, doorway by doorway: both sides of a
+doorway say `sheaf` = 1. Only there, and only where the two really are one
+kind of space; everywhere else rooms are glued as ever, each its own.
 
-* **`sg::glue_rooms(a, pa, b, pb, b_in_a)`** - two rooms and the doorway each
-  has: where `b` stands in `a`'s frame, if they are the same kind of space
-  there (a plain walked opening - no ball, no screen, no world in its own
-  look, no change of scale, nothing said to `differ` - both under a sky or
-  both walled). What the two rooms say of their doorway and nothing else: no
-  graph is asked, so no graph is an authority over it.
-* **`sg::glue_space(graph, root)`** - the rooms round `root` glued room by
-  room through the doorways each shares (glue_rooms), a room joining when
+* **`sg::sheafable(a, pa, b, pb, b_in_a)`** - two rooms and the doorway each
+  has: where `b` stands in `a`'s frame, if both doorways say `sheaf` and
+  they are the same kind of space there (a plain walked opening - no ball,
+  no screen, no world in its own look, no change of scale, nothing said to
+  `differ` - both under a sky or both walled). What the two rooms say of
+  their doorway and nothing else: no graph is asked, so no graph is an
+  authority over it.
+* **`sg::sheafify(graph, root)`** - the space round `root` made one, room by
+  room through the doorways each shares (sheafable), a room joining when
   every way to it agrees and it stands clear of the rooms already placed
   (its walls' box, more than two walls' breadth in). A ring that does not
   close - a holonomy, `Cover::monodromy` - is never folded onto itself: there
   the doorway stays a doorway. Placed in the frame of the first of them by
   name, so crossing among them the frame does not move; `root` first.
-* The renderer (`glue`) draws them as one: the glued doorways are openings
+  (`every`: also the doorways that agree without saying so - to try a world
+  as one space; `sheafify = true` in render.conf.)
+* The renderer draws a sheafified space as one: its doorways are openings
   (`PlacedRoom::doorways`; no view made, the filler of the opening left out,
-  each room still bounded at its doorway's plane), each room lit by its own
-  lamps and those its doorways let in (as through a portal, never a
-  neighbour's lamp through a wall), the air lit by every room's lamps, one
-  set of shadow maps for the space. Doorways that do not glue are views, as
-  ever.
+  each room's shell bounded at its doorway's plane - but a thing that has
+  moved is drawn where it stands, in the room beyond if it has rolled
+  there), each room lit by its own lamps and those its doorways let in (as
+  through a portal, never a neighbour's lamp through a wall), the air lit by
+  every room's lamps, one set of shadow maps for the space. A room of it is
+  drawn whole only where it is seen into (a doorway of it in sight and not
+  shut), and then only what is seen through those doorways; elsewhere only
+  what has moved in it (`PlacedRoom::things_only`). A view through a doorway
+  onto a room shows the space it is part of (`GLWorldView::glued_round`).
 
 It is derived, never kept: nothing is written to any state, and the rooms
 it places are where the seams' own carries put them. `sg_crossings_gl`
-walks a glued pair and holds the glued picture to the one seen through the
-doorway.
+holds a glued pair, not said to be one, to two rooms; said, walks it and
+holds its picture to the one seen through the doorway; and rolls a thing out
+through the doorway and sees it where it stands.
 
 Every image here is reproducible:
 `./build/sg_room3d 50 out.ppm <room|approach|open|before|after|dim|doorway|annex|east|south|north|alert|crossing>`.

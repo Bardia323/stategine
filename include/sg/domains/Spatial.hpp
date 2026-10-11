@@ -264,10 +264,14 @@ struct PlacedRoom {
     // where it is seen, lighting nothing and casting nothing, its doorways
     // only frames - the light and the ways are the room's own, once.
     bool image = false;
-    // Glued into one space with the rooms beside it (glue_space): its
-    // doorways are openings onto them, not bounds of what is drawn of it -
-    // the rooms are clear of each other as placed.
-    bool glued = false;
+    // Made one space with the rooms beside it (sheafify): its doorways are
+    // openings onto them, not bounds of what is drawn of it - the rooms are
+    // clear of each other as placed.
+    bool sheafed = false;
+    // Of a space made one, but not seen into this frame (no doorway of it
+    // in sight, or each shut): only the things that move in it are drawn -
+    // one that has rolled through into the room seen is seen there.
+    bool things_only = false;
 };
 
 // --- a space that wraps -------------------------------------------------------

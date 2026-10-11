@@ -507,6 +507,11 @@ private:
     // What is seen of a world, wherever it is seen from: it, and the worlds
     // round it or in it (sg::nests), where they are.
     std::vector<PlacedRoom> seen(const Spatial3D& world) const;
+    // The rooms made one space round `world` (sg::sheafify), placed in
+    // `world`'s own frame, `world` first: a view of a room shows the space it
+    // is part of, as the eye's does. Worked out again each frame (kept for
+    // it alone); empty where no doorway of it is sheafified.
+    const std::vector<PlacedRoom>& glued_round(const Spatial3D& world) const;
     Rect screen_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const;
     // The views through the doorways of `world`, seen from `eye` through the
     // doorways `path` names - as deep into it as the world says
@@ -1772,6 +1777,11 @@ private:
     std::vector<ViewJob> jobs_;  // this frame's views through doorways seen through doorways
     std::string path_;          // the way the eye came, while a view through doorways is drawn
     uint64_t frame_count_ = 0;
+    struct GluedRound {
+        uint64_t frame = ~uint64_t{0}, revision = ~uint64_t{0};
+        std::vector<PlacedRoom> rooms;
+    };
+    mutable std::unordered_map<const Spatial3D*, GluedRound> glued_round_;
     std::unordered_map<Key, TerrainMesh> terrains_;
     gl::Vec3 cam_eye_;  // the camera of the view being drawn
     // Drawing a world seen through a doorway (not the viewer's own), and how

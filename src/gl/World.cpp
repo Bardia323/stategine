@@ -328,9 +328,34 @@ GLWorldView::Camera GLWorldView::placed_camera(const Camera& c, const Pose& at) 
 
 std::vector<PlacedRoom> GLWorldView::seen(const Spatial3D& world) const {
     std::vector<PlacedRoom> out{PlacedRoom{&world, Pose{}, {}}};
+    // (Glued: the space it is part of, each room where it stands, its glued
+    // doorways openings.)
+    const auto& glued = glued_round(world);
+    if (!glued.empty()) out = glued;
     if (const StateGraph* g = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr))
-        for (const PlacedRoom& p : nests(*g, world.id())) out.push_back(p);
+        for (const PlacedRoom& p : nests(*g, world.id()))
+            if (std::none_of(out.begin(), out.end(), [&](const PlacedRoom& r) { return r.room == p.room; })) out.push_back(p);
     return out;
+}
+
+const std::vector<PlacedRoom>& GLWorldView::glued_round(const Spatial3D& world) const {
+    static const std::vector<PlacedRoom> none;
+    const StateGraph* g = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr);
+    if (!g) return none;
+    GluedRound& m = glued_round_[&world];
+    const uint64_t frame = root_ ? root_->frame_count_ : frame_count_;
+    if (m.frame == frame && m.revision == g->revision()) return m.rooms;
+    m.frame = frame, m.revision = g->revision();
+    m.rooms = sheafify(*g, world.id(), 6, kAllLights, q_.sheafify);
+    if (m.rooms.size() <= 1) {
+        m.rooms.clear();
+        return m.rooms;
+    }
+    // (Placed in the frame of the first by name: put in `world`'s own.)
+    const Pose to_world = inverse(m.rooms.front().pose);
+    for (PlacedRoom& p : m.rooms) p.pose = compose_pose(to_world, p.pose);
+    m.rooms.front().pose = Pose{};
+    return m.rooms;
 }
 
 void GLWorldView::set_quality(const GLQuality& to) {
@@ -461,21 +486,30 @@ void main() {
             if (std::none_of(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == p.room; })) rooms.push_back(p);
     const StateGraph* declared=graph_?graph_:(root_?root_->graph_:nullptr);
     // Glued: the rooms that agree round the eye's, in its frame - drawn where
-    // they stand, their doorways openings (sg::glue_space).
-    if (q_.glue && !root_ && declared && !rooms.empty() && rooms.front().room && rooms.front().pose.position.x == 0.0 && rooms.front().pose.position.y == 0.0 && rooms.front().pose.position.z == 0.0 &&
+    // they stand, their doorways openings (sg::sheafify).
+    if (!root_ && declared && !rooms.empty() && rooms.front().room && rooms.front().pose.position.x == 0.0 && rooms.front().pose.position.y == 0.0 && rooms.front().pose.position.z == 0.0 &&
         rooms.front().pose.yaw == 0.0) {
-        const auto glued = glue_space(*declared, rooms.front().room->id(), 6, kAllLights);
+        const auto glued = sheafify(*declared, rooms.front().room->id(), 6, kAllLights, q_.sheafify);
         rooms.front().pose = glued.front().pose;
-        rooms.front().glued = glued.front().glued;
+        rooms.front().sheafed = glued.front().sheafed;
         rooms.front().doorways = glued.front().doorways;
-        for (std::size_t i = 1; i < glued.size(); ++i)
-            if (std::none_of(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == glued[i].room; })) rooms.push_back(glued[i]);
+        // (Each where the anchor's frame has it - seen() put them in the
+        // eye's room's.)
+        for (std::size_t i = 1; i < glued.size(); ++i) {
+            const auto at = std::find_if(rooms.begin(), rooms.end(), [&](const PlacedRoom& r) { return r.room == glued[i].room && !r.image; });
+            if (at == rooms.end()) rooms.push_back(glued[i]);
+            else at->pose = glued[i].pose, at->doorways = glued[i].doorways, at->sheafed = glued[i].sheafed;
+        }
     }
-    if(rooms.size()>1){
+    // (What the graph's view plan says of the worlds round the eye's - not
+    // of the rooms made one with it: those are what sheafify says, and
+    // asked of the plan cost a frame its time for nothing.)
+    const bool planned_rooms = std::any_of(rooms.begin() + (rooms.empty() ? 0 : 1), rooms.end(), [](const PlacedRoom& r) { return !r.sheafed; });
+    if(rooms.size()>1 && planned_rooms){
         if(!declared)rooms.resize(1);
         else if(rooms.front().room){
             const auto plan=view_plan(*declared,*rooms.front().room,rooms);
-            rooms.erase(std::remove_if(rooms.begin(),rooms.end(),[&](const PlacedRoom& placed){return std::none_of(plan.rooms.begin(),plan.rooms.end(),[&](const RoomDraw& draw){return draw.room==placed.room;});}),rooms.end());
+            rooms.erase(std::remove_if(rooms.begin(),rooms.end(),[&](const PlacedRoom& placed){return !placed.sheafed && std::none_of(plan.rooms.begin(),plan.rooms.end(),[&](const RoomDraw& draw){return draw.room==placed.room;});}),rooms.end());
         }
     }
     if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;

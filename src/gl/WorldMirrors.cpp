@@ -177,7 +177,7 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
     const Pose& at0 = rooms.front().pose;
     const bool placed0 = at0.position.x != 0.0 || at0.position.y != 0.0 || at0.position.z != 0.0 || at0.yaw != 0.0;
     std::vector<MirrorPlane> planes = placed0 ? std::vector<MirrorPlane>{} : planned != mirror_plans_.end() ? planned->second : mirror_planes(room, eye, aspect, within);
-    // And those of the rooms glued to it into one space (sg::glue_space),
+    // And those of the rooms made one space with it (sg::sheafify),
     // found in each room's own frame and carried into this one's.
     for (std::size_t r = placed0 ? 0 : 1; r < rooms.size() && planes.size() < static_cast<std::size_t>(kMirrors); ++r) {
         const PlacedRoom& placed = rooms[r];

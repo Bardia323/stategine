@@ -39,12 +39,12 @@ struct Quality {
     // whole, each of its pixels a hard-edged square (1: the screen's own).
     // The look of a game of an older day - and a ninth of the shading at 3.
     int pixel=1;
-    // The rooms round the eye's glued into one space where they agree
-    // (sg::glue_space): drawn where they stand, in one frame, not each
-    // through its doorway as a view of its own - no view to make when one
-    // comes into sight, nothing to draw twice. Doorways that do not glue
-    // (a ring that does not close, a world in its own look) are views as ever.
-    bool glue=false;
+    // Every doorway whose rooms agree sheafified, not only those that say
+    // `sheaf` (sg::sheafify, `every`): to try a world as one space. A
+    // sheafified doorway is drawn as an opening, the room beyond where it
+    // stands; one that is not (a ring that does not close, a world in its
+    // own look) is a view as ever.
+    bool sheafify=false;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

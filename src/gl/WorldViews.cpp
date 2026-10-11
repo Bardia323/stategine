@@ -46,8 +46,12 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
     const int deep = static_cast<int>(world.params().num(Key{"views_deep"}, 1.0));
     if ((reach >= 1e30 && depth - from > deep) || depth > 16 || jobs_.size() >= 512) return;
     const Camera cam = camera_of(eye);
+    const auto& glued = glued_round(world);
+    const std::vector<Key>* openings = glued.empty() ? nullptr : &glued.front().doorways;
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"}) || e.id == back) continue;
+        // (Glued: what is beyond is drawn where it stands, in this view.)
+        if (openings && std::find(openings->begin(), openings->end(), e.id.key()) != openings->end()) continue;
         auto it = worlds_.find(e.id);
         if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
         if (!in_view(world, e, cam, aspect) || !opens_from(e, position_of(eye))) continue;
