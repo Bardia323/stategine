@@ -19,21 +19,21 @@ bool GLWorldView::instanceable(const Element& e) const {
     if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(splat) ||
         e.params.num(lines, 0.0) > 0.5)
         return false;
-    const auto skin = surfaces_.find(e.id);
-    if (skin != surfaces_.end() && skin->second.surface) return false;
+    const auto skin = bound_surfaces().find(e.id);
+    if (skin != bound_surfaces().end() && skin->second.surface) return false;
     // Hung from a thing that wears a texture, it wears it too: drawn on its
     // own (skin_holder says in whose frame).
     const std::string* parent = e.params.text(keys::parent);
-    const auto worn_by = !parent || parent->empty() ? surfaces_.end() : surfaces_.find(Key{*parent});
-    return worn_by == surfaces_.end() || !worn_by->second.surface;
+    const auto worn_by = !parent || parent->empty() ? bound_surfaces().end() : bound_surfaces().find(Key{*parent});
+    return worn_by == bound_surfaces().end() || !worn_by->second.surface;
 }
 
 const Element* GLWorldView::skin_holder(const State& st, const Element& e) const {
     const Element* at = &e;
     for (int i = 0; i < 8 && at; ++i) {
-        const auto s = surfaces_.find(at->id);
+        const auto s = bound_surfaces().find(at->id);
         // A thing's parts wear only a texture, never a sheet bound to it.
-        if (s != surfaces_.end() && s->second.surface && (at == &e || dynamic_cast<const Texture*>(s->second.surface)) &&
+        if (s != bound_surfaces().end() && s->second.surface && (at == &e || dynamic_cast<const Texture*>(s->second.surface)) &&
             declared_surface(*at, *s->second.surface))
             return at;
         const std::string* parent = at->params.text(keys::parent);
@@ -98,8 +98,19 @@ auto GLWorldView::skin_frame(const State& st, const Element& holder) const -> co
 void GLWorldView::upload_skin(BoundSurface& bound) {
     const uint64_t frame = (root_ ? root_->frame_count_ : frame_count_) + 1;
     if (bound.asked == frame && bound.texture.valid()) return;
+    // The frame's painting, shared by every view drawn in it.
+    GLWorldView& top = root_ ? *root_ : *this;
+    if (top.paint_frame_ != frame) top.paint_frame_ = frame, top.paint_spent_ = 0.0;
+    if (bound.texture.valid() && top.paint_spent_ >= kPaintMs && bound.waits < kPaintWaits) {
+        ++bound.waits;
+        bound.asked = frame;  // (once a frame, however many wear it)
+        return;
+    }
     bound.asked = frame;
+    bound.waits = 0;
+    const auto t0 = std::chrono::steady_clock::now();
     refresh(bound);
+    top.paint_spent_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 void GLWorldView::LetGo::now() {
@@ -392,8 +403,8 @@ bool GLWorldView::batch_skinned(const State& st, const Element& e) {
     static const Key hung{"straddle"}, worn{"skin"};
     if (!q_.instancing || e.id == highlight_ || e.params.num(hung, 0.0) > 0.5 || e.params.has(worn)) return false;
     if (skin_holder(st, e) != &e) return false;
-    const auto it = surfaces_.find(e.id);
-    if (it == surfaces_.end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;
+    const auto it = bound_surfaces().find(e.id);
+    if (it == bound_surfaces().end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;
     upload_skin(it->second);
     append_record(st, e, batch_for(shape_of(st, e), &it->second));
     return true;

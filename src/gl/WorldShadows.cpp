@@ -325,7 +325,8 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
     }
     for (const Element* ep : ix.portals) {
         const Element& e = *ep;
-        if (!e.alive || is_doorway(room, e) || !has_surface(e)) continue;
+        // (`cast` 0: it throws no shadow - as a thing that says so throws none.)
+        if (!e.alive || is_doorway(room, e) || !has_surface(e) || e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
         Caster c;
         c.room = rc.room, c.element = &e;
         const RoomMatrix frame = portal_frame_model(room, e);

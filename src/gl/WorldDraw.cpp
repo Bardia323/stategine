@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <chrono>
 #include <map>
 #include <cstdio>
 #include <cstdlib>
@@ -47,10 +49,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     auto part_at = part_from;
     std::vector<PlacedRoom> rooms = given;
     // A room of a space made one is drawn whole only where it is seen into
-    // from here: a doorway of it made one in sight and not shut (the room
-    // the view is of is always) - and then only what is seen through those
-    // doorways (`through`: the part of the screen they cover), as a view
-    // through a doorway is. Elsewhere only what moves in it is drawn: the
+    // from here: a doorway of it made one in sight (the room the view is of
+    // is always) - and then only what is seen through those doorways
+    // (`through`: the part of the screen they cover), as a view through a
+    // doorway is. (Shut too: the door shutting it hangs in one of the two
+    // rooms, and is seen from the other.) Elsewhere only what moves in it is drawn: the
     // space costs what is seen of it, in every view.
     std::vector<Rect> through(rooms.size(), Rect{-1, -1, 1, 1});
     for (std::size_t i = 1; i < rooms.size(); ++i) {
@@ -62,7 +65,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         Rect r{1, 1, -1, -1};
         for (Key d : placed.doorways) {
             const Element* pe = placed.room->find(d);
-            if (!pe || !in_view(*placed.room, *pe, cam_here, aspect) || shut_to(*pe, eye_here)) continue;
+            if (!pe || !in_view(*placed.room, *pe, cam_here, aspect)) continue;
             seen = true;
             // (Standing in the doorway, or nearly: all of the screen.)
             if (distance(eye_here, world_position(*placed.room, *pe)) < 0.5 * pe->params.num(keys::w, 1.0) + 0.6) inside = true;
@@ -109,6 +112,30 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     times_.lights_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lights_from).count();
     cam_eye_ = cam.eye, cam_forward_ = cam.forward, cam_up_ = cam.up;
     guest_pass_ = depth > 0;
+    // The lamps the eye sees, where they fall on the screen (the eye's own
+    // view only): what a halation is gathered round.
+    if (depth == 0 && !mirroring_) {
+        halo_lamps_.clear();
+        const gl::Mat4 vp = projection_of(cam, aspect, kNear, 100.0f) * gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
+        for (const Light& l : lights) {
+            if (l.sun || l.indirect || l.power <= 0.0f) continue;
+            const gl::Vec3 d = l.pos - cam.eye;
+            const float along = gl::dot(d, cam.forward);
+            if (along <= kNear) continue;
+            const float* m = vp.m;
+            const float x = m[0] * l.pos.x + m[4] * l.pos.y + m[8] * l.pos.z + m[12], y = m[1] * l.pos.x + m[5] * l.pos.y + m[9] * l.pos.z + m[13],
+                        w = m[3] * l.pos.x + m[7] * l.pos.y + m[11] * l.pos.z + m[15];
+            if (w <= 0.0f) continue;
+            const float u = 0.5f + 0.5f * x / w, v = 0.5f + 0.5f * y / w;
+            if (u < -0.05f || u > 1.05f || v < -0.05f || v > 1.05f) continue;
+            halo_lamps_.push_back({u, v, along, l.color * l.power});
+        }
+        // (The brightest as seen, as many as the composite takes.)
+        std::sort(halo_lamps_.begin(), halo_lamps_.end(), [](const HaloLamp& a, const HaloLamp& b) {
+            return gl::dot(a.light, gl::Vec3{0.2126f, 0.7152f, 0.0722f}) / (a.z * a.z) > gl::dot(b.light, gl::Vec3{0.2126f, 0.7152f, 0.0722f}) / (b.z * b.z);
+        });
+        if (halo_lamps_.size() > kHaloLamps) halo_lamps_.resize(kHaloLamps);
+    }
     lod_px_ = 0.5f * static_cast<float>(target.height()) / std::tan(cam.fov * 0.5f);
     lod_least_ = static_cast<float>(rooms.front().room->params().num(Key{"lod_px"}, 0.75));
     const float zfar = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
@@ -446,6 +473,31 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     };
     const auto layers_from = std::chrono::steady_clock::now();
     std::vector<const Caster*> sees, movers_in, extras_in;
+    // A thing that says `cast_lamps` = n casts in the maps of the n lamps
+    // nearest it only (a walker's own body: its shadows from the lamps it
+    // stands by, each laid again every frame it moves - not from every lamp
+    // in the house, a frame behind in half of them).
+    std::map<const Element*, std::vector<std::size_t>> nearest_lamps;
+    const auto takes = [&](const Caster& c, std::size_t light) {
+        const double n = c.element->params.num(Key{"cast_lamps"}, 0.0);
+        if (n < 1.0) return true;
+        auto it = nearest_lamps.find(c.element);
+        if (it == nearest_lamps.end()) {
+            std::vector<std::pair<float, std::size_t>> by;
+            for (std::size_t k = 0; k < layers; ++k) {
+                if (!in_use[k]) continue;
+                const std::size_t l = layer_light[k];
+                if (std::any_of(by.begin(), by.end(), [&](const auto& b) { return b.second == l; })) continue;
+                const gl::Vec3 d = lights[l].pos - c.centre;
+                by.emplace_back(lights[l].sun ? -1.0f : gl::dot(d, d), l);
+            }
+            std::sort(by.begin(), by.end());
+            std::vector<std::size_t> chosen;
+            for (std::size_t k = 0; k < by.size() && static_cast<double>(k) < n; ++k) chosen.push_back(by[k].second);
+            it = nearest_lamps.emplace(c.element, std::move(chosen)).first;
+        }
+        return std::find(it->second.begin(), it->second.end(), light) != it->second.end();
+    };
     bool unshadowed = lightless;
     // A map holds what stands still in the volume its light sees, and what
     // moves in it, drawn over. What stands still is laid once, and kept as it
@@ -511,7 +563,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             if (!rc) continue;
             for (uint32_t k : rc->movers) {
                 const Caster& c = rc->list[k];
-                if (!shades(c, volume, li)) continue;
+                if (!shades(c, volume, li) || !takes(c, layer_light[i])) continue;
                 movers_in.push_back(&c);
                 movers_sig = fnv(fnv(movers_sig, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
             }
@@ -640,7 +692,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             for (const RoomCasters* rc : entries) {
                 if (!rc) continue;
                 for (const Caster& c : rc->list)
-                    if (c.on && !c.mover && shades(c, volume, li)) sees.push_back(&c);
+                    if (c.on && !c.mover && shades(c, volume, li) && takes(c, layer_light[i])) sees.push_back(&c);
             }
             sees.insert(sees.end(), extras_in.begin(), extras_in.end());
             times_.shadow_casters += static_cast<int>(sees.size());
@@ -1176,8 +1228,17 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         lap(4, part_at);
         // Doorways' frames drawn together (what each shows, one by one).
         batch_frames_ = q_.instancing;
+        std::vector<const Element*> light_panels;
         for (const auto i : draw_plans_.at(&room).portals) {
             const auto& e=room.elements()[i];
+            // `unseen`: in no picture (a panel shown only now and then).
+            if (e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+            // `add`: what it shows is light, added over what is behind it
+            // (words in the air): drawn after the room, below.
+            if (e.params.num(Key{"add"}, 0.0) > 0.5) {
+                light_panels.push_back(&e);
+                continue;
+            }
             // (Glued: its frame, but no view - what is beyond it is drawn where it stands.)
             const bool opening = std::find(placed.doorways.begin(), placed.doorways.end(), e.id.key()) != placed.doorways.end();
             // The doorway being looked through keeps its frame; only its
@@ -1212,6 +1273,17 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             gl::glDepthMask(1);
             gl::glDisable(gl::GL_BLEND);
             glass.clear();
+        }
+        if (!light_panels.empty() && !surface_only_) {
+            // Light added over all that is drawn, its black nothing at all;
+            // where it has light, as far off as it is (its depth written:
+            // what is focused there - words in the air - is sharp there).
+            gl::glEnable(gl::GL_BLEND);
+            gl::glBlendFuncSeparate(gl::GL_ONE, gl::GL_ONE, gl::GL_ZERO, gl::GL_ONE);
+            scene_->set("uAdd", 1.0f);
+            for (const Element* e : light_panels) draw_portal(room, *e, depth, target, false);
+            scene_->set("uAdd", 0.0f);
+            gl::glDisable(gl::GL_BLEND);
         }
         lap(5, part_at);
     }

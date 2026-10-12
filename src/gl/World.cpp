@@ -1,6 +1,7 @@
 #include "sg/gl/World.hpp"
 
 #include "sg/domains/Atlas.hpp"
+#include "sg/domains/Walk.hpp"
 
 #include <atomic>
 #include <thread>
@@ -124,7 +125,8 @@ void GLWorldView::bind_feed(Key portal_element, const Spatial3D* world, int w, i
     if (f.world != world) f.drawn = false;
     f.world = world;
     f.live = live;
-    const bool sized = f.w != w || f.h != h || !f.outs[0][0].valid();
+    const bool sized = f.w != w || f.h != h || !f.outs[0][0].valid() || f.made_raw != f.viewer_film;
+    f.made_raw = f.viewer_film;
     if (sized) {
         f.w = std::max(1, w), f.h = std::max(1, h);
         f.rw = f.w, f.rh = f.h, f.div = 1, f.slack = 0;
@@ -149,9 +151,9 @@ void GLWorldView::bind_feed(Key portal_element, const Spatial3D* world, int w, i
         // taking the set that is there - not by making one mid-frame.
         std::vector<std::pair<int, int>> sizes;
         for (int d : {1, 2, 4, 8}) {
-            if (d > 1 && (!f.live || f.h / d < 64)) break;
+            if (d > 1 && f.h / d < 64) break;
             for (gl::RenderTarget& o : f.outs[Feed::slot_of(d)]) {
-                o.create(std::max(1, f.w / d), std::max(1, f.h / d), gl::GL_SRGB8_ALPHA8, 0, false);
+                o.create(std::max(1, f.w / d), std::max(1, f.h / d), f.format(), 0, false);
                 o.mipmap();  // (its levels made now: the first time is not when it is first drawn)
             }
             sizes.emplace_back(std::max(1, f.w / d), std::max(1, f.h / d));
@@ -487,7 +489,7 @@ void main() {
     const StateGraph* declared=graph_?graph_:(root_?root_->graph_:nullptr);
     // Glued: the rooms that agree round the eye's, in its frame - drawn where
     // they stand, their doorways openings (sg::sheafify).
-    if (!root_ && declared && !rooms.empty() && rooms.front().room && rooms.front().pose.position.x == 0.0 && rooms.front().pose.position.y == 0.0 && rooms.front().pose.position.z == 0.0 &&
+    if ((!root_ || viewer_feed_) && declared && !rooms.empty() && rooms.front().room && rooms.front().pose.position.x == 0.0 && rooms.front().pose.position.y == 0.0 && rooms.front().pose.position.z == 0.0 &&
         rooms.front().pose.yaw == 0.0) {
         const auto glued = sheafify(*declared, rooms.front().room->id(), 6, kAllLights, q_.sheafify);
         rooms.front().pose = glued.front().pose;
@@ -531,6 +533,7 @@ void main() {
             const Element* panel = host ? host->find(em.portal) : nullptr;
             if (!guest || !panel || panel->params.num(Key{"feed"}, 0.0) < 0.5) continue;
             const Key resource=panel->params.num(Key{"eye"},0)>.5?em.name:em.portal;
+            feeds_[resource].viewer_film = panel->params.num(Key{"viewer_film"}, 0.0) > 0.5;
             bind_feed(resource, guest, static_cast<int>(panel->params.num(Key{"feed_w"}, 640.0)),
                       static_cast<int>(panel->params.num(Key{"feed_h"}, 480.0)),
                       panel->params.num(Key{"live"}, 1.0) > 0.5);
@@ -588,17 +591,52 @@ void main() {
                 if (w != rooms.front().room && (w->find(id) || shown_in(*w, id))) return static_cast<float>(declared);
             return most;
         };
+        // The picture drawn is only as big as the screen is seen: a
+        // painting across the room costs a few hundred pixels, not the
+        // window's. More at once as it comes near; less only after it has
+        // been small a while, so it does not flicker at a boundary.
+        std::vector<const Feed*> adapted;
+        const auto detail = [&](Key id, Feed& f) {
+            adapted.push_back(&f);
+            // (A held picture is painted once, at its size: drawn again as it
+            // is walked up to, it would be a new picture at every step.)
+            const int want = f.live ? feed_detail(shown_px(id, f.h), f.h) : 1;
+            if (want < f.div) f.div = want, f.slack = 0;
+            else if (want > f.div && ++f.slack >= 20) f.div = want, f.slack = 0;
+            else if (want == f.div) f.slack = 0;
+            const int nw = std::max(1, f.w / f.div), nh = std::max(1, f.h / f.div);
+            if (nw != f.rw || nh != f.rh) {
+                f.rw = nw, f.rh = nh;
+                // (Made already, with the feed.)
+                for (int i = 0; i < 2; ++i)
+                    if (!f.out()[i].valid()) f.out()[i].create(f.rw, f.rh, f.format(), 0, false);
+            }
+        };
+        int held = 0;
         for (bool more = true; more;) {
             more = false;
             for (auto& [id, f] : feeds_) {
-                if (!f.world || !f.view || !declared_feed(id, *f.world) || (!f.live && f.drawn)) continue;
+                if (!f.world || !f.view || !declared_feed(id, *f.world)) continue;
                 if (std::any_of(due.begin(), due.end(), [&](const auto& d) { return d.second == &f; })) continue;
-                bool here = false;
+                // (Warming, every feed is drawn - and the maps its view lays
+                // laid - never the first time its screen is seen.)
+                bool here = warming_ && !f.drawn;
                 for (const PlacedRoom& placed : rooms)
-                    if (placed.room && seen_in(*placed.room, id, true)) here = true;
+                    if (!here && placed.room && seen_in(*placed.room, id, true)) here = true;
                 for (const Spatial3D* w : shown)
                     if (!here && seen_in(*w, id, false)) here = true;
                 if (!here) continue;
+                // A held picture is drawn again only when what it sees has
+                // changed (feed_key): it shows the world as it is, and costs
+                // nothing while that stands still. Not again within kHeldEvery
+                // frames of the last, and one in a frame: a door swung, a lamp
+                // flickering, is a picture a few frames behind - never a
+                // frame that stops to draw one.
+                if (!f.live && f.drawn) {
+                    detail(id, f);
+                    if (frame_count_ - f.drawn_at < kHeldEvery || held >= 1 || f.drawn_of == feed_key(f)) continue;
+                    ++held;
+                }
                 due.emplace_back(id, &f);
                 shown.push_back(f.world);
                 more = true;
@@ -610,24 +648,7 @@ void main() {
         for (auto it = due.rbegin(); it != due.rend(); ++it) {
             Feed& f = *it->second;
             f.drawn = true;
-            // The picture drawn is only as big as the screen is seen: a
-            // painting across the room costs a few hundred pixels, not the
-            // window's. More at once as it comes near; less only after it has
-            // been small a while, so it does not flicker at a boundary.
-            if (f.live) {
-                const int want = feed_detail(shown_px(it->first, f.h), f.h);
-                if (want < f.div) f.div = want, f.slack = 0;
-                else if (want > f.div && ++f.slack >= 20) f.div = want, f.slack = 0;
-                else if (want == f.div) f.slack = 0;
-                const int nw = std::max(1, f.w / f.div), nh = std::max(1, f.h / f.div);
-                if (nw != f.rw || nh != f.rh) {
-                    f.rw = nw, f.rh = nh;
-                    // (Made already, with the feed; one asked for since -
-                    // a feed that was not `live` then - is made now.)
-                    for (int i = 0; i < 2; ++i)
-                        if (!f.out()[i].valid()) f.out()[i].create(f.rw, f.rh, gl::GL_SRGB8_ALPHA8, 0, false);
-                }
-            }
+            if (std::find(adapted.begin(), adapted.end(), &f) == adapted.end()) detail(it->first, f);
             if (draw_feed(f)) ++feed_views;
         }
     }
@@ -716,10 +737,47 @@ void main() {
     for (auto& [id, wp] : worlds_) wp.own_drawn = false;
     // The eye's own mirrors, and what is seen through their doorways.
     plan_mirrors(world, eye_of(world), aspect, 1, std::string(), Rect{-1, -1, 1, 1}, 0);
-    const auto glued = [&](const Element& e) {
-        const auto& d = rooms.front().doorways;
-        return std::find(d.begin(), d.end(), e.id.key()) != d.end();
+    // The doorways of each room seen from the eye: its own, and those of the
+    // rooms glued into one space with it (a window of the room past a glued
+    // doorway shows its view too) - each from the eye as that room has it.
+    const auto glued_of = [](const std::vector<Key>& d, const Element& e) { return std::find(d.begin(), d.end(), e.id.key()) != d.end(); };
+    struct Host {
+        const Spatial3D* room;
+        Element eye;
+        Camera cam;
+        const std::vector<Key>* openings;
+        // Where on the screen the eye sees into it: its doorways made one,
+        // in sight and open (the eye's own room: all of the screen).
+        Rect through{-1, -1, 1, 1};
     };
+    std::vector<Host> hosts{Host{&world, eye_of(world), eye_cam, &rooms.front().doorways}};
+    if (rooms.front().sheafed) {
+        const Camera drawn = placed_camera(eye_cam, rooms.front().pose);
+        for (std::size_t i = 1; i < rooms.size(); ++i) {
+            const PlacedRoom& r = rooms[i];
+            if (!r.room || r.image || !r.sheafed || r.room == &world) continue;
+            // (From the eye's room into this one's frame: rooms made one stand upright.)
+            const Pose to = compose_pose(inverse(r.pose), rooms.front().pose);
+            Host h{r.room, eye_of(world), placed_camera(drawn, inverse(r.pose)), &r.doorways};
+            set_position(h.eye, place_in(to, position_of(h.eye)));
+            h.eye.params.set(keys::yaw, h.eye.params.num(keys::yaw) + to.yaw);
+            // Only a room seen into: a doorway of it in view, and not shut.
+            Rect seen{1, 1, -1, -1};
+            for (Key d : r.doorways)
+                if (const Element* pe = r.room->find(d); pe && in_view(*r.room, *pe, h.cam, aspect) && !shut_to(*pe, position_of(h.eye))) {
+                    const Rect sr = screen_rect(*r.room, *pe, h.cam, aspect);
+                    seen = Rect{std::min(seen.x0, sr.x0), std::min(seen.y0, sr.y0), std::max(seen.x1, sr.x1), std::max(seen.y1, sr.y1)};
+                }
+            h.through = seen.cut(Rect{-1, -1, 1, 1});
+            if (!h.through.empty()) hosts.push_back(std::move(h));
+        }
+    }
+    const Element* const own_override = eye_override_;
+    for (const Host& host : hosts) {
+    const Spatial3D& world = *host.room;
+    const Camera& eye_cam = host.cam;
+    if (host.room != hosts.front().room) eye_override_ = &host.eye;
+    const auto glued = [&](const Element& e) { return glued_of(*host.openings, e); };
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || is_screen(e) || e.params.has(Key{"ball"})) continue;
         if (glued(e)) continue;  // (an opening: what is beyond it is drawn where it stands)
@@ -732,9 +790,19 @@ void main() {
         Element eye = it->second.world->camera();
         if (it->second.carry) it->second.carry(eye_of(world), eye);
         const Element* back = !it->second.back.empty() ? it->second.world->find(it->second.back) : back_portal(*it->second.world, world);
-        view_through(*it->second.world, eye, aspect, 1, "/" + e.id.str(), screen_rect(world, e, eye_cam, aspect), 0, back ? back->id.key() : Key{});
+        // (Only where it is seen: in a room seen into, through the doorway it is seen into by.)
+        const Rect shown = screen_rect(world, e, eye_cam, aspect).cut(host.through);
+        if (shown.empty()) continue;
+        view_through(*it->second.world, eye, aspect, 1, "/" + e.id.str(), shown, 0, back ? back->id.key() : Key{});
+    }
+    eye_override_ = own_override;
     }
     bool views_drawn = false;
+    for (const Host& host : hosts) {
+    const Spatial3D& world = *host.room;
+    const Camera& eye_cam = host.cam;
+    if (host.room != hosts.front().room) eye_override_ = &host.eye;
+    const auto glued = [&](const Element& e) { return glued_of(*host.openings, e); };
     for (const auto& e : world.elements()) {
         if (e.kind != kinds::portal || !e.alive || (e.params.has(Key{"ball"}) && !ball_window(e))) continue;
         if (glued(e)) continue;
@@ -743,6 +811,9 @@ void main() {
         WorldPortal& wp = it->second;
         wp.shared = nullptr;
         if (!in_view(world, e, eye_cam) || !opens_from(e, position_of(eye_of(world)))) continue;
+        // (In a room seen into: only where it is seen, through the doorway it is seen into by.)
+        const Rect shown = screen_rect(world, e, eye_cam, aspect).cut(host.through);
+        if (!is_screen(e) && !e.params.has(Key{"ball"}) && shown.empty()) continue;
         // A door shut in the doorway stops the view: none is drawn, and none
         // of the shadows the room beyond would keep for it. (In the door's
         // own thickness - walking through the leaf - it is drawn as ever.)
@@ -797,7 +868,7 @@ void main() {
         }
         RootView& view = root_pool_[root_views++];
         // Its mirrors, from the eye carried there, where the doorway shows them.
-        if (!screen && !e.params.has(Key{"ball"})) draw_mirrors(seen(*wp.world), guest_cam, aspect, screen_rect(world, e, eye_cam, aspect));
+        if (!screen && !e.params.has(Key{"ball"})) draw_mirrors(seen(*wp.world), guest_cam, aspect, shown);
         host_air_ = air_of(world);
         // A ball onto a world is drawn only where the ball is on the
         // screen, at the screen's own pixels: a glass on a table costs what
@@ -809,7 +880,7 @@ void main() {
         // only that is drawn (cut_), with a margin for what stands proud of
         // its plane. (A screen's picture may be shown by another screen too.)
         if (!screen && !e.params.has(Key{"ball"})) {
-            const Rect r = screen_rect(world, e, eye_cam, aspect);
+            const Rect r = shown;
             const float mx = 0.04f + 0.1f * (r.x1 - r.x0), my = 0.04f + 0.1f * (r.y1 - r.y0);
             cut_ = Rect{std::max(r.x0 - mx, -1.0f), std::max(r.y0 - my, -1.0f), std::min(r.x1 + mx, 1.0f), std::min(r.y1 + my, 1.0f)};
         }
@@ -833,6 +904,8 @@ void main() {
         cut_ = Rect{-1, -1, 1, 1};
         wp.shown = &view.target;
         ++times_.portal_views;
+    }
+    eye_override_ = own_override;
     }
     times_.portals = since(t0);
     t0 = mark();
@@ -859,8 +932,10 @@ void main() {
                static_cast<float>(setting(post_, passes::composite, "ao.radius", 0.45)));
         scene_src_ = &lit_;
     }
-    // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl).
-    fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0;
+    // The glow thick air spreads reads how far each pixel is (fog_bloom_glsl);
+    // so does a look's depth of field (`uDof`).
+    fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0 || setting(post_, passes::composite, "uDof", 0.0) > 0.0 ||
+                 setting(post_, passes::composite, "uHalation", 0.0) > 0.0;
     if ((fog_depth_ || taa_on()) && ao <= 0.0) scene_ms().blit_depth_to(depth_);
     if (taa_on()) run_taa();
     meter_exposure();
@@ -872,8 +947,8 @@ void main() {
 }
 
 bool GLWorldView::has_surface(const Element& e) const {
-    auto it = surfaces_.find(e.id);
-    if (it != surfaces_.end() && it->second.surface != nullptr && declared_surface(e, *it->second.surface)) return true;
+    auto it = bound_surfaces().find(e.id);
+    if (it != bound_surfaces().end() && it->second.surface != nullptr && declared_surface(e, *it->second.surface)) return true;
     const auto& feeds = shared_feeds();
     auto f = feeds.find(signal_of(e));
     return f != feeds.end() && f->second.world != nullptr && declared_feed(signal_of(e), *f->second.world);
@@ -930,7 +1005,7 @@ uint64_t GLWorldView::scene_key(const std::vector<PlacedRoom>& rooms, int w, int
                                e.kind == kinds::anchor || e.kind == kinds::camera || e.kind == terrain_kind();
             if (!drawn) continue;
             mix(e.params.stamp() << 1 | (e.alive ? 1u : 0u));
-            if (const auto s = surfaces_.find(e.id); s != surfaces_.end() && s->second.surface) mix(s->second.surface->revision());
+            if (const auto s = bound_surfaces().find(e.id); s != bound_surfaces().end() && s->second.surface) mix(s->second.surface->revision());
             if (e.kind != kinds::portal) continue;
             if (const auto f = feeds.find(signal_of(e)); f != feeds.end()) mix(f->second.drawn_of), mix(static_cast<uint64_t>(f->second.front));
             if (const auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world && it->second.world != &room)
@@ -945,13 +1020,18 @@ bool GLWorldView::draw_feed(Feed& f) {
     const uint64_t key = feed_key(f);
     if (f.drawn_of == key && f.drawn_of != 0) return false;
     f.drawn_of = key;
+    f.drawn_at = frame_count_;
     f.view->graph_ = graph_;  // the looks it is shown in are in the same graph
     f.view->root_ = this;
     f.view->output_ = &f.out()[1 - f.front];
     f.view->eye_override_ = f.eye;
+    f.view->film_of_viewer_ = f.viewer_film;
+    f.view->viewer_feed_ = f.viewer_film;
     f.view->render(*f.world, f.rw, f.rh);
     f.view->output_ = nullptr;
     f.view->eye_override_ = nullptr;
+    f.view->film_of_viewer_ = false;
+    f.view->viewer_feed_ = false;
     f.out()[1 - f.front].mipmap();
     f.front = 1 - f.front;
     return true;
@@ -960,19 +1040,65 @@ bool GLWorldView::draw_feed(Feed& f) {
 uint64_t GLWorldView::feed_key(const Feed& f) const {
     uint64_t h = 1469598103934665603ULL;
     const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
-    mix(stamp_of(*f.world));
     mix(stamp_of(look_of(*f.world)));
+    if (f.eye) mix(f.eye->params.stamp());
+    mix(static_cast<uint64_t>(f.rw) << 32 | static_cast<uint64_t>(f.rh));
+    if (!f.live) {
+        // Held: what its picture is made of, not every stamp of the world -
+        // a walker's body (`unseen`) or the eye of the one looking is not in
+        // it, and time passing alone does not make it a new picture.
+        std::vector<const Spatial3D*> walked;
+        const Camera seen_by = camera_of(f.eye ? *f.eye : f.world->camera());
+        mix(seen_stamp(*f.world, f.eye == nullptr, walked, &seen_by, static_cast<float>(f.w) / static_cast<float>(std::max(1, f.h))));
+        return h | 1;
+    }
+    mix(stamp_of(*f.world));
     const double t = semantic_time(graph_, *f.world);
     uint64_t b = 0;
     std::memcpy(&b, &t, sizeof b);
     mix(b);
-    if (f.eye) mix(f.eye->params.stamp());
-    mix(static_cast<uint64_t>(f.rw) << 32 | static_cast<uint64_t>(f.rh));
     for (const Element& e : f.world->elements())
         if (e.kind == kinds::portal && e.alive)
             if (auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world && it->second.world != f.world)
                 mix(stamp_of(*it->second.world));
     return h | 1;  // (never 0: 0 is "never drawn")
+}
+
+uint64_t GLWorldView::seen_stamp(const Spatial3D& room, bool camera, std::vector<const Spatial3D*>& walked, const Camera* seen_by, float aspect) const {
+    // What a picture of this room is made of: its drawn things where they
+    // stand (an `unseen` one is in no picture), and what the doorways and
+    // screens in the picture (seen by `seen_by`) show beyond - one doorway
+    // on, each room once.
+    static const Key unseen_key{"unseen"};
+    uint64_t k = 1469598103934665603ULL;
+    const auto mix = [&k](uint64_t v) { k = (k ^ v) * 1099511628211ULL; };
+    if (std::find(walked.begin(), walked.end(), &room) != walked.end()) return k;
+    walked.push_back(&room);
+    // (Not the room's own params: a walker's steps are kept there, and it is not
+    // what a picture is made of - its things, its looks and its lamps are.)
+    static const Key base_key{"base"};
+    for (const Element& e : room.elements()) {
+        const bool drawn = e.kind == kinds::mesh || e.kind == kinds::wall || e.kind == kinds::light || e.kind == kinds::portal ||
+                           e.kind == terrain_kind() || (camera && e.kind == kinds::camera);
+        if (!drawn || e.params.num(unseen_key, 0.0) > 0.5) continue;
+        // (A doorway or screen with nothing in it and no frame is drawn as nothing: where a body stands.)
+        if (e.kind == kinds::portal && !framed(e) && !worlds_.count(e.id) && !bound_surfaces().count(e.id) && !shared_feeds().count(signal_of(e))) continue;
+        // Where it stands in the room (following what it hangs from: a door's
+        // leaf as its hinge turns), how big - and a lamp, whether it is lit
+        // (a flickering one, by its steady light): what a still picture is
+        // of. Not a lamp's flicker, nor a glow's, nor a clock's hand going
+        // round: it was painted in one moment of those.
+        mix(e.alive ? 1u : 0u);
+        const Pose at = world_pose(room, e);
+        for (double v : {at.position.x, at.position.y, at.position.z, at.yaw, at.pitch, at.roll, e.params.num(keys::sx, 0.0), e.params.num(keys::sy, 0.0),
+                         e.params.num(keys::sz, 0.0)})
+            mix(static_cast<uint64_t>(std::llround(v * 1000.0)));
+        if (e.kind == kinds::light) mix(e.params.num(base_key, e.params.num(keys::intensity, 1.0)) > 0.05 ? 1u : 0u);
+        if (e.kind != kinds::portal || !e.alive || !seen_by || !in_view(room, e, *seen_by, aspect)) continue;
+        if (auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world && it->second.world != &room)
+            mix(seen_stamp(*it->second.world, false, walked, nullptr, aspect));
+    }
+    return k;
 }
 
 uint64_t GLWorldView::stamp_of(const State& s) const {

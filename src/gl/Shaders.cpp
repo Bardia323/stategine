@@ -596,6 +596,9 @@ uniform float uCutout;        // > 0: pixels clearer than this are not drawn (a 
 uniform float uTwoSided;      // 1: thin, seen from either side - lit on the side it is seen from (`two_sided`)
 uniform float uTranslucent;   // and how much of a lamp's light behind it comes through (`translucent`: a leaf)
 uniform float uGlow;          // extra emission for an active interface
+uniform float uFillCut;       // how much of the light from all round (and back off the walls) is taken away: 0 as it is, 1 none - lamps' pools in the dark
+uniform float uUnlit;         // 1: what it shows arrives already lit - no light of the room on it (a panel that says `lit` 0)
+uniform float uAdd;           // 1: light added over what is behind it (a panel that says `add`) - the air dims it, adds nothing to it
 uniform float uGlass;         // > 0: glass, this clear - what is behind it seen through it, more of it reflected at a glance (Fresnel)
 )" + lights_glsl() + R"(
 uniform vec3  uViewPos;
@@ -1757,13 +1760,13 @@ void main() {
         // as bare Fresnel gives - and less as it roughens.
         reflected = max(reflected, vec3(uMirrorUse[k].x * (1.0 - roughness)));
     }
-    vec3 ambient = diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced;
+    vec3 ambient = (diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced) * (1.0 - uFillCut);
     // What its own hollows shut out of the light from all round and back off
     // the room (a surface map's occlusion): the lamps' direct light still
     // reaches where they shine.
     ambient *= occlusion;
 
-    vec3 color = ambient + direct + albedo * (mEmissive + uGlow) * (1.0 - uDark);
+    vec3 color = (ambient + direct) * (1.0 - uUnlit) + albedo * (mEmissive + uGlow) * (1.0 - uDark);
     // How much of what is seen here is light from all round - the only part
     // occlusion takes away (ao_apply_fs): a corner in lamplight stays lit.
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
@@ -1791,11 +1794,20 @@ void main() {
     // what is seen is what is beyond the last thing drawn.
     vec3 haze = uFogColor + uSunColor * toward * 0.25 * (1.0 - uFogFull);
     fog = clamp(fog, 0.0, mix(0.85, 1.0, uFogFull));
+    if (uAdd > 0.5) {
+        // Light added over what is behind: the air between takes some of it,
+        // and gives nothing of its own (that is in what is behind already).
+        // Where it has none it is not there at all - not even as a depth:
+        // what is behind is what is seen there, as far off as it is.
+        if (max(max(color.r, color.g), color.b) < 0.01) discard;
+        color *= 1.0 - fog;
+    } else {
     color = mix(color, haze, fog);
     // And the light of this world's lamps that its air scatters towards the
     // eye on the way (air_light: none unless its look says the air scatters).
     color += air_light(len);
     if (uHostFog.w > 0.5) color = mix(color, uHostFogColor, clamp(1.0 - exp(-uHostFog.x * max(t - uHostFog.y, 0.0)), 0.0, mix(0.85, 1.0, uHostFog.z)));
+    }
 
     // The eye adjusted to a screen: the room around it dims, the picture
     // on the screen does not. Alpha: the share of it occlusion may darken.
@@ -1883,12 +1895,18 @@ uniform float uSaturation;
 uniform float uVignette;
 uniform float uGrain;
 uniform float uTime;
+uniform float uRaw;  // 1: the light itself, undeveloped (a viewer's film: the eye that looks at it develops it)
 )") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
 void main() {
     vec3 scene = texture(uScene, vUV).rgb;
+    if (uRaw > 0.5) {
+        // (Its bloom is the developing eye's own, laid on what it sees.)
+        FragColor = vec4(scene + texture(uBloom, vUV).rgb * fog_bloom(vUV) + godrays(vUV), 1.0);
+        return;
+    }
     scene += texture(uBloom, vUV).rgb * (uBloomStrength + fog_bloom(vUV));
     scene += godrays(vUV);
     vec3 color = smooth_edges(vUV, tonemap(scene * uExposure));

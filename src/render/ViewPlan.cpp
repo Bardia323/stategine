@@ -148,11 +148,14 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
         return Vec3{static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
     };
     DrawLight l;
-    l.pos = vec(compose_pose(pose, world_pose(room, e)).position);
+    // Where it is and which way it shines: in the frame of what it hangs
+    // from (a lamp's shade, a tube's housing) - turned with it.
+    const Pose at = compose_pose(pose, world_pose(room, e));
+    l.pos = vec(at.position);
     l.color = {static_cast<float>(e.params.num("r", 1)), static_cast<float>(e.params.num("g", .93)),
                static_cast<float>(e.params.num("b", .82))};
     l.power = static_cast<float>(e.params.num(keys::intensity, 1)) * 26.0f;
-    l.dir = normalize(vec(turn(pose, {e.params.num("dx"), e.params.num("dy", -1), e.params.num("dz")})));
+    l.dir = normalize(vec(turn(Pose{{}, at.yaw, at.pitch, at.roll}, {e.params.num("dx"), e.params.num("dy", -1), e.params.num("dz")})));
     l.inner = static_cast<float>(e.params.num("inner", .55));
     l.outer = static_cast<float>(e.params.num("outer", 1.15));
     l.sun = e.params.num("sun") > .5;

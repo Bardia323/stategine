@@ -304,8 +304,8 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // A surface bound to a mesh is its skin: an atlas, a cell a face - or a
     // texture worn by a thing it is part of.
     const Element* holder = skin_holder(st, e);
-    auto skin = holder ? surfaces_.find(holder->id) : surfaces_.end();
-    if (skin != surfaces_.end()) {
+    auto skin = holder ? bound_surfaces().find(holder->id) : bound_surfaces().end();
+    if (skin != bound_surfaces().end()) {
         BoundSurface& bound = skin->second;
         Surface2D& surf = *bound.surface;
         upload_skin(bound);

@@ -18,7 +18,9 @@
 // And without being told: a portal with `feed` = 1 that the graph embeds a 3D
 // state in, while that embedding is open, shows it as a feed (`feed_w` x
 // `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture; `untone`
-// = 0 shows it as paint, colour lit by the room, not as light). What is
+// = 0 shows it as paint, colour lit by the room, not as light; `lit` = 0
+// takes no light of the room; `add` = 1 is light added over what is behind
+// it - words in the air, its black nothing; `unseen` = 1 is in no picture). What is
 // shown is what the graph declares, and only that. The portal may belong to
 // a state that is not drawn - a deck, whose output is what it plays - and a
 // panel in a room shows it by `shows` = that embedding's name: a set cabled
@@ -46,7 +48,8 @@
 // time: its shaders move by it (`uTime`), or its declared Temporal line - still
 // when it is still. A thing with `unseen` = 1 is in no picture but casts its
 // shadow (a walker's own body, seen from inside it); one that also says
-// `mirrored` = 1 is seen in a mirror (that body, in the glass). A light with `sun` = 1 is parallel light with an
+// `mirrored` = 1 is seen in a mirror (that body, in the glass); `cast_lamps` = n casts in
+// the n nearest lamps' shadows only. A light with `sun` = 1 is parallel light with an
 // orthographic shadow that follows the viewer. How far anything is drawn is
 // the state's `far` (120 m unless it says otherwise).
 //
@@ -392,6 +395,9 @@ private:
         // The frame it was last asked whether it changed: once a frame, however
         // many things wear it, in however many copies of a room.
         uint64_t asked = 0;
+        // Frames it has shown its last picture past being painted again
+        // (the frame's painting spent: kPaintMs).
+        uint32_t waits = 0;
         // The picture packed for the card (warm), and which of the surface's
         // pictures it is: shown packed while the surface still shows that one.
         std::shared_ptr<render::Packed> packed;
@@ -1340,6 +1346,14 @@ private:
     static constexpr int kNestedShadowMaps = 6;
     static constexpr uint32_t kShadowWaits = 3;  // frames a map may stand out of date, in a view through a doorway
     int shadow_budget_ = kNestedShadowMaps;
+    // What a frame spends painting the pictures things wear (screens moving
+    // on their own, as fast as they are painted): past it, one that would be
+    // painted again shows its last picture a frame longer - never more than
+    // kPaintWaits frames - so screens painted in step are spread over frames.
+    static constexpr double kPaintMs = 1.0;
+    static constexpr uint32_t kPaintWaits = 3;
+    uint64_t paint_frame_ = 0;
+    double paint_spent_ = 0.0;
     static constexpr int kEyeShadowMaps = 6;  // maps the eye's own room lays again in a frame, before the rest wait
     int eye_shadow_budget_ = kEyeShadowMaps;
     std::map<std::pair<const void*, const void*>, std::unique_ptr<ShadowSet>> shadow_sets_;
@@ -1585,6 +1599,8 @@ private:
     // viewer's, laid over the whole picture - its own grain would be a second
     // layer, and a still one wherever the world beyond keeps its time still.
     bool film_of_viewer_ = false;
+    // The picture of a feed that stands for what the viewer will see (Feed::viewer_film): the rooms glued to its world are one with it, as in the viewer's own.
+    bool viewer_feed_ = false;
     struct Feed {
         const Spatial3D* world = nullptr;
         const Element* eye = nullptr;  // seen from this (a camera's lens), not the world's camera
@@ -1594,6 +1610,14 @@ private:
         int slack = 0;         // frames a smaller picture would have done
         bool live = true, drawn = false;
         bool from_graph = false, seen = false;
+        // Developed by the eye that looks at it (`viewer_film` = 1): its
+        // exposure that eye's, no grain of its own - a picture seen as the
+        // place it shows would be seen (a painting gone into).
+        bool viewer_film = false;
+        bool made_raw = false;  // its pictures made as light (a viewer's film: Feed::format), not as developed
+        // What its pictures are made in: a viewer's film, as light itself
+        // (the eye that looks at it develops it); any other, as developed.
+        unsigned format() const { return viewer_film ? gl::GL_RGBA16F : gl::GL_SRGB8_ALPHA8; }
         // Its picture, made at each size it may be drawn at (by `div`: 1, 2, 4,
         // 8) and kept, so that a screen coming near or leaving is only a
         // change of which is drawn into - never made again mid-frame.
@@ -1602,6 +1626,7 @@ private:
         gl::RenderTarget* out() { return outs[slot_of(div)]; }
         const gl::RenderTarget* out() const { return outs[slot_of(div)]; }
         int front = 0;  // the one shown; the other is drawn into
+        uint64_t drawn_at = 0;  // the frame it was last drawn
         uint64_t drawn_of = 0;  // what its picture was drawn from (feed_key): drawn again only when that moves
         const gl::RenderTarget& shown() const { return out()[front]; }
         std::unique_ptr<GLWorldView> view;
@@ -1617,7 +1642,11 @@ private:
     // Everything a feed's picture is made from: its world's data and look,
     // its time there, the eye it is seen from, its size, and the worlds its
     // own doorways open onto. A still world on a wall is drawn once.
+    // The frames a held picture waits between draws, however much has changed.
+    static constexpr uint64_t kHeldEvery = 40;
     uint64_t feed_key(const Feed& f) const;
+    // What a held picture of a room is made of (feed_key): its drawn things that are seen, and the rooms beyond them.
+    uint64_t seen_stamp(const Spatial3D& room, bool camera, std::vector<const Spatial3D*>& walked, const Camera* seen_by = nullptr, float aspect = 0.0f) const;
     // Draw a feed's picture through its own view, unless nothing it is made
     // from moved since it was last drawn (feed_key). Whether it was drawn.
     bool draw_feed(Feed& f);
@@ -1640,7 +1669,15 @@ private:
     // Ambient occlusion: the resolved depth, the occlusion and its blur, and
     // the scene with it laid on. `scene_src_` is what the post chain reads.
     gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
-    bool fog_depth_ = false;  // this frame's composite reads depth_ (uFogBloom)
+    bool fog_depth_ = false;  // this frame's composite reads depth_ (uFogBloom, uDof, uHalation)
+    // The lamps the eye sees this frame, on the screen (a look's halation
+    // gathers round them): where (0..1), how far along the view, their light.
+    static constexpr int kHaloLamps = 16;
+    struct HaloLamp {
+        float u = 0, v = 0, z = 0;
+        gl::Vec3 light;
+    };
+    std::vector<HaloLamp> halo_lamps_;
     // What a look lays over its composited picture (gl::finish_fs): `deband`
     // where nothing was drawn, `smear` of the last frame shown. Both off
     // unless the look says, and then the composite writes the screen as it
@@ -1683,6 +1720,10 @@ private:
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply
     std::unordered_map<Key, BoundSurface> surfaces_;
+    // What things wear, as the view on the screen has it bound: a view drawn
+    // for it (a feed, a lens) wears the same pictures, not none.
+    std::unordered_map<Key, BoundSurface>& bound_surfaces() { return root_ ? root_->bound_surfaces() : surfaces_; }
+    const std::unordered_map<Key, BoundSurface>& bound_surfaces() const { return root_ ? root_->bound_surfaces() : surfaces_; }
     const Spatial3D* rays_room_ = nullptr;
     Vec3d rays_at_{}, rays_dir_{}, rays_fwd_{};
     double rays_strength_ = 0, rays_tan_ = 0.7;

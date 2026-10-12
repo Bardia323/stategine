@@ -281,6 +281,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     Body& body = bodies_[&e];
     if (const uint64_t stamp = placed_of(st, e).stamp; body.stamp != stamp || body.window != is_window)
         body = Body{stamp, is_window, portal_body(st, e, is_window)};
+    // (Light in the air, `add`, has no body: no frame, no sheet.)
+    if (e.params.num(Key{"add"}, 0.0) < 0.5)
     for(const auto& draw:body.parts) {
         const gl::Vec3 c{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)};
         if (batch_frames_) batch(cube_, draw.model, c, static_cast<float>(draw.roughness), 0, 0, hi, 0);
@@ -430,14 +432,15 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // Developed light, taken back to light - unless the panel is paint
         // (`untone` = 0): then the picture is only colour, as a canvas is,
         // and reflects the room's light and no more.
-        scene_->set("uUntone", e.params.num(Key{"untone"}, 1.0) > 0.5 ? 1.0f : 0.0f);
+        scene_->set("uUntone", e.params.num(Key{"untone"}, 1.0) > 0.5 && !f->second.viewer_film ? 1.0f : 0.0f);
     } else {
-        auto it = surfaces_.find(e.id);
-        if (it == surfaces_.end() || !it->second.surface) return;  // a plain opening
+        auto it = bound_surfaces().find(e.id);
+        if (it == bound_surfaces().end() || !it->second.surface) return;  // a plain opening
         BoundSurface& bound = it->second;
         Surface2D& surf = *bound.surface;
-        // A surface that has changed size gets a texture its new size.
-        refresh(bound);
+        // A surface that has changed size gets a texture its new size. (Once a
+        // frame, however many views show it, within the frame's painting.)
+        upload_skin(bound);
         bound.texture.bind(0);
         tex_w = surf.px_w(), tex_h = surf.px_h();
     }
@@ -467,6 +470,10 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     scene_->set("uHighlight", !framed(e) && e.id == highlight_ ? 1.0f : 0.0f);
     scene_->set("uTexMix", 1.0f);
     scene_->set("uGlow", open && !says_glow ? std::max(glow, 0.55f) : glow);
+    // `lit` 0: what it shows is light already, none of the room's on it - a
+    // picture of a place, shown as that place is seen (and with `glow` 1, its
+    // pixels as they were drawn).
+    scene_->set("uUnlit", e.params.num(Key{"lit"}, 1.0) < 0.5 ? 1.0f : 0.0f);
     // `crt` makes the panel a screen: the glass is drawn per pixel.
     scene_->set("uCRT", static_cast<float>(e.params.num(Key{"crt"}, 0.0)));
     // `halo`: how much the tube's phosphor glows into the glass round it.
@@ -476,6 +483,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
     if (domed) dome_of(w, h, bulge).draw();
     else quad_.draw();
+    scene_->set("uUnlit", 0.0f);
     scene_->set("uTexFlip", 0.0f);
     scene_->set("uUntone", 0.0f);
     scene_->set("uTexMix", 0.0f);

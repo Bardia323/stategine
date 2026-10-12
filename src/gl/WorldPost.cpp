@@ -302,6 +302,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         apply_attended(p, passes::composite);
         if (gain != 1.0f) p.set("uExposure", exposure);
         if (film_of_viewer_) p.set("uGrain", 0.0f);
+        if (viewer_feed_) p.set("uRaw", 1.0f);
         if (rays_on_) {
             p.set("uRayDir", to_vec3(rays_dir_));
             p.set("uCamFwd", to_vec3(rays_fwd_));
@@ -318,10 +319,30 @@ void GLWorldView::composite(int fb_w, int fb_h) {
             p.set("uAirThick", air_density, air_start);
         }
         p.set("uTime", static_cast<float>(world_time_));
+        // The lamps the eye sees (a halation round each, if the look has one).
+        if (p.has("uHaloCount")) {
+            const int n = root_ ? 0 : static_cast<int>(halo_lamps_.size());
+            p.set("uHaloCount", n);
+            for (int i = 0; i < n; ++i) {
+                const HaloLamp& h = halo_lamps_[static_cast<std::size_t>(i)];
+                const std::string at = "uHaloAt[" + std::to_string(i) + "]", light = "uHaloLight[" + std::to_string(i) + "]";
+                p.set(at.c_str(), gl::Vec3{h.u, h.v, h.z});
+                p.set(light.c_str(), h.light);
+            }
+        }
         p.set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
         p.set("uEdgesSmooth", taa_on() ? 1.0f : 0.0f);
         screen_.draw();
     };
+    // A viewer's feed is the light itself, undeveloped: the eye that looks at
+    // it develops it, with its grade, curve, lens, film and steps - once,
+    // not once for the look it was drawn in and again for the look it is seen in.
+    if (viewer_feed_) {
+        draw(*program_for(standard_, passes::composite));
+        if (fin.on()) finish(fb_w, fb_h, fin);
+        gl::glEnable(gl::GL_DEPTH_TEST);
+        return;
+    }
     // Looks that share a program share its draw.
     programs_in_mix_.clear();
     for (const Mix::Part& part : post_.parts) {
@@ -333,6 +354,26 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         } else {
             it->second += part.weight;
         }
+    }
+    // A look that says `dissolve` (and whose program can: `uDissolve`) goes
+    // over to the next pixel by pixel - each pixel of the one or the other,
+    // as its own lot falls (its share of the picture, the weight): never two
+    // pictures laid over each other.
+    bool dissolve = programs_in_mix_.size() > 1;
+    for (const Mix::Part& part : post_.parts)
+        if (fader_.value(*part.look, passes::composite, Key{"dissolve"}, 0.0) < 0.5) dissolve = false;
+    for (const auto& e : programs_in_mix_)
+        if (!e.first->has("uDissolve")) dissolve = false;
+    if (dissolve) {
+        float from = 0.0f;
+        for (const auto& e : programs_in_mix_) {
+            e.first->use();
+            e.first->set("uDissolve", from, from + e.second);
+            draw(*e.first);
+            e.first->set("uDissolve", 0.0f, 1.0f);
+            from += e.second;
+        }
+        programs_in_mix_.clear();
     }
     // A running weighted mean: the k-th program is blended over the ones
     // before it with alpha = its weight / the weight drawn so far.

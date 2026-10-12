@@ -502,6 +502,10 @@ void main() {
 //                           soft, a pixel and a half across, strongest in the
 //                           mid tones and least in the highlights, moving each
 //                           frame - and a last dither, so nothing bands.
+//   vec3 film_at(vec3 c, float grain, float time, vec2 px)
+//                           the same, its grain laid by `px` (the pixel by
+//                           default): a picture drawn at another size than
+//                           the screen keeps its grain the size it was.
 inline const char* film_glsl() {
     return R"(
 uniform float uGradeExposure;
@@ -593,9 +597,8 @@ float film_clump(vec2 p) {
     return film_hash(p) * 0.4 + (film_hash(p + vec2(1.0, 0.0)) + film_hash(p - vec2(1.0, 0.0)) +
                                  film_hash(p + vec2(0.0, 1.0)) + film_hash(p - vec2(0.0, 1.0))) * 0.15;
 }
-vec3 film(vec3 c, float grain, float time) {
+vec3 film_at(vec3 c, float grain, float time, vec2 px) {
     vec3 e = pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));
-    vec2 px = gl_FragCoord.xy;
     vec2 jump = vec2(film_hash(vec2(floor(time * 24.0), 7.0)), film_hash(vec2(floor(time * 24.0), 13.0))) * 911.0;
     float y = dot(e, vec3(0.2126, 0.7152, 0.0722));
     float g = (film_clump(px + jump) - 0.5) * 1.1;
@@ -605,6 +608,7 @@ vec3 film(vec3 c, float grain, float time) {
     e += (film_hash(px + jump * 1.37) - film_hash(px + 17.0 + jump) ) / 255.0;
     return e;
 }
+vec3 film(vec3 c, float grain, float time) { return film_at(c, grain, time, gl_FragCoord.xy); }
 )";
 }
 
