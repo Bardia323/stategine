@@ -1060,7 +1060,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             scene_->set("uClipCount", bounds);
         }
         const gl::Vec3 moved = shift * -1.0f;
-        static const Key unseen_key{"unseen"}, glass_key{"glass"}, surface_key{"surface"};
+        static const Key unseen_key{"unseen"}, mirrored_key{"mirrored"}, glass_key{"glass"}, surface_key{"surface"};
         // What fills an opening onto nothing (`<opening>.blank`) where the
         // opening is a glued doorway: there is something beyond it now.
         std::vector<std::pair<Vec3d, double>> openings;
@@ -1115,8 +1115,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 continue;
             if (e.kind == kinds::wall && fills_opening(e)) continue;
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
-            // own body, seen from inside it).
-            if (e.params.num(unseen_key, 0.0) > 0.5) continue;
+            // own body, seen from inside it); `mirrored` too, and a mirror
+            // shows it (that body, in the glass).
+            if (e.params.num(unseen_key, 0.0) > 0.5 && !(mirroring_ && e.params.num(mirrored_key, 0.0) > 0.5)) continue;
             if (hidden_ && hidden_->count(e.id.key())) continue;  // (moving: not what the probes see)
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);

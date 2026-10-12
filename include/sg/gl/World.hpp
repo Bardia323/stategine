@@ -45,7 +45,8 @@
 // terrain that says `splat` (sg::terrain::lay) is covered by its layers. A state with `own_time` among its params keeps its own
 // time: its shaders move by it (`uTime`), or its declared Temporal line - still
 // when it is still. A thing with `unseen` = 1 is in no picture but casts its
-// shadow (a walker's own body, seen from inside it). A light with `sun` = 1 is parallel light with an
+// shadow (a walker's own body, seen from inside it); one that also says
+// `mirrored` = 1 is seen in a mirror (that body, in the glass). A light with `sun` = 1 is parallel light with an
 // orthographic shadow that follows the viewer. How far anything is drawn is
 // the state's `far` (120 m unless it says otherwise).
 //
