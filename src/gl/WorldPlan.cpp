@@ -101,6 +101,11 @@ auto GLWorldView::through(const Element& portal, const Spatial3D& guest, const E
     return t;
 }
 
+gl::Mat4 GLWorldView::frame_of(const Pose& p) {
+    return gl::Mat4::translate({static_cast<float>(p.position.x), static_cast<float>(p.position.y), static_cast<float>(p.position.z)}) *
+           gl::Mat4::rotate_y(static_cast<float>(p.yaw)) * gl::Mat4::rotate_z(static_cast<float>(p.pitch)) * gl::Mat4::rotate_x(static_cast<float>(p.roll));
+}
+
 void GLWorldView::set_frame(const Pose& p) {
     frame_ = p;
     frame_matrix_ = gl::Mat4::translate({static_cast<float>(p.position.x),

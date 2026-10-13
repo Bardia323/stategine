@@ -898,11 +898,14 @@ void main() {
         host_air_.on = false;
         wp.drawn = frame_count_;
         path_.clear();
+        const float view_near = drawn_near_, view_far = drawn_far_;
         const bool cut = scissor_to(cut_, scene_ms().width(), scene_ms().height());
         scene_ms().blit_to(view.target);
+        scene_ms().blit_depth_to(view.target);
         if (cut) gl::glDisable(gl::GL_SCISSOR_TEST);
         cut_ = Rect{-1, -1, 1, 1};
         wp.shown = &view.target;
+        wp.shown_near = view_near, wp.shown_far = view_far;
         ++times_.portal_views;
     }
     eye_override_ = own_override;

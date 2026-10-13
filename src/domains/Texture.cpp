@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <chrono>
 #include "sg/domains/Texture.hpp"
+#include "sg/core/Work.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -394,9 +395,16 @@ void Texture::paint() {
     const auto it = generators().find(m.params.get_or<std::string>("generator", "plain"));
     const Generator& gen = it != generators().end() ? it->second : generators()["plain"];
     const double tr = m.params.num("tint_r", 1.0), tg = m.params.num("tint_g", 1.0), tb = m.params.num("tint_b", 1.0);
-    for (int cl = 0; cl < wide * rows(); ++cl) {
+    // A generator is a function of the map's params and the point (that is
+    // its contract): each band of rows of each cell painted by a hand of its
+    // own (sg::work), each writing only its own pixels - the same picture on
+    // one hand or many.
+    const int cells = wide * rows(), bands = std::max(1, std::min(c, 16));
+    const int per = (c + bands - 1) / bands;
+    work::each(static_cast<std::size_t>(cells * bands), [&](std::size_t job) {
+        const int cl = static_cast<int>(job) / bands, band = static_cast<int>(job) % bands;
         const int x0 = (cl % wide) * c, y0 = (cl / wide) * c;
-        for (int y = 0; y < c; ++y)
+        for (int y = band * per; y < std::min(c, (band + 1) * per); ++y)
             for (int x = 0; x < c; ++x) {
                 const auto rgba = gen(m.params, cl, (x + 0.5) / c, 1.0 - (y + 0.5) / c);
                 unsigned char* p = &px[(static_cast<std::size_t>(y0 + y) * W + (x0 + x)) * 4];
@@ -405,7 +413,7 @@ void Texture::paint() {
                 p[2] = static_cast<unsigned char>(to_byte(rgba[2] * tb));
                 p[3] = static_cast<unsigned char>(to_byte(rgba[3]));
             }
-    }
+    });
     // The layer painted over it, stretched to the map if it is another size.
     int lw = 0, lh = 0;
     std::vector<unsigned char> layer;

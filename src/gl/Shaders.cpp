@@ -35,7 +35,7 @@ const std::string& lights_glsl() {
 // is, so shadows do not come and go as you walk; then light from beyond its
 // doorways, whose shadows are what stands in the way of the opening. A sun is always first: it lights everything, from one direction,
 // without falling off.
-const int MAX_LIGHTS = 24;
+const int MAX_LIGHTS = 32;
 uniform int   uLightCount;
 uniform vec3  uLightPos[MAX_LIGHTS];
 uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
@@ -705,8 +705,11 @@ flat in vec4 vMat0;
 flat in vec4 vMat1;
 flat in float vInstanced;
 flat in float vMetal;
+flat in float vGrime;
 uniform float uMetal;         // how metal, 0..1: reflects in its own colour, scatters none
+uniform float uGrime;         // `grime` 0..1: how lived-in - the unevenness a room's surface has at the scale of the room
 vec3 mAlbedo;
+float mGrime;
 float mRoughness, mSurface, mEmissive, mHighlight, mMirror, mMetal;
 // A worn texture's surface map (Texture::surface_raster): red how open its
 // hollows are to the light from all round, green roughness, blue metal -
@@ -745,9 +748,12 @@ uniform float uHalo;
 // The eye's adjustment: how much everything but a screen's picture is
 // dimmed (0: not at all - what an unset uniform says).
 uniform float uDim;
+uniform float uDimNear;       // how far the room is dimmed round what is held up close to read (a look's, as uDim is)
 uniform float uUndim;         // 1: this is part of the screen the room dims round, not dimmed with it
 // How flat the tube is seen (crt_shape): 0 as it is, 1 face up to the glass.
 uniform float uFlat;
+// A round tube (x: 0 square, 1 round), and the panel's width over its height (y).
+uniform vec2  uRound;
 )") + crt_glsl_constants() + air_glsl() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
@@ -765,16 +771,24 @@ vec3 crt_sample(vec2 uv) {
     // The glass: a rounded rectangle, its edge spread over one pixel.
     vec2 d = abs(g) - vec2(1.0 - corner);
     float glass_sd = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - corner;
+    // (Round: the circle as high as the panel, in the middle of it - and
+    // nothing outside its rim: what it is set in shows there.)
+    vec2 aspect = vec2(max(uRound.y, 1e-3), 1.0);
+    glass_sd = mix(glass_sd, length(g * aspect) - 1.0, uRound.x);
+    if (uRound.x > 0.5 && length(g * aspect) > 1.06) discard;
     float gpx = max(fwidth(glass_sd), 1e-5);
     float glass = 1.0 - smoothstep(-gpx, gpx, glass_sd);
     // The picture bows out with the tube and sits wholly inside the glass,
     // with a dark margin, the way a real one does - no corner of it is lost.
     float r2 = dot(g, g);
     vec2 w = g * (1.0 + kBulge * (1.0 - uFlat) * uCRT * r2) / mix(kFit, 1.0, uFlat);
-    float pic_sd = max(abs(w.x), abs(w.y)) - 1.0;
+    float pic_sd = mix(max(abs(w.x), abs(w.y)), length(w * aspect), uRound.x) - 1.0;
     float ppx = max(fwidth(pic_sd), 1e-5);
     float picture = 1.0 - smoothstep(-ppx, ppx, pic_sd);
     vec2 s = clamp(w * 0.5 + 0.5, 0.0, 1.0);
+    // (Round: the picture's own middle, at its own shape - not squeezed to
+    // the panel's.)
+    if (uRound.x > 0.5) s.x = clamp(0.5 + (s.x - 0.5) * uRound.y / max(uTexSize.x / max(uTexSize.y, 1.0), 1e-3), 0.0, 1.0);
     vec3 col = texture(uTex, s).rgb;
     // Halation: light from the phosphor spreading in the glass - a ring of
     // samples round each point, near and farther out, added as light. Done
@@ -869,8 +883,14 @@ vec2 skin_at(float cell, vec3 p, vec3 size) {
 // That point of that cell of the atlas `t` (the picture, or its surface map:
 // laid alike), filtered as the unwrapped place changes across the screen (no
 // seam where a tiling wraps).
+// How many texels a picture is seen at, at most, across a cell (or the whole
+// picture of a model's own): an older machine's, each a square of its colour,
+// no smoothing between (0: as it is).
+uniform float uTexels;
+vec2 texel_snap(vec2 f, float n) { return n > 0.0 ? (floor(f * n) + 0.5) / n : f; }
 vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     vec2 f = clamp(uSkinTile > 0.0 ? fract(uv) : uv, 0.002, 0.998);
+    f = texel_snap(f, uTexels);
     // One tile, every way's (Texture::one_tile): the whole picture is the cell.
     if (uSkinOne > 0.5) return textureGrad(t, vec2(f.x, 1.0 - f.y), dx * vec2(1.0, -1.0), dy * vec2(1.0, -1.0));
     float col = mod(cell, 3.0), row = floor(cell / 3.0);
@@ -1421,10 +1441,10 @@ void main() {
     vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
     if (vInstanced > 0.5) {
         mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
-        mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w, mMetal = vMetal;
+        mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w, mMetal = vMetal, mGrime = vGrime;
     } else {
         mAlbedo = uAlbedo, mRoughness = uRoughness;
-        mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror, mMetal = uMetal;
+        mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror, mMetal = uMetal, mGrime = uGrime;
     }
     if (mSurface > 8.5 && mSurface < 9.5) {
         // The sky is not lit and not fogged: it is what the fog fades into.
@@ -1434,7 +1454,7 @@ void main() {
         // where the last of the ground meets it.
         vec3 d = normalize(vWorld - uViewPos);
         vec3 s = mix(sky(d), uFogColor, uFogFull * (1.0 - smoothstep(0.0, 0.35, d.y)));
-        FragColor = vec4((s + air_light(1e9)) * (1.0 - uDim), 0.0);
+        FragColor = vec4((s + air_light(1e9)) * (1.0 - max(uDim, uDimNear)), 0.0);
         return;
     }
     float rough_mod;
@@ -1454,6 +1474,8 @@ void main() {
         if (uTexFlip > 0.5) uv.y = 1.0 - uv.y;
         if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
         bool framed_skin = uSkin > 0.5 && uSkin < 1.5 && uSkinFramed > 0.5;
+        // (A model's own picture, or a screen's - but a screen keeps its pixels.)
+        if (!framed_skin && uTexels > 0.0 && uScreenUV < 0.5 && uCRT < 0.5) uv = texel_snap(uv, min(uTexels * 2.0, float(textureSize(uTex, 0).y)));
         vec4 texel = framed_skin ? skin_texel(uTex) : texture(uTex, uv);
         if (framed_skin && uSurfaceMapOn > 0.5) surface_at = skin_texel(uSurfaceMap);
         if (framed_skin && uNormalMapOn > 0.5) mapped = true, height_steps = skin_height_steps();
@@ -1516,7 +1538,7 @@ void main() {
         }
         // This side's air up to the opening is this side's to light.
         seen += air_light(length(vWorld - uViewPos));
-        FragColor = vec4(seen * (1.0 - uDim * (1.0 - uUndim)), 0.0);
+        FragColor = vec4(seen * (1.0 - max(uDim, uDimNear) * (1.0 - uUndim)), 0.0);
         return;
     }
     float roughness = clamp(mRoughness + rough_mod, 0.05, 1.0);
@@ -1534,6 +1556,30 @@ void main() {
         occlusion = clamp(surface_at.r, 0.0, 1.0);
         roughness = clamp(surface_at.g, 0.05, 1.0);
         metal = clamp(surface_at.b, 0.0, 1.0);
+    }
+    // `grime`: how lived-in a surface is - what no tile repeats: paint gone
+    // patchy and a little yellow over years, larger than any tile and never
+    // the same twice across a room (noise in the room's own frame, on the
+    // plane the surface lies in), roughness going with it; and on a wall,
+    // the scuffs and dust of the floor's edge, its line not quite straight.
+    if (mGrime > 0.0) {
+        vec3 an = abs(normalize(vRoomNormal));
+        vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+        // (Patches a metre or two across, edges a hand's width soft; inside
+        // them finer mottling - none of it lined up with anything.)
+        float big = noise(gp * 0.55 + 3.1) * 0.5 + noise(gp * 1.6 + 7.7) * 0.3 + noise(gp * 4.7 + 1.3) * 0.2;
+        float blotch = smoothstep(0.42, 0.72, big);
+        float mottle = noise(gp * 13.0) * 0.6 + noise(gp * 37.0) * 0.4;
+        float shade = 1.0 - mGrime * (0.3 * blotch + 0.12 * (mottle - 0.5));
+        // (Streaks run down a wall: what ran down it once, faint, long.)
+        if (an.y < 0.5) {
+            float run = noise(vec2(gp.x * 7.0, gp.y * 0.35 + 5.0));
+            shade *= 1.0 - mGrime * 0.12 * smoothstep(0.62, 0.9, run);
+            float edge = 0.22 + 0.14 * noise(vec2(gp.x * 2.3, 0.0));
+            shade *= 1.0 - mGrime * 0.32 * (1.0 - smoothstep(0.0, edge, vRoom.y)) * (0.7 + 0.3 * noise(gp * 9.0));
+        }
+        albedo = mix(albedo, albedo * vec3(0.92, 0.85, 0.7), mGrime * blotch * 0.8) * shade;
+        roughness = clamp(roughness + mGrime * 0.18 * (blotch - 0.4), 0.05, 1.0);
     }
     vec3 f0 = mix(vec3(0.04), albedo, metal);
     vec3 diffuse = albedo * (1.0 - metal);
@@ -1817,10 +1863,12 @@ void main() {
     if (uGlass > 0.0) {
         float facing = abs(dot(n, normalize(-to_frag)));
         float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
-        FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), clamp(mix(1.0 - uGlass, 1.0, fresnel), 0.0, 1.0));
+        FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - max(uDim, uDimNear) * (1.0 - uUndim))), clamp(mix(1.0 - uGlass, 1.0, fresnel), 0.0, 1.0));
         return;
     }
-    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - uDim)), indirect * (1.0 - fog));
+    // (Dimmed round a screen leaned in to, or round what is held up to read
+    // - but not what it is: a screen, a page that says `undim`.)
+    FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - max(uDim, uDimNear) * (1.0 - uUndim))), indirect * (1.0 - fog));
 })";
     return source.c_str();
 }
@@ -1857,12 +1905,44 @@ float fog_bloom(vec2 uv) {
 )";
 }
 
+const char* deep_view_fs() {
+    return R"(#version 330 core
+out vec4 FragColor;
+uniform sampler2D uViewDepth;
+uniform vec4 uScreenRect;
+uniform vec4 uUVRect;
+uniform vec2 uViewport;
+uniform vec2 uViewNF;
+uniform vec2 uDrawNF;
+uniform float uReversed;
+void main() {
+    vec2 on_screen = gl_FragCoord.xy / uViewport;
+    vec2 uv = (on_screen - uScreenRect.xy) / max(uScreenRect.zw - uScreenRect.xy, vec2(1e-4));
+    if (uUVRect.z > 0.0) uv = uUVRect.xy + uv * uUVRect.zw;
+    float d = textureLod(uViewDepth, uv, 0.0).r;
+    float ds = uReversed > 0.5 ? 1.0 - d : d;
+    float vn = uViewNF.x, vf = uViewNF.y, n = uDrawNF.x, f = uDrawNF.y;
+    // How far along the view's axis (the view's eye is this one carried: the
+    // same axis, the same distances).
+    float lin = ds >= 0.999999 ? f : 2.0 * vn * vf / (vf + vn - (ds * 2.0 - 1.0) * (vf - vn));
+    lin = clamp(lin, n, f);
+    float out_d = 0.5 * ((f + n - 2.0 * n * f / lin) / (f - n)) + 0.5;
+    if (uReversed > 0.5) out_d = 1.0 - out_d;
+    // Never nearer than the doorway itself.
+    gl_FragDepth = uReversed > 0.5 ? min(out_d, gl_FragCoord.z) : max(out_d, gl_FragCoord.z);
+    FragColor = vec4(0.0);
+}
+)";
+}
+
 const char* exposure_meter_fs() {
     return R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uScene;
 uniform vec2 uCell;  // one pixel of the meter, in the scene's 0..1
+uniform float uSpot; // how wide the middle that counts most is (a part of the view)
+uniform float uEdge; // how much the rest counts beside it
 void main() {
     // Four looks about the cell, so a lamp or a dark seam between two
     // samples is not missed - each as bright as its light, not its colour.
@@ -1872,10 +1952,11 @@ void main() {
         vec3 c = texture(uScene, vUV + o).rgb;
         sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1.0 / 16384.0));
     }
-    // The middle of the view counts most, as the eye looks at it; the edges
-    // still a quarter as much, so a lamp at the edge is not all ignored.
+    // The middle of the view counts most, as the eye looks at it (as wide as
+    // the look says: `exposure.spot`); the edges as much as it says beside
+    // it (`exposure.edge`), so a lamp at the edge is not all ignored.
     vec2 d = vUV - 0.5;
-    float w = 0.25 + exp(-dot(d, d) / (2.0 * 0.2 * 0.2));
+    float w = uEdge + exp(-dot(d, d) / (2.0 * uSpot * uSpot));
     FragColor = vec4(w * sum * 0.25, w, 0.0, 1.0);
 })";
 }

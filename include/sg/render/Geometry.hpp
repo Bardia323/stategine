@@ -24,6 +24,12 @@ Indexed indexed(const std::vector<float>& corners);
 std::vector<float> tangents(const std::vector<float>& corners);
 
 std::vector<float> cube_vertices();
+// The same cube, each face cut into `n` x `n` (its uv the same, 0..1 across
+// each face): for a thing that bends (`bend`), whose faces must curve.
+std::vector<float> grid_cube_vertices(int n);
+// A panel's quad (as quad_vertices: in x = 0, facing +x, its u across from
+// +z to -z), cut into `n` columns across: for a panel that curls (`curl`).
+std::vector<float> quad_columns_vertices(int n);
 
 // A cylinder standing on y, radius 0.5 and height 1, centred like the cube, so
 // the same model matrix sizes it: sx and sz are its diameters, sy its height.

@@ -139,6 +139,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     lod_px_ = 0.5f * static_cast<float>(target.height()) / std::tan(cam.fov * 0.5f);
     lod_least_ = static_cast<float>(rooms.front().room->params().num(Key{"lod_px"}, 0.75));
     const float zfar = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
+    drawn_near_ = znear, drawn_far_ = zfar;
+    if (depth == 0) deep_views_.clear();
     for (const PlacedRoom& placed : rooms)
         if (placed.room)
             for (const auto& e : placed.room->elements())
@@ -250,6 +252,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         taa_vp_ = view_proj;
         taa_world_ = rooms.front().room;
         taa_eye_ = cam.eye;
+        taa_rooms_.clear();
+        for (const PlacedRoom& r : rooms)
+            if (!r.image) taa_rooms_.emplace_back(r.room, frame_of(r.pose));
     }
 
     if (timing_) gl::glFinish();
@@ -474,9 +479,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const auto layers_from = std::chrono::steady_clock::now();
     std::vector<const Caster*> sees, movers_in, extras_in;
     // A thing that says `cast_lamps` = n casts in the maps of the n lamps
-    // nearest it only (a walker's own body: its shadows from the lamps it
-    // stands by, each laid again every frame it moves - not from every lamp
-    // in the house, a frame behind in half of them).
+    // that light it most only (a walker's own body: its shadows from the
+    // lamps it stands in the light of, each laid again every frame it moves -
+    // not from every lamp in the house, a frame behind in half of them). Most:
+    // as bright as each is there - its power over the square of how far, none
+    // outside its cone - not merely the nearest (at a doorway, the small lamps
+    // just past it are nearer than the room's own light overhead).
     std::map<const Element*, std::vector<std::size_t>> nearest_lamps;
     const auto takes = [&](const Caster& c, std::size_t light) {
         const double n = c.element->params.num(Key{"cast_lamps"}, 0.0);
@@ -488,8 +496,21 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 if (!in_use[k]) continue;
                 const std::size_t l = layer_light[k];
                 if (std::any_of(by.begin(), by.end(), [&](const auto& b) { return b.second == l; })) continue;
-                const gl::Vec3 d = lights[l].pos - c.centre;
-                by.emplace_back(lights[l].sun ? -1.0f : gl::dot(d, d), l);
+                const auto& L = lights[l];
+                if (L.sun) {
+                    by.emplace_back(-1e30f, l);
+                    continue;
+                }
+                const gl::Vec3 d = c.centre - L.pos;
+                const float d2 = std::max(gl::dot(d, d), 0.25f);
+                float cone = 1.0f;
+                if (shadow_faces(L) == 1 && L.frame_w <= 0.0f) {  // (a cone; a lamp of six faces lights all round)
+                    const float cosa = gl::dot(d, L.dir) / std::sqrt(d2 * std::max(gl::dot(L.dir, L.dir), 1e-12f));
+                    const float co = std::cos(L.outer), ci = std::cos(std::min(L.inner, L.outer));
+                    cone = std::clamp((cosa - co) / std::max(ci - co, 1e-4f), 0.0f, 1.0f);
+                }
+                const float bright = L.power * (0.2126f * L.color.x + 0.7152f * L.color.y + 0.0722f * L.color.z) * cone / d2;
+                by.emplace_back(-bright, l);
             }
             std::sort(by.begin(), by.end());
             std::vector<std::size_t> chosen;
@@ -969,6 +990,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const auto frame_uniforms = [&](const gl::Program& p) {
         p.set("uViewProj", drawn_proj);
         p.set("uDepthNudge", reversed ? 1.0f : 0.0f);
+        p.set("uSnapAspect", vp_w_ / std::max(vp_h_, 1.0f));
+        last_view_proj_ = drawn_proj, last_nudge_ = reversed ? 1.0f : 0.0f;
         p.set("uMirrorScreen", vp_w_, vp_h_);
         mirror_uniforms(p, !mirroring_);
         p.set("uInstanced", 0);
@@ -1027,21 +1050,23 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // This room's side of each doorway, from the portals as they are now,
         // and whatever the caller cuts away besides.
         int n = 0;
+        const auto clip_at = [&](const HalfSpace& h) {
+            if (n < 8) last_clip_[n][0] = static_cast<float>(h.normal.x), last_clip_[n][1] = static_cast<float>(h.normal.y),
+                       last_clip_[n][2] = static_cast<float>(h.normal.z), last_clip_[n][3] = static_cast<float>(h.offset);
+            scene_->set(clip_uniform(n++), static_cast<float>(h.normal.x), static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
+                        static_cast<float>(h.offset));
+        };
         for (const HalfSpace& h : clips) {
             if (n >= kMaxBounds) break;
-            scene_->set(clip_uniform(n++), static_cast<float>(h.normal.x),
-                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
-                        static_cast<float>(h.offset));
+            clip_at(h);
         }
         for (Key d : placed.doorways) {
             const Element* portal = room.find(d);
             if (!portal || n >= kMaxBounds) continue;
-            const HalfSpace h = room_side(room, *portal, placed.pose);
-            scene_->set(clip_uniform(n++), static_cast<float>(h.normal.x),
-                        static_cast<float>(h.normal.y), static_cast<float>(h.normal.z),
-                        static_cast<float>(h.offset));
+            clip_at(room_side(room, *portal, placed.pose));
         }
         scene_->set("uClipCount", n);
+
         clip_count_ = n;
         doors_to_program(placed);
         probes_to_program(placed);
@@ -1062,6 +1087,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // Glass (`glass`, how clear): drawn after everything else of its room,
     // furthest first, over what is behind it.
     std::vector<const Element*> glass;
+    // Light (`add`: a hologram, a beam): drawn after the glass, added over
+    // what is behind it - no light of the room on it, nothing hidden by it.
+    std::vector<const Element*> added;
 
     lap(1, part_at);
     scene_ = nullptr;
@@ -1112,7 +1140,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             scene_->set("uClipCount", bounds);
         }
         const gl::Vec3 moved = shift * -1.0f;
-        static const Key unseen_key{"unseen"}, mirrored_key{"mirrored"}, glass_key{"glass"}, surface_key{"surface"};
+        static const Key unseen_key{"unseen"}, mirrored_key{"mirrored"}, glass_key{"glass"}, surface_key{"surface"}, add_key{"add"};
         // What fills an opening onto nothing (`<opening>.blank`) where the
         // opening is a glued doorway: there is something beyond it now.
         std::vector<std::pair<Vec3d, double>> openings;
@@ -1178,6 +1206,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 uncut.push_back(&e);
             } else if (e.kind == kinds::mesh) {
                 if (is_sprite(e) || cuts_out(e)) sprites.push_back(&e);
+                else if (e.params.num(add_key, 0.0) > 0.5) added.push_back(&e);
                 else if (e.params.num(glass_key, 0.0) > 0.0) glass.push_back(&e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
@@ -1257,7 +1286,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // stand in the rooms beside it.)
         if (room.params().num(Key{"sky"}, 0.0) <= 0.5 && !(placed.sheafed && !room.params().has(Key{"room_w"}))) draw_room(room);
         // (Asked what surfaces are, glass is none: it is seen through.)
-        if (surface_only_) glass.clear();
+        if (surface_only_) glass.clear(), added.clear();
         if (!glass.empty()) {
             const Vec3d eye{cam.eye.x, cam.eye.y, cam.eye.z};
             const auto far = [&](const Element* e) { return distance(world_position(room, *e), eye); };
@@ -1274,6 +1303,25 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             gl::glDisable(gl::GL_BLEND);
             glass.clear();
         }
+        if (!added.empty()) {
+            // Light, each part of it added to what is there: in any order.
+            gl::glEnable(gl::GL_BLEND);
+            gl::glBlendFuncSeparate(gl::GL_ONE, gl::GL_ONE, gl::GL_ZERO, gl::GL_ONE);
+            gl::glDepthMask(0);
+            scene_->set("uAdd", 1.0f);
+            scene_->set("uUnlit", 1.0f);
+            // (Many alike - a hologram's points of light - drawn as one, as
+            // what stands in the room is.)
+            for (const Element* e : added)
+                if (q_.instancing && instanceable(*e)) batch_crate(room, *e);
+                else draw_crate(room, *e);
+            flush_batches(*scene_, true);
+            scene_->set("uUnlit", 0.0f);
+            scene_->set("uAdd", 0.0f);
+            gl::glDepthMask(1);
+            gl::glDisable(gl::GL_BLEND);
+            added.clear();
+        }
         if (!light_panels.empty() && !surface_only_) {
             // Light added over all that is drawn, its black nothing at all;
             // where it has light, as far off as it is (its depth written:
@@ -1287,10 +1335,60 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(5, part_at);
     }
+    if (depth == 0) lay_deep_views();
     for (int i = 0; i < kMaxBounds; ++i)
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
     if (part || cut) gl::glDisable(gl::GL_SCISSOR_TEST);
     set_frame(Pose{});
+}
+
+}  // namespace sg::render
+
+namespace sg::render {
+
+void GLWorldView::lay_deep_views() {
+    if (deep_views_.empty()) return;
+    if (!deep_prog_) deep_prog_ = std::make_unique<gl::Program>(gl::scene_vs(), gl::deep_view_fs(), "deep view");
+    const gl::Program& p = *deep_prog_;
+    p.use();
+    // Only where the view itself was laid (its own depth there, to the bit),
+    // and only its depth.
+    gl::glColorMask(0, 0, 0, 0);
+    gl::glDepthMask(1);
+    gl::glDepthFunc(gl::GL_EQUAL);
+    const bool reversed = gl::reversed_depth();
+    p.set("uReversed", reversed ? 1.0f : 0.0f);
+    p.set("uDrawNF", drawn_near_, drawn_far_);
+    p.set("uInstanced", 0);
+    p.set("uViewDepth", 12);
+    for (const DeepView& d : deep_views_) {
+        const auto mat = [](const float* f) {
+            gl::Mat4 m;
+            for (int i = 0; i < 16; ++i) m.m[i] = f[i];
+            return m;
+        };
+        p.set("uModel", mat(d.model));
+        p.set("uTexModel", mat(d.model));
+        p.set("uViewProj", mat(d.view_proj));
+        p.set("uFrame", mat(d.frame));
+        p.set("uDepthLayer", d.layer);
+        p.set("uDepthNudge", d.nudge);
+        p.set("uClipCount", d.clips);
+        for (int i = 0; i < d.clips; ++i) {
+            const std::string name = "uClip[" + std::to_string(i) + "]";
+            p.set(name.c_str(), d.clip[4 * i], d.clip[4 * i + 1], d.clip[4 * i + 2], d.clip[4 * i + 3]);
+        }
+        p.set("uScreenRect", d.rect[0], d.rect[1], d.rect[2], d.rect[3]);
+        p.set("uUVRect", d.uv_rect[0], d.uv_rect[1], d.uv_rect[2], d.uv_rect[3]);
+        p.set("uViewport", d.viewport[0], d.viewport[1]);
+        p.set("uViewNF", d.view_near, d.view_far);
+        d.target->bind_depth(12);
+        quad_.draw();
+    }
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
+    gl::glColorMask(1, 1, 1, 1);
+    if (scene_) scene_->use();
 }
 
 }  // namespace sg::render

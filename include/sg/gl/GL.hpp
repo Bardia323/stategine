@@ -28,6 +28,7 @@ constexpr GLenum GL_DEPTH_BUFFER_BIT = 0x00000100;
 constexpr GLenum GL_COLOR_BUFFER_BIT = 0x00004000;
 constexpr GLenum GL_TRIANGLES = 0x0004;
 constexpr GLenum GL_LEQUAL = 0x0203;
+constexpr GLenum GL_EQUAL = 0x0202;
 constexpr GLenum GL_LESS = 0x0201;
 constexpr GLenum GL_GREATER = 0x0204;
 constexpr GLenum GL_LOWER_LEFT = 0x8CA1;
@@ -90,6 +91,8 @@ constexpr GLenum GL_TEXTURE_MAX_ANISOTROPY = 0x84FE;
 constexpr GLenum GL_COMPRESSED_RGBA_BPTC_UNORM = 0x8E8C;
 constexpr GLenum GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM = 0x8E8D;
 constexpr GLenum GL_EXTENSIONS = 0x1F03;
+constexpr GLenum GL_VENDOR = 0x1F00;
+constexpr GLenum GL_RENDERER = 0x1F01;
 constexpr GLenum GL_NUM_EXTENSIONS = 0x821D;
 constexpr GLenum GL_TEXTURE_COMPARE_MODE = 0x884C;
 constexpr GLenum GL_TEXTURE_COMPARE_FUNC = 0x884D;
@@ -181,6 +184,7 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, CompressedTexImage2D,                                                             \
       (GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void*))                 \
     X(const unsigned char*, GetStringi, (GLenum, GLuint))                                     \
+    X(const unsigned char*, GetString, (GLenum))                                              \
     X(void, GetTexImage, (GLenum, GLint, GLenum, GLenum, void*))                              \
     X(void, GenFramebuffers, (GLsizei, GLuint*))                                              \
     X(void, BindFramebuffer, (GLenum, GLuint))                                                \
@@ -202,6 +206,9 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, ReadBuffer, (GLenum))                                                             \
     X(void, GetIntegerv, (GLenum, GLint*))                                                    \
     X(void, DepthMask, (GLboolean))                                                           \
+    X(void, ColorMask, (GLboolean, GLboolean, GLboolean, GLboolean))                          \
+    X(void, GetUniformfv, (GLuint, GLint, GLfloat*))                                          \
+    X(void, GetUniformiv, (GLuint, GLint, GLint*))                                            \
     X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))                                        \
     X(void, Finish, ())
 

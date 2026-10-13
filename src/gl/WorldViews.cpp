@@ -281,8 +281,11 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     Body& body = bodies_[&e];
     if (const uint64_t stamp = placed_of(st, e).stamp; body.stamp != stamp || body.window != is_window)
         body = Body{stamp, is_window, portal_body(st, e, is_window)};
-    // (Light in the air, `add`, has no body: no frame, no sheet.)
-    if (e.params.num(Key{"add"}, 0.0) < 0.5)
+    // (Light in the air, `add`, has no body: no frame, no sheet - nor has a
+    // round tube: what it is set in is its body, and a box's corners would
+    // stand out of it - nor a page that curls, whose flat sheet would stand
+    // where it curls away.)
+    if (e.params.num(Key{"add"}, 0.0) < 0.5 && e.params.num(Key{"round"}, 0.0) < 0.5 && e.params.num(Key{"curl"}, 0.0) == 0.0)
     for(const auto& draw:body.parts) {
         const gl::Vec3 c{static_cast<float>(draw.colour.r),static_cast<float>(draw.colour.g),static_cast<float>(draw.colour.b)};
         if (batch_frames_) batch(cube_, draw.model, c, static_cast<float>(draw.roughness), 0, 0, hi, 0);
@@ -347,6 +350,10 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         if (deeper) deeper->target.bind_color(0);
         else if (own) wp.own_out.bind_color(0);
         else wp.shown->bind_color(0);
+        // A view of the room the eye is in, its depth kept: laid in at the
+        // depth of what it shows (so the picture's later passes - its
+        // smoothing over frames above all - take it as far off as it is).
+        const bool deep_view = !deeper && !own && depth == 0 && !in_mirror && wp.shown_far > 0.0f && wp.shown;
         // A picture already developed in its own look is taken back
         // through the tone curve, to come out as it went in.
         if (own) scene_->set("uUntone", 1.0f);
@@ -384,6 +391,19 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         if (in_mirror) scene_->set("uSeenFrom", 0.0f);
         if (undim) scene_->set("uUndim", 0.0f);
         if (own) scene_->set("uUntone", 0.0f);
+        if (deep_view) {
+            // (Kept as the scene's program was given it, to be laid again: lay_deep_views.)
+            DeepView d;
+            for (int i = 0; i < 16; ++i) d.model[i] = last_model_.m[i], d.view_proj[i] = last_view_proj_.m[i], d.frame[i] = 0;
+            for (int i = 0; i < 4; ++i) d.rect[i] = last_rect_[i], d.uv_rect[i] = last_uv_rect_[i];
+            d.viewport[0] = last_viewport_[0], d.viewport[1] = last_viewport_[1];
+            d.layer = 0, d.nudge = last_nudge_;
+            d.clips = std::clamp(clip_count_, 0, 8);
+            for (int i = 0; i < d.clips; ++i)
+                for (int k = 0; k < 4; ++k) d.clip[4 * i + k] = last_clip_[i][k];
+            d.view_near = wp.shown_near, d.view_far = wp.shown_far, d.target = wp.shown;
+            deep_views_.push_back(d);
+        }
         // Stepping through, the eye comes nearer the doorway than the near
         // plane and the quad is cut away. For those last few centimetres
         // (`tunnel` > 0) the same view is drawn again just past the near
@@ -480,9 +500,34 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
     scene_->set("uHalo", static_cast<float>(e.params.num(Key{"halo"}, 0.0)));
     // `flat`: how flat the tube is seen (crt_shape) - 1 face up to it.
     scene_->set("uFlat", static_cast<float>(e.params.num(Key{"flat"}, 0.0)));
+    // `round`: a round tube - its glass the circle inside the panel, as high as it is.
+    scene_->set("uRound", static_cast<float>(std::clamp(e.params.num(Key{"round"}, 0.0), 0.0, 1.0)), static_cast<float>(w / std::max(h, 1e-6f)));
     scene_->set("uTexSize", static_cast<float>(tex_w), static_cast<float>(tex_h));
+    // `uv_x` `uv_y` `uv_w` `uv_h`: only that part of the picture (0..1 of
+    // it, from its left and top) - one page of a spread, a strip of it.
+    static const Key uvx{"uv_x"}, uvy{"uv_y"}, uvw{"uv_w"}, uvh{"uv_h"};
+    // `undim`: what the room dims round (a page held up to read) - not dimmed with it.
+    const bool undims = e.params.num(Key{"undim"}, 0.0) > 0.5;
+    if (undims) scene_->set("uUndim", 1.0f);
+    const bool part = e.params.has(uvw);
+    if (part)
+        scene_->set("uUVRect", static_cast<float>(e.params.num(uvx, 0.0)), static_cast<float>(e.params.num(uvy, 0.0)), static_cast<float>(e.params.num(uvw, 1.0)),
+                    static_cast<float>(e.params.num(uvh, 1.0)));
+    // `curl`: metres one edge of it curls back behind its face - the edge
+    // at its picture's right (`curl_side` 1) or left (0), over `curl_span`
+    // of its width (a page down into a book's gutter), smoothly, its
+    // shading turned as it turns.
+    static const Key curl{"curl"}, curl_side{"curl_side"}, curl_span{"curl_span"};
+    const float curls = static_cast<float>(e.params.num(curl, 0.0));
+    if (curls != 0.0f)
+        scene_->set("uCurl", gl::Vec3{curls, static_cast<float>(e.params.num(curl_side, 1.0)), static_cast<float>(std::clamp(e.params.num(curl_span, 0.2), 0.01, 1.0))});
     if (domed) dome_of(w, h, bulge).draw();
+    else if (curls != 0.0f) curled_.draw();
     else quad_.draw();
+    if (curls != 0.0f) scene_->set("uCurl", gl::Vec3{0.0f, 0.0f, 0.0f});
+    if (part) scene_->set("uUVRect", 0.0f, 0.0f, 0.0f, 0.0f);
+    if (undims) scene_->set("uUndim", 0.0f);
+    scene_->set("uRound", 0.0f, 1.0f);
     scene_->set("uUnlit", 0.0f);
     scene_->set("uTexFlip", 0.0f);
     scene_->set("uUntone", 0.0f);

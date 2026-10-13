@@ -23,6 +23,7 @@ fraction of the light a surface gives back, not a colour picked on a screen
 | `r` `g` `b` | albedo: the fraction of each colour of light it scatters | mesh 0.8 0.5 0.25 (orange), wall 0.52 0.50 0.48 |
 | `roughness` | 0.05 a polished mirror .. 1 chalk (kept to 0.05..1) | mesh 0.6, wall 0.9 |
 | `metal` | 0..1, how metal: 1 reflects in its own colour (`r g b` its tint: gold 1.0 0.78 0.34, copper 0.95 0.64 0.54, iron 0.56 0.57 0.58) and scatters none; 0 a dielectric (paint, stone, wood) reflecting 4% white. Real things are 0 or 1; between is for a dusty or painted-over metal | 0 |
+| `grime` | 0..1, how lived-in: what no tile repeats - paint gone patchy and a little yellow, larger than a tile and never the same twice across the room (noise in the room's frame, on the plane the surface lies in), its roughness going with it; on a wall, the scuffs and dust along the floor. For a room's walls and ceilings, 0.4..0.8; a box's draw (walls, ceilings, floors, blocks) | 0 |
 | `surface` | which procedural surface it is (section 2) | **mesh 3 (crate)**, wall 2 (plaster) |
 | `emissive` | light of its own, added to what it reflects | 0 |
 | `glass` | 0..1, how clear: drawn after the rest of its room, blended over what is behind, more reflective edge on | 0 (opaque) |

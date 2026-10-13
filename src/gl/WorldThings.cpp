@@ -215,6 +215,16 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         scene_->set("uStraddle", 1.0f);
         if (guest_pass_) hung.clips = clip_count_, scene_->set("uClipCount", mirroring_ ? std::min(clip_count_, 1) : 0);
     }
+    // `lit` 0: no light on it - only what it gives itself (a black that
+    // takes no light, a thing seen by its own glow alone).
+    struct Unlit {
+        const gl::Program* p;
+        bool on;
+        ~Unlit() {
+            if (on) p->set("uUnlit", 0.0f);
+        }
+    } unlit{scene_, e.params.num(Key{"lit"}, 1.0) < 0.5};
+    if (unlit.on) scene_->set("uUnlit", 1.0f);
     // Its depth layer, for this draw alone.
     struct Layer {
         const gl::Program* p;
@@ -239,6 +249,20 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         ~Metal() { p->set("uMetal", 0.0f); }
     } metal{scene_};
     scene_->set("uMetal", static_cast<float>(std::clamp(e.params.num(Key{"metal"}, 0.0), 0.0, 1.0)));
+    // `grime`: how lived-in it is (0 as made) - for this draw alone.
+    struct Grime {
+        const gl::Program* p;
+        bool on;
+        ~Grime() { if (on) p->set("uGrime", 0.0f); }
+    } grime{scene_, e.params.num(Key{"grime"}, 0.0) > 0.0};
+    if (grime.on) scene_->set("uGrime", static_cast<float>(std::clamp(e.params.num(Key{"grime"}, 0.0), 0.0, 1.0)));
+    // `bend`: how far it bends, its corners off its middle - for this draw alone.
+    struct Bend {
+        const gl::Program* p;
+        bool on;
+        ~Bend() { if (on) p->set("uBend", 0.0f); }
+    } bend{scene_, e.params.num(Key{"bend"}, 0.0) != 0.0};
+    if (bend.on) scene_->set("uBend", static_cast<float>(e.params.num(Key{"bend"}, 0.0)));
     // A land's water, how deep; a road's lines.
     struct Land {
         GLWorldView* view;

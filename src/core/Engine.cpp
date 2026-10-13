@@ -869,10 +869,34 @@ void Engine::take_inputs() {
     in.swap(inputs_);
     for (auto& kv : in)
         if (State* s = graph_.find(kv.first)) {
+            // (The one on top is crossed by its frame, below: tick.)
+            const Params before = s == top() ? Params{} : s->passage();
             s->hear(std::move(kv.second));
             s->dispatch_pending();
+            if (!before.empty()) cross_within(*s, before);
             heard_from(*s);
         }
+}
+
+void Engine::cross_within(State& s, const Params& before) {
+    for (std::size_t i : graph_.seams_of(s.id())) {
+        const Seam& sm = graph_.seams()[i];
+        if (sm.a != s.id() || sm.b != s.id() || !graph_.admits(sm, Channel::Objects)) continue;
+        for (const bool from_a : {true, false}) {
+            const Key travel = from_a ? sm.a_to_b : sm.b_to_a;
+            for (const Key& boundary : from_a ? sm.boundary_a : sm.boundary_b) {
+                if (!s.passed(before, boundary)) continue;
+                for (std::size_t j : graph_.transitions_carrying(travel)) {
+                    const Transition& t = graph_.transitions()[j];
+                    if (t.kind != TransitionKind::Switch || t.from != s.id() || t.to != s.id()) continue;
+                    if (t.guard && !t.guard(s, Event{t.trigger})) continue;
+                    Params args;
+                    graph_.cross(t, s, &s, Event{t.trigger}, args);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 void Engine::process_transitions() {

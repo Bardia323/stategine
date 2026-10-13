@@ -158,6 +158,8 @@ private:
 
 using render::cube_vertices;
 using render::rounded_box_vertices;
+using render::grid_cube_vertices;
+using render::quad_columns_vertices;
 using render::cylinder_vertices;
 using render::sphere_vertices;
 using render::quad_vertices;

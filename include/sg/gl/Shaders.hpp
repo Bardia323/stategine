@@ -26,7 +26,8 @@ layout(location=3) in mat4 iLocal;
 layout(location=7) in vec4 iMat0;
 layout(location=8) in vec4 iMat1;
 // Its depth layer (x): steps nearer the eye it is drawn, past its size's
-// (`depth_layer`); how metal it is (y).
+// (`depth_layer`); how metal it is (y); how lived-in (z, `grime`); how far
+// it bends (w, `bend`).
 layout(location=9) in vec4 iMat2;
 // Which way the corner's u runs on its surface, and which side its v (w):
 // a model's own normal map is laid along them (gl::Mesh::set_tangents);
@@ -34,11 +35,14 @@ layout(location=9) in vec4 iMat2;
 layout(location=10) in vec4 aTangent;
 out vec4 vTangent;
 uniform float uDepthLayer;
+uniform float uBend;  // metres a box's corners stand off its middle, along its thinnest way (`bend`)
+uniform vec3 uCurl;   // a panel's curl: metres its edge goes back, which edge (1 its picture's right), over how much of it (`curl`)
 uniform int uInstanced;
 uniform mat4 uFrame;
 flat out vec4 vMat0;
 flat out vec4 vMat1;
 flat out float vMetal;
+flat out float vGrime;
 flat out float vInstanced;
 
 uniform mat4 uModel;
@@ -48,6 +52,8 @@ uniform mat4 uModel;
 // tiles fall.
 uniform mat4 uTexModel;
 uniform mat4 uViewProj;
+uniform float uSnap;        // (the lines of the picture corners are put on: 0, none)
+uniform float uSnapAspect;  // (its width over its height)
 uniform float uDepthNudge;  // 1: depth reversed (near 1, far 0, float), the nudge below a share of it; 0: as GL keeps depth
 
 // The half-spaces this room owns: one per doorway, the room's own side of the
@@ -74,27 +80,72 @@ void main() {
     vMat0 = iMat0;
     vMat1 = iMat1;
     vMetal = iMat2.y;
+    vGrime = iMat2.z;
     vInstanced = float(uInstanced);
-    vec4 world = model * vec4(aPos, 1.0);
+    // A box that bends: its thinnest way pushed out, the more the further
+    // from its middle across its face (a bowl, `bend` metres deep at its
+    // corners), and its faces' normals turned as the bowl turns them.
+    vec3 pos = aPos, nrm = aNormal;
+    float bend = uInstanced == 1 ? iMat2.w : uBend;
+    if (bend != 0.0) {
+        vec3 sc = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
+        int k = sc.x <= sc.y && sc.x <= sc.z ? 0 : (sc.y <= sc.z ? 1 : 2);
+        int i = (k + 1) % 3, j = (k + 2) % 3;
+        float u = pos[i] * 2.0, v = pos[j] * 2.0;
+        pos[k] += bend * 0.5 * (u * u + v * v) / max(sc[k], 1e-5);
+        if (abs(nrm[k]) > 0.5) {
+            vec3 w = vec3(0.0);
+            float s = sign(nrm[k]);
+            w[i] = -s * 2.0 * bend * u / max(sc[i], 1e-5);
+            w[j] = -s * 2.0 * bend * v / max(sc[j], 1e-5);
+            w[k] = s;
+            nrm = w;
+        }
+    }
+    // A panel that curls: one edge of it gone back behind its face, the
+    // curve over `span` of its width (its x its face, its z across it).
+    bool curled = uInstanced == 0 && uCurl.x != 0.0;
+    if (curled) {
+        float w = max(length(model[2].xyz), 1e-5);
+        float u = 0.5 - pos.z;                      // 0 at its picture's left .. 1 its right
+        float t = uCurl.y > 0.5 ? u : 1.0 - u;      // 0 at the far edge .. 1 at the edge that curls
+        float span = uCurl.z;
+        float s = clamp((t - (1.0 - span)) / span, 0.0, 1.0);
+        pos.x -= uCurl.x * s * s;
+        // (Its slope across it, in metres: its face turned by as much.)
+        float dt = (uCurl.y > 0.5 ? -1.0 : 1.0) / w;
+        float slope = -2.0 * uCurl.x * s / span * dt;
+        nrm = vec3(1.0, 0.0, -slope);
+    }
+    vec4 world = model * vec4(pos, 1.0);
     vWorld = world.xyz;
-    vRoom = (texModel * vec4(aPos, 1.0)).xyz;
-    vLocal = aPos;
+    vRoom = (texModel * vec4(pos, 1.0)).xyz;
+    vLocal = pos;
     // The mesh's own frame at its own size: materials that belong to a thing
     // (grain, brushing, weave) ride along with it however it is moved.
     vec3 scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
-    vObject = aPos * scale;
-    vObjNormal = aNormal;
+    vObject = pos * scale;
+    vObjNormal = nrm;
     // In the room's frame, as a surface's normal goes when it is scaled.
     vec3 texScale = vec3(length(texModel[0].xyz), length(texModel[1].xyz), length(texModel[2].xyz));
     vTexScale = texScale;
-    vRoomNormal = mat3(texModel) * (aNormal / max(texScale * texScale, vec3(1e-8)));
-    vNormal = normalize(mat3(model) * aNormal);
+    // (A bent face's normal is already the way it faces in the box's own
+    // metres: carried by its turn alone, its size taken back out.)
+    bool metric = bend != 0.0 || curled;
+    vRoomNormal = mat3(texModel) * (metric ? nrm / max(texScale, vec3(1e-8)) : nrm / max(texScale * texScale, vec3(1e-8)));
+    vNormal = normalize(mat3(model) * (metric ? nrm / max(scale, vec3(1e-8)) : nrm));
     vUV = aUV;
     // (Turned over - a model mirrored - its v runs the other side of its u.)
     vTangent = vec4(mat3(model) * aTangent.xyz, aTangent.w * (determinant(mat3(model)) < 0.0 ? -1.0 : 1.0));
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
+    // An older machine's: each corner put on a pixel of a picture uSnap lines
+    // high (0: where it is) - things wobble a little as the eye moves.
+    if (uSnap > 0.0 && gl_Position.w > 1e-4) {
+        vec2 grid = vec2(uSnap * uSnapAspect, uSnap) * 0.5;
+        gl_Position.xy = floor(gl_Position.xy / gl_Position.w * grid + 0.5) / grid * gl_Position.w;
+    }
     // No two surfaces fight. Where two coincide (a lining in a wall's face,
     // a plate on a floor) their depths differ only by rounding, a step or
     // two of the depth buffer, whatever the distance - so each thing is drawn
@@ -189,6 +240,10 @@ const char* air_glsl();
 const char* exposure_meter_fs();
 
 const char* scene_fs();
+// A doorway's view laid again, depth only: each pixel as far off as what the
+// view shows there - its depth read from the view (uViewDepth, drawn between
+// uViewNF's near and far), put into the room's range (uDrawNF).
+const char* deep_view_fs();
 
 // Depth-only pass for the shadow map.
 inline const char* depth_vs() {

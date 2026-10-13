@@ -11,13 +11,28 @@ void GLWorldView::run_taa() {
     for (gl::RenderTarget& t : taa_history_)
         if (!t.valid() || t.width() != w || t.height() != h) t.create(w, h, gl::GL_RGBA16F, 0, false), fresh = true;
     // How the view moved since the last frame - in one world; carried across
-    // a doorway, the picture goes on as it stood. A jump (put somewhere else)
-    // starts again.
+    // a doorway into a room drawn in both frames (one space: a room beside
+    // it), by where that room stood in each - so what was seen is brought
+    // over to where it is now, not left where it was on the screen. Into a
+    // room not drawn with the last (a view, not a space), it starts again, as
+    // it does after a jump (put somewhere else).
     gl::Mat4 reproject = gl::Mat4::identity();
     if (taa_world_ == taa_last_world_) {
         const gl::Vec3 d = taa_eye_ - taa_last_eye_;
         if (gl::dot(d, d) > 4.0f) fresh = true;
         reproject = taa_last_vp_ * taa_vp_.inverse();
+    } else {
+        // (A room in both frames: from this frame to its own, and on to the last's.)
+        bool carried = false;
+        for (const auto& [room, now] : taa_rooms_)
+            for (const auto& [was_room, was] : taa_last_rooms_)
+                if (!carried && room == was_room && room == taa_last_world_) {
+                    reproject = taa_last_vp_ * was * now.inverse() * taa_vp_.inverse();
+                    carried = true;
+                }
+        // Not drawn with the last: what was seen cannot be put where it is
+        // now, and left as it stood it would ghost over the room come into.
+        if (!carried) fresh = true;
     }
     gl::RenderTarget& out = taa_history_[1 - taa_front_];
     gl::glDisable(gl::GL_DEPTH_TEST);
@@ -44,6 +59,7 @@ void GLWorldView::run_taa() {
     scene_src_ = &out;
     taa_last_vp_ = taa_vp_;
     taa_last_world_ = taa_world_;
+    taa_last_rooms_ = taa_rooms_;
     taa_last_eye_ = taa_eye_;
 }
 
@@ -222,6 +238,8 @@ void GLWorldView::meter_exposure() {
     meter_prog_->use();
     meter_prog_->set("uScene", 0);
     meter_prog_->set("uCell", 1.0f / kMeterW, 1.0f / kMeterH);
+    meter_prog_->set("uSpot", static_cast<float>(std::max(0.02, setting(post_, passes::scene, "exposure.spot", 0.2))));
+    meter_prog_->set("uEdge", static_cast<float>(std::max(0.0, setting(post_, passes::scene, "exposure.edge", 0.25))));
     scene_src_->bind_color(0);
     screen_.draw();
     x.meter.mipmap();  // (leaves the meter's picture bound to unit 0)

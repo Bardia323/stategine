@@ -15,9 +15,9 @@
 namespace sg::render {
 
 bool GLWorldView::instanceable(const Element& e) const {
-    static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"};
+    static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"}, lit{"lit"};
     if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(splat) ||
-        e.params.num(lines, 0.0) > 0.5)
+        e.params.num(lines, 0.0) > 0.5 || e.params.num(lit, 1.0) < 0.5)
         return false;
     const auto skin = bound_surfaces().find(e.id);
     if (skin != bound_surfaces().end() && skin->second.surface) return false;
@@ -425,7 +425,8 @@ void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
         std::copy(mat, mat + 8, p.record.begin() + 16);
         p.record[24] = static_cast<float>(e.params.num(Key{"depth_layer"}, 0.0));
         p.record[25] = static_cast<float>(std::clamp(e.params.num(Key{"metal"}, 0.0), 0.0, 1.0));  // how metal (iMat2.y)
-        p.record[26] = p.record[27] = 0.0f;
+        p.record[26] = static_cast<float>(std::clamp(e.params.num(Key{"grime"}, 0.0), 0.0, 1.0));  // how lived-in (iMat2.z)
+        p.record[27] = static_cast<float>(e.params.num(Key{"bend"}, 0.0));  // how far it bends (iMat2.w)
         p.recorded = true;
     }
     b.data.insert(b.data.end(), p.record.begin(), p.record.end());
@@ -464,7 +465,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
     for (Batch& b : batches_) {
         if (b.data.empty()) continue;
         if (scene) {
-            if (b.mesh == &cube_) gl::glEnable(gl::GL_CULL_FACE), gl::glCullFace(gl::GL_BACK);
+            if (b.mesh == &cube_ || b.mesh == &bent_) gl::glEnable(gl::GL_CULL_FACE), gl::glCullFace(gl::GL_BACK);
             else gl::glDisable(gl::GL_CULL_FACE);
         }
         if (!any) {

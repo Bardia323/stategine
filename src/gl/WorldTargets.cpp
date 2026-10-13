@@ -21,6 +21,8 @@ void GLWorldView::ensure_resources() {
     if (!cut_caster_) std::fprintf(stderr, "! the caster for things cut out of their pictures does not build: %s\n", cut_error.c_str());
     preparing_ = was;
     cube_.create(gl::cube_vertices());
+    bent_.create(gl::grid_cube_vertices(14));
+    curled_.create(gl::quad_columns_vertices(48));
     cylinder_.create(gl::cylinder_vertices());
     sphere_.create(gl::sphere_vertices());
     quad_.create(gl::quad_vertices());
@@ -194,7 +196,9 @@ gl::RenderTarget& GLWorldView::scene_ms() {
 }
 
 void GLWorldView::make_root_view(RootView& v, int w, int h) {
-    v.target.create(w, h, gl::GL_RGBA16F, 0, false);
+    // (With its depth, as a texture: laid in the room, the view says how far
+    // off what it shows is - so what reads the room's depth reads it there.)
+    v.target.create(w, h, gl::GL_RGBA16F, 0, true, true);
     v.target.bind();
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 }
@@ -205,6 +209,12 @@ void GLWorldView::sample_screen(const Rect& r, float fx, float fy) const {
     scene_->set("uScreenRect", (r.x0 - sub_.x0) / w, (r.y0 - sub_.y0) / h, (r.x1 - sub_.x0) / w, (r.y1 - sub_.y0) / h);
     scene_->set("uViewport", vp_w_, vp_h_);
     if (fx < 1.0f || fy < 1.0f) scene_->set("uUVRect", 0.0f, 0.0f, fx, fy);
+    // (Kept as given: lay_deep_views lays the same again.)
+    auto& self = const_cast<GLWorldView&>(*this);
+    self.last_rect_[0] = (r.x0 - sub_.x0) / w, self.last_rect_[1] = (r.y0 - sub_.y0) / h, self.last_rect_[2] = (r.x1 - sub_.x0) / w, self.last_rect_[3] = (r.y1 - sub_.y0) / h;
+    self.last_viewport_[0] = vp_w_, self.last_viewport_[1] = vp_h_;
+    if (fx < 1.0f || fy < 1.0f) self.last_uv_rect_[0] = 0, self.last_uv_rect_[1] = 0, self.last_uv_rect_[2] = fx, self.last_uv_rect_[3] = fy;
+    else self.last_uv_rect_[0] = self.last_uv_rect_[1] = self.last_uv_rect_[2] = self.last_uv_rect_[3] = 0;
 }
 
 bool GLWorldView::scissor_to(const Rect& r, int w, int h) {

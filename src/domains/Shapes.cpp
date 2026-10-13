@@ -256,9 +256,13 @@ std::vector<float> fit(std::vector<float> v, Vec3d& size, const Vec3d& within_lo
         v[i] = static_cast<float>((v[i] - (lo[0] + hi[0]) * 0.5) / s[0]);
         v[i + 1] = static_cast<float>((v[i + 1] - lo[1]) / s[1] - 0.5);
         v[i + 2] = static_cast<float>((v[i + 2] - (lo[2] + hi[2]) * 0.5) / s[2]);
-        // Stretched by s again, a normal n comes out as s n; what is wanted
-        // is n / s: so it is kept as n / s^2.
-        const Vec3d n = unit({v[i + 3] / (s[0] * s[0]), v[i + 4] / (s[1] * s[1]), v[i + 5] / (s[2] * s[2])});
+        // Drawn, the box is stretched by s again and its normals with it
+        // (the scene's vertex stage turns a normal by the model, as it turns
+        // a point): a normal kept as n / s comes out as n, the way the
+        // surface faces at its own size - as render::Geometry keeps a box's.
+        // (Kept as n / s^2, it came out as n / s: a flat thing's curves all
+        // but level, a tall thing's all but upright.)
+        const Vec3d n = unit({v[i + 3] / s[0], v[i + 4] / s[1], v[i + 5] / s[2]});
         v[i + 3] = static_cast<float>(n.x), v[i + 4] = static_cast<float>(n.y), v[i + 5] = static_cast<float>(n.z);
     }
     return v;

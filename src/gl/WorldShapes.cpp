@@ -253,6 +253,15 @@ bool GLWorldView::is_doorway(const State& host,const Element& e) const {
 }
 
 const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
+    // A box that bends (`bend`: metres its corners stand off its middle,
+    // along its thinnest way - a sheet held, sagging): the cube cut finer,
+    // its faces curved by the scene's vertex stage.
+    static const Key bend{"bend"};
+    const gl::Mesh& m = shape_plain(st, e);
+    return &m == &cube_ && e.params.num(bend, 0.0) != 0.0 ? bent_ : m;
+}
+
+const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) const {
     if (e.kind != kinds::mesh) return cube_;
     // Asked every frame, in every pass, of every thing: remembered while
     // the thing's parameters, or what its mesh is made of, hold.
@@ -416,7 +425,8 @@ bool GLWorldView::has_walls(const State& st) {
 }
 
 void GLWorldView::set_model(const RoomMatrix& local) {
-    scene_->set("uModel", frame_matrix_ * local.m);
+    last_model_ = frame_matrix_ * local.m;
+    scene_->set("uModel", last_model_);
     scene_->set("uTexModel", local.m);
 }
 

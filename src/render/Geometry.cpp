@@ -113,6 +113,51 @@ std::vector<float> cube_vertices() {
     return v;
 }
 
+std::vector<float> grid_cube_vertices(int n) {
+    const float nm[6][3] = {{0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
+    std::vector<float> v;
+    v.reserve(static_cast<std::size_t>(6 * n * n * 6 * 8));
+    // A face from its corners a, b, c, d (as cube_vertices lays them), cut
+    // into n x n quads, each corner at its place between them.
+    auto face = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, const float* nrm) {
+        const auto at = [&](float s, float t) {
+            const Vec3 ab{a.x + (b.x - a.x) * s, a.y + (b.y - a.y) * s, a.z + (b.z - a.z) * s};
+            const Vec3 dc{d.x + (c.x - d.x) * s, d.y + (c.y - d.y) * s, d.z + (c.z - d.z) * s};
+            return Vec3{ab.x + (dc.x - ab.x) * t, ab.y + (dc.y - ab.y) * t, ab.z + (dc.z - ab.z) * t};
+        };
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const float s0 = static_cast<float>(i) / n, s1 = static_cast<float>(i + 1) / n;
+                const float t0 = static_cast<float>(j) / n, t1 = static_cast<float>(j + 1) / n;
+                const float st[6][2] = {{s0, t0}, {s1, t0}, {s1, t1}, {s0, t0}, {s1, t1}, {s0, t1}};
+                for (const auto& q : st) {
+                    const Vec3 p = at(q[0], q[1]);
+                    v.insert(v.end(), {p.x, p.y, p.z, nrm[0], nrm[1], nrm[2], q[0], q[1]});
+                }
+            }
+    };
+    const float h = 0.5f;
+    face({-h, -h, h}, {h, -h, h}, {h, h, h}, {-h, h, h}, nm[0]);
+    face({h, -h, -h}, {-h, -h, -h}, {-h, h, -h}, {h, h, -h}, nm[1]);
+    face({h, -h, h}, {h, -h, -h}, {h, h, -h}, {h, h, h}, nm[2]);
+    face({-h, -h, -h}, {-h, -h, h}, {-h, h, h}, {-h, h, -h}, nm[3]);
+    face({-h, h, h}, {h, h, h}, {h, h, -h}, {-h, h, -h}, nm[4]);
+    face({-h, -h, -h}, {h, -h, -h}, {h, -h, h}, {-h, -h, h}, nm[5]);
+    return v;
+}
+
+std::vector<float> quad_columns_vertices(int n) {
+    std::vector<float> v;
+    const float h = 0.5f;
+    for (int i = 0; i < n; ++i) {
+        const float u0 = static_cast<float>(i) / n, u1 = static_cast<float>(i + 1) / n;
+        const float z0 = h - u0, z1 = h - u1;
+        const float c[6][4] = {{-h, z0, u0, 1}, {-h, z1, u1, 1}, {h, z1, u1, 0}, {-h, z0, u0, 1}, {h, z1, u1, 0}, {h, z0, u0, 0}};
+        for (const auto& q : c) v.insert(v.end(), {0.0f, q[0], q[1], 1.0f, 0.0f, 0.0f, q[2], q[3]});
+    }
+    return v;
+}
+
 std::vector<float> rounded_box_vertices(float sx, float sy, float sz, float r, float taper, int seg) {
     const float hx = sx * 0.5f, hy = sy * 0.5f, hz = sz * 0.5f;
     r = std::max(0.0f, std::min(r, std::min({hx, hy, hz}) * 0.95f));

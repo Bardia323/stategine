@@ -20,7 +20,14 @@
 // `feed_h`, 640 x 480 unless it says; `live` = 0 holds the picture; `untone`
 // = 0 shows it as paint, colour lit by the room, not as light; `lit` = 0
 // takes no light of the room; `add` = 1 is light added over what is behind
-// it - words in the air, its black nothing; `unseen` = 1 is in no picture). What is
+// it - words in the air, its black nothing; `unseen` = 1 is in no picture;
+// `uv_x` `uv_y` `uv_w` `uv_h` show only that part of a surface's picture,
+// 0..1 of it from its left and top - a page of a spread; `curl` metres
+// one edge of it goes back behind its face, `curl_side` 1 its picture's
+// right edge (0 its left), over `curl_span` of its width - a page curving
+// down into a book's gutter; `undim` 1, not dimmed with the room round it
+// - a look's `uDim`, a screen leaned in to, or `uDimNear`, a page held up
+// to read). What is
 // shown is what the graph declares, and only that. The portal may belong to
 // a state that is not drawn - a deck, whose output is what it plays - and a
 // panel in a room shows it by `shows` = that embedding's name: a set cabled
@@ -155,7 +162,7 @@ using GLQuality = Quality;
 
 class GLWorldView {
 public:
-    static constexpr std::size_t kMaxLights = 24;   // matches the scene shader: lamps one draw is lit by
+    static constexpr std::size_t kMaxLights = 32;   // matches the scene shader: lamps one draw is lit by
     static constexpr std::size_t kAllLights = 64;   // lamps a frame keeps, over every room it draws
     static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
     static constexpr std::size_t kShadowLights = 10;  // lights with maps, and suns' close-up maps: a lamp with no cone counts once for its six layers
@@ -221,7 +228,8 @@ public:
     // The eye's exposure. A look whose scene pass says `exposure.auto` = 1
     // has the eye adjust to what it sees: the scene's light, measured each
     // frame (the log of its brightness, the middle of the view counting
-    // most), is brought to `exposure.key` (0.18, mid-grey), opened or closed
+    // most: `exposure.spot` how wide that middle is, 0.2 of the view;
+    // `exposure.edge` how much the rest counts beside it, 0.25), is brought to `exposure.key` (0.18, mid-grey), opened or closed
     // by no more than `exposure.min` .. `exposure.max` stops (-8 .. 8), at
     // `exposure.rate` stops a second (1.5) of the interval handed in - the
     // look's own `uExposure` laid on top, as a bias. A look that says none
@@ -472,6 +480,7 @@ private:
         WorldPortal* shared = nullptr;  // this frame, showing another screen's view
         uint64_t drawn = 0;       // the frame its view was last drawn
         const gl::RenderTarget* shown = nullptr;  // that frame's picture of it (a view of the frame's own)
+        float shown_near = 0, shown_far = 0;      // and the depth it was drawn with (its near and far): 0, none kept
         int width = 0, height = 0;
         // Where on the screen that picture was drawn, and how much of its
         // target it fills (a ball onto a world is drawn only where it is).
@@ -877,6 +886,7 @@ private:
     // have `taper`: the top that fraction of the bottom's width (a lamp's
     // shade, the back of a tube). Those are made once for each size and kept.
     const gl::Mesh& shape_of(const State& st, const Element& e) const;
+    const gl::Mesh& shape_plain(const State& st, const Element& e) const;
     const gl::Mesh& find_shape(const State& st, const Element& e) const;
 
     // Boxes sit on the floor: y is the base, not the centre. The pose comes from
@@ -890,6 +900,8 @@ private:
     // turns it in its own plane (a photo pinned crooked). Doorways ignore both;
     // they are hinged on the vertical, like the walk through them.
     static gl::Mat4 panel_turn(const Pose& pose, const Element& e);
+    // A placement as a matrix (what set_frame puts the frame to).
+    static gl::Mat4 frame_of(const Pose& p);
 
     // The way a panel's face points: its heading, raised by its pitch.
     static gl::Vec3 panel_normal(const Pose& pose, const Element& e);
@@ -1234,6 +1246,9 @@ private:
     double fixed_step_ = 0.0;
 
     gl::Mesh cube_, quad_, cylinder_, sphere_;
+    // The cube cut finer, for a box that bends (`bend`); a panel's quad cut
+    // into columns, for one that curls (`curl`).
+    gl::Mesh bent_, curled_;
     // A tube's face, domed (a crt panel's `bulge`, metres): the panel's quad
     // as a grid lifted to a dome at its size, made once a size.
     std::map<std::tuple<int, int, int>, gl::Mesh> domes_;
@@ -1496,6 +1511,10 @@ private:
     float jitter_x_ = 0.0f, jitter_y_ = 0.0f;
     gl::Mat4 taa_vp_ = gl::Mat4::identity(), taa_last_vp_ = gl::Mat4::identity();
     const void* taa_world_ = nullptr;
+    // Where each room drawn this frame and the last stood (the frame each was
+    // drawn in): crossed into the next room, the picture of the last is
+    // brought over by where that room stands in this one's frame.
+    std::vector<std::pair<const void*, gl::Mat4>> taa_rooms_, taa_last_rooms_;
     const void* taa_last_world_ = nullptr;
     gl::Vec3 taa_eye_{0, 0, 0}, taa_last_eye_{0, 0, 0};
     std::unique_ptr<gl::Program> taa_prog_;
@@ -1817,6 +1836,26 @@ private:
         std::string parent;  // the view it is seen in (its path, or a mirror's view's)
     };
     std::vector<ViewJob> jobs_;  // this frame's views through doorways seen through doorways
+    // The near and far of the world last set out to be drawn (draw_world):
+    // a doorway's view keeps its own, the room it is laid in has these.
+    float drawn_near_ = 0, drawn_far_ = 0;
+    // The doorways' views laid in the room the eye is in this frame, with
+    // their depths: each quad drawn again after the room, depth only, where
+    // it was drawn (as the scene's own vertex stage put it), at the depth of
+    // what it shows - for the passes after (smoothing over frames, air, focus).
+    struct DeepView {
+        float model[16], view_proj[16], frame[16], clip[32], rect[4], uv_rect[4], viewport[2];
+        int clips = 0;
+        float layer = 0, nudge = 0, view_near = 0, view_far = 0;
+        const gl::RenderTarget* target = nullptr;
+    };
+    std::vector<DeepView> deep_views_;
+    // What the scene's program was last given, kept here as it is given (read
+    // back from the card, it would stop the frame to wait for it).
+    gl::Mat4 last_model_ = gl::Mat4::identity(), last_view_proj_ = gl::Mat4::identity();
+    float last_nudge_ = 0, last_clip_[8][4] = {}, last_rect_[4] = {0, 0, 1, 1}, last_uv_rect_[4] = {0, 0, 0, 0}, last_viewport_[2] = {1, 1};
+    std::unique_ptr<gl::Program> deep_prog_;
+    void lay_deep_views();
     std::string path_;          // the way the eye came, while a view through doorways is drawn
     uint64_t frame_count_ = 0;
     struct GluedRound {
