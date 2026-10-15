@@ -411,10 +411,40 @@ GLWorldView& GLWorldView::own_view_of(const Spatial3D* world) {
     return *v;
 }
 
+bool GLWorldView::share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h) {
+    const Vec3d at = position_of(eye);
+    const double yaw = eye.params.num(keys::yaw), pitch = eye.params.num(keys::pitch);
+    for (auto& [id, other] : worlds_) {
+        if (&other == &wp || !other.own_drawn || other.world != wp.world || other.own_pic != &other.own_out || !other.own_out.valid()) continue;
+        if (other.own_out.width() != fb_w || other.own_out.height() != fb_h) continue;
+        const Vec3d d = at - other.own_at;
+        if (d.x * d.x + d.y * d.y + d.z * d.z > 1e-8 || std::fabs(std::remainder(yaw - other.own_yaw, 6.283185307179586)) > 1e-6 ||
+            std::fabs(pitch - other.own_pitch) > 1e-6)
+            continue;
+        wp.own_pic = &other.own_out;
+        return true;
+    }
+    return false;
+}
+
 void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h) {
     wp.own = &own_view_of(wp.world);
     if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
-        wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false);
+        wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false), wp.own_key = 0;
+    // (Held: nothing in it changed - its world's data, the eye, the size -
+    // since it was last drawn: the same picture would be drawn again.)
+    uint64_t key = 1469598103934665603ULL;
+    const auto mix = [&key](uint64_t v) { key = (key ^ v) * 1099511628211ULL; };
+    mix(wp.world->data_version());
+    for (double v : {position_of(eye).x, position_of(eye).y, position_of(eye).z, eye.params.num(keys::yaw), eye.params.num(keys::pitch), eye.params.num(keys::roll),
+                     eye.params.num(keys::fov, 60.0), double(fb_w), double(fb_h)})
+        mix(static_cast<uint64_t>(std::llround(v * 1e5)));
+    if (key == wp.own_key && wp.own_out.valid() && wp.own_key != 0) {
+        wp.own_pic = &wp.own_out;
+        wp.own_at = position_of(eye), wp.own_yaw = eye.params.num(keys::yaw), wp.own_pitch = eye.params.num(keys::pitch);
+        return;
+    }
+    wp.own_key = key;
     wp.own->graph_ = graph_;
     wp.own->root_ = root_ ? root_ : this;
     wp.own->output_ = &wp.own_out;
@@ -435,6 +465,8 @@ void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal
     // (Moved as this view is: it is shown at the screen's pixels.)
     wp.own->jitter_x_ = jitter_x_, wp.own->jitter_y_ = jitter_y_;
     wp.own->render(*wp.world, fb_w, fb_h);
+    wp.own_pic = &wp.own_out;
+    wp.own_at = position_of(eye), wp.own_yaw = eye.params.num(keys::yaw), wp.own_pitch = eye.params.num(keys::pitch);
     if (lend) wp.own->trade_scratch(*this);
     wp.own->lent_scene_ = nullptr;
     wp.own->own_clips_.clear();
@@ -734,7 +766,7 @@ void main() {
     jobs_.clear();
     mirror_plans_.clear();
     // (Drawn in its own look this frame, or not: said again as it is planned.)
-    for (auto& [id, wp] : worlds_) wp.own_drawn = false;
+    for (auto& [id, wp] : worlds_) wp.own_drawn = false, wp.own_pic = nullptr;
     // The eye's own mirrors, and what is seen through their doorways.
     plan_mirrors(world, eye_of(world), aspect, 1, std::string(), Rect{-1, -1, 1, 1}, 0);
     // The doorways of each room seen from the eye: its own, and those of the
@@ -844,7 +876,9 @@ void main() {
             // composite too - from the carried eye, at the size of the
             // screen: what is seen through the doorway is what will be
             // seen once through it, pixel for pixel.
-            draw_own(world, e, wp, eye, fb_w, fb_h);
+            // (The next doorway onto the same world from the same eye shows
+            // the same picture: drawn once.)
+            if (!share_own(wp, eye, fb_w, fb_h)) draw_own(world, e, wp, eye, fb_w, fb_h);
             wp.own_drawn = true;
             own_shown_now_.push_back(wp.world);
             ++times_.portal_views;

@@ -31,8 +31,8 @@
 //              intentions (`play`, `reach`, `turn`) by the graph.
 //
 // Its own clock: the spirit runs at `tempo` = `scale` ^ -`tempo_exp` of the
-// time its line is given - a small creature lives faster than a large one -
-// and how long it has lived, by its own measure, is `age`.
+// time its line is given - a small creature lives faster than a large one.
+// (How long it has lived is its line's: no sum of its steps is kept beside it.)
 //
 // The spirit's arrow is a function of the being's params and the step's dt,
 // as the laws require: clips are text it reads (memoised on the text), layers
@@ -85,6 +85,7 @@ public:
     Key scale_event() const { return Key{id().str() + ".scale"}; }  // {scale}
     Key steer_event() const { return Key{id().str() + ".steer"}; }  // {blend, x, y}: where in a blend, eased there
     Key lead_event() const { return Key{id().str() + ".lead"}; }    // {weight=1, fade=0.3}: how far it follows what leads it
+    Key follow_event() const { return Key{id().str() + ".follow"}; }  // {weight=1, fade=0.3}: how far it takes another's motion for its own (retarget own)
 
     // --- what it is made of (before it starts) ------------------------------------
     // A joint riding `parent` (empty: the root) at `offset`, at rest turned by
@@ -232,7 +233,12 @@ std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to)
 // size. Two bodies of one skeleton but other sizes, bone axes or rest poses
 // dance one dance. `to` follows as far as it gives itself (`lead`); one
 // source may lead many. Returns the functor's name.
-Key retarget(StateGraph& g, const Being& from, const Being& to, Key name = {});
+//
+// `own`: carried as its own motion instead (`follow_*`, followed by
+// `follow`), as a clip's is - what it means to do: a ragdoll's muscles aim
+// for it, and a knock (`lead`) still moves it from outside. A body with no
+// clips of its own, given another's.
+Key retarget(StateGraph& g, const Being& from, const Being& to, Key name = {}, bool own = false);
 
 // Which keys of a track can go: `values` is `width` numbers a key - a turn
 // (4: w x y z, slerped) or a place (3, straight between) - at `times`. A key

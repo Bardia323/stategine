@@ -69,7 +69,7 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
         // seen: what is seen of it from the corridor is what is seen once
         // in the room, and stepping in changes nothing in it.
         if (e.params.num(Key{"own_look"}, 0.0) > 0.5 && !root_ && !in_mirror) {
-            draw_own(world, e, it->second, there, target_w_, target_h_);
+            if (!share_own(it->second, there, target_w_, target_h_)) draw_own(world, e, it->second, there, target_w_, target_h_);
             it->second.own_drawn = true;
             own_shown_now_.push_back(it->second.world);
             ++times_.portal_views;
@@ -325,7 +325,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // In a mirror: the picture drawn through it this frame, where the eye
         // the mirror is seen from sees each point of it.
         const bool in_mirror = mirroring_eye_ && fresh && !deeper;
-        const bool own_ready = wp.own_drawn && wp.own_out.valid();
+        const bool own_ready = wp.own_drawn && wp.own_pic && wp.own_pic->valid();
         if (!in_mirror && ((depth > 0 && !deeper && !own_ready) || (depth == 0 && !fresh && !own_ready))) {
             const Mix far = mix(wp.world->id(), look_of(*wp.world));
             set_model(room_local(gl::Mat4::translate(pos + n * inset) * turned * gl::Mat4::scale({1.0f, h, w})));
@@ -346,9 +346,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // of it, or (`crop_a0..a1` along it, `crop_b0..b1` up it, each 0
         // to 1) only that part of it open: the rest of the doorway is
         // there, glued and carrying, but not yet a hole.
-        const bool own = !deeper && wp.own_drawn && wp.own_out.valid();
+        const bool own = !deeper && wp.own_drawn && wp.own_pic && wp.own_pic->valid();
         if (deeper) deeper->target.bind_color(0);
-        else if (own) wp.own_out.bind_color(0);
+        else if (own) wp.own_pic->bind_color(0);
         else wp.shown->bind_color(0);
         // A view of the room the eye is in, its depth kept: laid in at the
         // depth of what it shows (so the picture's later passes - its

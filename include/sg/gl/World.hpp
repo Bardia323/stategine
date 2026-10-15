@@ -498,7 +498,21 @@ private:
         GLWorldView* own = nullptr;  // (own_views_'s, for its world)
         gl::RenderTarget own_out;
         bool own_drawn = false;
+        // The picture it shows this frame: its own, or another doorway's onto
+        // the same world from the same eye (windows side by side onto one
+        // sky: drawn once, shown by each - share_own), and the eye it was
+        // drawn from.
+        const gl::RenderTarget* own_pic = nullptr;
+        Vec3d own_at;
+        double own_yaw = 0, own_pitch = 0;
+        // What its picture was last drawn of (the world as it was, the eye,
+        // the screen's size): drawn again only when that
+        // changes - a still sky through a window is not drawn every frame.
+        uint64_t own_key = 0;
     };
+    // `wp` given the picture another doorway drew this frame of its world in
+    // its own look from the same eye, if one did (and so not drawn again).
+    bool share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h);
     // A ball window's reflection of `world` round it, kept up to date.
     void capture_glass(const Spatial3D& world, const Element& e, WorldPortal& wp);
 

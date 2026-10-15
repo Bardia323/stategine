@@ -106,7 +106,8 @@ int main() {
         sg::Engine e(g);
         e.start();
         for (int i = 0; i < 60; ++i) e.tick(1.0 / 60);
-        const double ab = big.element(sg::Being::self_id()).params.num("age"), as = small.element(sg::Being::self_id()).params.num("age");
+        // (By its own measure: its line's time, at its tempo.)
+        const double ab = clock.time(sg::Key{"big"}) * big.tempo(), as = clock.time(sg::Key{"small"}) * small.tempo();
         check(std::fabs(ab - 1.0) < 1e-6 && std::fabs(as - 2.0) < 1e-6, "its own clock: in a second, the big one lives 1 s, the half-sized one 2 s");
     }
     {
@@ -442,6 +443,47 @@ int main() {
         for (int i = 0; i < 90; ++i) e.tick(1.0 / 60);
         const sg::Vec3d rest = dir(b, "Arm", "Hand");
         check(rest.y < -0.99 && std::fabs(b.pose_of("hips").position.y - 0.6) < 1e-3, "let go, it stands as it was made again");
+    }
+    {
+        // Taken for its own: the same dance carried as what the kid means to
+        // do (follow), not as something leading it - its meant pose is the
+        // dance (what a ragdoll's muscles aim for), and a lead is still free.
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& a = g.add<sg::Being>(sg::Key{"dancer"});
+        a.joint("hips", "", {0, 1.0, 0});
+        a.joint("Arm", "hips", {0, 0.5, 0});
+        a.joint("Hand", "Arm", {0, -0.5, 0});
+        a.clip("reach", "0 Arm 30 80 0\n1 Arm 30 80 0\n0 hips p 0.2 0.9 0\n1 hips p 0.2 0.9 0");
+        auto& b = g.add<sg::Being>(sg::Key{"kid"});
+        b.joint("hips", "", {0, 0.6, 0});
+        b.joint("Arm", "hips", {0, 0.3, 0});
+        b.joint("Hand", "Arm", {0, -0.3, 0});
+        sg::retarget(g, a, b, {}, true);
+        sg::drive(g, clock, "dancer", a.live_event());
+        sg::drive(g, clock, "kid", b.live_event(), false, sg::Keeps::Always);
+        g.set_initial("dancer");
+        a.hear(sg::Event{a.play_event(), sg::Params{}.set("clip", std::string("reach")).set("fade", 0.0)});
+        a.dispatch_pending();
+        b.hear(sg::Event{b.follow_event(), sg::Params{}.set("weight", 1.0).set("fade", 0.0)});
+        b.dispatch_pending();
+        const sg::LawReport r = sg::verify(g);
+        for (const auto& v : r.violations) std::printf("     %s: %s\n", v.where.c_str(), v.detail.c_str());
+        sg::Engine e(g);
+        e.set_strict(true);
+        e.start();
+        for (int i = 0; i < 60; ++i) e.tick(1.0 / 60);
+        const auto hand_dir = [](const sg::Being& s) {
+            const sg::Vec3d d = s.pose_of(sg::Key{"Hand"}).position - s.pose_of(sg::Key{"Arm"}).position;
+            return d * (1.0 / std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z));
+        };
+        const sg::Vec3d da = hand_dir(a), db = hand_dir(b);
+        const double off = std::acos(std::min(1.0, da.x * db.x + da.y * db.y + da.z * db.z)) * 180 / 3.14159265;
+        const sg::Element& arm = b.element(sg::Key{"Arm"});
+        const sg::Vec3d meant{arm.params.num("ax"), arm.params.num("ay"), arm.params.num("az")};
+        check(r.ok() && off < 1.0 && b.faults().empty() && std::fabs(b.pose_of("hips").position.y - 0.54) < 0.01 &&
+                  std::fabs(meant.y - b.pose_of(sg::Key{"Arm"}).position.y) < 1e-6 && b.element(sg::Being::self_id()).params.num("lead") == 0.0,
+              "followed, the dance is its own: what it means to do, nothing leading it (" + std::to_string(off) + " degrees off)");
     }
     {
         // A blend: two clips played together by how near a point is to each,

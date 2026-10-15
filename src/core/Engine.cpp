@@ -381,8 +381,12 @@ void Engine::keep_time(const Tick& t) {
         if (d->keeps == Keeps::WhileShown && !shown(s->id())) continue;
         stepped_.insert(s);
         if (!take_early(*s)) {
+            // (Moved by its own time - not by an input - it crosses a seam of
+            // its own as an input would cross it: take_inputs.)
+            const Params before = s->passage();
             drive(*s, t.dt);
             step(*s, t);
+            if (!before.empty()) cross_within(*s, before);
         }
         step_embeddings_in(*s, t);  // and what is open in it, as anywhere
         carry_to_hosts(*s);

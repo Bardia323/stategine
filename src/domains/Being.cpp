@@ -87,7 +87,7 @@ Turn4 turn4(const char* p) {
     return {p, Key{s + "w"}, Key{s + "x"}, Key{s + "y"}, Key{s + "z"}};
 }
 const Turn4& names_of(const char* p) {
-    static const Turn4 known[] = {turn4("q"), turn4("rest_q"), turn4("h"), turn4("lead_q"), turn4("bq"), turn4("aq"), turn4("pq")};
+    static const Turn4 known[] = {turn4("q"), turn4("rest_q"), turn4("h"), turn4("lead_q"), turn4("follow_q"), turn4("bq"), turn4("aq"), turn4("pq")};
     for (const Turn4& t : known)
         if (std::strcmp(t.p, p) == 0) return t;
     thread_local Turn4 other;
@@ -186,10 +186,12 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     add_element(self_id(), Key{"being"})
         .params.set("scale", scale)
         .set("tempo_exp", 1.0)
-        .set("age", 0.0)
         .set("lead", 0.0)
         .set("lead_to", 0.0)
         .set("lead_fade", 0.3)
+        .set("follow", 0.0)
+        .set("follow_to", 0.0)
+        .set("follow_fade", 0.3)
         .set("lived", 0.0);
     for (int i = 0; i < kLayers; ++i)
         add_element(layer_key(i), kLayer)
@@ -277,6 +279,10 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     loop(Key{"lead"}, self_id(), lead_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("lead_to", std::clamp(ev.args.num("weight", 1.0), 0.0, 1.0)).set("lead_fade", ev.args.num("fade", 0.3));
     });
+    //   self --follow--> self: how much it takes another's motion for its own.
+    loop(Key{"follow"}, self_id(), follow_event(), [](State&, Element& self, Element*, const Event& ev) {
+        self.params.set("follow_to", std::clamp(ev.args.num("weight", 1.0), 0.0, 1.0)).set("follow_fade", ev.args.num("fade", 0.3));
+    });
     loop(Key{"scale"}, self_id(), scale_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("scale", std::max(1e-3, ev.args.num("scale", 1.0)));
     });
@@ -287,6 +293,7 @@ Element& Being::joint(const std::string& name, const std::string& parent, const 
     j.params.set("parent_joint", parent).set(keys::x, offset.x).set(keys::y, offset.y).set(keys::z, offset.z);
     j.params.set("rest_yaw", rest_deg.x * kDeg).set("rest_pitch", rest_deg.y * kDeg).set("rest_roll", rest_deg.z * kDeg);
     j.params.set("stiffness", stiffness).set("hold", 0.0).set("hold_to", 0.0).set("lead_at", 0.0).set("lead_moves", 0.0);
+    j.params.set("follow_at", 0.0).set("follow_moves", 0.0);
     set_q(j, rest_of(j));
     set_q(j, Q{}, "h");
     resolve();
@@ -454,7 +461,6 @@ void Being::live(double dt) {
     Element& self = element(self_id());
     self.params.set("lived", 1.0);
     const double t = dt * tempo();
-    self.params.set("age", self.params.num("age") + t);
 
     // The joints in order, parents first.
     std::vector<Element*> js;
@@ -605,6 +611,42 @@ void Being::live(double dt) {
         const double hold = j.params.num("hold") + (j.params.num("hold_to") - j.params.num("hold")) * ease(t, 8.0);
         j.params.set("hold", hold);
         if (hold > 1e-4) target[i] = slerp(target[i], q_of(j, "h"), hold), back[i] = slerp(back[i], q_of(j, "h"), hold);
+    }
+
+    // Followed: each joint whose motion is another being's taken for its own
+    // (`follow_q`, a turn in the being's frame; for one that travels
+    // `follow_t`, a place - carried by retarget(..., own)) is turned that way
+    // by how much it follows (`follow`), as a clip would turn it - before
+    // anything leads it: it is what it means to do, so a ragdoll's muscles
+    // aim for it and a knock (`lead`) is on top of it. The turn on its parent
+    // is found from its parent's as followed, now and at the step's start.
+    {
+        const double fol = self.params.num("follow") +
+                           (self.params.num("follow_to") - self.params.num("follow")) * ease(t, 1.0 / std::max(1e-3, self.params.num("follow_fade", 0.3)));
+        self.params.set("follow", fol);
+        if (fol > 1e-4) {
+            std::vector<Q> wt(js.size()), wb(js.size());
+            for (std::size_t i = 0; i < js.size(); ++i) {
+                Element& j = *js[i];
+                const Q pt = parent[i] >= 0 ? wt[std::size_t(parent[i])] : Q{}, pb = parent[i] >= 0 ? wb[std::size_t(parent[i])] : Q{};
+                Q w = mul(pt, target[i]), w_b = mul(pb, back[i]);
+                if (j.params.num("follow_at") > 0.5) {
+                    Q l = norm(q_of(j, "follow_q"));
+                    if (dot(l, w) < 0) l = scaled(l, -1);
+                    w = slerp(w, l, fol);
+                    Q lb = l;
+                    if (dot(lb, w_b) < 0) lb = scaled(lb, -1);
+                    w_b = slerp(w_b, lb, fol);
+                    target[i] = norm(mul(conj(pt), w)), back[i] = norm(mul(conj(pb), w_b));
+                }
+                wt[i] = w, wb[i] = w_b;
+                if (j.params.num("follow_moves") > 0.5) {
+                    const Vec3d from = offset_of(j), to{j.params.num("follow_tx"), j.params.num("follow_ty"), j.params.num("follow_tz")};
+                    const Vec3d p = from + (to - from) * fol;
+                    j.params.set("tx", p.x).set("ty", p.y).set("tz", p.z);
+                }
+            }
+        }
     }
 
     // Where every joint is, for a set of turns.
@@ -915,31 +957,70 @@ std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to)
     return out;
 }
 
-Key retarget(StateGraph& g, const Being& from, const Being& to, Key name) {
+namespace {
+double length_of(const Element& e) {
+    const double x = e.params.num(keys::x), y = e.params.num(keys::y), z = e.params.num(keys::z);
+    return std::sqrt(x * x + y * y + z * z);
+}
+// How far a joint stands from its parent in `b`: as it was made - unless
+// its first clip that carries it first puts it nowhere near there (a rig
+// whose root holds the rest, its hips made beside it; Mixamo's FBX), and
+// then as that clip stands it. (A crouch in a clip is a crouch carried: only
+// a made length that says nothing of the body is passed over.)
+double standing(const Being& b, Key joint) {
+    const Element* j = b.find(joint);
+    const double made = j ? length_of(*j) : 0.0;
+    for (const Element& c : b.elements()) {
+        if (c.kind != kClip) continue;
+        std::istringstream in(c.params.get_or<std::string>("keys", ""));
+        double first = 1e18, len = -1;
+        for (std::string line; std::getline(in, line);) {
+            std::istringstream ls(line);
+            double t, x, y, z;
+            std::string jn, word;
+            if (ls >> t >> jn >> word && jn == joint.str() && (word == "p" || word == "pc") && (ls >> x >> y >> z) && t < first)
+                first = t, len = std::sqrt(x * x + y * y + z * z);
+        }
+        if (len >= 0) return made < 0.5 * len || made > 2.0 * len ? len : made;
+    }
+    return made;
+}
+}  // namespace
+
+Key retarget(StateGraph& g, const Being& from, const Being& to, Key name, bool own) {
+    // (Led: lead_*; taken for its own: follow_*.)
+    const std::string ch = own ? "follow" : "lead";
+    const Key k_q{ch + "_q"}, k_at{ch + "_at"}, k_moves{ch + "_moves"}, k_tx{ch + "_tx"}, k_ty{ch + "_ty"}, k_tz{ch + "_tz"};
     if (name.empty()) name = Key{from.id().str() + ".to." + to.id().str()};
     Functor f(name, from.id(), to.id());
-    for (const auto& [a, b] : same_joints(from, to))
-        f.on_object(a, b, [](const Element& src, Element& dst) {
+    for (const auto& [a, b] : same_joints(from, to)) {
+        // A joint that travels (the hips) travels as far for its size: by how
+        // far each stands it from its parent - the other as it stands (its
+        // clip), this one as it was made.
+        // Only a root travels: a rig that keys a place on every bone (Mixamo's)
+        // keys its own proportions there, not motion - carried, they would
+        // make this body the other's shape.
+        const Element& mine = to.element(b);
+        const Element* up = to.find(Key{mine.params.get_or<std::string>("parent_joint", "")});
+        const bool root = !up || up->kind != kJoint;
+        const double ls = standing(from, a), k = ls > 1e-6 ? length_of(mine) / ls : 1.0;
+        f.on_object(a, b, [=](const Element& src, Element& dst) {
             // The source's turn away from its own bind, put on the target's
             // bind: lead = pq_src * bq_src^-1 * bq_dst. Each body keeps its
             // own bones' axes; only the motion crosses.
             const Q w = mul(mul(q_of(src, "pq"), conj(q_of(src, "bq"))), q_of(dst, "bq"));
-            set_q(dst, norm(w), "lead_q");
-            dst.params.set("lead_at", 1.0);
+            set_q(dst, norm(w), own ? "follow_q" : "lead_q");
+            dst.params.set(k_at, 1.0);
             // A joint that travels (the hips) travels as far for its size:
             // by how far each stands from its parent as made.
-            if (src.params.has(Key{"tx"})) {
-                const auto len = [](const Element& e) {
-                    const double x = e.params.num(keys::x), y = e.params.num(keys::y), z = e.params.num(keys::z);
-                    return std::sqrt(x * x + y * y + z * z);
-                };
-                const double ls = len(src), k = ls > 1e-6 ? len(dst) / ls : 1.0;
-                dst.params.set("lead_tx", src.params.num("tx") * k).set("lead_ty", src.params.num("ty") * k).set("lead_tz", src.params.num("tz") * k);
-                dst.params.set("lead_moves", 1.0);
+            if (root && src.params.has(Key{"tx"})) {
+                dst.params.set(k_tx, src.params.num("tx") * k).set(k_ty, src.params.num("ty") * k).set(k_tz, src.params.num("tz") * k);
+                dst.params.set(k_moves, 1.0);
             } else {
-                dst.params.set("lead_moves", 0.0);
+                dst.params.set(k_moves, 0.0);
             }
         });
+    }
     g.set_functor(std::move(f));
     g.keep(name);
     return name;

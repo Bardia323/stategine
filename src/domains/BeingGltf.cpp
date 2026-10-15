@@ -1,6 +1,7 @@
 // A being read from glTF 2.0 (.gltf or .glb): its skeleton (a skin's joints),
 // its skinned body, and its animations as clips - and that body posed, as the
 // skeleton is now (linear blend skinning, in the being's frame).
+#include <cctype>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -377,16 +378,26 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         j.params.set("rest_qw", q[0]).set("rest_qx", q[1]).set("rest_qy", q[2]).set("rest_qz", q[3]);
         j.params.set("qw", q[0]).set("qx", q[1]).set("qy", q[2]).set("qz", q[3]);
     }
-    // The body: the first mesh this skin deforms.
-    int mesh_node = -1;
+    // The body: every mesh a skin deforms, each a skin of its own (one alone
+    // is `skin`; more, `skin_<its node's name>` - a head with pictures of its
+    // own beside the body that wears another).
+    std::vector<int> mesh_nodes;
     for (std::size_t i = 0; i < nodes.a.size(); ++i)
-        if (nodes[i].has("mesh") && nodes[i].has("skin")) mesh_node = int(i);
-    if (mesh_node >= 0) {
-        Element& s = add_element(Key{prefix + "skin"}, Key{"skin"});
+        if (nodes[i].has("mesh") && nodes[i].has("skin")) mesh_nodes.push_back(int(i));
+    for (int mesh_node : mesh_nodes) {
+        std::string sname = prefix + "skin";
+        if (mesh_nodes.size() > 1) {
+            std::string nn = node_name(d.j, mesh_node);
+            for (char& ch : nn)
+                if (!std::isalnum(static_cast<unsigned char>(ch))) ch = '_';
+            sname += "_" + nn;
+        }
+        Element& s = add_element(Key{sname}, Key{"skin"});
         s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix).set("rig", rig);
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
         // Which joints the skin binds anything to (`bound`): a joint it binds
-        // nothing to only marks a place - the end of a head, a toe.
+        // nothing to only marks a place - the end of a head, a toe. (Bound
+        // by any of them.)
         const J& node = nodes[std::size_t(mesh_node)];
         const J& sk = d.j["skins"][std::size_t(node["skin"].i(0))];
         std::vector<bool> used(sk["joints"].a.size(), false);
@@ -399,7 +410,8 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
                 if (ws[k] > 0.01f && js[k] >= 0 && std::size_t(js[k]) < used.size()) used[std::size_t(js[k])] = true;
         }
         for (std::size_t k = 0; k < sk["joints"].a.size(); ++k)
-            if (Element* j = find(Key{prefix + node_name(d.j, sk["joints"][k].i())})) j->params.set("bound", used[k] ? 1.0 : 0.0);
+            if (Element* j = find(Key{prefix + node_name(d.j, sk["joints"][k].i())}))
+                j->params.set("bound", used[k] || (mesh_node != mesh_nodes.front() && j->params.num("bound") > 0.5) ? 1.0 : 0.0);
     }
     // Its motions: each animation a clip, its channels the joints' rotations
     // (`q` keys) and translations (`p` keys) - cubic ones (`qc`, `pc`) with
@@ -816,7 +828,9 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
         if (const std::vector<unsigned char>* rgba = b.skin_picture(s.id, w, h)) {
             const Key pic{model.str() + ".picture"};
             if (!host.picture(pic)) host.picture(pic, w, h, *rgba);
-            e->params.set("skin", pic.str()).set("uv", 1.0);
+            // (Its own picture worn as it is first shown; after that, whatever
+            // it has been given to wear - a face, an open mouth - it keeps.)
+            if (!e->params.has(Key{"skin"})) e->params.set("skin", pic.str()).set("uv", 1.0);
             for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, 1.0);
         }
     }
