@@ -7,6 +7,7 @@
 #include "sg/core/Temporal.hpp"
 #include "sg/domains/Being.hpp"
 #include "sg/domains/Ragdoll.hpp"
+#include "sg/domains/Walk.hpp"
 
 namespace sg {
 
@@ -67,17 +68,24 @@ Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Castin
     drive(g, clock, b.id(), b.live_event(), false, how.always ? Keeps::Always : Keeps::WhileActive);
     Params& self = b.element(Being::self_id()).params;
     if (!stand.empty()) self.set("stand_clip", stand);
+    // Its feet set down on the ground (whatever its skeleton: by its shape),
+    // so they stay where they are put as it goes on over them.
+    if (how.plant)
+        for (Key ankle : b.ankles()) b.plant(ankle.str());
+    // How fast its walk goes as made: as said, else as its own feet say it.
+    const double pace_of = how.stride > 0 || stride.empty() ? how.stride : b.ground_speed(stride);
     // (A walker stands on the floor, its lowest foot on it, whatever its clip
     // makes of its hips: its walk read beside its own clips leaves its
     // standing a little lower than it is - whoever shows it grounds it.)
-    if (!stride.empty()) self.set("grounded", 1.0).set("stride", how.stride);
+    if (!stride.empty()) self.set("grounded", 1.0).set("stride", pace_of > 0.05 ? pace_of : 0.88);
     if (!stand.empty() && !stride.empty()) {
         // Standing and walking blended by pace (`go`: still, the walk at a
         // stride), steered from outside at its ports: how fast it goes.
-        b.blend("go", stand + " 0\n" + stride + " " + std::to_string(how.stride) + "\n", 0.0, 0.0, 6.0);
+        b.blend("go", stand + " 0\n" + stride + " " + std::to_string(self.num("stride")) + "\n", 0.0, 0.0, 6.0);
         b.hear(Event{b.play_event(), Params{}.set("clip", std::string("go")).set("fade", 0.0)});
         g.port(b.id(), b.steer_event());
         g.port(b.id(), b.play_event());
+        g.port(b.id(), b.travel_event());
     } else if (!stand.empty()) {
         b.hear(Event{b.play_event(), Params{}.set("clip", stand).set("fade", 0.0)});
     }
@@ -87,22 +95,68 @@ Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Castin
 
 bool walks(const Being& b) { return b.find(Key{"blend.go"}) != nullptr; }
 
-std::vector<Event> pace(const Being& b, double speed) {
+std::vector<Event> pace(const Being& b, double speed, double turn) { return pace(b, Vec3d{speed, 0, 0}, turn); }
+
+std::vector<Event> pace(const Being& b, const Vec3d& velocity, double turn) {
     const Params& self = b.element(Being::self_id()).params;
+    const double speed = std::hypot(velocity.x, velocity.z);
+    // How it goes across its ground, told whenever it changes (its feet set
+    // down stay put as it goes).
+    std::vector<Event> out;
+    if (std::fabs(self.num("go_x") - velocity.x) > 1e-4 || std::fabs(self.num("go_z") - velocity.z) > 1e-4 || std::fabs(self.num("go_turn") - turn) > 1e-4)
+        out.push_back(Event{b.travel_event(), Params{}.set(keys::x, velocity.x).set(keys::z, velocity.z).set("turn", turn)});
     const std::string stand = self.get_or<std::string>("stand_clip", "");
     // Standing now: its own standing clip the one it plays.
     bool standing = false;
     for (const Element& e : b.elements())
         if (e.kind == Key{"layer"} && !stand.empty() && e.params.get_or<std::string>("clip", "") == stand && e.params.num("to") > 0.5) standing = true;
+    // (Standing and walking change into each other inertialized: at once,
+    // the difference let go of - not the two averaged as they cross.)
     if (speed < 0.05 && !stand.empty()) {
-        if (standing) return {};
-        return {Event{b.play_event(), Params{}.set("clip", stand).set("fade", 0.25).set("speed", 1.0)}};
+        if (standing) return out;
+        out.push_back(Event{b.play_event(), Params{}.set("clip", stand).set("fade", 0.25).set("inert", 0.12).set("speed", 1.0)});
+        return out;
     }
     // Slower than its stride: the walk eased into standing (shorter steps, as
     // fast); faster: the walk itself quicker - so its feet go as fast as it does.
     const double stride = self.num("stride", 0.88), quick = std::max(1.0, speed / stride);
-    return {Event{b.steer_event(), Params{}.set("blend", std::string("go")).set("x", speed / quick).set("y", 0.0)},
-            Event{b.play_event(), Params{}.set("clip", std::string("go")).set("fade", 0.0).set("speed", quick)}};
+    out.push_back(Event{b.steer_event(), Params{}.set("blend", std::string("go")).set("x", speed / quick).set("y", 0.0)});
+    out.push_back(Event{b.play_event(), Params{}.set("clip", std::string("go")).set("fade", 0.0).set("inert", 0.12).set("speed", quick)});
+    return out;
+}
+
+std::vector<Event> pace(const Spatial3D& host, const Being& b, const Vec3d& velocity, double turn) {
+    // (A yaw takes x toward z: turned back by its spot's.)
+    const Element* spot = host.find(spot_of(host, b.id()));
+    const double yaw = spot ? spot->params.num(keys::yaw) : 0.0, c = std::cos(yaw), s = std::sin(yaw);
+    std::vector<Event> out = pace(b, Vec3d{velocity.x * c + velocity.z * s, 0.0, -velocity.x * s + velocity.z * c}, turn);
+    if (!spot) return out;
+    // The ground under each foot, from the ground its spot stands on: what
+    // stops a walker, met by a ray straight down where the foot is to be
+    // (no further up or down than half its leg; nothing met, its spot's own).
+    const Vec3d at = position_of(*spot);
+    std::vector<std::pair<Key, double>> floors;
+    bool changed = false;
+    for (const Element& g : b.elements()) {
+        if (g.kind != Key{"goal"} || g.params.num("plants") < 0.5) continue;
+        const double leg = g.params.num("leg", 0.9), x = g.params.num(keys::x), z = g.params.num(keys::z);
+        const Vec3d from{at.x + x * c - z * s, at.y + 0.5 * leg, at.z + x * s + z * c};
+        Vec3d hit, normal;
+        const double floor = ray(host, from, {0, -1, 0}, leg, hit, normal) ? hit.y - at.y : 0.0;
+        floors.emplace_back(Key{"floor_" + g.params.get_or<std::string>("tip", "")}, floor);
+        if (std::fabs(floor - g.params.num("floor_to")) > 1e-3) changed = true;
+    }
+    if (!changed) return out;
+    for (Event& e : out)
+        if (e.name == b.travel_event()) {
+            for (const auto& [k, v] : floors) e.args.set(k, v);
+            return out;
+        }
+    Params travel = Params{}.set(keys::x, b.element(Being::self_id()).params.num("go_x")).set(keys::z, b.element(Being::self_id()).params.num("go_z"));
+    travel.set("turn", b.element(Being::self_id()).params.num("go_turn"));
+    for (const auto& [k, v] : floors) travel.set(k, v);
+    out.insert(out.begin(), Event{b.travel_event(), travel});
+    return out;
 }
 
 Key lead(StateGraph& g, Spatial3D& host, Temporal& clock, Being& led, const std::string& glb, double height, double speed, std::string* why) {

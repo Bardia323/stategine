@@ -65,6 +65,25 @@ Q from_euler(double yaw, double pitch, double roll) {
 void to_euler(const Q& q, double& yaw, double& pitch, double& roll) {
     spatial::to_euler(spatial::from_quat(q.w, q.x, q.y, q.z), yaw, pitch, roll);
 }
+// A turn as the axis it turns about, as long as the angle (radians), and back.
+Vec3d log_of(Q q) {
+    if (q.w < 0) q = scaled(q, -1);
+    const double s = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+    if (s < 1e-12) return {2 * q.x, 2 * q.y, 2 * q.z};
+    const double a = 2 * std::atan2(s, q.w) / s;
+    return {q.x * a, q.y * a, q.z * a};
+}
+Q exp_of(const Vec3d& v) { return axis_angle(v, std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z)); }
+// A critically damped spring let go of `x` (going at `v`), `dt` on, its
+// half-life `half`: exactly, as it would go in any number of steps.
+void let_go(Vec3d& x, Vec3d& v, double half, double dt) {
+    const double y = 0.6931471805599453 * 2.0 / std::max(1e-4, half);
+    const Vec3d j = v + x * y;
+    const double e = std::exp(-y * dt);
+    x = (x + j * dt) * e;
+    v = (v - j * (y * dt)) * e;
+}
+
 // The smallest turn taking direction `a` to direction `b`.
 Q between(Vec3d a, Vec3d b) {
     const double la = length(a), lb = length(b);
@@ -114,6 +133,70 @@ Vec3d offset_of(const Element& e) {
     return {e.params.num(keys::x), e.params.num(keys::y), e.params.num(keys::z)};
 }
 double ease(double dt, double rate) { return rate <= 0 ? 1.0 : 1.0 - std::exp(-dt * rate); }
+
+// A foot set down (a goal that `plants`), one step on: `at` where its clips
+// put it now and `going` how fast they move it, in the being's frame; the
+// being's travel (`go_*`) and how far its body stands raised or lowered to
+// its lowest foot's ground (`ground`) in `self`. Where the leg is to bring it
+// is said as the goal's point. `may_step`: no other foot of it is off the
+// ground - a foot left behind, or going faster than the ground, steps only
+// while the others stand (its clip lifting it, it goes whenever).
+void plant_step(Element& g, const Params& self, Vec3d at, const Vec3d& going, double dt, bool may_step) {
+    Params& p = g.params;
+    const double vx = self.num("go_x"), vz = self.num("go_z"), turn = self.num("go_turn"), ground = self.num("ground");
+    // (Its clip's height, as if its body stood on its own floor.)
+    at.y -= ground;
+    const double still = p.num("still", 0.27), slip = p.num("slip", 0.14), lift = p.num("lift", 0.06), leg = p.num("leg", 0.9);
+    // How fast it goes over the ground as its clips have it: as they move it,
+    // and as the body carries it along (its travel - not its turn, which no
+    // clip turns it by: a body turning where it stands turns on its feet).
+    // (A walk's foot on the ground goes back at no one speed through its
+    // step: the faster it travels, the more its clip's foot is let differ.)
+    const double over = std::hypot(going.x + vx, going.z + vz) - 0.4 * std::hypot(vx, vz);
+    // How low the clips set it: the lowest it has been, forgotten slowly (a
+    // step's height in a second or two) - and soon where it stays still: a
+    // foot that does not go over the ground is on it (as a body stands up
+    // from how it was made, or stands somewhere new).
+    double low = p.num("low", 1e9);
+    const bool first = low > 1e8;
+    low = std::min(low, at.y);
+    if (over < still) low += (at.y - low) * ease(dt, 8.0);
+    else low = std::min(at.y, low + 0.02 * leg * dt);
+    p.set("low", low);
+    double lx = p.num("lock_x"), lz = p.num("lock_z");
+    if (first) lx = at.x, lz = at.z;
+    bool down = p.num("locked") > 0.5;
+    if (down) {
+        // Where it was set down, as the body goes on over it: turned back by
+        // the body's turn, and carried back by its travel.
+        const double a = turn * dt, c = std::cos(a), sn = std::sin(a);
+        const double x = lx * c + lz * sn, z = -lx * sn + lz * c;
+        lx = x - vx * dt, lz = z - vz * dt;
+    }
+    const double off = std::hypot(at.x - lx, at.z - lz), high = at.y - low;
+    // Let go of as its clip lifts it; as it goes over the ground faster than
+    // the body's travel lets a foot on it go - only while it travels: a body
+    // standing that changes what it does with its feet (a walk come to a
+    // stop, standing again) steps to them, not slides; or left behind.
+    // (Set down again only once its step has brought it back under its clip.)
+    const bool travels = std::hypot(vx, vz) > 0.05;
+    if (!down && over < still && high < 0.05 * leg && off < 0.25 * slip) down = true, lx = at.x, lz = at.z;
+    else if (down && (high > 0.09 * leg || (may_step && ((travels && over > 2.0 * still) || off > slip)))) down = false;
+    // Its ground: eased to what is under it (`floor_to`, from its own floor).
+    const double floor = p.num("floor") + (p.num("floor_to") - p.num("floor")) * ease(dt, 12.0);
+    p.set("floor", floor);
+    double y = at.y + floor;
+    if (!down) {
+        // Let go: brought back to where its clips have it in a short step,
+        // lifted as far as it has to go.
+        // (Carried as its clip carries it, and only how far it is off that let go of.)
+        const double k = 1.0 - ease(dt, 16.0);
+        y += std::min(lift, 0.5 * off);
+        lx = at.x + (lx - (at.x - going.x * dt)) * k, lz = at.z + (lz - (at.z - going.z * dt)) * k;
+    }
+    p.set("locked", down ? 1.0 : 0.0).set("lock_x", lx).set("lock_z", lz);
+    p.set(keys::x, lx).set(keys::y, y).set(keys::z, lz);
+}
 
 const Key kJoint{"joint"}, kPart{"part"}, kClip{"clip"}, kLayer{"layer"}, kGoal{"goal"}, kBlend{"blend"};
 const Key kParentJoint{"parent_joint"}, kTip{"tip"};
@@ -192,6 +275,13 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         .set("follow", 0.0)
         .set("follow_to", 0.0)
         .set("follow_fade", 0.3)
+        .set("go_x", 0.0)
+        .set("go_z", 0.0)
+        .set("go_turn", 0.0)
+        .set("ground", 0.0)
+        .set("inert", 0.0)
+        .set("inert_from", 0.0)
+        .set("inert_half", 0.1)
         .set("lived", 0.0);
     for (int i = 0; i < kLayers; ++i)
         add_element(layer_key(i), kLayer)
@@ -210,12 +300,21 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     loop(Key{"play"}, self_id(), play_event(), [](State& s, Element&, Element*, const Event& ev) {
         const std::string clip = ev.args.get_or<std::string>("clip", "");
         if (!s.find(Key{"clip." + clip}) && !s.find(Key{"blend." + clip})) return;
-        const double fade = ev.args.num("fade", 0.3), weight = ev.args.num("weight", 1.0);
+        const double fade = ev.args.num("fade", 0.3), weight = ev.args.num("weight", 1.0), inert = ev.args.num("inert", 0.0);
+        const bool alone = ev.args.num("alone", 1.0) > 0.5;
         Element* slot = nullptr;
         for (int i = 0; i < kLayers; ++i) {
             Element& l = s.element(layer_key(i));
             if (l.params.get_or<std::string>("clip", "") == clip) slot = &l;
         }
+        // Inertialized: only if what it plays changes (a clip it plays
+        // already, alone, played again is no change of motion).
+        bool changes = !slot || std::fabs(slot->params.num("weight") - weight) > 1e-3;
+        if (alone)
+            for (int i = 0; i < kLayers; ++i) {
+                const Element& l = s.element(layer_key(i));
+                if (&l != slot && !l.params.get_or<std::string>("clip", "").empty() && l.params.num("weight") > 1e-3) changes = true;
+            }
         if (!slot) {
             double least = 1e9;
             for (int i = 0; i < kLayers; ++i) {
@@ -227,11 +326,22 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         }
         slot->params.set("to", weight).set("fade", fade).set("speed", ev.args.num("speed", 1.0)).set("loop", ev.args.num("loop", 1.0));
         slot->params.set("mask", ev.args.get_or<std::string>("mask", "")).set("additive", ev.args.get_or<std::string>("additive", ""));
-        if (ev.args.num("alone", 1.0) > 0.5)
+        if (alone)
             for (int i = 0; i < kLayers; ++i) {
                 Element& l = s.element(layer_key(i));
                 if (&l != slot) l.params.set("to", 0.0).set("fade", fade);
             }
+        if (inert > 0 && changes) {
+            // At once: the clip wholly, the others gone; the step after
+            // takes the difference up as each joint's offset, let go of.
+            slot->params.set("weight", weight);
+            if (alone)
+                for (int i = 0; i < kLayers; ++i) {
+                    Element& l = s.element(layer_key(i));
+                    if (&l != slot) l.params.set("clip", std::string{}).set("weight", 0.0).set("to", 0.0);
+                }
+            s.element(self_id()).params.set("inert_from", 1.0).set("inert_half", inert);
+        }
     });
     loop(Key{"stop"}, self_id(), stop_event(), [](State& s, Element&, Element*, const Event& ev) {
         const std::string clip = ev.args.get_or<std::string>("clip", "");
@@ -283,6 +393,14 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     loop(Key{"follow"}, self_id(), follow_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("follow_to", std::clamp(ev.args.num("weight", 1.0), 0.0, 1.0)).set("follow_fade", ev.args.num("fade", 0.3));
     });
+    //   self --travel--> self: how it goes across its ground, in its own frame
+    //   (and the ground under each foot, if it is not its own floor).
+    loop(Key{"travel"}, self_id(), travel_event(), [](State& s, Element& self, Element*, const Event& ev) {
+        self.params.set("go_x", ev.args.num(keys::x)).set("go_z", ev.args.num(keys::z)).set("go_turn", ev.args.num("turn"));
+        for (Element& g : s.elements())
+            if (g.kind == kGoal && g.params.num("plants") > 0.5)
+                if (const Key f{"floor_" + g.params.get_or<std::string>("tip", "")}; ev.args.has(f)) g.params.set("floor_to", ev.args.num(f));
+    });
     loop(Key{"scale"}, self_id(), scale_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("scale", std::max(1e-3, ev.args.num("scale", 1.0)));
     });
@@ -329,6 +447,27 @@ Element& Being::goal(const std::string& name, const std::string& tip, int links)
     g.params.set(keys::x, 0.0).set(keys::y, 0.0).set(keys::z, 0.0);
     g.params.set("aim", 0.0).set("pole", 0.0).set("pole_x", 0.0).set("pole_y", 0.0).set("pole_z", 0.0).set("soften", 0.0).set("twist", 0.0);
     g.params.set("fwd_x", 1.0).set("fwd_y", 0.0).set("fwd_z", 0.0).set("up_x", 0.0).set("up_y", 1.0).set("up_z", 0.0).set("shares", std::string{});
+    return g;
+}
+
+Element& Being::plant(const std::string& ankle) {
+    const std::string name = "plant." + ankle;
+    Element* had = find(Key{"goal." + name});
+    Element& g = had ? *had : goal(name, ankle, 2);
+    // How long its leg is, as it is made: what it lets slip, and how high it steps, are by it.
+    double leg = 0;
+    const Element* j = find(Key{ankle});
+    for (int n = 0; j && n < 2; ++n) {
+        const Element* up = find(Key{j->params.get_or<std::string>("parent_joint", "")});
+        if (!up) break;
+        const Vec3d a{j->params.num("px"), j->params.num("py"), j->params.num("pz")}, b{up->params.num("px"), up->params.num("py"), up->params.num("pz")};
+        leg += length(a - b);
+        j = up;
+    }
+    if (leg < 1e-6) leg = 0.9;
+    g.params.set("plants", 1.0).set("to", 1.0).set("weight", 1.0).set("fade", 0.1).set("soften", 0.97);
+    g.params.set("low", 1e9).set("floor", 0.0).set("floor_to", 0.0).set("lock_x", 0.0).set("lock_z", 0.0).set("locked", 0.0);
+    g.params.set("still", 0.3 * leg).set("slip", 0.16 * leg).set("lift", 0.07 * leg).set("leg", leg);
     return g;
 }
 
@@ -456,6 +595,63 @@ bool Being::sample(const std::string& clip, Key joint, double t, double out[4]) 
     return true;
 }
 
+double Being::ground_speed(const std::string& clip) const {
+    const Element* c = find(Key{"clip." + clip});
+    if (!c) return 0;
+    const Parsed& p = parsed(*c);
+    const std::vector<Key> feet = ankles();
+    if (p.length <= 0 || feet.empty()) return 0;
+    // The joints in order, parents first, as the clip alone poses them.
+    std::vector<const Element*> js;
+    for (const Element& e : elements())
+        if (e.kind == kJoint) js.push_back(&e);
+    std::unordered_map<std::string_view, std::size_t> at;
+    for (std::size_t i = 0; i < js.size(); ++i) at[js[i]->id.str()] = i;
+    std::vector<int> parent(js.size(), -1);
+    for (std::size_t i = 0; i < js.size(); ++i)
+        if (auto it = at.find(text_or_none(js[i]->params, kParentJoint)); it != at.end() && it->second < i) parent[i] = int(it->second);
+    const bool loops = c->params.num("loop", 1.0) > 0.5;
+    const auto pose_at = [&](double ph, std::vector<Vec3d>& out) {
+        std::vector<Frame> f(js.size());
+        for (std::size_t i = 0; i < js.size(); ++i) {
+            const Element& j = *js[i];
+            Q q = rest_of(j);
+            Vec3d off{j.params.num(keys::x), j.params.num(keys::y), j.params.num(keys::z)};
+            if (auto tr = p.tracks.find(j.id); tr != p.tracks.end()) {
+                double a[4], v[3];
+                if (!tr->second.keys.empty()) turn_at(tr->second, ph, loops, p.length, a), q = norm(Q{a[0], a[1], a[2], a[3]});
+                if (!tr->second.moves.empty()) move_at(tr->second, ph, v), off = {v[0], v[1], v[2]};
+            }
+            f[i] = parent[i] < 0 ? Frame{off, q} : Frame{f[std::size_t(parent[i])].p + rotate(f[std::size_t(parent[i])].r, off), mul(f[std::size_t(parent[i])].r, q)};
+        }
+        out.clear();
+        for (Key k : feet) out.push_back(f[at[k.str()]].p);
+    };
+    const int n = std::max(48, int(p.length * 120));
+    const double step = p.length / n;
+    std::vector<std::vector<Vec3d>> track(std::size_t(n) + 1);
+    for (int k = 0; k <= n; ++k) pose_at(k * step, track[std::size_t(k)]);
+    const Vec3d ahead = facing();
+    // Each foot while it is at its lowest (within a fiftieth of its leg): how
+    // fast it goes back along the facing then, the middle of those speeds.
+    std::vector<double> speeds;
+    for (std::size_t foot = 0; foot < feet.size(); ++foot) {
+        double low = 1e18, high = -1e18;
+        for (const auto& t : track) low = std::min(low, t[foot].y), high = std::max(high, t[foot].y);
+        const Element* g = find(Key{"goal.plant." + feet[foot].str()});
+        const double leg = g ? g->params.num("leg", 0.9) : std::max(0.2, high - low) * 3.0;
+        for (int k = 1; k < n; ++k) {
+            const Vec3d& here = track[std::size_t(k)][foot];
+            if (here.y > low + 0.02 * leg) continue;
+            const Vec3d d = track[std::size_t(k + 1)][foot] - track[std::size_t(k - 1)][foot];
+            speeds.push_back(-(d.x * ahead.x + d.z * ahead.z) / (2 * step));
+        }
+    }
+    if (speeds.empty()) return 0;
+    std::nth_element(speeds.begin(), speeds.begin() + std::ptrdiff_t(speeds.size() / 2), speeds.end());
+    return std::max(0.0, speeds[speeds.size() / 2]);
+}
+
 void Being::live(double dt) {
     if (dt <= 0) return;  // no time, no change
     Element& self = element(self_id());
@@ -551,6 +747,16 @@ void Being::live(double dt) {
         if (to <= 0 && nw < 1e-3) l.params.set("clip", std::string{}).set("weight", 0.0);
     }
 
+    // (Switched just now, inertialized: where each joint stood on its parent before.)
+    const bool switched = self.params.num("inert_from") > 0.5;
+    std::vector<Vec3d> stood;
+    if (switched)
+        for (Element* j : js) {
+            // (A root as it stood on its own floor: the ground it is raised to is no motion of its clips.)
+            const bool root = j->params.get_or<std::string>("parent_joint", "").empty();
+            stood.push_back(offset_of(*j) - Vec3d{0, root ? self.params.num("ground") : 0.0, 0});
+        }
+
     // Each joint's target: rest, the clips blended over it, what is added to
     // that, what is held - now, and as the clips had it at the step's start.
     std::vector<Q> target(js.size()), back(js.size());
@@ -613,6 +819,64 @@ void Being::live(double dt) {
         if (hold > 1e-4) target[i] = slerp(target[i], q_of(j, "h"), hold), back[i] = slerp(back[i], q_of(j, "h"), hold);
     }
 
+    // Inertialized: what it plays changed at once (`play` with `inert`), so
+    // each joint's turn from where it was to where the clips have it now -
+    // and how much faster it was turning than they turn it - is taken up as
+    // an offset (`i*`; a joint that travels, its place too: `ip*`), let go of
+    // by a critically damped spring of the half-life said: one motion, no two
+    // averaged, its speed kept across the change. Gone once it is let go.
+    {
+        static const Key ix{"ix"}, iy{"iy"}, iz{"iz"}, ivx{"ivx"}, ivy{"ivy"}, ivz{"ivz"}, ipx{"ipx"}, ipy{"ipy"}, ipz{"ipz"}, iux{"iux"}, iuy{"iuy"}, iuz{"iuz"};
+        static const Key awx{"awx"}, awy{"awy"}, awz{"awz"};
+        if (switched) {
+            self.params.set("inert_from", 0.0).set("inert", 1.0);
+            for (std::size_t i = 0; i < js.size(); ++i) {
+                Element& j = *js[i];
+                const Vec3d x = log_of(mul(q_of(j), conj(target[i])));
+                // How fast it was turning on its parent (from the meant turns'
+                // speeds in the being's frame), and how fast the clips turn it now.
+                const Vec3d wi{j.params.num(awx), j.params.num(awy), j.params.num(awz)};
+                Vec3d wp{};
+                Q pq{};
+                if (parent[i] >= 0) {
+                    const Element& up = *js[std::size_t(parent[i])];
+                    wp = {up.params.num(awx), up.params.num(awy), up.params.num(awz)}, pq = norm(q_of(up, "aq"));
+                }
+                const Vec3d v = rotate(conj(pq), wi - wp) - log_of(mul(target[i], conj(back[i]))) * (1.0 / dt);
+                j.params.set(ix, x.x).set(iy, x.y).set(iz, x.z).set(ivx, v.x).set(ivy, v.y).set(ivz, v.z);
+                const Vec3d d = stood[i] - offset_of(j);
+                if (length(d) > 1e-6) j.params.set(ipx, d.x).set(ipy, d.y).set(ipz, d.z).set(iux, 0.0).set(iuy, 0.0).set(iuz, 0.0);
+            }
+        }
+        if (self.params.num("inert") > 0.5) {
+            const double half = self.params.num("inert_half", 0.1);
+            double most = 0;
+            for (std::size_t i = 0; i < js.size(); ++i) {
+                Element& j = *js[i];
+                if (!j.params.has(ix)) continue;
+                Vec3d x{j.params.num(ix), j.params.num(iy), j.params.num(iz)}, v{j.params.num(ivx), j.params.num(ivy), j.params.num(ivz)};
+                let_go(x, v, half, dt);
+                j.params.set(ix, x.x).set(iy, x.y).set(iz, x.z).set(ivx, v.x).set(ivy, v.y).set(ivz, v.z);
+                const Q off = exp_of(x);
+                target[i] = norm(mul(off, target[i])), back[i] = norm(mul(off, back[i]));
+                most = std::max({most, length(x), length(v) * half});
+                if (j.params.has(ipx)) {
+                    Vec3d p{j.params.num(ipx), j.params.num(ipy), j.params.num(ipz)}, u{j.params.num(iux), j.params.num(iuy), j.params.num(iuz)};
+                    let_go(p, u, half, dt);
+                    j.params.set(ipx, p.x).set(ipy, p.y).set(ipz, p.z).set(iux, u.x).set(iuy, u.y).set(iuz, u.z);
+                    const Vec3d at = offset_of(j) + p;
+                    j.params.set("tx", at.x).set("ty", at.y).set("tz", at.z);
+                    most = std::max(most, length(p) * 4.0);
+                }
+            }
+            if (most < 1e-4) {
+                self.params.set("inert", 0.0);
+                for (Element* j : js)
+                    for (Key k : {ix, iy, iz, ivx, ivy, ivz, ipx, ipy, ipz, iux, iuy, iuz}) j->params.erase(k);
+            }
+        }
+    }
+
     // Followed: each joint whose motion is another being's taken for its own
     // (`follow_q`, a turn in the being's frame; for one that travels
     // `follow_t`, a place - carried by retarget(..., own)) is turned that way
@@ -668,8 +932,8 @@ void Being::live(double dt) {
     // goes (`aw`, radians a second of its line, in its own frame): the turn
     // from the clips at the step's start to its end - both read from the
     // clips, so a muscle follows the motion and not only the pose.
+    std::vector<Frame> meant, before;
     {
-        std::vector<Frame> meant, before;
         fk(target, meant);
         fk(back, before);
         for (std::size_t i = 0; i < js.size(); ++i) {
@@ -718,6 +982,26 @@ void Being::live(double dt) {
         }
     }
 
+    // Its feet's ground: the body raised or lowered to the lowest ground any
+    // foot of it is on (`ground`, eased; its roots carry it), each foot then
+    // brought to its own (Being::plant) - a body over a step stands on the
+    // lower side, its other leg bent up onto it, not hung from the top.
+    std::vector<const Element*> feet;
+    {
+        double lowest = 1e18;
+        for (const Element& g : elements())
+            if (g.kind == kGoal && g.params.num("plants") > 0.5) feet.push_back(&g), lowest = std::min(lowest, g.params.num("floor_to"));
+        if (feet.empty()) lowest = 0;
+        const double ground = self.params.num("ground") + (lowest - self.params.num("ground")) * ease(dt, 10.0);
+        self.params.set("ground", ground);
+        if (std::fabs(ground) > 1e-6)
+            for (std::size_t i = 0; i < js.size(); ++i)
+                if (parent[i] < 0) {
+                    const Vec3d at = offset_of(*js[i]);
+                    js[i]->params.set("tx", at.x).set("ty", at.y + ground).set("tz", at.z);
+                }
+    }
+
     // Reaching and looking: each goal's chain turned toward its point, and
     // the target turned that far toward it by the goal's weight. A chain of
     // two is solved exactly (two bones and the line to the point are a
@@ -733,12 +1017,20 @@ void Being::live(double dt) {
         const std::size_t tip = tip_at->second;
         std::vector<std::size_t> chain;  // from the tip's parent up
         for (int c = parent[tip], n = int(g.params.num("links", 2)); c >= 0 && n > 0; c = parent[std::size_t(c)], --n) chain.push_back(std::size_t(c));
-        const Vec3d aim{g.params.num(keys::x), g.params.num(keys::y), g.params.num(keys::z)};
         const bool has_pole = g.params.num("pole") > 0.5;
         const Vec3d pole{g.params.num("pole_x"), g.params.num("pole_y"), g.params.num("pole_z")};
         std::vector<Q> work = target;
         std::vector<Frame> f;
         fk(work, f);
+        const bool plants = g.params.num("plants") > 0.5;
+        if (plants) {
+            bool others_down = true;
+            for (const Element* o : feet)
+                if (o != &g && o->params.num("locked") < 0.5) others_down = false;
+            plant_step(g, self.params, f[tip].p, (meant[tip].p - before[tip].p) * (1.0 / dt), dt, others_down);
+        }
+        const Vec3d aim{g.params.num(keys::x), g.params.num(keys::y), g.params.num(keys::z)};
+        const Q foot_turn = f[tip].r;  // (a foot set down keeps its own turn, however its leg bends)
         // Joint `c` turned by `d`, a turn in the being's frame (and all it carries).
         const auto turn_by = [&](std::size_t c, const Q& d) {
             const Q pr = parent[c] >= 0 ? f[std::size_t(parent[c])].r : Q{};
@@ -820,6 +1112,11 @@ void Being::live(double dt) {
                     turn_by(c, between(f[tip].p - f[c].p, aim - f[c].p));
                 }
             }
+        }
+        if (plants && parent[tip] >= 0) {
+            fk(work, f);
+            work[tip] = norm(mul(conj(f[std::size_t(parent[tip])].r), foot_turn));
+            moved.push_back(tip);
         }
         for (std::size_t c : moved) target[c] = slerp(target[c], work[c], w);
     }

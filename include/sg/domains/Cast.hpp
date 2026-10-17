@@ -27,7 +27,8 @@ struct Casting {
     std::string glb;      // the rigged model (glTF): its first clip what it does standing
     std::string walk;     // a glTF of the same skeleton's walk (no skin), if it walks
     double height = 1.8;  // metres
-    double stride = 0.88; // how fast its walk goes as made (metres a second)
+    double stride = 0;    // how fast its walk goes as made (metres a second); 0: as its feet say (Being::ground_speed)
+    bool plant = true;    // its feet set down on the ground as it goes (Being::plant, at its ankles)
     Vec3d at;             // its feet
     double yaw = 0;
     bool always = false;  // lives whether its place is entered or not (Keeps::Always)
@@ -43,12 +44,20 @@ Key spot_of(const Spatial3D& host, Key being);
 // (Its files are `Being::files()`.)
 Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Casting& how, std::string* why = nullptr);
 
-// Whether it walks; and the events that walk it at `speed` (metres a second),
-// its feet as fast as it goes - for its ports. Nearly still, its own standing
+// Whether it walks; and the events that walk it at `speed` (metres a second)
+// ahead, turning at `turn` (radians a second, as its yaw goes), its feet as
+// fast as it goes - for its ports: its travel (Being::travel_event, so its
+// feet set down stay put), and how it walks. Nearly still, its own standing
 // clip played as it is (not the blend at nought, which stands it lower): told
-// only as it comes to a stop, as it plays now says.
+// only as it comes to a stop, as it plays now says. Standing and walking
+// change into each other inertialized. `velocity`: any way across its
+// ground, in its own frame (ahead is +x).
 bool walks(const Being& b);
-std::vector<Event> pace(const Being& b, double speed);
+std::vector<Event> pace(const Being& b, double speed, double turn = 0);
+std::vector<Event> pace(const Being& b, const Vec3d& velocity, double turn);
+// The same for a velocity across `host` (as the place has it): turned into
+// its own frame by how its spot in the place is turned.
+std::vector<Event> pace(const Spatial3D& host, const Being& b, const Vec3d& velocity, double turn);
 
 // `led` moved by another's motion: `glb`, a glTF of motion alone (no skin),
 // read as a being of its own (`<led>_lead`), fitted `height` tall, standing

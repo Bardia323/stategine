@@ -63,10 +63,14 @@ public:
     static Key self_id() { return Key{"self"}; }
     // Its intentions, each its own (so many beings never share one).
     Key live_event() const { return Key{id().str() + ".live"}; }    // driven: {dt}
-    // {clip, fade=0.3, speed=1, loop=1, weight=1, alone=1, mask, additive}: `mask` names
+    // {clip, fade=0.3, speed=1, loop=1, weight=1, alone=1, mask, additive, inert}: `mask` names
     // joints and their weights (`spine 1, hips 0`: a joint not named takes its
     // parent's, a root 1); `additive` ("rest" or "first") adds the clip's turn
-    // away from that pose to what the other layers play.
+    // away from that pose to what the other layers play. `inert` (seconds, a
+    // half-life): inertialized instead of faded - played wholly at once, and
+    // the turn of each joint from where it was going to where the clip has it
+    // let go of by a critically damped spring, keeping how fast it was
+    // turning, so a body changes what it does without two motions averaged.
     Key play_event() const { return Key{id().str() + ".play"}; }
     Key stop_event() const { return Key{id().str() + ".stop"}; }    // {clip (empty: all), fade}
     // {goal, x, y, z, fade, pole_x, pole_y, pole_z, soften, twist}: a point in its own
@@ -86,6 +90,10 @@ public:
     Key steer_event() const { return Key{id().str() + ".steer"}; }  // {blend, x, y}: where in a blend, eased there
     Key lead_event() const { return Key{id().str() + ".lead"}; }    // {weight=1, fade=0.3}: how far it follows what leads it
     Key follow_event() const { return Key{id().str() + ".follow"}; }  // {weight=1, fade=0.3}: how far it takes another's motion for its own (retarget own)
+    // {x, z (metres a second), turn (radians a second about its up)}: how it
+    // goes across its ground now, in its own frame - so a planted foot stays
+    // where it was put on the ground while the body goes on over it (`plant`).
+    Key travel_event() const { return Key{id().str() + ".travel"}; }
 
     // --- what it is made of (before it starts) ------------------------------------
     // A joint riding `parent` (empty: the root) at `offset`, at rest turned by
@@ -111,6 +119,25 @@ public:
     // turn: its forward is `fwd_x/y/z` and its up `up_x/y/z`, both in the
     // being's frame as it is bound (default +x and +y).
     Element& goal(const std::string& name, const std::string& tip, int links = 2);
+    // A foot set down on the ground: a goal of two links ending at `ankle`
+    // (`goal.plant.<ankle>`), always held. While the clips have the foot still
+    // on the ground (going no faster than `still`, metres a second, as the
+    // being travels - `travel`) it stays where it was set down, the leg bent
+    // to keep it there however the body goes on over it; let go - lifted by
+    // its clip, or left `slip` behind where its clip puts it - it is carried
+    // back to its clip in a short step (`lift` high at most). Its height is
+    // its clip's, raised or lowered by the ground under it (`floor`, from its
+    // own floor; said by `travel`'s `floor_<ankle>`).
+    Element& plant(const std::string& ankle);
+    // Its ankles, by its shape: each a low joint with two bones above it
+    // that hang down to it (a shin, a thigh), the joints its feet ride - two
+    // for a person, four for a horse; by height, not by name.
+    std::vector<Key> ankles() const;
+    // How fast the ground goes under a clip walked in place: how fast its
+    // planted feet go back (metres a second of its own time, along its
+    // facing) while each is at its lowest - the speed its body must go for
+    // its feet not to slide. Nought if it has no feet or never sets one down.
+    double ground_speed(const std::string& clip) const;
     // A clip read from BVH (motion capture): its joints made where it names
     // ones not there yet, its motion a clip `name`. False, with why, if it
     // cannot be read.

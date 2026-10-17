@@ -1,10 +1,12 @@
 // A being's motion, exactly: a leg of two bones reaching a point solved as a
-// triangle, a cubic clip played by its tangents as glTF says, and a clip's
-// keys thinned only where nothing a body shows would move.
+// triangle, a cubic clip played by its tangents as glTF says, a clip's keys
+// thinned only where nothing a body shows would move, feet set down on the
+// ground as it goes, and one motion changed into another inertialized.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "sg/core/Engine.hpp"
@@ -224,6 +226,113 @@ int main() {
         }
         check(left > 0.1 && right < 1e-6, "masked to the left leg, only the left leg walks (" + std::to_string(left) + ", " + std::to_string(right) + ")");
         check(spin > 1.0 && spin <= 20.0, "and the clip says how fast the thigh swings (" + std::to_string(spin) + " rad/s at most)");
+    }
+    {
+        // Its feet, found by its shape; how fast a walk's ground goes, read
+        // from the walk; and a foot set down stays where it was put while the
+        // body goes on over it - even going faster than its walk. Two legs
+        // of 0.45 + 0.45 m stepping in place: each thigh swung from 20 degrees
+        // ahead to 20 behind with its knee straight (on the ground), and back
+        // with its knee bent (lifted) - the ground going 2 L sin 20 a half
+        // second under it.
+        const auto walker = [](sg::StateGraph& g, bool plant) -> sg::Being& {
+            auto& clock = g.add<sg::Temporal>("clock");
+            auto& b = g.add<sg::Being>(sg::Key{"walker"});
+            b.joint("hips", "", {0, 0.92, 0}, {}, 400);
+            std::string keys;
+            for (const auto& [side, z, lag] : {std::tuple{std::string("_l"), 0.1, 0.0}, std::tuple{std::string("_r"), -0.1, 0.5}}) {
+                b.joint("thigh" + side, "hips", {0, 0, z}, {}, 400);
+                b.joint("shin" + side, "thigh" + side, {0, -0.45, 0}, {}, 400);
+                b.joint("foot" + side, "shin" + side, {0, -0.45, 0}, {}, 400);
+                b.joint("toe" + side, "foot" + side, {0.12, -0.02, 0}, {}, 400);
+                for (int i = 0; i <= 8; ++i) {
+                    const double u = std::fmod(i / 8.0 + lag, 1.0), t = i / 8.0;
+                    const double thigh = u < 0.5 ? 20 - 80 * u : -20 + 80 * (u - 0.5), knee = u < 0.5 ? 0.0 : -40 * std::sin((u - 0.5) * 2 * 3.14159265358979);
+                    keys += std::to_string(t) + " thigh" + side + " 0 " + std::to_string(thigh) + " 0\n" + std::to_string(t) + " shin" + side + " 0 " + std::to_string(knee) + " 0\n";
+                }
+            }
+            b.clip("walk", keys);
+            if (plant)
+                for (sg::Key a : b.ankles()) b.plant(a.str());
+            sg::drive(g, clock, "walker", b.live_event());
+            g.set_initial("walker");
+            return b;
+        };
+        sg::StateGraph g0;
+        sg::Being& b0 = walker(g0, false);
+        const std::vector<sg::Key> feet = b0.ankles();
+        check(feet.size() == 2 && ((feet[0] == sg::Key{"foot_l"} && feet[1] == sg::Key{"foot_r"}) || (feet[0] == sg::Key{"foot_r"} && feet[1] == sg::Key{"foot_l"})),
+              "a body's ankles are found by its shape: the two feet, not its toes or knees");
+        sg::StateGraph gh;
+        auto& person = gh.add<sg::Being>(sg::Key{"person"});
+        sg::humanoid(person, 1.75);
+        check(person.ankles().size() == 2, "and a person's two feet the same");
+        const double ground = b0.ground_speed("walk"), made = 2 * 0.9 * std::sin(20 * 3.14159265358979 / 180) / 0.5;
+        check(std::fabs(ground - made) < 0.15 * made, "a walk in place says how fast its ground goes (" + std::to_string(ground) + " m/s, made " + std::to_string(made) + ")");
+        // Gone a fifth faster than its walk: unplanted, its feet slide.
+        double slid[2] = {0, 0}, down[2] = {0, 0};
+        for (int planted = 0; planted < 2; ++planted) {
+            sg::StateGraph g;
+            sg::Being& b = walker(g, planted == 1);
+            if (planted) {
+                const sg::LawReport r = sg::verify(g);
+                for (const auto& v : r.violations) std::printf("     %s: %s\n", v.where.c_str(), v.detail.c_str());
+                check(r.structure.empty() && r.ok(), "a being whose feet are set down keeps the laws");
+            }
+            sg::Engine e(g);
+            e.set_strict(true);
+            e.start();
+            const double v = 1.2 * ground;
+            e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("walk")).set("fade", 0.0)});
+            e.fire(sg::Event{b.travel_event(), sg::Params{}.set(sg::keys::x, v)});
+            double x = 0, was = 0;
+            bool had = false;
+            for (int i = 0; i < 300; ++i) {
+                e.tick(1.0 / 60);
+                x += v / 60;
+                // (On the ground: the left foot's first half of its walk, its middle.)
+                const double at = x + b.pose_of("foot_l").position.x, phase = std::fmod((i + 1) / 60.0, 1.0);
+                const bool on = phase > 0.05 && phase < 0.4;
+                if (i > 60 && on && had) slid[planted] += std::fabs(at - was), down[planted] += 1.0 / 60;
+                was = at, had = on;
+            }
+        }
+        check(down[1] > 0.5 && slid[0] > 0.3 && slid[1] < 0.15 * slid[0],
+              "a foot set down stays on the ground as the body goes faster than its walk (" + std::to_string(slid[1]) + " m slid in " + std::to_string(down[1]) +
+                  " s on it; unplanted " + std::to_string(slid[0]) + " m)");
+    }
+    {
+        // Inertialized: from standing to walking at once, the difference let
+        // go of - each joint goes on as it was going, no kick, and is the
+        // walk's own a few half-lives on.
+        double kick[2] = {0, 0};
+        sg::Vec3d end[2];
+        for (int inert = 0; inert < 2; ++inert) {
+            sg::StateGraph g;
+            auto& clock = g.add<sg::Temporal>("clock");
+            auto& b = g.add<sg::Being>(sg::Key{"walker"});
+            sg::humanoid(b, 1.75);
+            sg::drive(g, clock, "walker", b.live_event());
+            g.set_initial("walker");
+            sg::Engine e(g);
+            e.set_strict(true);
+            e.start();
+            e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("idle")).set("fade", 0.0)});
+            for (int i = 0; i < 60; ++i) e.tick(1.0 / 60);
+            e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("walk")).set("fade", 0.0).set("inert", inert ? 0.1 : 0.0)});
+            sg::Vec3d p0 = b.pose_of("foot_l").position, p1 = p0;
+            for (int i = 0; i < 90; ++i) {
+                e.tick(1.0 / 60);
+                const sg::Vec3d p = b.pose_of("foot_l").position;
+                // How much faster or slower the foot goes from one step to the next.
+                if (i < 20) kick[inert] = std::max(kick[inert], sg::length((p - p1) - (p1 - p0)) * 3600.0);
+                p0 = p1, p1 = p;
+            }
+            end[inert] = p1;
+            if (inert) check(b.element(sg::Being::self_id()).params.num("inert") < 0.5, "and once it is let go of, nothing is kept of it");
+        }
+        check(kick[1] < 0.7 * kick[0], "inertialized, a body starts walking with less of a kick (" + std::to_string(kick[1]) + " m/s2, faded at once " + std::to_string(kick[0]) + ")");
+        check(sg::distance(end[0], end[1]) < 0.01, "and a second and a half on it walks as the walk does (" + std::to_string(sg::distance(end[0], end[1])) + " m apart)");
     }
     return failures == 0 ? 0 : 1;
 }

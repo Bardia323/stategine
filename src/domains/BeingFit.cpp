@@ -94,6 +94,27 @@ Vec3d Being::facing() const {
     return l > 1e-6 ? Vec3d{sum.x / l, 0, sum.z / l} : Vec3d{1, 0, 0};
 }
 
+std::vector<Key> Being::ankles() const {
+    // A low joint with two bones above it that hang down to it: a shin
+    // above, a thigh above that (a toe's parent is low too: not one).
+    double low, high;
+    extent(low, high);
+    const double h = high - low;
+    std::vector<Key> out;
+    const auto up_of = [&](const Element& j) {
+        const Element* u = find(Key{j.params.get_or<std::string>("parent_joint", "")});
+        return u && u->kind == kJoint ? u : nullptr;
+    };
+    for (const Element& j : elements()) {
+        if (j.kind != kJoint || j.params.num("py") > low + 0.15 * h) continue;
+        const Element* knee = up_of(j);
+        const Element* hip = knee ? up_of(*knee) : nullptr;
+        if (!hip || knee->params.num("py") < j.params.num("py") + 0.12 * h || hip->params.num("py") < knee->params.num("py") + 0.12 * h) continue;
+        out.push_back(j.id);
+    }
+    return out;
+}
+
 double Being::extent_low() const {
     double low, high;
     extent(low, high);
@@ -115,6 +136,11 @@ void Being::resize(double k) {
             e.params.set("rig", e.params.num("rig", 1.0) * k);
         } else if (e.kind == Key{"goal"}) {
             for (Key c : {keys::x, keys::y, keys::z}) e.params.set(c, e.params.num(c) * k);
+            // (A foot set down: how far it lets slip, how high it steps, all by its leg.)
+            if (e.params.num("plants") > 0.5) {
+                for (const char* c : {"still", "slip", "lift", "leg", "lock_x", "lock_z", "floor", "floor_to"}) e.params.set(c, e.params.num(c) * k);
+                e.params.set("low", 1e9);
+            }
         }
     }
     rewrite(*this, [&](double t, const std::string& j, const std::string& rest) {
