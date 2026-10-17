@@ -119,9 +119,11 @@ std::vector<Event> pace(const Being& b, const Vec3d& velocity, double turn) {
     }
     // Slower than its stride: the walk eased into standing (shorter steps, as
     // fast); faster: the walk itself quicker - so its feet go as fast as it does.
-    const double stride = self.num("stride", 0.88), quick = std::max(1.0, speed / stride);
+    // Going back: its walk played backwards - its feet going the way the
+    // ground does under them.
+    const double stride = self.num("stride", 0.88), quick = std::max(1.0, speed / stride), way = velocity.x < 0 ? -1.0 : 1.0;
     out.push_back(Event{b.steer_event(), Params{}.set("blend", std::string("go")).set("x", speed / quick).set("y", 0.0)});
-    out.push_back(Event{b.play_event(), Params{}.set("clip", std::string("go")).set("fade", 0.0).set("inert", 0.12).set("speed", quick)});
+    out.push_back(Event{b.play_event(), Params{}.set("clip", std::string("go")).set("fade", 0.0).set("inert", 0.12).set("speed", way * quick)});
     return out;
 }
 
