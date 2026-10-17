@@ -374,10 +374,9 @@ public:
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
 
-    // Seen from `eye` (an element of the room drawn: a camera hung in it),
-    // not the room's own camera, until handed nullptr. What walks the room
-    // is still its camera; only the picture is taken from elsewhere.
-    void look_from(const Element* eye) { eye_override_ = eye; }
+    // (A room is seen from another eye of its own when its camera says so -
+    // `seen_from`, an element of it: a camera hung there. What walks the room
+    // is still its camera; only the picture is taken from elsewhere.)
 
     // A neighbourhood of rooms, each with the pose it has when seen from the
     // first one - which is the room the viewer is standing in. Nothing here

@@ -1,18 +1,17 @@
 #include "sg/domains/Modeler.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
 #include <set>
-#include <thread>
 #include <unordered_map>
 
 #include "ModelerLibrary.hpp"
 #include "SG_MODELER_CODE.hpp"
 #include "sg/core/Cache.hpp"
 #include "sg/core/StateGraph.hpp"
+#include "sg/core/Work.hpp"
 #include "sg/domains/Shapes.hpp"
 #include "sg/domains/Spatial.hpp"
 
@@ -45,7 +44,7 @@ using Read = std::vector<std::pair<std::string, Digest>>;
 
 std::string to_bytes(const sculpt::Model& m, const Read& read) {
     std::string s;
-    put<uint32_t>(s, 8);
+    put<uint32_t>(s, 9);
     put_text(s, m.errors);
     for (double v : {m.lo.x, m.lo.y, m.lo.z, m.hi.x, m.hi.y, m.hi.z}) put(s, v);
     put<uint64_t>(s, m.triangles);
@@ -56,6 +55,7 @@ std::string to_bytes(const sculpt::Model& m, const Read& read) {
         put_text(s, p.normal_texture);
         put_text(s, p.surface_texture);
         put<uint32_t>(s, p.cutout ? 1 : 0);
+        for (double v : {p.kd[0], p.kd[1], p.kd[2], p.roughness, p.metal}) put(s, v);
         put_text(s, p.joint);
         put<uint64_t>(s, p.corners.size());
         put_bytes(s, p.corners.data(), p.corners.size() * sizeof(float));
@@ -111,7 +111,7 @@ struct Reader {
 };
 bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
     Reader r{s};
-    if (r.get<uint32_t>() != 8) return false;
+    if (r.get<uint32_t>() != 9) return false;
     m.errors = r.text();
     double v[6];
     for (double& d : v) d = r.get<double>();
@@ -126,6 +126,7 @@ bool from_bytes(const std::string& s, sculpt::Model& m, Read& read) {
         p.normal_texture = r.text();
         p.surface_texture = r.text();
         p.cutout = r.get<uint32_t>() != 0;
+        for (double* v : {&p.kd[0], &p.kd[1], &p.kd[2], &p.roughness, &p.metal}) *v = r.get<double>();
         p.joint = r.text();
         const uint64_t n = r.get<uint64_t>();
         if (!r.ok || n > (s.size() - r.at) / sizeof(float)) return false;
@@ -269,22 +270,11 @@ void prepare(const std::vector<std::string>& recipes, const Options& o) {
         if (asked.insert(r).second && !seen_before(memory_key(r, o))) due.push_back(&r);
     if (due.empty()) return;
     const sculpt::Files* f = files().read ? &files() : nullptr;
-    std::atomic<std::size_t> next{0};
-    const auto work = [&] {
-        for (std::size_t i; (i = next++) < due.size();) {
-            const std::string& t = *due[i];
-            cached(memory_key(t, o), [&] { return build_kept(t, o, f); });
-        }
-    };
-    const unsigned cores = cache::hands();
-    std::vector<std::thread> hands;
-    for (unsigned k = 1; k < std::min<std::size_t>(cores, due.size()); ++k)
-        hands.emplace_back([&] {
-            cache::background_priority();
-            work();
-        });
-    work();
-    for (std::thread& t : hands) t.join();
+    // (Over the program's one set of hands: a recipe a piece.)
+    work::each(due.size(), [&](std::size_t i) {
+        const std::string& t = *due[i];
+        cached(memory_key(t, o), [&] { return build_kept(t, o, f); });
+    });
 }
 
 }  // namespace sculpt
@@ -371,6 +361,21 @@ std::vector<float> Modeler::fitted_part(std::size_t part, Vec3d& size) {
     const sculpt::Model& m = model();
     if (part >= m.parts.size()) return {};
     return shapes::fit(m.parts[part].corners, size, m.lo, m.hi);
+}
+
+void sculpt::dress(Element& e, const Part& p, const std::function<std::string(const std::string& path)>& picture) {
+    const bool said = p.kd[0] >= 0;
+    e.params.set(keys::r, said ? p.kd[0] : 0.8).set(keys::g, said ? p.kd[1] : 0.8).set(keys::b, said ? p.kd[2] : 0.8);
+    e.params.set("roughness", p.roughness >= 0 ? p.roughness : 0.6);
+    if (p.metal >= 0) e.params.set("metal", p.metal);
+    const std::string skin = p.texture.empty() || !picture ? std::string() : picture(p.texture);
+    if (skin.empty()) return;
+    e.params.set("skin", skin).set("uv", 1.0).set(keys::r, 1.0).set(keys::g, 1.0).set(keys::b, 1.0);
+    if (!p.normal_texture.empty())
+        if (const std::string n = picture(p.normal_texture); !n.empty()) e.params.set("skin_normal", n);
+    if (!p.surface_texture.empty())
+        if (const std::string s = picture(p.surface_texture); !s.empty()) e.params.set("skin_surface", s);
+    if (p.cutout) e.params.set("cutout", 0.5).set("two_sided", 1.0).set("translucent", 0.35);
 }
 
 }  // namespace sg

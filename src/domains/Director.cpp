@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "sg/domains/Spatial.hpp"
+#include "sg/domains/Walk.hpp"
 
 namespace sg {
 
@@ -244,6 +245,110 @@ Functor& cue(StateGraph& g, Director& d, Key word, Key state, Key event) {
     Functor f{Key{d.id().str() + ".cue." + word.str()}, d.id(), state};
     f.on_event(word, event);
     return g.set_functor(std::move(f));
+}
+
+// --- coverage -------------------------------------------------------------------------------
+
+bool sees(const Spatial3D& room, const Element& a, const Element& live, const Vec3d& p, double edge) {
+    const Vec3d eye = position_of(a), fwd = forward_of(a);
+    const Vec3d d = p - eye;
+    const double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    // (Under it, or nearly: not watched, only passed beneath - unless it is
+    // one that looks close: `near`.)
+    if (std::hypot(d.x, d.z) < a.params.num("near", 1.1)) return false;
+    // (Too far: a figure a few lines high is not him seen - unless it is one
+    // that looks far: `far`.)
+    if (std::hypot(d.x, d.z) > a.params.num("far", 8.0)) return false;
+    const double ahead = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z;
+    if (ahead < 0.3) return false;
+    const double fl = std::max(1e-6, std::hypot(fwd.x, fwd.z));
+    const Vec3d right{-fwd.z / fl, 0.0, fwd.x / fl};
+    const Vec3d up{-right.z * fwd.y, right.z * fwd.x - right.x * fwd.z, right.x * fwd.y};
+    const double aspect = live.params.num("feed_w", 4.0) / std::max(1.0, live.params.num("feed_h", 3.0));
+    // (Its width is its angle, its picture cut to the set's shape top and
+    // bottom; a little in from its edges: a man at the edge is half out of it.)
+    const double tv = std::tan(a.params.num(keys::fov, 60.0) * 0.5 * 3.14159265358979323846 / 180.0) * edge;
+    if (std::fabs((d.x * right.x + d.z * right.z) / ahead) > tv) return false;
+    if (std::fabs((d.x * up.x + d.y * up.y + d.z * up.z) / ahead) > tv / aspect) return false;
+    // Nothing solid between (from a little out of the camera, to a little short of it).
+    Vec3d hit, n;
+    double dist = 0;
+    const Vec3d dir = d * (1.0 / std::max(1e-6, l));
+    return !(ray(room, eye + dir * 0.25, dir, l - 0.25, hit, n, &dist) && dist < l - 0.25 - 0.45);
+}
+
+bool cover(Spatial3D& room, const std::string& prefix, const Vec3d& feet, double going, double time) {
+    Element* live = room.find(Key{prefix});
+    if (!live) return false;
+    const Vec3d& f = feet;
+    const Vec3d go = heading(going);
+    // (Each camera where it is for him now: hung, or carried along with him.)
+    const auto posed = [&](const Element& a) {
+        Element c = a;
+        const std::string axis = a.params.get_or<std::string>("track", "");
+        if (axis.empty()) return c;
+        const double v = std::clamp((axis == "x" ? f.x : f.z) + a.params.num("track_off"), a.params.num("track_lo"), a.params.num("track_hi"));
+        c.params.set(axis == "x" ? keys::x : keys::z, v);
+        return c;
+    };
+    const auto him = [&](const Element& a, double edge) {
+        // (What of him it frames, `frames`: his feet, his head and shoulders, him
+        // from the chest up, or all of him.)
+        const std::string what = a.params.get_or<std::string>("frames", "");
+        const double lo = what == "feet" ? 0.1 : what == "head" ? 1.62 : what == "chest" ? 1.15 : 0.5, hi = what == "feet" ? 0.3 : what == "head" ? 1.75 : 1.6;
+        return sees(room, a, *live, f + Vec3d{0, lo, 0}, edge) && sees(room, a, *live, f + Vec3d{0, hi, 0}, edge);
+    };
+    const auto his_way = [&](const Element& a) {
+        if (!a.params.has(Key{"going"})) return true;
+        const Vec3d w = heading(a.params.num("going"));
+        return go.x * w.x + go.z * w.z > 0.7;
+    };
+    // (Where he goes, in the picture too: for a hung one that sees all of
+    // him; one carried with him goes there with him, one at his feet sees
+    // them go.)
+    const Vec3d to = f + go * 1.6 + Vec3d{0, 0.7, 0};
+    const auto ahead = [&](const Element& a) {
+        return a.params.has(Key{"track"}) || a.params.get_or<std::string>("frames", "") == "feet" || sees(room, a, *live, to);
+    };
+    const int was = static_cast<int>(live->params.num("cam", -1.0));
+    const auto cam = [&](int k) { return room.find(Key{prefix + std::to_string(k)}); };
+    bool keep = false;
+    if (was >= 0) {
+        // (Kept while he is well inside its picture, and where he goes is in it too.)
+        const Element a = posed(*cam(was));
+        keep = (him(a, 0.55) && ahead(a) && his_way(a)) || time - live->params.num("cut_at", -99.0) < 0.6;
+    }
+    int pick = was;
+    if (!keep) {
+        double best = -1e9;
+        int found = -1;
+        for (int k = 0; k < 32; ++k) {
+            const Element* hung = cam(k);
+            if (!hung) break;
+            const Element a = posed(*hung);
+            if (!him(a, 0.88) || !his_way(a)) continue;
+            // Both, first; then the one looking the way he goes (behind him);
+            // the one already watching, if it is as good.
+            const Vec3d fw = forward_of(a);
+            const double behind = (fw.x * go.x + fw.z * go.z) / std::max(1e-6, std::hypot(fw.x, fw.z));
+            const double score = (a.params.num("first") > 0.5 ? 100.0 : 0.0) + (ahead(a) ? 10.0 : 0.0) + behind + (k == was ? 0.5 : 0.0);
+            if (score > best) best = score, found = k;
+        }
+        // (Seeing only him, not where he goes: kept by the one that has him, unless another sees both.)
+        const bool still_has = was >= 0 && him(posed(*cam(was)), 0.88) && his_way(*cam(was));
+        if (found >= 0 && found != was && !(still_has && best < 10.0)) pick = found, live->params.set("cut_at", time);
+    }
+    if (pick < 0) return false;
+    if (pick != was) live->params.set("shake_zoom", 1.0);  // (cut: as it hangs, not as close as the last was brought)
+    const Element a = posed(*cam(pick));
+    const double fov = a.params.num(keys::fov) * live->params.num("shake_zoom", 1.0);
+    const Vec3d at = position_of(a) + Vec3d{live->params.num("shake_x"), live->params.num("shake_y"), live->params.num("shake_z")};
+    const double yaw = a.params.num(keys::yaw) + live->params.num("shake_yaw"), pitch = a.params.num(keys::pitch) + live->params.num("shake_pitch");
+    if (live->params.num(keys::x) != at.x || live->params.num(keys::y) != at.y || live->params.num(keys::z) != at.z || live->params.num(keys::yaw) != yaw || live->params.num(keys::pitch) != pitch || live->params.num(keys::fov) != fov || pick != was) {
+        set_position(*live, at);
+        live->params.set(keys::yaw, yaw).set(keys::pitch, pitch).set(keys::fov, fov).set("cam", static_cast<double>(pick));
+    }
+    return true;
 }
 
 }  // namespace sg

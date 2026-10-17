@@ -431,7 +431,17 @@ std::map<std::string, MtlMaps> read_mtl(const std::string& text) {
         std::istringstream ls(line);
         std::string w;
         ls >> w;
-        if (w == "newmtl") ls >> cur;
+        if (w == "newmtl") ls >> cur, out[cur];
+        else if (!cur.empty() && w == "Kd") ls >> out[cur].kd[0] >> out[cur].kd[1] >> out[cur].kd[2];
+        else if (!cur.empty() && w == "Ks") {
+            double s = 0;
+            ls >> s;
+            if (!out[cur].has_pr) out[cur].roughness = 0.9 - 0.6 * s;
+        }
+        // (A photographed model's own roughness and metal - tools that write
+        // them from its metal-roughness picture: over the guess from Ks.)
+        else if (!cur.empty() && w == "Pr") ls >> out[cur].roughness, out[cur].has_pr = true;
+        else if (!cur.empty() && w == "Pm") ls >> out[cur].metal;
         else if (!cur.empty() && (w == "map_Kd" || w == "norm" || w == "map_Bump" || w == "bump" || w == "map_ORM" || w == "map_d")) {
             // The file is the last word: options (-s, -o, -bm ...) come before it.
             std::string word, last;

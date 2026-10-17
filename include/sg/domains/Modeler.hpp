@@ -101,6 +101,11 @@ struct Part {
     // Its colour picture's alpha cuts it out (`map_d` of the .mtl): a leaf
     // on a card, drawn only where the leaf is (`cutout`, `two_sided`).
     bool cutout = false;
+    // What its material says of itself (an imported one's .mtl): its colour
+    // (`Kd`), how rough (`Pr`, else from `Ks`), how metal (`Pm`) - below 0
+    // where unsaid.
+    double kd[3] = {-1, -1, -1};
+    double roughness = -1, metal = -1;
     // The joint its faces move with (`moves`), by name; empty: they stand still.
     std::string joint;
 };
@@ -181,6 +186,15 @@ Model opened(const Model& m, double open);
 // The mesh of a recipe: a function of the text, the options and the files it
 // imports.
 Model build(const std::string& recipe, const Options& options = {}, const Files* files = nullptr);
+
+// A part on the thing that shows it, dressed as its material says: its colour
+// (0.8 grey unsaid), how rough (0.6 unsaid), how metal (only if said), and
+// its pictures - each given to the thing by `picture` (a file's path to the
+// name of a picture of the room the thing is in; empty if it cannot be read):
+// its colour worn by its own uv (`skin`, `uv`; the colour then white), its
+// normal and surface maps (`skin_normal`, `skin_surface`), and a leaf on a
+// card cut out of its picture, lit from either side.
+void dress(Element& thing, const Part& part, const std::function<std::string(const std::string& path)>& picture);
 
 // Recipes about to be asked for, made now, all at once (a recipe to a core),
 // so that a Modeler asking for one finds it made. Nothing but time: a recipe

@@ -476,6 +476,19 @@ void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal
 }
 
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    // A room that says it is seen from one of its own (its camera's
+    // `seen_from`: an element of it - a camera hung there, chosen by whatever
+    // stages it) is drawn from there; what walks it is still its camera.
+    if (!eye_override_ && !root_ && !requested.empty() && requested.front().room) {
+        const Spatial3D& w = *requested.front().room;
+        const std::string from = w.camera().params.get_or<std::string>("seen_from", "");
+        if (const Element* e = from.empty() ? nullptr : w.find(Key{from})) {
+            eye_override_ = e;
+            render(requested, fb_w, fb_h);
+            eye_override_ = nullptr;
+            return;
+        }
+    }
     // Drawn at a part of the screen's size, and laid on it in squares: the
     // eye's own view only (a view drawn for another is that one's size).
     if (q_.pixel > 1 && !root_ && !output_ && !baking_ && surface_only_ == 0 && fb_w > 0 && fb_h > 0) {

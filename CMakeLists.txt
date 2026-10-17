@@ -474,6 +474,8 @@ if(SG_BUILD_TESTS)
   add_executable(sg_modeler tests/test_modeler.cpp)
   target_link_libraries(sg_modeler PRIVATE stategine_dev)
   add_test(NAME sg_modeler COMMAND sg_modeler)
+  # Every word of every library and style made (the fast tier makes one of each).
+  add_test(NAME sg_modeler_libraries CONFIGURATIONS full COMMAND sg_modeler --full)
   add_executable(sg_terrain tests/test_terrain.cpp)
   target_link_libraries(sg_terrain PRIVATE stategine_dev)
   add_test(NAME sg_terrain COMMAND sg_terrain)
@@ -524,9 +526,16 @@ if(SG_BUILD_TESTS)
   add_executable(sg_lanes tests/test_lanes.cpp)
   target_link_libraries(sg_lanes PRIVATE stategine_dev)
   add_test(NAME sg_lanes COMMAND sg_lanes)
+  # (It also times lanes against one hand: alone, or other tests' work is in its numbers.)
+  set_tests_properties(sg_lanes PROPERTIES RUN_SERIAL TRUE)
   add_executable(sg_director tests/test_director.cpp)
   target_link_libraries(sg_director PRIVATE stategine_dev)
   add_test(NAME sg_director COMMAND sg_director)
+  # People and what they meet: a conversation of any number of speakers,
+  # the face that speaks with it, a door between two rooms.
+  add_executable(sg_people tests/test_people.cpp)
+  target_link_libraries(sg_people PRIVATE stategine_dev)
+  add_test(NAME sg_people COMMAND sg_people)
 
   # Work kept - a portal's carry, the laws' answers, validate's - is the same
   # as work done again: each run both ways and held to one answer.
@@ -791,7 +800,7 @@ endif()
 # guard only that path and take most of the time: run them when it changes,
 # and before a release. Labels say which is which (`-L fast`, `-L full`).
 if(SG_BUILD_TESTS)
-  set(_sg_full_tests sg_net_processes sg_net_verified_processes sg_net_pong)
+  set(_sg_full_tests sg_net_processes sg_net_verified_processes sg_net_pong sg_modeler_libraries)
   get_property(_sg_all_tests DIRECTORY PROPERTY TESTS)
   foreach(_t IN LISTS _sg_all_tests)
     if(_t IN_LIST _sg_full_tests)

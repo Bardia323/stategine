@@ -603,7 +603,10 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
         for (int& f : g->mat) {
             const std::string& name = ob.materials[std::size_t(f)];
             f = keep ? mat_id(name) : d.mat;
-            if (auto it = pictures.find(name); it != pictures.end() && !textures_.count(f)) textures_[f] = it->second;
+            // (Kept apart, each its own; made one, the first that has a picture.)
+            if (auto it = pictures.find(name); it != pictures.end() && !textures_.count(f) &&
+                (keep || !it->second.colour.empty() || !it->second.normal.empty() || !it->second.surface.empty() || it->second.cutout))
+                textures_[f] = it->second;
         }
         Box bb;
         for (const V3& q : g->p) bb.grow(q);
@@ -1080,6 +1083,8 @@ Model build(const std::string& recipe, const Options& options, const Files* file
             part.normal_texture = it->second.normal;
             part.surface_texture = it->second.surface;
             part.cutout = it->second.cutout;
+            for (int c = 0; c < 3; ++c) part.kd[c] = it->second.kd[c];
+            part.roughness = it->second.roughness, part.metal = it->second.metal;
         }
         part.corners = std::move(by[m]);
         for (std::size_t i = 0; i + 7 < part.corners.size(); i += 8) bb.grow(V3{part.corners[i], part.corners[i + 1], part.corners[i + 2]});

@@ -730,6 +730,38 @@ cues it passes. It meets what it stages only through the graph:
 A mark with `aim_x aim_y aim_z` looks there from its `x y z` (`yaw`, `pitch`).
 What a script gets wrong is the director's `faults`.
 
+Where nobody holds the camera, the director's eye covers whoever walks:
+cameras hung in a room (`cctv0`, `cctv1` ...) or carried on a dolly
+(`track`), and the cut chosen as an editor would (`sg::cover(room, "cctv",
+feet, heading, time)`, from the room's own step): a camera that sees the
+subject and where it is going, kept while the subject is well inside it,
+never cut twice in a breath; one may frame only the feet or the head, or
+be only for one way of going. A room whose camera says `seen_from` (one
+of its own elements: the camera watching) is drawn from it - what walks
+the room is still its camera.
+
+### People: cast, faces, conversations, doors
+
+* `sg::cast(g, room, clock, "bruce", casting)` (`sg/domains/Cast.hpp`): a
+  rigged glTF read, fitted to a height, stood at its spot in a room and
+  shown there, its first clip played; with a walk of the same skeleton,
+  standing and walking blended by pace (`sg::pace`). `sg::lead` moves a body
+  by another's motion (a skeleton's clip, retargeted); `sg::touch` finds
+  where a ray meets its ragdoll.
+* `sg::Face` (`Face.hpp`): which picture a face wears, a state on its own
+  line - idle pictures at random, talking ones as open as the mouth is told
+  to be (`sg::voices`, from whatever speaks), carried to the skin
+  (`sg::wears_face`). The pictures read (`faces_from`) or made from the skin's
+  own and a map of the mouth (`mouths_from`).
+* `sg::Dialogue` (`Dialogue.hpp`): a conversation of any number of speakers
+  - exchanges of as many lines as they have, each by anyone; links between
+  them by what they are about, some waiting on others; its phases on its own
+  line, a voice for each speaker. Written as text (`speaker`, `exchange`,
+  `> yours`, `< theirs`, `ada: hers`); a game paints it by overriding `paint`.
+* `sg::Door` (`Door.hpp`): a door, in neither room - its leaf swung, held,
+  pushed, rattled on its own line; `door_hinge`, `door_near`, `door_far`
+  carry it to both sides.
+
 ### Looks
 
 How a room is shown is a state too. A `LookState` has one element per pass

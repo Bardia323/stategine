@@ -150,4 +150,15 @@ void beside(const std::function<void()>& mine, std::size_t n, const std::functio
     run(&mine, n, fn);
 }
 
+void bands(int n, const std::function<void(int, int)>& fn, int per_hand) {
+    if (n <= 0) return;
+    const int pieces = std::min(n, static_cast<int>(hands()) * std::max(1, per_hand));
+    if (pieces <= 1) return fn(0, n);
+    each(static_cast<std::size_t>(pieces), [&](std::size_t i) {
+        const int a = static_cast<int>(static_cast<long long>(n) * static_cast<long long>(i) / pieces);
+        const int b = static_cast<int>(static_cast<long long>(n) * static_cast<long long>(i + 1) / pieces);
+        if (a < b) fn(a, b);
+    });
+}
+
 }  // namespace sg::work

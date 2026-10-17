@@ -61,6 +61,7 @@
 #include "sg/gl/Window.hpp"
 #include "sg/gl/World.hpp"
 #include "sg/render/ViewPlan.hpp"
+#include "sg/domains/Mat.hpp"
 #include "sg/sg.hpp"
 
 namespace sgen {
@@ -76,80 +77,15 @@ const char* const kSpecimens[] = {"ball", "cube", "slab"};
 const char* const kMeasured[] = {"ball", "cube", "slab", "model", "grey", "chrome", "white", "mid", "black", "red", "green", "blue"};
 const char* const kPresets[] = {"studio", "lamp", "soft"};
 
-// What a material says: what is set on the specimens, and on their texture's map.
-struct Material {
-    std::vector<std::pair<std::string, sg::Value>> things, map;
-    int srgb = -1;  // -1: as a texture is (sRGB)
-    bool worn() const { return !map.empty() || srgb >= 0; }
-};
+// What a material says: what is set on the specimens, and on their texture's
+// map (the engine's reading of a `.mat`).
+using Material = sg::mat::File;
 
 // A model stood in the specimens' place (`--model`).
 struct ModelSpec {
     std::string file;
     double fit = 1.1, turn = 0.0;
 };
-
-std::string trim(const std::string& s) {
-    const auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-}
-
-// A number if it reads as one whole, else text (quotes taken off).
-sg::Value value_of(const std::string& raw) {
-    const std::string v = trim(raw);
-    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') return v.substr(1, v.size() - 2);
-    char* end = nullptr;
-    const double d = std::strtod(v.c_str(), &end);
-    if (!v.empty() && end && *end == '\0') return d;
-    return v;
-}
-
-// One `key = value`; false (and why) when it is not one.
-bool say(Material& m, const std::string& line, const fs::path& dir, std::string& why) {
-    const auto eq = line.find('=');
-    if (eq == std::string::npos) return why = "no '='", false;
-    const std::string key = trim(line.substr(0, eq));
-    if (key.empty()) return why = "no key", false;
-    sg::Value v = value_of(line.substr(eq + 1));
-    if (key.rfind("texture.", 0) == 0) {
-        const std::string k = key.substr(8);
-        if (k == "srgb") {
-            m.srgb = std::holds_alternative<double>(v) && std::get<double>(v) != 0.0 ? 1 : 0;
-            return true;
-        }
-        if (k.size() >= 5 && k.compare(k.size() - 5, 5, "layer") == 0 && std::holds_alternative<std::string>(v)) {
-            const fs::path p = std::get<std::string>(v);
-            v = (p.is_absolute() ? p : dir / p).string();
-        }
-        m.map.emplace_back(k, std::move(v));
-    } else {
-        m.things.emplace_back(key, std::move(v));
-    }
-    return true;
-}
-
-bool read(Material& m, const std::string& text, const fs::path& dir, const std::string& from) {
-    bool ok = true;
-    std::size_t n = 0, at = 0;
-    while (at <= text.size()) {
-        const auto nl = text.find('\n', at);
-        std::string line = text.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
-        at = nl == std::string::npos ? text.size() + 1 : nl + 1;
-        ++n;
-        bool quoted = false;
-        for (std::size_t i = 0; i < line.size(); ++i) {
-            if (line[i] == '"') quoted = !quoted;
-            if (line[i] == '#' && !quoted) {
-                line.resize(i);
-                break;
-            }
-        }
-        if (trim(line).empty()) continue;
-        std::string why;
-        if (!say(m, line, dir, why)) std::fprintf(stderr, "%s:%zu: %s: %s\n", from.c_str(), n, why.c_str(), trim(line).c_str()), ok = false;
-    }
-    return ok;
-}
 
 std::string slurp(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -220,7 +156,7 @@ void stand_model(sg::Spatial3D& stage, const ModelSpec& spec, const Material& m,
         if (const std::string pic = picture(part.normal_texture); !pic.empty()) e.params.set("skin_normal", pic);
         if (const std::string pic = picture(part.surface_texture); !pic.empty()) e.params.set("skin_surface", pic);
         if (part.cutout) e.params.set("cutout", 0.5).set("two_sided", 1.0).set("translucent", 0.35);
-        for (const auto& [k, v] : m.things) e.params.set(sg::Key{k}, v);
+        for (const auto& [k, v] : m.thing) e.params.set(sg::Key{k}, v);
         char line[256];
         std::snprintf(line, sizeof line, "  part %-14s %7zu faces  colour %s  normal %s  surface %s%s", part.material.c_str(), part.corners.size() / 24,
                       part.texture.empty() ? "-" : fs::path(part.texture).filename().string().c_str(),
@@ -239,7 +175,7 @@ Shot shoot(const Material& m, const ModelSpec& spec, const std::string& preset, 
 
     // What the material says, on each specimen - before anything is drawn.
     for (const char* id : kSpecimens)
-        for (const auto& [k, v] : m.things) stage.element(sg::Key{id}).params.set(sg::Key{k}, v);
+        for (const auto& [k, v] : m.thing) stage.element(sg::Key{id}).params.set(sg::Key{k}, v);
     if (!spec.file.empty()) stand_model(stage, spec, m, shot.notes);
     if (m.worn()) {
         auto& swatch = g.add<sg::Texture>(sg::Key{"swatch"}, cell);
@@ -385,12 +321,14 @@ int main(int argc, char** argv) {
         if (!fs::exists(file)) return std::fprintf(stderr, "no file %s\n", file.c_str()), 1;
         dir = fs::path(file).parent_path();
         name = fs::path(file).stem().string();  // pictures go where it runs, never beside the source
-        ok = read(m, slurp(file), dir, file);
+        m = sg::mat::read(slurp(file), dir.generic_string(), file);
+        for (const std::string& e : m.errors) std::fprintf(stderr, "%s\n", e.c_str());
+        ok = m.errors.empty();
     }
     for (const auto& s : sets) {
-        if (trim(s).empty()) continue;
+        if (s.find_first_not_of(" \t\r\n") == std::string::npos) continue;
         std::string why;
-        if (!say(m, s, dir, why)) std::fprintf(stderr, "--set %s: %s\n", s.c_str(), why.c_str()), ok = false;
+        if (!sg::mat::say(m, s, dir.generic_string(), &why)) std::fprintf(stderr, "--set %s: %s\n", s.c_str(), why.c_str()), ok = false;
     }
     if (!ok) return 1;
     if (!look_at.empty() && std::find(std::begin(kSpecimens), std::end(kSpecimens), look_at) == std::end(kSpecimens) &&

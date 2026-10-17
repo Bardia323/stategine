@@ -288,7 +288,9 @@ the material.
 3. Change one thing at a time (`-e` to try it), and look again.
 4. When it is right, put it where it will be used: its params in the `.sg`
    that declares the thing, its texture as a `Texture` state the thing wears.
-   The `.mat` is a sketch for `sgmat`, not a format the engine reads.
+   A program can also wear the `.mat` itself as `sgmat` reads it
+   (`sg/domains/Mat.hpp`: `sg::mat::load`, `texture`, `dress`), so what was
+   tuned is what is worn.
 
 ### A photographed material (Poly Haven, ambientCG, ...)
 

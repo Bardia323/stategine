@@ -94,8 +94,11 @@ static bool inside(const Model& m, double x, double y, double z) {
     return n % 2 == 1;
 }
 
-int main() {
+int main(int argc, char** argv) {
     using namespace sg;
+    // The fast tier says one of each kind of thing the libraries make; the
+    // full one (`--full`, ctest -C full) every word of every library and style.
+    const bool full = argc > 1 && std::string(argv[1]) == "--full";
     {
         StateGraph g;
         auto& m = g.add<Modeler>(Key{"model"});
@@ -321,9 +324,11 @@ int main() {
         // Every style says every word: each makes a building and a tower with
         // no error, and the composer's other compositions run in it.
         for (const std::string& style : {"classical", "gothic", "modern", "romanesque", "islamic", "japanese", "brutalist", "artdeco"}) {
+            if (!full && style != "classical") continue;
             const Model b = sculpt::build("use arch\nuse " + style + "\nbuilding style=" + style + " w=10 d=8 floors=2 bays=4\ntower style=" + style + " at=-10,0,0\n");
             check(b.errors.empty() && b.triangles > 2000 && b.size().y > 8, style + ": a building and a tower, every word of the style said " + b.errors);
         }
+        if (full) {
         const Model church = sculpt::build("use arch\nuse gothic\nchurch\n"), temple = sculpt::build("use arch\nuse classical\ntemple\n"),
                     street = sculpt::build("use arch\nuse modern\nstreet style=modern n=3 seed=2\n");
         // (A field meshed coarser to keep its grid down is a note, not a fault.)
@@ -335,6 +340,7 @@ int main() {
         };
         check(faultless(church) && faultless(temple) && faultless(street) && church.size().z > 25 && street.size().x > 20,
               "compositions: a church, a temple, a street of houses each its own");
+        }
         sculpt::define_library("tiny", "define tiny.wall len=1 h=1 t=1\n  box $len $h $t\nend\n");
         check(sculpt::build("use tiny\ntiny.wall 2 2 2\n").triangles == 12, "a program adds a library of its own (define_library)");
     }
@@ -380,11 +386,14 @@ int main() {
                               "use city\ncity.block 60 40 1 3\n", "let detail 0.4\nuse arch\nuse gothic\ncathedral len=24 w=9 h=10\n", "use arch\nuse islamic\nmosque\n",
                               "let detail 0.4\nuse arch\nuse classical\npalace w=24 d=10 floors=2 bays=7\n",
                               "use arch\nuse romanesque\ncastle\n"}) {
+            if (!full && std::string(r).rfind("use mould", 0) != 0) continue;
             const Model m = sculpt::build(r);
             check(faultless(m) && m.triangles > 500, std::string("every word of the libraries says something, without a fault: ") + m.errors + r);
         }
-        const Model dist = sculpt::build("use city\ncity.district 2 2 bw=50 bd=40\n");
-        check(faultless(dist) && dist.size().x > 100 && dist.triangles > 20000, "a district: blocks and streets, buildings by zone and seed");
+        if (full) {
+            const Model dist = sculpt::build("use city\ncity.district 2 2 bw=50 bd=40\n");
+            check(faultless(dist) && dist.size().x > 100 && dist.triangles > 20000, "a district: blocks and streets, buildings by zone and seed");
+        }
         // `default` is a `let` unless the name is already set: how a library takes a setting given before `use`.
         const Model dflt = sculpt::build("let k 3\ndefault k 5\ndefault j 2\nbox $k $j 1\n");
         check(dflt.errors.empty() && std::abs(dflt.size().x - 3) < 1e-6 && std::abs(dflt.size().y - 2) < 1e-6, "default sets a variable only where none is set");
@@ -395,6 +404,7 @@ int main() {
         check(coarse.triangles < fine.triangles / 2 && coarse.triangles > 100, "detail 0.3 makes a balustrade of a fraction of the faces");
         // The parametric style: every known style is a point in it, and two mixed are still a building.
         for (const std::string& pa : {"classical", "gothic", "romanesque", "islamic", "byzantine", "baroque", "modern", "japanese", "artdeco", "brutalist"}) {
+            if (!full && pa != "gothic") continue;
             const Model b = sculpt::build("let pa " + pa + "\nuse arch\nuse param\nbuilding style=param w=10 d=8 floors=2 bays=4\ntower style=param at=-10,0,0\n");
             check(faultless(b) && b.triangles > 2000 && b.size().y > 8, "param at " + pa + ": a building and a tower " + b.errors);
         }

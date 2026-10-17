@@ -53,6 +53,8 @@
 
 namespace sg {
 
+class Spatial3D;
+
 class Director : public State {
 public:
     static Key board_id() { return Key{"board"}; }
@@ -117,5 +119,36 @@ Functor& action(StateGraph& g, Director& d, Key state, Key event);
 
 // The word `word` the director says carried to `event` of `state`.
 Functor& cue(StateGraph& g, Director& d, Key word, Key state, Key event);
+
+// --- coverage: a subject covered by cameras -----------------------------------------------
+// What a director does with cameras where nobody holds one: hung in a room,
+// or carried there as a film's camera is on its dolly, and the cut chosen as
+// an editor would. The cameras are elements of the room (`<prefix>0`,
+// `<prefix>1` ...: each where it hangs, which way it looks, how wide - `fov`);
+// the one watching now is `<prefix>` (where it is and as it is, `cam` which it
+// is, its picture's shape `feed_w` by `feed_h`), for whatever shows it - a
+// room whose camera says `seen_from` = `<prefix>` is drawn from it.
+//
+// The one watching is one that sees the subject and where it is going -
+// whatever it walks to is in the picture with it, not behind the camera or
+// under it. It keeps the subject while it is well inside its picture; then
+// gives it up to one that sees both, or, when none does, to the one behind it;
+// never twice inside a breath (0.6 s of the time it is given). A camera may
+// say: `track` 'x' or 'z' - carried along that way with the subject
+// (`track_off` from it, within `track_lo`..`track_hi`); `frames` - only some
+// of it (`feet`, `head`, `chest`; else all of a person); `going` - only for
+// the subject going one way (a heading, within a quarter turn), and `first` -
+// taken over any hung one that has it; `near`, `far` - how close under it,
+// and how far off, it still sees (1.1 m, 8 m). The one watching is shaken by
+// as much as it says (`shake_x` ... `shake_pitch`) and brought closer
+// (`shake_zoom`, its angle's part) until it cuts.
+//
+// Whether camera `a` sees `p` - in its picture (shaped as `live`'s), within
+// `edge` of the way to its edges, nothing solid between.
+bool sees(const Spatial3D& room, const Element& a, const Element& live, const Vec3d& p, double edge = 0.88);
+// The one watching `room`'s subject - its feet at `feet`, going `going` (a
+// heading) - at `time` (the room's own): posed, if one sees it. False if none
+// does (or there is no `<prefix>`).
+bool cover(Spatial3D& room, const std::string& prefix, const Vec3d& feet, double going, double time);
 
 }  // namespace sg

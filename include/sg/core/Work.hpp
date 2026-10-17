@@ -33,6 +33,11 @@ void set_hands(unsigned n);
 // (the first, once all are done). Pieces should write only what is theirs.
 void each(std::size_t n, const std::function<void(std::size_t)>& fn);
 
+// `fn(i0, i1)` for pieces of [0, n) - rows of a picture, say - side by side:
+// `per_hand` pieces a hand (a few more than there are hands, so a hand slow
+// to wake holds nobody up), each a run of its own; back when all are done.
+void bands(int n, const std::function<void(int, int)>& fn, int per_hand = 3);
+
 // `mine()` on the caller's own thread while `fn(i)` for i in [0, n) is
 // shared out over the other hands - the caller joining them when its own is
 // done. For work that must stay on the thread it was given on (a GL context,

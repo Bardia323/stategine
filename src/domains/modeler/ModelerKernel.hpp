@@ -181,10 +181,14 @@ Obj read_obj(const std::string& text);
 // colour (`map_Kd`), its normal map (`norm`, or `map_Bump` / `bump`, as
 // exporters write a normal map there), its surface map (`map_ORM`: red
 // occlusion, green roughness, blue metal) - and whether its colour's alpha
-// cuts it out (`map_d`: leaves on cards).
+// cuts it out (`map_d`: leaves on cards); and what it says of itself: its
+// colour (`Kd`), how rough (`Pr`, else guessed from `Ks`), how metal (`Pm`).
 struct MtlMaps {
     std::string colour, normal, surface;
     bool cutout = false;
+    double kd[3] = {-1, -1, -1};  // below 0: unsaid
+    double roughness = -1, metal = -1;
+    bool has_pr = false;
 };
 std::map<std::string, MtlMaps> read_mtl(const std::string& text);
 
