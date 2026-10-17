@@ -248,7 +248,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const bool jittered = depth <= 1 && (jitter_x_ != 0.0f || jitter_y_ != 0.0f);
     const gl::Mat4 drawn_proj = (jittered ? gl::Mat4::translate({2.0f * jitter_x_ / vp_w_, 2.0f * jitter_y_ / vp_h_, 0.0f}) : gl::Mat4::identity()) *
                                 narrow * drawn_lens * looking;
-    if (depth == 0 && taa_on()) {
+    if (depth == 0 && eye_view()) {
         taa_vp_ = view_proj;
         taa_world_ = rooms.front().room;
         taa_eye_ = cam.eye;

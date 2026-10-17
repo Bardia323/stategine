@@ -34,75 +34,110 @@ void GLWorldView::ShadowSet::forget() {
     }
 }
 
+GLWorldView& GLWorldView::shadow_pool() {
+    GLWorldView* p = this;
+    while (p->root_ && p->root_ != p) p = p->root_;
+    return *p;
+}
+
 long long GLWorldView::shadow_room() {
+    if (&shadow_pool() != this) return shadow_pool().shadow_room();
     if (shadow_room_ != 0) return shadow_room_;
     if (q_.shadow_budget_mb < 0) return shadow_room_ = -1;
-    if (q_.shadow_budget_mb > 0) return shadow_room_ = static_cast<long long>(q_.shadow_budget_mb) << 20;
-    // As the card says it is (in kilobytes): how much it has, or how much is
-    // free for textures; a sixteenth of that, within reason.
-    constexpr gl::GLenum kDedicatedNvx = 0x9047, kFreeAti = 0x87FC;
-    gl::GLint kb[4] = {0, 0, 0, 0};
-    gl::glGetIntegerv(kDedicatedNvx, kb);
-    if (gl::glGetError() != gl::GL_NO_ERROR || kb[0] <= 0) {
-        kb[0] = 0;
-        gl::glGetIntegerv(kFreeAti, kb);
-        if (gl::glGetError() != gl::GL_NO_ERROR) kb[0] = 0;
-    }
-    const long long card = static_cast<long long>(kb[0]) << 10;
-    return shadow_room_ = card > 0 ? std::clamp(card / 16, 512LL << 20, 2048LL << 20) : 1024LL << 20;
+    // As the card says it is (in kilobytes): how much it has, and how much
+    // of it is free now (the first map made: the rest of the frame's targets
+    // still to come, and whatever else shares the card).
+    constexpr gl::GLenum kDedicatedNvx = 0x9047, kFreeNvx = 0x9049, kFreeAti = 0x87FC;
+    const auto ask = [](gl::GLenum what) -> long long {
+        gl::GLint kb[4] = {0, 0, 0, 0};
+        gl::glGetIntegerv(what, kb);
+        return gl::glGetError() == gl::GL_NO_ERROR && kb[0] > 0 ? static_cast<long long>(kb[0]) << 10 : 0;
+    };
+    const long long card = ask(kDedicatedNvx);
+    long long free = ask(kFreeNvx);
+    if (!free) free = ask(kFreeAti);
+    // What it is told (render.conf), else a sixteenth of the card within
+    // reason - and never more than a quarter of what is free: maps the card
+    // has no room for are paged out and back every frame, every frame slow.
+    long long room = q_.shadow_budget_mb > 0 ? static_cast<long long>(q_.shadow_budget_mb) << 20
+                     : card > 0              ? std::clamp(card / 16, 512LL << 20, 2048LL << 20)
+                     : free > 0              ? std::clamp(free / 16, 512LL << 20, 2048LL << 20)
+                                             : 1024LL << 20;
+    if (free > 0) room = std::min(room, std::max(free / 4, 256LL << 20));
+    return shadow_room_ = room;
 }
 
 bool GLWorldView::let_go_of_oldest_shadows() {
-    // (Never one asked for this frame or the last: what is being drawn.)
-    auto oldest = shadow_sets_.end();
-    for (auto it = shadow_sets_.begin(); it != shadow_sets_.end(); ++it)
-        if (it->second->used + 1 < frame_count_ && (oldest == shadow_sets_.end() || it->second->used < oldest->second->used)) oldest = it;
-    if (oldest == shadow_sets_.end()) return false;
+    // (Never one asked for this frame or the last: what is being drawn. Of
+    // every view's, in the pool: the one asked for longest ago, whoever's.)
+    GLWorldView& pool = shadow_pool();
+    auto& sets = pool.shadow_sets_;
+    auto oldest = sets.end();
+    for (auto it = sets.begin(); it != sets.end(); ++it)
+        if (it->second->used + 1 < pool.frame_count_ && (oldest == sets.end() || it->second->used < oldest->second->used)) oldest = it;
+    if (oldest == sets.end()) return false;
     for (gl::ShadowArray* a : {&oldest->second->array, &oldest->second->still})
-        if (a->valid()) spare_shadows_.push_back(std::move(*a));
-    shadow_sets_.erase(oldest);
+        if (a->valid()) pool.spare_shadows_.push_back(std::move(*a));
+    sets.erase(oldest);
     return true;
 }
 
-bool GLWorldView::fit_shadows(gl::ShadowArray& maps, int size, int layers) {
+bool GLWorldView::fit_shadows(gl::ShadowArray& maps, int size, int layers, bool keep) {
     const long long room = shadow_room();
-    if (room < 0) return maps.ensure(size, layers);
+    auto& pool = shadow_pool();
     layers = std::max(1, layers);
     if (maps.valid() && maps.size() == size && maps.layers() >= layers) return false;
-    if (maps.valid()) spare_shadows_.push_back(std::move(maps));
+    // (Grown, and asked to keep what it holds: the old maps copied, layer by
+    // layer, into the new - nothing laid again.)
+    gl::ShadowArray old;
+    const bool grow = keep && maps.valid() && maps.size() == size;
+    if (grow) old = std::move(maps);
+    const auto kept = [&] {
+        if (!grow) return true;
+        for (int l = 0; l < old.layers() && l < maps.layers(); ++l) copy_depth(old, maps, l);
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+        pool.spare_shadows_.push_back(std::move(old));
+        return false;
+    };
+    if (room < 0) {
+        maps.ensure(size, layers);
+        return kept();
+    }
+    if (maps.valid()) pool.spare_shadows_.push_back(std::move(maps));
     // A spare that holds them and little more (the smallest), else room made
     // for them: a spare much bigger would hold the card for nothing.
     const auto take_spare = [&] {
-        auto best = spare_shadows_.end();
-        for (auto it = spare_shadows_.begin(); it != spare_shadows_.end(); ++it)
+        auto best = pool.spare_shadows_.end();
+        for (auto it = pool.spare_shadows_.begin(); it != pool.spare_shadows_.end(); ++it)
             if (it->size() == size && it->layers() >= layers && it->layers() <= layers + layers / 4 + 1 &&
-                (best == spare_shadows_.end() || it->layers() < best->layers()))
+                (best == pool.spare_shadows_.end() || it->layers() < best->layers()))
                 best = it;
-        if (best == spare_shadows_.end()) return false;
+        if (best == pool.spare_shadows_.end()) return false;
         maps = std::move(*best);
-        spare_shadows_.erase(best);
+        pool.spare_shadows_.erase(best);
         return true;
     };
-    if (take_spare()) return true;
+    if (take_spare()) return kept();
     const long long need = static_cast<long long>(size) * size * layers * 4;
     while (gl::ShadowArray::made_bytes() + need > room) {
-        if (!spare_shadows_.empty()) {
-            spare_shadows_.pop_back();  // (none of them would do)
+        if (!pool.spare_shadows_.empty()) {
+            pool.spare_shadows_.pop_back();  // (none of them would do)
             continue;
         }
         if (!let_go_of_oldest_shadows()) break;  // (what is being drawn needs more than there is room for)
-        if (take_spare()) return true;
+        if (take_spare()) return kept();
     }
     maps.ensure(size, layers);
-    return true;
+    return kept();
 }
 
 void GLWorldView::keep_shadows_within_room() {
     const long long room = shadow_room();
+    auto& pool = shadow_pool();
     if (room < 0) return;
     while (gl::ShadowArray::made_bytes() > room) {
-        if (!spare_shadows_.empty()) {
-            spare_shadows_.pop_back();
+        if (!pool.spare_shadows_.empty()) {
+            pool.spare_shadows_.pop_back();
             continue;
         }
         if (!let_go_of_oldest_shadows()) break;
@@ -112,16 +147,20 @@ void GLWorldView::keep_shadows_within_room() {
 auto GLWorldView::shadows_for(const void* world, const void* view) -> ShadowSet& {
     // Never more than the views there can be: past that, the set asked for
     // longest ago goes - one, never all of them at once (every view would
-    // draw its maps again in the same frame).
-    if (shadow_sets_.size() >= 64 && !shadow_sets_.count({world, view})) {
-        auto oldest = shadow_sets_.begin();
-        for (auto it = shadow_sets_.begin(); it != shadow_sets_.end(); ++it)
+    // draw its maps again in the same frame). (In the pool, keyed by whose:
+    // a view's sets are laid from its own casters.)
+    GLWorldView& pool = shadow_pool();
+    auto& sets = pool.shadow_sets_;
+    const void* whose = reinterpret_cast<const void*>(reinterpret_cast<std::uintptr_t>(view) ^ (reinterpret_cast<std::uintptr_t>(this) * 1099511628211ULL));
+    if (sets.size() >= 64 && !sets.count({world, whose})) {
+        auto oldest = sets.begin();
+        for (auto it = sets.begin(); it != sets.end(); ++it)
             if (it->second->used < oldest->second->used) oldest = it;
-        shadow_sets_.erase(oldest);
+        sets.erase(oldest);
     }
-    auto& set = shadow_sets_[{world, view}];
+    auto& set = sets[{world, whose}];
     if (!set) set = std::make_unique<ShadowSet>();
-    set->used = frame_count_;
+    set->used = pool.frame_count_;
     return *set;
 }
 

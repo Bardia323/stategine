@@ -566,6 +566,7 @@ void main() {
             if (!guest || !panel || panel->params.num(Key{"feed"}, 0.0) < 0.5) continue;
             const Key resource=panel->params.num(Key{"eye"},0)>.5?em.name:em.portal;
             feeds_[resource].viewer_film = panel->params.num(Key{"viewer_film"}, 0.0) > 0.5;
+            feeds_[resource].painted = panel->params.num(Key{"painted"}, 0.0) > 0.5;
             bind_feed(resource, guest, static_cast<int>(panel->params.num(Key{"feed_w"}, 640.0)),
                       static_cast<int>(panel->params.num(Key{"feed_h"}, 480.0)),
                       panel->params.num(Key{"live"}, 1.0) > 0.5);
@@ -973,8 +974,11 @@ void main() {
     // so does a look's depth of field (`uDof`).
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0 || setting(post_, passes::composite, "uDof", 0.0) > 0.0 ||
                  setting(post_, passes::composite, "uHalation", 0.0) > 0.0;
-    if ((fog_depth_ || taa_on()) && ao <= 0.0) scene_ms().blit_depth_to(depth_);
+    const double mosh = eye_view() ? setting(post_, passes::composite, "mosh", 0.0) : 0.0;
+    if ((fog_depth_ || taa_on() || mosh > 0.0) && ao <= 0.0) scene_ms().blit_depth_to(depth_);
     if (taa_on()) run_taa();
+    if (mosh > 0.0) run_mosh(static_cast<float>(std::min(mosh, 1.0)));
+    else mosh_held_ = false;
     meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);
@@ -1077,6 +1081,13 @@ bool GLWorldView::draw_feed(Feed& f) {
 uint64_t GLWorldView::feed_key(const Feed& f) const {
     uint64_t h = 1469598103934665603ULL;
     const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
+    // Painted (held, `painted`): from where it was painted, as big as it is -
+    // nothing the world does since paints it again.
+    if (!f.live && f.painted) {
+        if (f.eye) mix(f.eye->params.stamp());
+        mix(static_cast<uint64_t>(f.rw) << 32 | static_cast<uint64_t>(f.rh));
+        return h | 1;
+    }
     mix(stamp_of(look_of(*f.world)));
     if (f.eye) mix(f.eye->params.stamp());
     mix(static_cast<uint64_t>(f.rw) << 32 | static_cast<uint64_t>(f.rh));

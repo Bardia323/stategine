@@ -223,6 +223,16 @@ const char* air_sum_fs();
 // the pixel holds - so what moved or came into sight does not trail - and
 // blended, a tenth of this frame to nine of what was. uFresh 1: no history.
 const char* taa_fs();
+// Data moshing (a look's `mosh`, 0..1): a picture whose key frame was lost.
+// What it started as (the frame before the look asked for it: whatever was
+// seen before the cut) is carried on by the motion of what is seen now -
+// block by block (uBlock pixels), the view's motion found from depth as taa_fs
+// finds it (uReproject) - with only the small changes of this frame laid
+// over it (uCurrent less uLast where it came from), a big one (the cut) lost:
+// the old picture dragged and smeared by the new one's motion. What comes in
+// from beyond the edge is as it is now; the less uAmount, the bigger the
+// changes kept, until the new picture is all there is. uFresh 1: it starts.
+const char* mosh_fs();
 // Relighting a room's light from all round (GLWorldView::relight_room): what
 // each box sees lit by one light, and that taken to nine harmonics a box.
 const char* relight_fs();

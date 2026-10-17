@@ -374,6 +374,11 @@ public:
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
 
+    // Seen from `eye` (an element of the room drawn: a camera hung in it),
+    // not the room's own camera, until handed nullptr. What walks the room
+    // is still its camera; only the picture is taken from elsewhere.
+    void look_from(const Element* eye) { eye_override_ = eye; }
+
     // A neighbourhood of rooms, each with the pose it has when seen from the
     // first one - which is the room the viewer is standing in. Nothing here
     // treats that room as special beyond being the one asked from: hand it a
@@ -1397,7 +1402,15 @@ private:
     std::vector<gl::ShadowArray> spare_shadows_;
     long long shadow_room_ = 0;  // bytes (0: not yet known; below 0: no limit)
     long long shadow_room();
-    bool fit_shadows(gl::ShadowArray& maps, int size, int layers);
+    // Maps of `size` with at least `layers` in `maps`: true if they were made
+    // anew (what was laid in them is gone). `keep`: grown, what was laid in
+    // the layers it had is copied into the new - nothing to lay again.
+    bool fit_shadows(gl::ShadowArray& maps, int size, int layers, bool keep = false);
+    // Whose shadow sets these are: every view drawn for another (a doorway
+    // in its own look, a feed) keeps its sets in the view it is drawn for -
+    // one pool, one room on the card, let go of oldest first whoever laid
+    // them (each set still its own view's: its key says whose).
+    GLWorldView& shadow_pool();
     bool let_go_of_oldest_shadows();
     void keep_shadows_within_room();
     static void copy_depth(const gl::ShadowArray& from, const gl::ShadowArray& to, int layer, const int* rect = nullptr);
@@ -1532,8 +1545,29 @@ private:
     const void* taa_last_world_ = nullptr;
     gl::Vec3 taa_eye_{0, 0, 0}, taa_last_eye_{0, 0, 0};
     std::unique_ptr<gl::Program> taa_prog_;
-    bool taa_on() const { return q_.taa && !root_ && !output_ && !baking_ && surface_only_ == 0; }
+    // The eye's own view (not one drawn for another, nor baked): the only one
+    // a picture is made of the frames before for.
+    bool eye_view() const { return !root_ && !output_ && !baking_ && surface_only_ == 0; }
+    bool taa_on() const { return q_.taa && eye_view(); }
     void run_taa();
+    // How a pixel of this frame's view is found in a last one (its view, its
+    // world, where its rooms stood, its eye): clip space to clip space. False
+    // where it cannot be (a world not drawn with it, a jump): identity then.
+    bool reprojection(const gl::Mat4& last_vp, const void* last_world, const std::vector<std::pair<const void*, gl::Mat4>>& last_rooms,
+                      const gl::Vec3& last_eye, gl::Mat4& out) const;
+    // Data moshing (a look's `mosh`, composite: mosh_fs): the moshed picture
+    // in two taken in turn, the last frame as it was drawn, and the last
+    // view - kept across a crossing (what was seen goes on into the world
+    // come into: the point of it), started again once the look stops.
+    gl::RenderTarget mosh_history_[2], mosh_last_;
+    int mosh_front_ = 0;
+    bool mosh_held_ = false;
+    gl::Mat4 mosh_last_vp_ = gl::Mat4::identity();
+    const void* mosh_last_world_ = nullptr;
+    std::vector<std::pair<const void*, gl::Mat4>> mosh_last_rooms_;
+    gl::Vec3 mosh_last_eye_{0, 0, 0};
+    std::unique_ptr<gl::Program> mosh_prog_;
+    void run_mosh(float amount);
     // Mirrors (Quality::reflections; WorldMirrors.cpp): the planes a view's
     // room says reflect - the eye's own, and every room seen through a
     // doorway, however deep, from the eye carried there - a thing's top face
@@ -1647,6 +1681,9 @@ private:
         // exposure that eye's, no grain of its own - a picture seen as the
         // place it shows would be seen (a painting gone into).
         bool viewer_film = false;
+        // A picture painted once (`painted` = 1, held): painted again only
+        // as its eye or its size changes - not as the world it shows does.
+        bool painted = false;
         bool made_raw = false;  // its pictures made as light (a viewer's film: Feed::format), not as developed
         // What its pictures are made in: a viewer's film, as light itself
         // (the eye that looks at it develops it); any other, as developed.

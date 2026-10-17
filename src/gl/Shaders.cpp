@@ -289,6 +289,60 @@ void main() {
     return source.c_str();
 }
 
+const char* mosh_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uCurrent;
+uniform sampler2D uMoshed;
+uniform sampler2D uLast;
+uniform sampler2D uDepth;
+uniform mat4 uReproject;
+uniform vec2 uTexel;
+uniform float uAmount;
+uniform float uBlock;
+uniform float uFresh;
+uniform float uReversedZ;
+// A pixel's whole: read from where it is, never between pixels (read
+// between, what is carried on would blur a little every frame).
+vec2 whole(vec2 px) { return (floor(px) + 0.5) * uTexel; }
+float tone(vec3 c) { return dot(c / (1.0 + c), vec3(0.299, 0.587, 0.114)); }
+void main() {
+    vec3 cur = texture(uCurrent, vUV).rgb;
+    if (uFresh > 0.5) {
+        FragColor = vec4(cur, 1.0);
+        return;
+    }
+    vec2 px = gl_FragCoord.xy;
+    // How its block moved: the view's motion at the block's middle - the
+    // motion of what is seen now, as a codec finds it, one for the block.
+    vec2 block = floor(px / uBlock);
+    vec2 mid = (block + 0.5) * uBlock * uTexel;
+    float d = texture(uDepth, mid).r;
+    d = uReversedZ > 0.5 ? 1.0 - d : d;
+    vec4 was = uReproject * vec4(mid * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    vec2 moved = was.w > 0.0 ? (mid - (was.xy / was.w * 0.5 + 0.5)) / uTexel : vec2(0.0);
+    vec2 from = px - moved;
+    // Come in from beyond the edge: nothing was there to carry - as it is now.
+    if (any(lessThan(from, vec2(0.0))) || any(greaterThanEqual(from * uTexel, vec2(1.0)))) {
+        FragColor = vec4(cur, 1.0);
+        return;
+    }
+    // What was moshed, carried by that motion; and laid over it only what
+    // changed this frame that is small - a big change (the cut itself, the
+    // frame the key frame was) is lost, so the old picture stays. Less moshed,
+    // more of the change is kept, and the new picture comes into it.
+    vec3 m = texture(uMoshed, whole(from)).rgb;
+    vec3 change = cur - texture(uLast, whole(from)).rgb;
+    float big = abs(tone(cur) - tone(texture(uLast, whole(from)).rgb));
+    float keep = mix(0.7, 0.05, uAmount);
+    m += change * (1.0 - smoothstep(keep * 0.5, keep, big));
+    m = mix(m, cur, clamp((0.4 - uAmount) * 1.2, 0.0, 1.0));
+    FragColor = vec4(max(m, vec3(0.0)), 1.0);
+}
+)";
+}
+
 const char* taa_fs() {
     return R"(#version 330 core
 in vec2 vUV;

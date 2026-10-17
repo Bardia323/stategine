@@ -4,36 +4,83 @@
 
 namespace sg::render {
 
+bool GLWorldView::reprojection(const gl::Mat4& last_vp, const void* last_world, const std::vector<std::pair<const void*, gl::Mat4>>& last_rooms,
+                               const gl::Vec3& last_eye, gl::Mat4& out) const {
+    // How the view moved since the last frame - in one world; carried across
+    // a doorway into a room drawn in both frames (one space: a room beside
+    // it), by where that room stood in each - so what was seen is brought
+    // over to where it is now, not left where it was on the screen.
+    out = gl::Mat4::identity();
+    if (taa_world_ == last_world) {
+        const gl::Vec3 d = taa_eye_ - last_eye;
+        if (gl::dot(d, d) > 4.0f) return false;  // (put somewhere else)
+        out = last_vp * taa_vp_.inverse();
+        return true;
+    }
+    // (A room in both frames: from this frame to its own, and on to the last's.)
+    for (const auto& [room, now] : taa_rooms_)
+        for (const auto& [was_room, was] : last_rooms)
+            if (room == was_room && room == last_world) {
+                out = last_vp * was * now.inverse() * taa_vp_.inverse();
+                return true;
+            }
+    return false;
+}
+
+void GLWorldView::run_mosh(float amount) {
+    if (!mosh_prog_) mosh_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::mosh_fs(), "mosh");
+    const int w = scene_src_->width(), h = scene_src_->height();
+    bool fresh = !mosh_held_;
+    for (gl::RenderTarget* t : {&mosh_history_[0], &mosh_history_[1], &mosh_last_})
+        if (!t->valid() || t->width() != w || t->height() != h) t->create(w, h, gl::GL_RGBA16F, 0, false), fresh = true;
+    // (Across a crossing it goes on: what cannot be found where it was is
+    // carried by nothing of the view's this frame - not started again.)
+    gl::Mat4 reproject;
+    reprojection(mosh_last_vp_, mosh_last_world_, mosh_last_rooms_, mosh_last_eye_, reproject);
+    gl::RenderTarget& out = mosh_history_[1 - mosh_front_];
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    out.bind();
+    gl::glViewport(0, 0, w, h);
+    const gl::Program& p = *mosh_prog_;
+    p.use();
+    p.set("uCurrent", 0);
+    p.set("uMoshed", 1);
+    p.set("uLast", 2);
+    p.set("uDepth", 3);
+    scene_src_->bind_color(0);
+    mosh_history_[mosh_front_].bind_color(1);
+    mosh_last_.bind_color(2);
+    depth_.bind_depth(3);
+    p.set("uReproject", reproject);
+    p.set("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    p.set("uAmount", amount);
+    p.set("uBlock", std::max(8.0f, std::round(static_cast<float>(h) / 56.0f)));  // (16 at 900: a codec's macroblock)
+    p.set("uFresh", fresh ? 1.0f : 0.0f);
+    p.set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
+    screen_.draw();
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    scene_src_->blit_to(mosh_last_);
+    mosh_front_ = 1 - mosh_front_;
+    mosh_held_ = true;
+    scene_src_ = &out;
+    mosh_last_vp_ = taa_vp_;
+    mosh_last_world_ = taa_world_;
+    mosh_last_rooms_ = taa_rooms_;
+    mosh_last_eye_ = taa_eye_;
+}
+
 void GLWorldView::run_taa() {
     if (!taa_prog_) taa_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::taa_fs(), "taa");
     const int w = scene_src_->width(), h = scene_src_->height();
     bool fresh = !taa_held_;
     for (gl::RenderTarget& t : taa_history_)
         if (!t.valid() || t.width() != w || t.height() != h) t.create(w, h, gl::GL_RGBA16F, 0, false), fresh = true;
-    // How the view moved since the last frame - in one world; carried across
-    // a doorway into a room drawn in both frames (one space: a room beside
-    // it), by where that room stood in each - so what was seen is brought
-    // over to where it is now, not left where it was on the screen. Into a
-    // room not drawn with the last (a view, not a space), it starts again, as
-    // it does after a jump (put somewhere else).
-    gl::Mat4 reproject = gl::Mat4::identity();
-    if (taa_world_ == taa_last_world_) {
-        const gl::Vec3 d = taa_eye_ - taa_last_eye_;
-        if (gl::dot(d, d) > 4.0f) fresh = true;
-        reproject = taa_last_vp_ * taa_vp_.inverse();
-    } else {
-        // (A room in both frames: from this frame to its own, and on to the last's.)
-        bool carried = false;
-        for (const auto& [room, now] : taa_rooms_)
-            for (const auto& [was_room, was] : taa_last_rooms_)
-                if (!carried && room == was_room && room == taa_last_world_) {
-                    reproject = taa_last_vp_ * was * now.inverse() * taa_vp_.inverse();
-                    carried = true;
-                }
-        // Not drawn with the last: what was seen cannot be put where it is
-        // now, and left as it stood it would ghost over the room come into.
-        if (!carried) fresh = true;
-    }
+    // How the view moved since the last frame (reprojection).
+    gl::Mat4 reproject;
+    // (Not drawn with the last, or jumped: what was seen cannot be put where
+    // it is now, and left as it stood it would ghost over the room come into.)
+    if (!reprojection(taa_last_vp_, taa_last_world_, taa_last_rooms_, taa_last_eye_, reproject)) fresh = true;
     gl::RenderTarget& out = taa_history_[1 - taa_front_];
     gl::glDisable(gl::GL_DEPTH_TEST);
     gl::glDisable(gl::GL_BLEND);
