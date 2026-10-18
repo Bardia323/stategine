@@ -1212,6 +1212,16 @@ played; `set_timing` finishes the card between stages instead, which shows
 where a frame stalls but slows every frame it measures. Both are how the
 machine is, not how the world is: neither is written into any state.
 
+**Warming ahead.** A game that cannot warm every world at its start (`warm`)
+gives the view the worlds it may go to next - `view.ahead(graph, here, steps)`
+finds those within `steps` doorways or transitions - and `warm_ahead` makes
+them ready a few things a frame, beside the frames it draws (half a
+millisecond of the processor a frame at most): their things' shapes made
+and sent, their pictures sent. The first frame one is seen then makes none
+of them (`FrameTimes::made_late`; `warmed_ahead` counts what was made
+ahead; `sg_ahead_gl`: a gallery of 120 shapes, 120 made late cold, none
+warmed ahead).
+
 **Still things drawn together** (`GLQuality::proxies`, `proxies` in
 render.conf; on unless said). What stands still in each cell of a room
 (`proxy_cell` metres, 16 unless the room says) and would be drawn with others

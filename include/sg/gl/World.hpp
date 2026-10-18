@@ -207,6 +207,8 @@ public:
         int proxied = 0;      // things drawn in their cell's merged mesh (Quality::proxies), and the calls it took
         int proxy_calls = 0;
         int proxies_merged = 0;  // cells merged (again) this frame: a few at most
+        int made_late = 0;     // things' shapes first made as a frame drew them (none, warmed)
+        int warmed_ahead = 0;  // and made ahead, beside the frame (warm_ahead)
         int lod_drawn = 0;    // things drawn with fewer faces, far enough off that no pixel shows it (Quality::lod)
         int domes_made = 0;   // clouds' domes made whole again (a look's `clouds.cover`): none while nothing jumps (a part of each is made every frame)
         int views_asked = 0;  // views drawn only if the card finds their doorway seen (Quality::skip_unseen)
@@ -366,6 +368,18 @@ public:
     // card takes it: what things wear goes to the card a quarter the size,
     // whole, before the first frame.
     void warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h);
+
+    // Warming ahead, for a game that cannot warm every world at its start:
+    // the worlds it may go to next made ready a few things a frame, beside
+    // the frames it draws (half a millisecond of the processor a frame at
+    // most) - their things' shapes made and sent, their pictures sent - so
+    // the first frame one is seen makes none of them (FrameTimes::made_late
+    // counts what a frame still had to make as it drew; warmed_ahead what was
+    // made ahead). `ahead(g, from, steps)`: the worlds within `steps`
+    // doorways or transitions of `from` - what to give it as the eye goes.
+    void warm_ahead(const std::vector<Spatial3D*>& worlds);
+    std::vector<Spatial3D*> ahead(StateGraph& g, const State& from, int steps) const;
+    std::size_t warming_ahead() const { return ahead_.size(); }
 
     // The light probes of `room` baked (sg/domains/Probe.hpp): for each probe
     // and each of the room's lamps alone - lit at unit strength, in white,
@@ -1091,6 +1105,11 @@ private:
     static constexpr std::size_t kProxyCorners = 512;            // a thing of more corners is drawn with others of its shape
     static constexpr std::size_t kProxyCellCorners = 64 * 1024;  // and no cell merges more
     int proxy_budget_ = 0;                                       // cells that may still be merged this frame
+    // Warming ahead: each world's things still to be made ready, a few a frame.
+    std::deque<std::pair<Spatial3D*, std::size_t>> ahead_;
+    std::set<const Spatial3D*> warmed_;  // worlds warmed (whole, or ahead)
+    mutable bool making_ahead_ = false;  // (what is made now is made ahead - or in warm - not late)
+    void warm_some();
     struct RoomProxies {
         uint64_t structure = 0;
         std::vector<std::unique_ptr<ProxyCell>> cells;

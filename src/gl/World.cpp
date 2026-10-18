@@ -1,4 +1,6 @@
 #include "sg/gl/World.hpp"
+#include <set>
+#include <chrono>
 #include <cstring>
 #include "sg/domains/Shapes.hpp"
 #include "sg/core/Cache.hpp"
@@ -179,7 +181,66 @@ void GLWorldView::release_feed(Feed& f) {
     if (f.view) f.view->release_targets();
 }
 
+void GLWorldView::warm_ahead(const std::vector<Spatial3D*>& worlds) {
+    for (Spatial3D* w : worlds) {
+        if (!w || warmed_.count(w)) continue;
+        warmed_.insert(w);
+        for (std::size_t i = 0; i < w->elements().size(); ++i) ahead_.emplace_back(w, i);
+    }
+}
+
+std::vector<Spatial3D*> GLWorldView::ahead(StateGraph& g, const State& from, int steps) const {
+    // Out from `from`: through its transitions (to where any of them goes)
+    // and its doorways (to the worlds they show), `steps` deep.
+    std::vector<Spatial3D*> found;
+    std::set<const State*> seen{&from};
+    std::vector<const State*> now{&from};
+    for (int s = 0; s < steps && !now.empty(); ++s) {
+        std::vector<const State*> next;
+        const auto reach = [&](State* to) {
+            if (!to || !seen.insert(to).second) return;
+            next.push_back(to);
+            if (auto* w = dynamic_cast<Spatial3D*>(to)) found.push_back(w);
+        };
+        for (const State* at : now) {
+            for (const Transition& t : g.transitions())
+                if ((t.from == at->id() || t.from == Key{"*"}) && !t.to.empty()) reach(g.find(t.to));
+            for (const Element& e : at->elements())
+                if (e.kind == kinds::portal)
+                    if (const auto it = worlds_.find(e.id); it != worlds_.end() && it->second.world)
+                        reach(g.find(it->second.world->id()));
+        }
+        now = std::move(next);
+    }
+    return found;
+}
+
+void GLWorldView::warm_some() {
+    if (ahead_.empty()) return;
+    // (A few things a frame: half a millisecond of the processor at most.)
+    const auto from = std::chrono::steady_clock::now();
+    making_ahead_ = true;
+    while (!ahead_.empty() && std::chrono::steady_clock::now() - from < std::chrono::microseconds(500)) {
+        const auto [w, i] = ahead_.front();
+        ahead_.pop_front();
+        if (i >= w->elements().size()) continue;
+        const Element& e = w->elements()[i];
+        if (!e.alive || e.kind != kinds::mesh) continue;
+        shape_of(*w, e);
+        if (e.params.has(Key{"skin"})) bind_skin(*w, e);
+        if (is_sprite(e)) bind_picture(*w, e.params.get_or<std::string>(Key{"picture"}, ""));
+    }
+    making_ahead_ = false;
+}
+
 void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h) {
+    for (Spatial3D* w : worlds)
+        if (w) warmed_.insert(w);
+    making_ahead_ = true;
+    struct Done {
+        bool& on;
+        ~Done() { on = false; }
+    } done{making_ahead_};
     const LookFader fader = fader_;
     const Mix post = post_;
     // (And the eye as it was adjusted: what warming measures is of other worlds.)
@@ -591,6 +652,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     if (!root_) take_fewer();
     // (And a few rooms' cells merged a frame: Quality::proxies.)
     if (!root_) proxy_budget_ = 2;
+
     // A room that says it is seen from one of its own (its camera's
     // `seen_from`: an element of it - a camera hung there, chosen by whatever
     // stages it) is drawn from there; what walks it is still its camera.
@@ -876,6 +938,8 @@ void main() {
     shadow_budget_ = kNestedShadowMaps;
     eye_shadow_budget_ = kEyeShadowMaps;
     times_ = FrameTimes{};
+    // (And the worlds the game may go to next, a few things of them.)
+    if (!root_) warm_some();
     times_.feeds = feeds_ms;
     times_.feed_views = feed_views;
     const auto mark = [this] {

@@ -398,6 +398,7 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
             std::unique_ptr<gl::Mesh>& same = meshes_made_[corners_key(*corners)];
             if (!same) {
                 same = std::make_unique<gl::Mesh>();
+                making_ahead_ ? ++times_.warmed_ahead : ++times_.made_late;
                 same->create(*corners);
             }
             m.shared = same.get();
@@ -414,7 +415,7 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
         if (tp == 1.0) return cylinder_;
         const std::string key = "c" + std::to_string(std::lround(tp * 1000));
         gl::Mesh& m = shaped_[key];
-        if (!m.valid()) m.create(gl::cylinder_vertices(28, static_cast<float>(tp)));
+        if (!m.valid()) m.create(gl::cylinder_vertices(28, static_cast<float>(tp))), making_ahead_ ? ++times_.warmed_ahead : ++times_.made_late;
         return m;
     }
     const double r = e.params.num(bevel, 0.0);
@@ -425,6 +426,7 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
     const std::string key = "b" + mm(sx) + "," + mm(sy) + "," + mm(sz) + "," + mm(r) + "," + mm(tp);
     gl::Mesh& m = shaped_[key];
     if (!m.valid())
+        (making_ahead_ ? ++times_.warmed_ahead : ++times_.made_late),
         m.create(gl::rounded_box_vertices(static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz),
                                           static_cast<float>(r), static_cast<float>(tp)));
     return m;
