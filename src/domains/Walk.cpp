@@ -360,11 +360,35 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
     const V3 want = (ahead * in.forward + right * in.right) * in.speed;
     const double along_up = spatial::dot(v, up);
     V3 flat = v - up * along_up;
+    // On its feet on land steeper than it stands on (`max_slope`, radians;
+    // 0.8 unless it says) it cannot go up it, and slides down it ever faster
+    // (`slide`, its speed; `sliding`): what it means to do, so.
+    V3 meant = want;
+    double slide = 0.0;
+    {
+        const Grounds here(space);
+        double h0, hx, hz;
+        const V3 at = eye - up * body;
+        if (grounded && here.any() && up.y > 0.9 && here.under(at.x, at.z, h0) && here.under(at.x + 0.25, at.z, hx) &&
+            here.under(at.x, at.z + 0.25, hz) && at.y - h0 < 0.1) {
+            const V3 rise{(hx - h0) / 0.25, 0, (hz - h0) / 0.25};
+            const double steep = std::atan(spatial::length(rise));
+            if (steep > walker.params.num("max_slope", 0.8)) {
+                const V3 downhill = spatial::normalize(V3{-rise.x, 0, -rise.z});
+                const double climbing = -spatial::dot(meant, downhill);
+                if (climbing > 0) meant = meant + downhill * climbing;
+                slide = std::min(walker.params.num("slide") + 9.8 * (std::sin(steep) - 0.3 * std::cos(steep)) * dt, 12.0);  // (as down a slope with some grip)
+                meant = meant + downhill * slide;
+            }
+        }
+    }
+    walker.params.set("slide", slide).set("sliding", slide > 0.0 ? 1.0 : 0.0);
     // On its feet it goes as it means to, at once; in the air it steers a little.
     const double grip = grounded ? 1.0 : std::min(1.0, 1.5 * dt);
-    flat = flat + (want - flat) * grip;
+    flat = flat + (meant - flat) * grip;
     v = flat + up * along_up;
-    if (in.jump && grounded) v = v + up * 4.6, grounded = false;
+    bool jumped = false;
+    if (in.jump && grounded) v = v + up * 4.6, grounded = false, jumped = true;
     else if (in.thrust > 0 && !grounded) {
         const V3 look = v3(forward_of(walker));
         v = v + look * (in.thrust * dt);
@@ -427,7 +451,11 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
             if (v.y < 0) v.y = 0;
         }
     }
-    grounded = landed;
+    // Off its feet only a moment (a step off a kerb), it is still on them
+    // for `grace` seconds (0.12 unless it says) - but not once it has jumped.
+    const double air = landed ? 0.0 : jumped ? 1e9 : walker.params.num("air") + dt;
+    grounded = landed || air < walker.params.num("grace", 0.12);
+    walker.params.set("air", std::min(air, 1e3));
 
     // In a space that wraps, back in the cell round the origin.
     set_position(walker, wrapped(space, vd(eye)));

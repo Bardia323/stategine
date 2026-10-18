@@ -748,6 +748,20 @@ the room is still its camera.
   standing and walking blended by pace (`sg::pace`). `sg::lead` moves a body
   by another's motion (a skeleton's clip, retargeted); `sg::touch` finds
   where a ray meets its ragdoll.
+* On uneven ground. `sg::pace(host, being, ...)` asks the host's ground for
+  each foot - how high, the way it faces, what it is (its `ground`, else its
+  name) - asking a foot set down only when it has moved, and a lifted foot
+  where it will come down (its travel a fifth of a second on), and round the
+  body how the ground slopes (four rays). The being turns a sole set down to
+  its ground (`tilt_most` 0.45 rad, none past `tilt_steep` 0.8), leans its
+  hips up a slope (`hip_lean`), and says what each footfall stood on
+  (`footfall_on`). Its balance is its own (`balance_event`: its load and
+  where it is, how it is steadied): swayed by a load off-centre, by ground
+  steeper than it stands on easily and by turning as it goes, righting
+  itself; past its bounds it stumbles (`stumbles`), and whoever moves it
+  says what that does. A walker (`sg::walk`) slides down land steeper than
+  `max_slope` and cannot walk up it, and is on its feet a moment after
+  stepping off an edge (`grace`), but not once it has jumped.
 * A skin is posed on the card. Shown in a room (`sg::show_skins`), its
   corners are given the room once as they were bound, each with the four
   joints that move it (`Spatial3D::skin_model`, `Being::bound`), and each

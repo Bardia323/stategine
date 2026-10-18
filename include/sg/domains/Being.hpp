@@ -93,7 +93,26 @@ public:
     // {x, z (metres a second), turn (radians a second about its up)}: how it
     // goes across its ground now, in its own frame - so a planted foot stays
     // where it was put on the ground while the body goes on over it (`plant`).
+    // And what its ground is, as whoever moves it finds it (sg::pace does):
+    // under each foot `floor_<ankle>` (how high), `tilt_<ankle>_x`, `_z` (the
+    // way its ground faces, in its own frame: a sole set down turned to it,
+    // within `tilt_most` radians, not on ground steeper than `tilt_steep`),
+    // `on_<ankle>` (what it stands on: at a footfall, self's `footfall_on`)
+    // and `asked_<ankle>_x`, `_z` (where it was asked, kept with the foot);
+    // round it `slope_ahead`, `slope_side` (radians: rising ahead, toward +z)
+    // - its hips leaned that way, `hip_lean` of the slope ahead and a fifth of
+    // that of the slope to its side.
     Key travel_event() const { return Key{id().str() + ".travel"}; }
+    // {load (kilograms), load_x, load_z (where its centre is, off the body's,
+    // in its own frame), steady_x, steady_z (-1..1: how it is held upright,
+    // leaned against what pushes it)}: what bears on its balance. Its balance
+    // is its own, stepped with it (self's `sway_x`, `sway_z` and `balance`,
+    // 1 steady, 0 over): pushed by its load off-centre, by ground steeper
+    // than it stands on easily and by turning as it goes; righting itself
+    // and held as it is steadied; past 1 of sway it stumbles (self's
+    // `stumbles`, counted; sway begun again) - whoever moves it says what
+    // a stumble does. Its body leans with its sway.
+    Key balance_event() const { return Key{id().str() + ".balance"}; }
 
     // --- what it is made of (before it starts) ------------------------------------
     // A joint riding `parent` (empty: the root) at `offset`, at rest turned by

@@ -13,6 +13,7 @@
 #include "sg/core/Laws.hpp"
 #include "sg/core/Temporal.hpp"
 #include "sg/domains/Being.hpp"
+#include "sg/domains/Cast.hpp"
 #include "sg/domains/Spatial.hpp"
 
 static int failures = 0;
@@ -300,6 +301,111 @@ int main() {
         check(down[1] > 0.5 && slid[0] > 0.3 && slid[1] < 0.15 * slid[0],
               "a foot set down stays on the ground as the body goes faster than its walk (" + std::to_string(slid[1]) + " m slid in " + std::to_string(down[1]) +
                   " s on it; unplanted " + std::to_string(slid[0]) + " m)");
+    }
+    {
+        // On uneven ground: a sole set down turned to the ground under it; its
+        // hips leaned up a slope; what each footfall stood on; and its balance
+        // - swayed by its load off-centre, steadied back, past its bounds a
+        // stumble. And told by pace from the land itself: the slope round it,
+        // the way the ground faces under each foot.
+        const auto stander = [](sg::StateGraph& g) -> sg::Being& {
+            auto& clock = g.add<sg::Temporal>("clock");
+            auto& b = g.add<sg::Being>(sg::Key{"walker"});
+            b.joint("hips", "", {0, 0.92, 0}, {}, 400);
+            std::string keys;
+            for (const auto& [side, z, lag] : {std::tuple{std::string("_l"), 0.1, 0.0}, std::tuple{std::string("_r"), -0.1, 0.5}}) {
+                b.joint("thigh" + side, "hips", {0, 0, z}, {}, 400);
+                b.joint("shin" + side, "thigh" + side, {0, -0.45, 0}, {}, 400);
+                b.joint("foot" + side, "shin" + side, {0, -0.45, 0}, {}, 400);
+                b.joint("toe" + side, "foot" + side, {0.12, -0.02, 0}, {}, 400);
+                for (int i = 0; i <= 8; ++i) {
+                    const double u = std::fmod(i / 8.0 + lag, 1.0), t = i / 8.0;
+                    const double thigh = u < 0.5 ? 20 - 80 * u : -20 + 80 * (u - 0.5), knee = u < 0.5 ? 0.0 : -40 * std::sin((u - 0.5) * 2 * 3.14159265358979);
+                    keys += std::to_string(t) + " thigh" + side + " 0 " + std::to_string(thigh) + " 0\n" + std::to_string(t) + " shin" + side + " 0 " + std::to_string(knee) + " 0\n";
+                }
+            }
+            b.clip("walk", keys);
+            for (sg::Key a : b.ankles()) b.plant(a.str());
+            sg::drive(g, clock, "walker", b.live_event(), false, sg::Keeps::Always);
+            g.set_initial("walker");
+            return b;
+        };
+        const double a = 0.25;
+        double pitch[2] = {0, 0};
+        for (int tilted = 0; tilted < 2; ++tilted) {
+            sg::StateGraph g;
+            sg::Being& b = stander(g);
+            sg::Engine e(g);
+            e.start();
+            sg::Params travel;
+            if (tilted) travel.set("tilt_foot_l_x", -std::sin(a)).set("tilt_foot_l_z", 0.0).set("tilt_foot_r_x", -std::sin(a)).set("tilt_foot_r_z", 0.0);
+            e.fire(sg::Event{b.travel_event(), travel});
+            for (int i = 0; i < 90; ++i) e.tick(1.0 / 60);
+            pitch[tilted] = b.pose_of("foot_l").pitch;
+        }
+        check(std::fabs(std::fabs(pitch[1] - pitch[0]) - a) < 0.05,
+              "a sole set down on ground rising ahead is turned to it (" + std::to_string(pitch[1] - pitch[0]) + " rad, the ground " + std::to_string(a) + ")");
+        {
+            sg::StateGraph g;
+            sg::Being& b = stander(g);
+            sg::Engine e(g);
+            e.start();
+            const double flat = b.pose_of("hips").pitch;
+            e.fire(sg::Event{b.travel_event(), sg::Params{}.set("slope_ahead", 0.3).set("slope_side", 0.0)});
+            for (int i = 0; i < 120; ++i) e.tick(1.0 / 60);
+            const double up = b.pose_of("hips").pitch - flat;
+            check(std::fabs(std::fabs(up) - 0.35 * 0.3) < 0.03, "its hips leaned up a slope ahead (" + std::to_string(up) + " rad for a slope of 0.3)");
+        }
+        {
+            sg::StateGraph g;
+            sg::Being& b = stander(g);
+            sg::Engine e(g);
+            e.start();
+            const double ground = b.ground_speed("walk");
+            e.fire(sg::Event{b.play_event(), sg::Params{}.set("clip", std::string("walk")).set("fade", 0.0)});
+            e.fire(sg::Event{b.travel_event(), sg::Params{}.set(sg::keys::x, ground).set("on_foot_l", std::string("gravel")).set("on_foot_r", std::string("gravel"))});
+            for (int i = 0; i < 180; ++i) e.tick(1.0 / 60);
+            const sg::Params& self = b.element(sg::Being::self_id()).params;
+            check(self.num("footfalls") > 0 && self.get_or<std::string>("footfall_on", "") == "gravel",
+                  "each footfall says what it stood on (" + std::to_string(static_cast<int>(self.num("footfalls"))) + " on " + self.get_or<std::string>("footfall_on", "") + ")");
+        }
+        {
+            sg::StateGraph g;
+            sg::Being& b = stander(g);
+            sg::Engine e(g);
+            e.set_strict(true);
+            e.start();
+            const sg::Params& self = b.element(sg::Being::self_id()).params;
+            e.fire(sg::Event{b.balance_event(), sg::Params{}.set("load", 30.0).set("load_x", 0.0).set("load_z", 0.5)});
+            for (int i = 0; i < 300; ++i) e.tick(1.0 / 60);
+            const double loaded = self.num("balance");
+            e.fire(sg::Event{b.balance_event(), sg::Params{}.set("steady_z", 0.2)});
+            for (int i = 0; i < 300; ++i) e.tick(1.0 / 60);
+            const double steadied = self.num("balance");
+            check(loaded < 0.75 && steadied > 0.95, "a load to one side sways it (balance " + std::to_string(loaded) + "); steadied against it, it stands (" +
+                                                       std::to_string(steadied) + ")");
+            const sg::LawReport r = sg::verify(g);
+            check(r.structure.empty() && r.ok(), "and its balance keeps the laws: a step of its own, the same stepped again");
+            e.fire(sg::Event{b.balance_event(), sg::Params{}.set("load", 100.0).set("steady_z", 0.0)});
+            for (int i = 0; i < 600; ++i) e.tick(1.0 / 60);
+            check(self.num("stumbles") >= 1.0, "too much of it, it stumbles (" + std::to_string(static_cast<int>(self.num("stumbles"))) + ")");
+        }
+        {
+            // Land rising 0.3 a metre along x, a being standing on it facing +x.
+            sg::StateGraph g;
+            sg::Being& b = stander(g);
+            auto& land = g.add<sg::Spatial3D>("land");
+            land.terrain(sg::Key{"hill"}, [](double x, double) { return 0.3 * x; });
+            land.fixture(sg::spot_of(land, b.id()), 5.0, 1.5, 5.0);
+            const std::vector<sg::Event> told = sg::pace(land, b, {0.5, 0.0, 0.0}, 0.0);
+            const sg::Event* travel = nullptr;
+            for (const sg::Event& ev : told)
+                if (ev.name == b.travel_event()) travel = &ev;
+            const double want = -0.3 / std::sqrt(1.09);
+            check(travel && std::fabs(travel->args.num("slope_ahead") - std::atan(0.3)) < 0.02 && std::fabs(travel->args.num("tilt_foot_l_x") - want) < 0.02,
+                  "pace tells it the land: rising ahead " + std::to_string(travel ? travel->args.num("slope_ahead") : 0.0) + " rad, the ground under its foot facing back " +
+                      std::to_string(travel ? travel->args.num("tilt_foot_l_x") : 0.0));
+        }
     }
     {
         // Inertialized: from standing to walking at once, the difference let

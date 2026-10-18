@@ -134,29 +134,68 @@ std::vector<Event> pace(const Spatial3D& host, const Being& b, const Vec3d& velo
     std::vector<Event> out = pace(b, Vec3d{velocity.x * c + velocity.z * s, 0.0, -velocity.x * s + velocity.z * c}, turn);
     if (!spot) return out;
     // The ground under each foot, from the ground its spot stands on: what
-    // stops a walker, met by a ray straight down where the foot is to be
-    // (no further up or down than half its leg; nothing met, its spot's own).
+    // stops a walker, met by a ray straight down where the foot is to be (no
+    // further up or down than half its leg; nothing met, its spot's own) -
+    // how high it is, the way it faces (in the being's own frame) and what it
+    // is (its `ground`, else its name). A foot set down where it was last
+    // asked is not asked again; a foot lifted is asked where it will come
+    // down (where its travel takes it a fifth of a second on), so it is
+    // lifted onto a step before it gets there, not into it. And round the
+    // being, how the ground slopes: ahead and to its side, from four rays a
+    // hand and a half off its middle.
     const Vec3d at = position_of(*spot);
-    std::vector<std::pair<Key, double>> floors;
+    const Params& self = b.element(Being::self_id()).params;
+    const double go_x = self.num("go_x"), go_z = self.num("go_z");
+    Params told;
     bool changed = false;
+    const auto down_at = [&](double x, double z, double reach, Vec3d& hit, Vec3d& normal, Key* what) {
+        const Vec3d from{at.x + x * c - z * s, at.y + 0.5 * reach, at.z + x * s + z * c};
+        return ray(host, from, {0, -1, 0}, reach, hit, normal, nullptr, what);
+    };
     for (const Element& g : b.elements()) {
         if (g.kind != Key{"goal"} || g.params.num("plants") < 0.5) continue;
-        const double leg = g.params.num("leg", 0.9), x = g.params.num(keys::x), z = g.params.num(keys::z);
-        const Vec3d from{at.x + x * c - z * s, at.y + 0.5 * leg, at.z + x * s + z * c};
-        Vec3d hit, normal;
-        const double floor = ray(host, from, {0, -1, 0}, leg, hit, normal) ? hit.y - at.y : 0.0;
-        floors.emplace_back(Key{"floor_" + g.params.get_or<std::string>("tip", "")}, floor);
-        if (std::fabs(floor - g.params.num("floor_to")) > 1e-3) changed = true;
+        const std::string tip = g.params.get_or<std::string>("tip", "");
+        const bool down = g.params.num("locked") > 0.5;
+        double x = g.params.num(keys::x), z = g.params.num(keys::z);
+        if (down && g.params.num("asked") > 0.5 && std::hypot(x - g.params.num("asked_x"), z - g.params.num("asked_z")) < 0.03) continue;
+        if (!down) x += go_x * 0.2, z += go_z * 0.2;
+        const double leg = g.params.num("leg", 0.9);
+        Vec3d hit, normal{0, 1, 0};
+        Key what;
+        const bool met = down_at(x, z, leg, hit, normal, &what);
+        const double floor = met ? hit.y - at.y : 0.0;
+        // (The way it faces, turned into the being's frame as its travel is.)
+        const double nx = normal.x * c + normal.z * s, nz = -normal.x * s + normal.z * c;
+        std::string on;
+        if (met && !what.empty())
+            if (const Element* e = host.find(what)) on = e->params.get_or<std::string>("ground", what.str());
+        told.set(Key{"floor_" + tip}, floor).set(Key{"tilt_" + tip + "_x"}, nx).set(Key{"tilt_" + tip + "_z"}, nz).set(Key{"on_" + tip}, on);
+        told.set(Key{"asked_" + tip + "_x"}, x).set(Key{"asked_" + tip + "_z"}, z);
+        if (std::fabs(floor - g.params.num("floor_to")) > 1e-3 || std::fabs(nx - g.params.num("tilt_to_x")) > 1e-3 ||
+            std::fabs(nz - g.params.num("tilt_to_z")) > 1e-3 || !down)
+            changed = true;
+    }
+    {
+        double h[4];
+        bool all = true;
+        const double off[4][2] = {{0.3, 0}, {-0.3, 0}, {0, 0.3}, {0, -0.3}};
+        for (int k = 0; k < 4 && all; ++k) {
+            Vec3d hit, normal;
+            all = down_at(off[k][0], off[k][1], 1.0, hit, normal, nullptr);
+            h[k] = hit.y;
+        }
+        const double ahead = all ? std::atan2(h[0] - h[1], 0.6) : 0.0, side = all ? std::atan2(h[2] - h[3], 0.6) : 0.0;
+        told.set("slope_ahead", ahead).set("slope_side", side);
+        if (std::fabs(ahead - self.num("slope_ahead_to")) > 1e-3 || std::fabs(side - self.num("slope_side_to")) > 1e-3) changed = true;
     }
     if (!changed) return out;
     for (Event& e : out)
         if (e.name == b.travel_event()) {
-            for (const auto& [k, v] : floors) e.args.set(k, v);
+            for (const auto& kv : told) e.args.set(kv.first, kv.second);
             return out;
         }
-    Params travel = Params{}.set(keys::x, b.element(Being::self_id()).params.num("go_x")).set(keys::z, b.element(Being::self_id()).params.num("go_z"));
-    travel.set("turn", b.element(Being::self_id()).params.num("go_turn"));
-    for (const auto& [k, v] : floors) travel.set(k, v);
+    Params travel = Params{}.set(keys::x, go_x).set(keys::z, go_z).set("turn", self.num("go_turn"));
+    for (const auto& kv : told) travel.set(kv.first, kv.second);
     out.insert(out.begin(), Event{b.travel_event(), travel});
     return out;
 }

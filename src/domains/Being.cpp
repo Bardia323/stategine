@@ -189,9 +189,12 @@ bool plant_step(Element& g, const Params& self, Vec3d at, const Vec3d& going, do
     const double slip_now = settles ? 0.35 * slip : slip, twist_now = settles ? 0.25 : 0.45;
     if (!down && over < still && high < 0.05 * leg && off < 0.25 * slip) down = true, lx = at.x, lz = at.z;
     else if (down && (high > 0.09 * leg || (may_step && ((travels && over > 2.0 * still) || off > slip_now || std::fabs(yaw) > twist_now)))) down = false;
-    // Its ground: eased to what is under it (`floor_to`, from its own floor).
+    // Its ground: eased to what is under it (`floor_to`, from its own floor),
+    // and the way it faces (`tilt_to_*`) as well.
     const double floor = p.num("floor") + (p.num("floor_to") - p.num("floor")) * ease(dt, 12.0);
     p.set("floor", floor);
+    p.set("tilt_x", p.num("tilt_x") + (p.num("tilt_to_x") - p.num("tilt_x")) * ease(dt, 12.0));
+    p.set("tilt_z", p.num("tilt_z") + (p.num("tilt_to_z") - p.num("tilt_z")) * ease(dt, 12.0));
     double y = at.y + floor;
     if (!down) {
         // Let go: brought back to where its clips have it in a short step,
@@ -292,6 +295,21 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
         .set("go_turn", 0.0)
         .set("ground", 0.0)
         .set("footfalls", 0.0)
+        .set("footfall_on", std::string{})
+        .set("slope_ahead", 0.0)
+        .set("slope_side", 0.0)
+        .set("slope_ahead_to", 0.0)
+        .set("slope_side_to", 0.0)
+        .set("hip_lean", 0.35)
+        .set("balance", 1.0)
+        .set("sway_x", 0.0)
+        .set("sway_z", 0.0)
+        .set("load", 0.0)
+        .set("load_x", 0.0)
+        .set("load_z", 0.0)
+        .set("steady_x", 0.0)
+        .set("steady_z", 0.0)
+        .set("stumbles", 0.0)
         .set("inert", 0.0)
         .set("inert_from", 0.0)
         .set("inert_half", 0.1)
@@ -410,9 +428,23 @@ Being::Being(Key id, double scale) : State(std::move(id)) {
     //   (and the ground under each foot, if it is not its own floor).
     loop(Key{"travel"}, self_id(), travel_event(), [](State& s, Element& self, Element*, const Event& ev) {
         self.params.set("go_x", ev.args.num(keys::x)).set("go_z", ev.args.num(keys::z)).set("go_turn", ev.args.num("turn"));
+        if (ev.args.has(Key{"slope_ahead"})) self.params.set("slope_ahead_to", ev.args.num("slope_ahead"));
+        if (ev.args.has(Key{"slope_side"})) self.params.set("slope_side_to", ev.args.num("slope_side"));
         for (Element& g : s.elements())
-            if (g.kind == kGoal && g.params.num("plants") > 0.5)
-                if (const Key f{"floor_" + g.params.get_or<std::string>("tip", "")}; ev.args.has(f)) g.params.set("floor_to", ev.args.num(f));
+            if (g.kind == kGoal && g.params.num("plants") > 0.5) {
+                const std::string tip = g.params.get_or<std::string>("tip", "");
+                if (const Key f{"floor_" + tip}; ev.args.has(f)) g.params.set("floor_to", ev.args.num(f));
+                if (const Key f{"tilt_" + tip + "_x"}; ev.args.has(f))
+                    g.params.set("tilt_to_x", ev.args.num(f)).set("tilt_to_z", ev.args.num(Key{"tilt_" + tip + "_z"}));
+                if (const Key f{"on_" + tip}; ev.args.has(f)) g.params.set("on", ev.args.get_or<std::string>(f, ""));
+                if (const Key f{"asked_" + tip + "_x"}; ev.args.has(f))
+                    g.params.set("asked", 1.0).set("asked_x", ev.args.num(f)).set("asked_z", ev.args.num(Key{"asked_" + tip + "_z"}));
+            }
+    });
+    //   self --balance--> self: what bears on its balance (its load, how it is steadied).
+    loop(Key{"balance"}, self_id(), balance_event(), [](State&, Element& self, Element*, const Event& ev) {
+        for (const char* k : {"load", "load_x", "load_z", "steady_x", "steady_z"})
+            if (ev.args.has(Key{k})) self.params.set(k, ev.args.num(Key{k}));
     });
     loop(Key{"scale"}, self_id(), scale_event(), [](State&, Element& self, Element*, const Event& ev) {
         self.params.set("scale", std::max(1e-3, ev.args.num("scale", 1.0)));
@@ -1025,6 +1057,40 @@ void Being::live(double dt) {
                 }
     }
 
+    // The slope round it, eased to what it was told; and its balance, a step
+    // on: pushed by its load where its centre is off the body's, by ground
+    // steeper than it stands on easily (a quarter radian ahead, a seventh to
+    // its side) and by turning as it goes (outward); held upright as it is
+    // steadied; righting itself the while. Past 1 of sway, it stumbles.
+    {
+        Params& p = self.params;
+        const double ahead = p.num("slope_ahead") + (p.num("slope_ahead_to") - p.num("slope_ahead")) * ease(dt, 6.0);
+        const double side = p.num("slope_side") + (p.num("slope_side_to") - p.num("slope_side")) * ease(dt, 6.0);
+        p.set("slope_ahead", ahead).set("slope_side", side);
+        const auto beyond = [](double v, double easy) { return v > easy ? v - easy : v < -easy ? v + easy : 0.0; };
+        const double load = std::max(p.num("load"), 0.0), speed = std::hypot(p.num("go_x"), p.num("go_z"));
+        const double push_x = 0.02 * load * p.num("load_x") - beyond(ahead, 0.25);
+        const double push_z = 0.02 * load * p.num("load_z") - beyond(side, 0.15) - 0.15 * speed * p.num("go_turn");
+        double sx = p.num("sway_x"), sz = p.num("sway_z");
+        sx += (push_x - 1.5 * std::clamp(p.num("steady_x"), -1.0, 1.0)) * dt;
+        sz += (push_z - 1.5 * std::clamp(p.num("steady_z"), -1.0, 1.0)) * dt;
+        const double right = 1.0 - ease(dt, 0.8);
+        sx *= right, sz *= right;
+        if (std::hypot(sx, sz) >= 1.0) {
+            p.set("stumbles", p.num("stumbles") + 1.0);
+            sx = sz = 0.0;
+        }
+        p.set("sway_x", sx).set("sway_z", sz).set("balance", 1.0 - std::min(std::hypot(sx, sz), 1.0));
+        // Its hips leaned with the slope and its sway: forward up a slope, a
+        // little toward a slope to its side, as far as it sways.
+        const double forward = p.num("hip_lean", 0.35) * ahead + 0.15 * sx, toward = 0.07 * side + 0.15 * sz;
+        if (std::fabs(forward) > 1e-6 || std::fabs(toward) > 1e-6) {
+            const Q lean = norm(mul(axis_angle(Vec3d{0, 0, 1}, -forward), axis_angle(Vec3d{1, 0, 0}, toward)));
+            for (std::size_t i = 0; i < js.size(); ++i)
+                if (parent[i] < 0) target[i] = norm(mul(lean, target[i]));
+        }
+    }
+
     // Reaching and looking: each goal's chain turned toward its point, and
     // the target turned that far toward it by the goal's weight. A chain of
     // two is solved exactly (two bones and the line to the point are a
@@ -1067,14 +1133,23 @@ void Being::live(double dt) {
             // was solved to be: on the ground, as its body is raised or lowered.)
             const Vec3d clip_at = meant[tip].p + Vec3d{0, self.params.num("ground"), 0};
             if (plant_step(g, self.params, clip_at, (meant[tip].p - before[tip].p) * (1.0 / dt), dt, others_down))
-                self.params.set("footfalls", self.params.num("footfalls") + 1.0);
+                self.params.set("footfalls", self.params.num("footfalls") + 1.0).set("footfall_on", g.params.get_or<std::string>("on", ""));
         }
         const Vec3d aim{g.params.num(keys::x), g.params.num(keys::y), g.params.num(keys::z)};
         // (A foot set down keeps its own turn, however its leg bends - turned
         // as it was on the ground, as the body turns over it; its knee half as far.)
         const double foot_yaw = plants ? g.params.num("lock_yaw") : 0.0;
         // (Its clip's turn, not the body's: what the body had was turned last step.)
-        const Q foot_turn = plants ? norm(mul(from_euler(foot_yaw, 0, 0), meant[tip].r)) : f[tip].r;
+        // (And its sole turned to the ground under it: the way its ground
+        // faces, no more than `tilt_most`, none on ground past `tilt_steep`.)
+        Q foot_tilt{};
+        if (plants) {
+            const double tx = g.params.num("tilt_x"), tz = g.params.num("tilt_z"), sideways = std::sqrt(tx * tx + tz * tz);
+            const double steep = std::asin(std::min(sideways, 1.0));
+            if (sideways > 1e-6 && steep < g.params.num("tilt_steep", 0.8))
+                foot_tilt = axis_angle(Vec3d{tz, 0.0, -tx} * (1.0 / sideways), std::min(steep, g.params.num("tilt_most", 0.45)));
+        }
+        const Q foot_turn = plants ? norm(mul(foot_tilt, mul(from_euler(foot_yaw, 0, 0), meant[tip].r))) : f[tip].r;
         // Joint `c` turned by `d`, a turn in the being's frame (and all it carries).
         const auto turn_by = [&](std::size_t c, const Q& d) {
             const Q pr = parent[c] >= 0 ? f[std::size_t(parent[c])].r : Q{};

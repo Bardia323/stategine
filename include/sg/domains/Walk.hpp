@@ -60,7 +60,10 @@ void stand_clear(const State& space, Element& walker, double radius = 0.3);
 // One step of `walker` through `space`, pulled by `pull` (fields_of(space),
 // solved), `dt` long, ending at `time`. It reads and writes the walker's
 // params only: x y z (its eye), vx vy vz, its ground (stand_*), yaw and pitch
-// (its look within that ground), and `grounded`. Its `height` (eye above its
+// (its look within that ground), and `grounded` - which stays a moment
+// (`grace`, 0.12 s) after its feet leave the ground, unless it jumped (`air`:
+// how long they have) - and `sliding`: on land steeper than `max_slope` (0.8
+// rad) it cannot walk up it, and slides down it. Its `height` (eye above its
 // feet, 1.65) and `radius` (0.3) are its own. A doorway (a portal that says
 // `walk`) lets through whoever walks into it, wherever it stands: what is
 // solid behind its opening does not stop them while they are in it.

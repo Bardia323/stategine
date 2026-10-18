@@ -34,6 +34,53 @@ void steps(const sg::State& s, const sg::field::Solver& f, sg::Element& w, const
 
 int main() {
     {
+        // Land steeper than a walker stands on slides it down, and it cannot
+        // walk up it; land it stands on holds it. And stepped off an edge, it
+        // is on its feet a moment more - but not once it has jumped.
+        const auto on_land = [](double grade, const sg::Stride& in, double seconds, double& moved_x, bool& sliding) {
+            sg::Spatial3D s(Key{"hill"});
+            s.params().set("g", 9.81);
+            s.terrain(Key{"land"}, [grade](double x, double) { return grade * x; });
+            sg::Element& w = s.camera();
+            w.params.set(sg::keys::x, 0.0).set(sg::keys::y, 1.65).set(sg::keys::z, 0.0);
+            const auto f = solved(s);
+            double t = 0;
+            steps(s, f, w, {}, 0.5, t);
+            const double x0 = w.params.num(sg::keys::x);
+            steps(s, f, w, in, seconds, t);
+            moved_x = w.params.num(sg::keys::x) - x0;
+            sliding = w.params.num("sliding") > 0.5;
+        };
+        double moved = 0;
+        bool sliding = false;
+        on_land(0.3, {}, 1.0, moved, sliding);
+        check(std::fabs(moved) < 0.05 && !sliding, "on land it stands on, a walker stands still (" + std::to_string(moved) + " m)");
+        on_land(1.6, {}, 1.0, moved, sliding);
+        check(moved < -0.5 && sliding, "on land steeper than it stands on, it slides down (" + std::to_string(moved) + " m in a second)");
+        on_land(1.6, {1.0, 0, 0, 0, 3.0}, 1.0, moved, sliding);
+        check(moved < 0.0, "and cannot walk up it (" + std::to_string(moved) + " m, walking up)");
+    }
+    {
+        sg::Spatial3D s(Key{"ledge"});
+        s.params().set("g", 9.81);
+        s.wall(Key{"floor"}, {0, -1, 0}, 4, 1, 40);
+        sg::Element& w = s.camera();
+        w.params.set(sg::keys::x, 0.0).set(sg::keys::y, 1.65).set(sg::keys::z, 0.0);
+        const auto f = solved(s);
+        double t = 0;
+        steps(s, f, w, {}, 1.0, t);
+        // Walked off the floor's edge (x 2): a moment on, still on its feet.
+        bool kept = false, lost = false;
+        for (int i = 0; i < 120 && !lost; ++i) {
+            t += 1.0 / 60.0;
+            sg::walk(s, f, w, {1.0, 0, 0, 0, 3.0}, 1.0 / 60.0, t);
+            const bool over = w.params.num(sg::keys::x) > 2.05;
+            if (over && w.params.num("air") > 0.0 && w.params.num("grounded") > 0.5) kept = true;
+            if (over && w.params.num("grounded") < 0.5) lost = true;
+        }
+        check(kept && lost, "stepped off an edge, it is on its feet a moment more - then falls");
+    }
+    {
         // Level ground: a floor, ordinary gravity.
         sg::Spatial3D s(Key{"hall"});
         s.params().set("g", 9.81);
