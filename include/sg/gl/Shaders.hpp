@@ -277,6 +277,12 @@ const std::string& clouds_glsl();
 // (`fog_volume_at`) and how deep along a way (`fog_volume_depth`), read by
 // the scene (its fog) and the lit air (how much more light it scatters).
 const std::string& fog_volumes_glsl();
+
+// A terrain's horizon toward the sun (GLWorldView::horizon_for): from its
+// heights on an even grid, for each point how steeply the land toward the
+// sun rises over it, and the ground's height there - read by every sun's
+// light (lights_glsl's `horizon_shadow`).
+const char* horizon_fs();
 const char* cloud_shadow_fs();
 const char* cloud_noise_fs();
 const char* cloud_dome_fs();

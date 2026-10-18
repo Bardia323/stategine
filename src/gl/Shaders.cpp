@@ -150,13 +150,32 @@ float cloud_shadow(vec3 p, vec3 l) {
     return texture(uCloudShadowMap, (g - uCloudShadowAt.xy) / (2.0 * uCloudShadowAt.z) + 0.5).r;
 }
 
+// How much of a sun's light (from `l`) the land toward it leaves `p` (a
+// terrain's horizon, horizon_fs): lit while the sun stands higher over the
+// horizon than the land rises toward it there, soft across a little of it.
+// What stands above the ground sees over more of the land: as high as two
+// of the grid's cells, the horizon is let go of. 1 where there is none.
+uniform sampler2D uHorizonMap;
+uniform vec4 uHorizonAt;    // the grid's corner (x, z), 1 / its width (metres); w 1 where there is one
+uniform vec2 uHorizonCell;  // a cell of it (metres), and how high its room stands in the view
+float horizon_shadow(vec3 p, vec3 l) {
+    if (uHorizonAt.w <= 0.0) return 1.0;
+    vec2 uv = (p.xz - uHorizonAt.xy) * uHorizonAt.z;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+    vec2 h = texture(uHorizonMap, uv).rg;
+    float up = l.y / max(length(l.xz), 1e-4);
+    float lit = smoothstep(-0.03, 0.03, up - h.x);
+    return mix(lit, 1.0, smoothstep(0.0, 2.0 * uHorizonCell.x, p.y - h.y - uHorizonCell.y));
+}
+
 // How much of light `i` reaches `p` - its power, as it falls off with the
 // distance, its cone and its doorway - and which way it is (`l`, towards it).
 float light_reach(int i, vec3 p, out vec3 l) {
     if (uLightSun[i] > 0.5) {
         l = normalize(-uLightDir[i]);
-        // (Under the clouds, as much as gets through them.)
-        return uLightPower[i] * through_gate(i, p, l, true) * cloud_shadow(p, l);
+        // (Under the clouds, as much as gets through them; and the land
+        // toward it, as much as it leaves.)
+        return uLightPower[i] * through_gate(i, p, l, true) * cloud_shadow(p, l) * horizon_shadow(p, l);
     }
     vec3 toLight = uLightPos[i] - p;
     float dist = length(toLight);
@@ -744,6 +763,33 @@ void main() {
 }
 
 // --- a world's clouds (GLWorldView::sky_for) ----------------------------------------
+// --- a terrain's horizon toward the sun (GLWorldView::horizon_for) --------------
+//
+// For each point of the grid, how steeply the land toward the sun rises over
+// it (the tangent of the horizon that way, the steepest of the land met
+// along it, stepping further each step) and the ground's height there.
+const char* horizon_fs() {
+    static const std::string source = R"(#version 330 core
+out vec4 FragColor;
+uniform sampler2D uHeights;  // the ground's heights, a cell a texel
+uniform vec2 uHorizonGrid;   // cells across, metres a cell
+uniform vec2 uHorizonSun;    // the sun's bearing across the ground (towards it, unit)
+void main() {
+    float n = uHorizonGrid.x, cell = uHorizonGrid.y;
+    vec2 at = gl_FragCoord.xy;
+    float h0 = texture(uHeights, at / n).r, most = -1e3, s = 1.0;
+    for (int i = 0; i < 128; ++i) {
+        vec2 q = at + uHorizonSun * s;
+        if (q.x < 0.0 || q.y < 0.0 || q.x > n || q.y > n) break;
+        most = max(most, (texture(uHeights, q / n).r - h0) / (s * cell));
+        s = s * 1.05 + 0.5;
+    }
+    FragColor = vec4(most, h0, 0.0, 1.0);
+}
+)";
+    return source.c_str();
+}
+
 const std::string& fog_volumes_glsl() {
     static const std::string source = R"(
 const int MAX_FOGS = 4;

@@ -154,6 +154,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     guest_pass_ = depth > 0;
     // The fog pooled where this view looks (a probe's bake sees none).
     const Pooled pooled = baking_ ? Pooled{} : pooled_fog(rooms, cam.eye);
+    // The sun: this room's own, not one seen through a door.
+    gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
+    for (std::size_t i = 0; i < lights.size(); ++i)
+        if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
+            sun_dir = gl::normalize(lights[i].dir) * -1.0f;
+            sun_color = lights[i].color;
+        }
+
     // The lamps the eye sees, where they fall on the screen (the eye's own
     // view only): what a halation is gathered round.
     if (depth == 0 && !mirroring_) {
@@ -839,6 +847,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uShadowMaps", 1);
         lamp_cells_to(p);
     };
+    // The land toward the sun, as much of it as hides it (horizon_for):
+    // made by the eye's own view, read as made by every other.
+    const TerrainMesh* horizon = sun_color.x + sun_color.y + sun_color.z > 0.0f ? horizon_for(rooms, cam.eye, sun_dir, depth == 0 && !mirroring_) : nullptr;
     // The air of this view, lit by its lamps (air_fs) - when its look says
     // its air scatters: in the eye's own view and in every view through a
     // doorway, however deep (each gathered at its own pixels, so a small one
@@ -908,6 +919,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (And the fog pooled in it as it stands - its wisps moving through
         // the air are not gathered again for: no air would ever rest.)
         of = fnv(of, pooled.of);
+        // (And the land's horizon, as it was made: where, for which bearing.)
+        if (horizon)
+            for (float f : {static_cast<float>(horizon->grid_x), static_cast<float>(horizon->grid_z), static_cast<float>(horizon->grid_cell), horizon->bearing_x,
+                            horizon->bearing_z})
+                of = mix_bits(of, f);
         for (float f : {scatter, ahead, fog_glow, density, start, static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y),
                         static_cast<float>(clip.normal.z), static_cast<float>(clip.offset), a.near, a.far,
                         static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(steps), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
@@ -979,6 +995,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set("uScatterAhead", ahead);
             pooled_to(p, pooled);
             p.set("uFogGlow", fog_glow);
+            horizon_to(p, horizon, rooms.front(), 4);
             p.set("uAirClip", static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y), static_cast<float>(clip.normal.z),
                   static_cast<float>(clip.offset));
             // Every slice's own light in one pass; then the slices added up
@@ -1024,13 +1041,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         air = &a;
     }
     if (eye_maps) card_stamp(kCardAir);
-    // The sky's sun: this room's own, not one seen through a door.
-    gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
-    for (std::size_t i = 0; i < lights.size(); ++i)
-        if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
-            sun_dir = gl::normalize(lights[i].dir) * -1.0f;
-            sun_color = lights[i].color;
-        }
     // And the sky as a planet's, and its clouds as a volume, where the look
     // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
     // this eye and this world's time, as they must be.
@@ -1103,6 +1113,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uSunDir", sun_dir);
         p.set("uSunColor", sun_color);
         sky_to(p, sky, atmosphere);
+        horizon_to(p, horizon, rooms.front(), 6);
         p.set("uViewPos", cam.eye);
         p.set("uTime", static_cast<float>(world_time_));
         p.set("uShadowTexel", 1.0f / static_cast<float>(maps.array.size()),

@@ -15,7 +15,8 @@ strewn on it. `terrain::lay(world, name, land)` puts all of it in a 3D state:
   the walker stands on (`sg::walk`), rays stop at (`sg::ray`) and the renderer
   draws - resampled round the eye, fine near and coarse far, however far it
   goes - covered by its layers (surface 19, its shares the picture
-  `<name>.cover`);
+  `<name>.cover`), and shaded by the land toward the sun however far off it
+  is (`horizon`, metres it looks; README, *Rendering*);
 - roads and water are models (asphalt with painted lines; water shallow at the
   shore, dark where deep, ruffled or still);
 - each thing's variants are made by the modeller (`sculpt::made`, kept on

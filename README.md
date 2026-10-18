@@ -632,6 +632,20 @@ and the renderer draws round the eye however far it goes. `sgterrain` draws a
 land's map and says what it is; `sgland` draws it as a game would, sky, sun,
 shadows and air (`--fog`).
 
+Its land shades itself under a low sun however far off it is: the renderer
+reads the land's heights on a grid round the eye (512 cells a side, out past
+what it draws by as far as it looks toward the sun: the terrain's `horizon`,
+metres, twice its `reach` unless it says; 0 none), sampled in the background
+as its ground is, and makes on the card how steeply the land toward the sun
+rises over each point (`gl::horizon_fs`; `GLWorldView::horizon_for`). Every
+sun's light on the land, and in the air over it, is lit only while the sun
+stands higher than that (`lights_glsl`'s `horizon_shadow`), past where the
+sun's own shadow map ends; what stands above the ground sees over it, let go
+of within two cells of height. Made again only as the sun's bearing turns or
+the eye goes out of the middle of the grid (`FrameTimes::horizons_made`): the
+sun climbing or setting, at one bearing, needs nothing made. Its room seen
+turned through a doorway has none.
+
 ## Rendering
 
 Domain states never know about pixels, and renderers never know about a game:

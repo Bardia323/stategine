@@ -204,6 +204,7 @@ public:
         int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;
         int air_built = 0;  // views' air gathered again (air_fs): none while nothing it is made from moves  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
         int skies_made = 0;   // skies' pictures made again (a look's `atmosphere`): none while the sun and the eye's height stay
+        int horizons_made = 0;  // terrains' horizons made again: only as the sun's bearing turns or the eye goes far
         int proxied = 0;      // things drawn in their cell's merged mesh (Quality::proxies), and the calls it took
         int proxy_calls = 0;
         int proxies_merged = 0;
@@ -585,6 +586,19 @@ private:
         // A resample under way in the background, and where it is centred.
         std::future<std::vector<float>> job;
         double job_cx = 0, job_cz = 0, job_rev = -1;
+        // Its horizon toward the sun (horizon_for): its heights on an even
+        // grid round the eye, as far past where it is drawn as it looks for
+        // land that hides the sun (`horizon`), sampled in the background as
+        // the ground is (the grid sent: its corner, a cell); and, made on
+        // the card from them, the horizon's tangent toward the sun from each
+        // point and the ground's height there - for the sun's bearing it
+        // was made for.
+        std::future<std::vector<float>> grid_job;
+        double grid_x = 0, grid_z = 0, grid_cell = 0, grid_rev = -1;
+        double grid_job_x = 0, grid_job_z = 0, grid_job_cell = 0, grid_job_rev = -1;
+        gl::RenderTarget heights, horizon;
+        float bearing_x = 0, bearing_z = 0;
+        bool horizon_made = false;
     };
 
     // Is any of the portal in front of the camera, inside what it sees (at
@@ -1589,6 +1603,14 @@ private:
     };
     Pooled pooled_fog(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye) const;
     static void pooled_to(const gl::Program& p, const Pooled& f);
+    // The horizon toward the sun of the terrain of the view's own room
+    // (WorldHorizon.cpp): made again as it must be when `own` (the eye's
+    // view), else as it was made; null where there is none (no terrain, its
+    // `horizon` 0, its room turned in the view, no sun).
+    const TerrainMesh* horizon_for(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye, const gl::Vec3& sun_dir, bool own);
+    // And on a program, at a texture unit of its own (none: off).
+    void horizon_to(const gl::Program& p, const TerrainMesh* t, const PlacedRoom& here, int unit) const;
+    std::unique_ptr<gl::Program> horizon_prog_;
 
     // How many maps the views seen through doorways may still lay this
     // frame, between them: past it, a map stays as it was last laid (with the
