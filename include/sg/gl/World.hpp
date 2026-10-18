@@ -2177,6 +2177,7 @@ private:
         Camera cam;
         const std::vector<Key>* openings = nullptr;  // its doorways made one with the eye's room: no view
         bool sheafed = false;                        // part of a space made one (its shell as the room draws it)
+        std::vector<Camera> mirrored;                // the eye as its mirrors show it: what they see is never asked
     };
     void ask_doorways(const std::vector<Asked>& rooms, float aspect);
     // This frame's question for each doorway a view is drawn through, by the

@@ -1029,13 +1029,16 @@ void main() {
     }
     // The doorways the eye cannot see, asked of what stands before them
     // (Quality::skip_unseen): what their views would draw is left out by the
-    // card. Never where the eye has a mirror, which may see one the eye
-    // cannot. (A mirror in a view is seen only if its doorway is.)
+    // card. Never one the eye's mirrors may show - each mirror's eye, the
+    // eye as the mirror shows it, seeing it (they may see one the eye
+    // cannot). (A mirror in a view is seen only if its doorway is.)
     doorway_asked_.clear();
-    const auto eye_mirrors = mirror_plans_.find(std::string());
-    if (q_.skip_unseen && !root_ && !baking_ && surface_only_ == 0 && (eye_mirrors == mirror_plans_.end() || eye_mirrors->second.empty())) {
+    if (q_.skip_unseen && !root_ && !baking_ && surface_only_ == 0) {
         std::vector<Asked> asked;
-        for (const Host& h : hosts) asked.push_back(Asked{h.room, h.cam, h.openings, h.room != hosts.front().room || rooms.front().sheafed});
+        for (const Host& h : hosts) asked.push_back(Asked{h.room, h.cam, h.openings, h.room != hosts.front().room || rooms.front().sheafed, {}});
+        if (const auto eye_mirrors = mirror_plans_.find(std::string()); eye_mirrors != mirror_plans_.end())
+            for (const MirrorPlane& p : eye_mirrors->second)
+                asked.front().mirrored.push_back(camera_of(mirrored_eye(eye_of(*hosts.front().room), hosts.front().cam, p)));
         ask_doorways(asked, aspect);
     }
     bool views_drawn = false;

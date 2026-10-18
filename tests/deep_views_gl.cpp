@@ -156,6 +156,22 @@ int main() {
                                          "), the picture as it is with every view drawn (" + std::to_string(d) + " levels a pixel apart)");
     }
     blocker.alive = false;
+    // A doorway behind the eye that a mirror before it shows: never asked
+    // (the mirror's eye sees it), so its view is in the glass as ever.
+    {
+        sg::Element& glass = a.fixture("glass", 7.0, 0.2, 6.2);
+        glass.params.set(sg::keys::sx, 4.0).set(sg::keys::sy, 2.6).set(sg::keys::sz, 0.02).set(sg::keys::r, 0.02).set(sg::keys::g, 0.02)
+            .set(sg::keys::b, 0.02).set("reflects", 1.0).set("roughness", 0.0);
+        eye.params.set(sg::keys::z, 3.7).set(sg::keys::yaw, kQuarter);
+        view.set_quality(drawing);
+        const auto drawn = picture();
+        view.set_quality(asking);
+        const auto asked_picture = picture();
+        const double d = apart(drawn, asked_picture);
+        check(d < 0.05, "a doorway behind the eye that a mirror shows: in the glass as ever (" + std::to_string(d) + " levels a pixel apart)");
+        glass.alive = false;
+        eye.params.set(sg::keys::yaw, -kQuarter);
+    }
     for (const auto& why : g.validate()) std::printf("  %s\n", why.c_str());
     check(g.validate().empty(), "and the rooms are one graph, glued by their seams");
     return ok ? 0 : 1;

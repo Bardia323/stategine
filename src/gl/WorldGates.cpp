@@ -112,6 +112,9 @@ void GLWorldView::ask_doorways(const std::vector<Asked>& rooms, float aspect) {
             const auto it = worlds_.find(e.id);
             if (it == worlds_.end() || !it->second.world || !declared_world(world, e, *it->second.world)) continue;
             if (!in_view(world, e, cam, aspect)) continue;
+            // (One a mirror of the eye's may show is never asked: drawn.)
+            if (std::any_of(rooms[r].mirrored.begin(), rooms[r].mirrored.end(), [&](const Camera& m) { return in_view(world, e, m, aspect); }))
+                continue;
             const Pose pose = pose_of(world, e);
             const gl::Vec3 n = to_vec3(facing(pose));
             const float w = static_cast<float>(e.params.num(keys::w, 3.0)), h = static_cast<float>(e.params.num(keys::h, 2.0));
