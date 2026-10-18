@@ -168,6 +168,13 @@ public:
     std::vector<float> skinned(Key skin, Fitted* fitted = nullptr) const;
     // The same, laid into `out` (emptied first; its memory used again).
     void skinned(Key skin, Fitted* fitted, std::vector<float>& out) const;
+    // The same skin for the card to pose (Spatial3D::skin_model): its corners
+    // as bound, with the joints that move each - made once - and, as it is
+    // now (Spatial3D::pose_model), each joint's move fitted into the box
+    // round it as posed, that box said - a few numbers a joint, made each
+    // step it moves. Posed by them (Spatial3D::posed), it is skinned().
+    std::vector<float> bound(Key skin) const;
+    void pose_skin(Key skin, Fitted& fitted, std::vector<float>& joints) const;
     // The picture a skin wears by its uvs (its material's base colour), as
     // read with it; null if it wears none.
     const std::vector<unsigned char>* skin_picture(Key skin, int& w, int& h) const;
@@ -238,9 +245,11 @@ private:
 // (`<being>.body`) that runs whenever the being moves. Returns the functor's
 // name, for whoever embeds or applies it.
 Key show(StateGraph& g, const Being& being, Key host, Key anchor);
-// Its skins shown in `host` as it is posed now: each a model there (`<being>.<skin>`)
-// on an element riding `anchor`. A skin is a mesh made again as the being
-// moves, so whoever shows it calls this when it has.
+// Its skins shown in `host` as it is posed now: each a model its joints move
+// there (`<being>.<skin>`: Spatial3D::skin_model, its corners as bound, given
+// once; pose_model, where its joints are, given each time it is shown) on an
+// element riding `anchor`, sized to the box round it as posed. Whoever shows
+// it calls this when the being has moved; the card poses its corners.
 void show_skins(Spatial3D& host, const Being& being, Key anchor);
 
 // `model` fitted to `reference`: as tall, facing the same way, standing on

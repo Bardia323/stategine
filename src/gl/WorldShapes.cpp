@@ -267,8 +267,20 @@ const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) cons
     // the thing's parameters, or what its mesh is made of, hold.
     ShapeMemo& memo = slot_of(e).shape;
     const auto* space = dynamic_cast<const Spatial3D*>(&st);
-    const auto made = [&] { return space && memo.modelled ? space->model_revision(memo.model) : 0; };
-    if (memo.mesh && memo.stamp == e.params.stamp() && (memo.made == 0 || memo.made == made())) return *memo.mesh;
+    const auto made = [&] {
+        return space && memo.modelled ? (memo.skinned ? space->skin_revision(memo.model) : space->model_revision(memo.model)) : 0;
+    };
+    // (A skin, posed from where its joints are now, as it is asked for.)
+    const auto posed = [&](const gl::Mesh& m) -> const gl::Mesh& {
+        if (!memo.skinned || !space) return m;
+        const uint64_t now = space->pose_revision(memo.model);
+        if (m.posed != now) {
+            if (const std::vector<float>* joints = space->skin_pose(memo.model)) m.pose(*joints);
+            m.posed = now;
+        }
+        return m;
+    };
+    if (memo.mesh && memo.stamp == e.params.stamp() && (memo.made == 0 || memo.made == made())) return posed(*memo.mesh);
     static const Key shape{"shape"}, model{"model"}, bevel{"bevel"}, taper{"taper"};
     static const std::string none;
     const std::string* shape_name = e.params.text(shape);
@@ -277,19 +289,26 @@ const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) cons
     if (!model_name) model_name = &none;
     const double tp = e.params.num(taper, 1.0), r = e.params.num(bevel, 0.0);
     const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
+    const bool skin = skinned(e);
     if (memo.mesh && *shape_name == memo.shape_name && *model_name == memo.model_name && tp == memo.taper && r == memo.bevel &&
-        sx == memo.sx && sy == memo.sy && sz == memo.sz && (memo.made == 0 || memo.made == made())) {
+        sx == memo.sx && sy == memo.sy && sz == memo.sz && skin == memo.skinned && (memo.made == 0 || memo.made == made())) {
         memo.stamp = e.params.stamp();
-        return *memo.mesh;
+        return posed(*memo.mesh);
     }
     const gl::Mesh& m = find_shape(st, e);
     memo.stamp = e.params.stamp(), memo.mesh = &m;
     memo.modelled = *shape_name == "model";
+    memo.skinned = memo.modelled && skin;
     memo.model = memo.modelled ? Key{*model_name} : Key{};
     memo.shape_name = *shape_name, memo.model_name = *model_name;
     memo.taper = tp, memo.bevel = r, memo.sx = sx, memo.sy = sy, memo.sz = sz;
     memo.made = made();
-    return m;
+    return posed(m);
+}
+
+bool GLWorldView::skinned(const Element& e) {
+    static const Key skinned_key{"skinned"};
+    return e.params.num(skinned_key, 0.0) > 0.5;
 }
 
 auto GLWorldView::corners_key(const std::vector<float>& corners) -> CornersKey {
@@ -330,6 +349,19 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
     if (s == "model") {
         const auto* space = dynamic_cast<const Spatial3D*>(&st);
         const Key name{e.params.get_or<std::string>(model, "")};
+        // A skin: its corners as bound, sent once (and again when it is
+        // bound again), posed on the card as it is drawn (shape_plain).
+        if (skinned(e)) {
+            const std::vector<float>* bound = space ? space->skin_bound(name) : nullptr;
+            if (!bound || bound->empty()) return cube_;
+            ModelMesh& m = skin_meshes_[{&st, name.str()}];
+            const uint64_t made = space->skin_revision(name);
+            if (m.revision != made || !m.own.valid()) {
+                m.own.create_bound(*bound);
+                m.revision = made, m.own.posed = 0;
+            }
+            return m.own;
+        }
         const std::vector<float>* corners = space ? space->model(name) : nullptr;
         if (!corners || corners->empty()) return cube_;
         // (Kept by whose model it is and which making, never by where its

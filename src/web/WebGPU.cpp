@@ -441,7 +441,18 @@ struct WebGPUView::Impl {
                     } else if (shape == "model") {
                         const Key name{e->params.get_or<std::string>("model", {})};
                         const auto &space = dynamic_cast<const Spatial3D &>(root);
-                        if (const auto *model = space.model(name)) {
+                        if (e->params.num("skinned") > 0.5) {
+                            // A skin its joints move: posed here, as the GL view's vertex stage poses it
+                            // (Spatial3D::posed), again only when its joints have moved.
+                            static std::map<std::string, std::pair<uint64_t, std::vector<float>>> posed;
+                            auto &kept = posed[root.id().str() + ":" + name.str()];
+                            const uint64_t now = space.pose_revision(name) ^ (space.skin_revision(name) << 1);
+                            if (kept.first != now || kept.second.empty()) kept = {now, space.posed(name)};
+                            if (!kept.second.empty()) {
+                                mesh_key = "skin:" + root.id().str() + ":" + name.str() + ":" + std::to_string(now);
+                                mesh = &kept.second;
+                            }
+                        } else if (const auto *model = space.model(name)) {
                             // (By what it is: the model, as made this time.)
                             mesh_key = "model:" + root.id().str() + ":" + name.str() + ":" + std::to_string(space.model_revision(name));
                             mesh = model;

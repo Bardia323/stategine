@@ -1,3 +1,4 @@
+#include <cmath>
 #include "sg/domains/Spatial.hpp"
 
 #include <algorithm>
@@ -268,6 +269,69 @@ const std::vector<float>* Spatial3D::model(Key name) const {
 uint64_t Spatial3D::model_revision(Key name) const {
     const auto it = models_.find(name.str());
     return it == models_.end() ? 0 : it->second.revision;
+}
+
+void Spatial3D::skin_model(Key name, std::vector<float> bound) {
+    skins_[name.str()] = {std::make_shared<std::vector<float>>(std::move(bound)), next_making()};
+}
+
+std::vector<float> Spatial3D::pose_model(Key name, std::vector<float> joints) {
+    KeptModel& kept = poses_[name.str()];
+    std::shared_ptr<const std::vector<float>> was = std::move(kept.corners);
+    kept = {std::make_shared<std::vector<float>>(std::move(joints)), next_making()};
+    std::vector<float> back;
+    if (was && was.use_count() == 1) back = std::move(*std::const_pointer_cast<std::vector<float>>(was));
+    return back;
+}
+
+const std::vector<float>* Spatial3D::skin_bound(Key name) const {
+    const auto it = skins_.find(name.str());
+    return it == skins_.end() ? nullptr : it->second.corners.get();
+}
+
+const std::vector<float>* Spatial3D::skin_pose(Key name) const {
+    const auto it = poses_.find(name.str());
+    return it == poses_.end() ? nullptr : it->second.corners.get();
+}
+
+uint64_t Spatial3D::skin_revision(Key name) const {
+    const auto it = skins_.find(name.str());
+    return it == skins_.end() ? 0 : it->second.revision;
+}
+
+uint64_t Spatial3D::pose_revision(Key name) const {
+    const auto it = poses_.find(name.str());
+    return it == poses_.end() ? 0 : it->second.revision;
+}
+
+std::vector<float> Spatial3D::posed(Key name) const {
+    // As the renderer's vertex stage poses it (scene_vs: posed_by_joints):
+    // each corner by the joints that weigh on it, its normal sized back.
+    const std::vector<float>* bound = skin_bound(name);
+    const std::vector<float>* joints = skin_pose(name);
+    std::vector<float> out;
+    if (!bound || !joints || joints->size() < kJointFloats + 4) return out;
+    const std::size_t count = (joints->size() - 4) / kJointFloats;
+    const float* sizing = joints->data() + joints->size() - 4;
+    out.reserve(bound->size() / kSkinFloats * 8);
+    for (std::size_t c = 0; c + kSkinFloats <= bound->size(); c += kSkinFloats) {
+        const float* v = bound->data() + c;
+        float p[3] = {0, 0, 0}, n[3] = {0, 0, 0};
+        for (int k = 0; k < 4; ++k) {
+            const float w = v[12 + k];
+            const std::size_t j = static_cast<std::size_t>(v[8 + k]);
+            if (w <= 0.0f || j >= count) continue;
+            const float* m = joints->data() + j * kJointFloats;
+            for (int r = 0; r < 3; ++r) {
+                p[r] += w * (m[r * 4] * v[0] + m[r * 4 + 1] * v[1] + m[r * 4 + 2] * v[2] + m[r * 4 + 3]);
+                n[r] += w * (m[r * 4] * v[3] + m[r * 4 + 1] * v[4] + m[r * 4 + 2] * v[5]);
+            }
+        }
+        for (int r = 0; r < 3; ++r) n[r] *= sizing[r];
+        const float l = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) + 1e-12f;
+        out.insert(out.end(), {p[0], p[1], p[2], n[0] / l, n[1] / l, n[2] / l, v[6], v[7]});
+    }
+    return out;
 }
 
 Element& Spatial3D::terrain(Key id, Height height) {

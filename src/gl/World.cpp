@@ -494,6 +494,10 @@ void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal
 }
 
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    // A mesh that is no skin has no joints: what its vertex stage reads for
+    // them, where its corners do not say (none of a skin's: posed_by_joints).
+    gl::glVertexAttrib4f(11, 0.0f, 0.0f, 0.0f, 0.0f);
+    gl::glVertexAttrib4f(12, 0.0f, 0.0f, 0.0f, 0.0f);
     // A room that says it is seen from one of its own (its camera's
     // `seen_from`: an element of it - a camera hung there, chosen by whatever
     // stages it) is drawn from there; what walks it is still its camera.

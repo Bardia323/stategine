@@ -18,6 +18,11 @@ namespace sg::gl {
 
 GLuint compile(GLenum type, const char* src, const char* tag);
 
+// The unit a vertex stage reads a skin's joints from (`uJoints`, a buffer:
+// Mesh::pose) - given every program that has it as it is made, so it is
+// never read from unit 0 beside a picture.
+constexpr int kJointsUnit = 8;
+
 class Program {
 public:
     Program() = default;
@@ -112,10 +117,27 @@ public:
     // New vertices for a mesh that changes - ground rebuilt around a walker.
     void update(const std::vector<float>& verts);
 
+    // inline: every mesh drawn, every pass, every frame is this.
     void draw() const {
         glBindVertexArray(vao_);
+        if (joints_tex_) {
+            glActiveTexture(GL_TEXTURE0 + kJointsUnit);
+            glBindTexture(GL_TEXTURE_BUFFER, joints_tex_);
+            glActiveTexture(GL_TEXTURE0);
+        }
         glDrawArrays(GL_TRIANGLES, 0, count_);
     }
+
+    // A skin's corners as they were bound (Spatial3D::kSkinFloats each: a
+    // model's 8, then the four joints that move it at attribute 11 and how
+    // much each does at 12) - or bound again - posed by the vertex stage
+    // from where its joints are now (`pose`: Spatial3D::kJointFloats each,
+    // then one for a corner no joint moves, then how normals are sized
+    // back), read at kJointsUnit as it is drawn. `posed`: which making of
+    // its joints it holds, kept by whoever poses it.
+    void create_bound(const std::vector<float>& verts);
+    void pose(const std::vector<float>& joints) const;
+    mutable uint64_t posed = 0;
 
     // Drawn `instances` times in one call, each as `buffer` says: per
     // instance kInstanceFloats floats - a model matrix (column by column, at
@@ -154,6 +176,7 @@ private:
     // The vertex array whose instance attributes step once an instance
     // (their divisors are its own state, set once, kept while it stands).
     mutable GLuint divided_ = 0;
+    mutable GLuint joints_buf_ = 0, joints_tex_ = 0;  // where its joints are (a skin's)
 };
 
 using render::cube_vertices;

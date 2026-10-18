@@ -748,6 +748,16 @@ the room is still its camera.
   standing and walking blended by pace (`sg::pace`). `sg::lead` moves a body
   by another's motion (a skeleton's clip, retargeted); `sg::touch` finds
   where a ray meets its ragdoll.
+* A skin is posed on the card. Shown in a room (`sg::show_skins`), its
+  corners are given the room once as they were bound, each with the four
+  joints that move it (`Spatial3D::skin_model`, `Being::bound`), and each
+  time it moves only where its joints are - a few numbers a joint, fitted
+  into the box round it as posed (`pose_model`, `Being::pose_skin`); the
+  vertex stage poses its corners (and its shadow's) from them. Its box is
+  still the posed body's own, to the millimetre, for whoever culls it,
+  touches it or stands it on the ground. `Spatial3D::posed` makes its
+  corners as a model's for whoever wants them (the WebGPU view does).
+  Memory Leak at 1600 x 900: 0.5 to 1 ms a frame less (`sg_skin_gl`).
 * `sg::Face` (`Face.hpp`): which picture a face wears, a state on its own
   line - idle pictures at random, talking ones as open as the mouth is told
   to be (`sg::voices`, from whatever speaks), carried to the skin

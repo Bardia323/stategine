@@ -125,6 +125,7 @@ constexpr GLenum GL_ANY_SAMPLES_PASSED = 0x8C2F;
 constexpr GLenum GL_QUERY_WAIT = 0x8E13;
 // A buffer read by a shader as a picture one texel high (core since 3.1).
 constexpr GLenum GL_TEXTURE_BUFFER = 0x8C2A;
+constexpr GLenum GL_CURRENT_PROGRAM = 0x8B8D;
 constexpr GLenum GL_R32UI = 0x8236;
 constexpr GLenum GL_STREAM_DRAW = 0x88E0;
 // Pictures of whole numbers, read by a shader as they are (words of bits).
@@ -182,6 +183,7 @@ constexpr GLenum GL_UNSIGNED_INT = 0x1405;
     X(void, DeleteBuffers, (GLsizei, const GLuint*))                                          \
     X(void, GetBufferSubData, (GLenum, GLintptr, GLsizeiptr, void*))                          \
     X(void, VertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*))    \
+    X(void, VertexAttrib4f, (GLuint, GLfloat, GLfloat, GLfloat, GLfloat))                     \
     X(void, EnableVertexAttribArray, (GLuint))                                                \
     X(void, GenTextures, (GLsizei, GLuint*))                                                  \
     X(void, BindTexture, (GLenum, GLuint))                                                    \

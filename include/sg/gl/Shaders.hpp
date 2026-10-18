@@ -34,6 +34,28 @@ layout(location=9) in vec4 iMat2;
 // (0, 0, 0, 1) where a mesh has none, and the scene finds them on the screen.
 layout(location=10) in vec4 aTangent;
 out vec4 vTangent;
+// A skin's corner (gl::Mesh::create_bound): the four joints that move it and
+// how much each does - none, not a skin's - each joint's move three rows of
+// a 3 x 4 matrix in uJoints (Mesh::pose), the last texel how its normal is
+// sized back (Spatial3D::skin_model).
+layout(location=11) in vec4 aJoints;
+layout(location=12) in vec4 aWeights;
+uniform samplerBuffer uJoints;
+void posed_by_joints(inout vec3 pos, inout vec3 nrm) {
+    if (aWeights == vec4(0.0)) return;
+    vec3 p = vec3(0.0), n = vec3(0.0);
+    vec4 at = vec4(pos, 1.0);
+    for (int k = 0; k < 4; ++k) {
+        float w = aWeights[k];
+        if (w <= 0.0) continue;
+        int j = int(aJoints[k] + 0.5) * 3;
+        vec4 r0 = texelFetch(uJoints, j), r1 = texelFetch(uJoints, j + 1), r2 = texelFetch(uJoints, j + 2);
+        p += w * vec3(dot(r0, at), dot(r1, at), dot(r2, at));
+        n += w * vec3(dot(r0.xyz, nrm), dot(r1.xyz, nrm), dot(r2.xyz, nrm));
+    }
+    n *= texelFetch(uJoints, textureSize(uJoints) - 1).xyz;
+    pos = p, nrm = n / (length(n) + 1e-12);
+}
 uniform float uDepthLayer;
 uniform float uBend;  // metres a box's corners stand off its middle, along its thinnest way (`bend`)
 uniform vec3 uCurl;   // a panel's curl: metres its edge goes back, which edge (1 its picture's right), over how much of it (`curl`)
@@ -86,6 +108,7 @@ void main() {
     // from its middle across its face (a bowl, `bend` metres deep at its
     // corners), and its faces' normals turned as the bowl turns them.
     vec3 pos = aPos, nrm = aNormal;
+    posed_by_joints(pos, nrm);
     float bend = uInstanced == 1 ? iMat2.w : uBend;
     if (bend != 0.0) {
         vec3 sc = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
@@ -305,8 +328,24 @@ uniform mat4 uFrame;
 // stands in its way: a half-space, (normal, offset); all of space when 0.
 uniform vec4 uCasterSide;
 out float gl_ClipDistance[1];
+// A skin's corner posed by its joints, as the scene poses it (scene_vs).
+layout(location=11) in vec4 aJoints;
+layout(location=12) in vec4 aWeights;
+uniform samplerBuffer uJoints;
+vec3 posed_by_joints(vec3 pos) {
+    if (aWeights == vec4(0.0)) return pos;
+    vec3 p = vec3(0.0);
+    vec4 at = vec4(pos, 1.0);
+    for (int k = 0; k < 4; ++k) {
+        float w = aWeights[k];
+        if (w <= 0.0) continue;
+        int j = int(aJoints[k] + 0.5) * 3;
+        p += w * vec3(dot(texelFetch(uJoints, j), at), dot(texelFetch(uJoints, j + 1), at), dot(texelFetch(uJoints, j + 2), at));
+    }
+    return p;
+}
 void main() {
-    vec4 world = (uInstanced == 1 ? uFrame * iLocal : uModel) * vec4(aPos, 1.0);
+    vec4 world = (uInstanced == 1 ? uFrame * iLocal : uModel) * vec4(posed_by_joints(aPos), 1.0);
     gl_ClipDistance[0] = dot(uCasterSide.xyz, world.xyz) + uCasterSide.w;
     gl_Position = uLightViewProj * world;
 })";

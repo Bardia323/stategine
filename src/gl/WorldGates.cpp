@@ -29,7 +29,8 @@ auto GLWorldView::occluders_in(const Spatial3D& room, bool shell) -> RoomOcclude
             } else if (e.kind == kinds::mesh) {
                 // Only what nothing is seen through: not glass, light added over
                 // the room, a picture on a card or a thing cut out of one.
-                if (e.params.num(glass, 0.0) > 0.0 || e.params.num(add, 0.0) > 0.5 || is_sprite(e) || cuts_out(e)) continue;
+                // (Nor a skin: posed by its joints, it is no shape to lay as it stands.)
+                if (e.params.num(glass, 0.0) > 0.0 || e.params.num(add, 0.0) > 0.5 || is_sprite(e) || cuts_out(e) || skinned(e)) continue;
                 r.list.push_back(Occluder{&e});
             }
         }

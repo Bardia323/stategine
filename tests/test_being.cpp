@@ -316,9 +316,13 @@ int main() {
             sg::Spatial3D room{sg::Key{"room"}};
             sg::show_skins(room, being, sg::Key{"spot"});
             const sg::Element* e = room.find(sg::Key{"spot.skin"});
-            const std::vector<float>* drawn = room.model(sg::Key{being.id().str() + ".skin"});
+            // (Posed as the card poses it: its corners as bound, by where its joints are.)
+            const std::vector<float> posed = room.posed(sg::Key{being.id().str() + ".skin"});
+            const std::vector<float>* drawn = &posed;
             const std::vector<float> tris = being.skinned("skin");
-            if (!e || !drawn || drawn->size() != tris.size() || tris.empty()) return 1e9;
+            sg::Being::Fitted box;
+            const std::vector<float> fitted = being.skinned(sg::Key{"skin"}, &box);
+            if (!e || e->params.num("skinned") < 0.5 || drawn->size() != tris.size() || tris.empty()) return 1e9;
             const double x = e->params.num(sg::keys::x), y = e->params.num(sg::keys::y), z = e->params.num(sg::keys::z);
             const double sx = e->params.num(sg::keys::sx), sy = e->params.num(sg::keys::sy), sz = e->params.num(sg::keys::sz);
             double out = 0;  // how far the furthest corner is outside its box
@@ -327,6 +331,8 @@ int main() {
                 // and drawn at that size, there, it is where the skin is
                 out = std::max({out, std::fabs(x + (*drawn)[i] * sx - tris[i]), std::fabs(y + ((*drawn)[i + 1] + 0.5) * sy - tris[i + 1]),
                                 std::fabs(z + (*drawn)[i + 2] * sz - tris[i + 2])});
+                // and its normals and uvs are skinned()'s, fitted
+                for (std::size_t k = 3; k < 8; ++k) out = std::max(out, double(std::fabs((*drawn)[i + k] - fitted[i + k])));
             }
             return out;
         };

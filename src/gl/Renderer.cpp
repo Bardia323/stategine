@@ -38,6 +38,16 @@ Program::Program(const char* vs, const char* fs, const char* tag) {
     }
     glDeleteShader(v);
     glDeleteShader(f);
+    // A vertex stage that poses skins reads their joints at a unit of its
+    // own, set now and never again (a sampler left on unit 0 beside a
+    // picture of another kind stops a strict driver drawing at all).
+    if (const GLint at = glGetUniformLocation(id_, "uJoints"); at >= 0) {
+        GLint was = 0;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &was);
+        glUseProgram(id_);
+        glUniform1i(at, kJointsUnit);
+        glUseProgram(static_cast<GLuint>(was));
+    }
 }
 
 GLint Program::uniform(const char* name) const {
@@ -209,6 +219,42 @@ void Mesh::create(const std::vector<float>& verts) {
                           reinterpret_cast<void*>(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
     glBindVertexArray(0);
+}
+
+void Mesh::create_bound(const std::vector<float>& verts) {
+    constexpr int k = 16;  // (Spatial3D::kSkinFloats)
+    count_ = static_cast<GLsizei>(verts.size() / k);
+    if (!vao_) glGenVertexArrays(1, &vao_), glGenBuffers(1, &vbo_);
+    ++made_;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)), verts.data(), GL_STATIC_DRAW);
+    const GLsizei stride = k * sizeof(float);
+    const struct {
+        GLuint at;
+        GLint n;
+        std::size_t from;
+    } parts[] = {{0, 3, 0}, {1, 3, 3}, {2, 2, 6}, {11, 4, 8}, {12, 4, 12}};
+    for (const auto& p : parts) {
+        glVertexAttribPointer(p.at, p.n, GL_FLOAT, 0, stride, reinterpret_cast<void*>(p.from * sizeof(float)));
+        glEnableVertexAttribArray(p.at);
+    }
+    glBindVertexArray(0);
+    if (!joints_tex_) {
+        glGenBuffers(1, &joints_buf_);
+        glGenTextures(1, &joints_tex_);
+    }
+}
+
+void Mesh::pose(const std::vector<float>& joints) const {
+    if (!joints_tex_) return;
+    glBindBuffer(GL_TEXTURE_BUFFER, joints_buf_);
+    glBufferData(GL_TEXTURE_BUFFER, static_cast<GLsizeiptr>(joints.size() * sizeof(float)), joints.data(), GL_STREAM_DRAW);
+    glActiveTexture(GL_TEXTURE0 + kJointsUnit);
+    glBindTexture(GL_TEXTURE_BUFFER, joints_tex_);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, joints_buf_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
 void Mesh::update(const std::vector<float>& verts) {

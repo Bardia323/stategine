@@ -504,7 +504,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             const Element& e = *c->element;
             if (e.kind == kinds::mesh || e.kind == kinds::wall) {
                 if (e.kind == kinds::mesh && cast_thin(room, e)) continue;
-                if (q_.instancing) {
+                if (q_.instancing && !skinned(e)) {
                     batch(shape_of(room, e), box_matrix(room, e).m, {}, 0, 0, 0, 0, 0);
                     continue;
                 }

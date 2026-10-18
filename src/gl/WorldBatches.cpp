@@ -16,8 +16,9 @@ namespace sg::render {
 
 bool GLWorldView::instanceable(const Element& e) const {
     static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"}, lit{"lit"};
+    // (A skin is posed by its own joints: drawn on its own.)
     if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(splat) ||
-        e.params.num(lines, 0.0) > 0.5 || e.params.num(lit, 1.0) < 0.5)
+        e.params.num(lines, 0.0) > 0.5 || e.params.num(lit, 1.0) < 0.5 || skinned(e))
         return false;
     const auto skin = bound_surfaces().find(e.id);
     if (skin != bound_surfaces().end() && skin->second.surface) return false;
@@ -401,7 +402,7 @@ void GLWorldView::ready_skins() {
 
 bool GLWorldView::batch_skinned(const State& st, const Element& e) {
     static const Key hung{"straddle"}, worn{"skin"};
-    if (!q_.instancing || e.id == highlight_ || e.params.num(hung, 0.0) > 0.5 || e.params.has(worn)) return false;
+    if (!q_.instancing || e.id == highlight_ || e.params.num(hung, 0.0) > 0.5 || e.params.has(worn) || skinned(e)) return false;
     if (skin_holder(st, e) != &e) return false;
     const auto it = bound_surfaces().find(e.id);
     if (it == bound_surfaces().end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;

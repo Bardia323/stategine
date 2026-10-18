@@ -124,6 +124,27 @@ public:
     std::vector<float> model_again(Key name, std::vector<float> corners);
     const std::vector<float>* model(Key name) const;
     uint64_t model_revision(Key name) const;
+    // A model its joints move (a being's skin shown here: show_skins), drawn
+    // by an element that says `shape` = "model", `model` = its name and
+    // `skinned` = 1. Its corners as they were bound, made when its skin is:
+    // kSkinFloats each - a model's 8 (place, normal, uv), then the four
+    // joints that move it and how much each does (a corner no joint moves
+    // goes by the one after the last) - laid as a model's are, a triangle
+    // every three. And where its joints are now, made again as it moves:
+    // kJointFloats each (a 3 x 4 matrix, row by row, taking a bound corner
+    // into the model's own unit box), then one more for a corner no joint
+    // moves, then how its normals are sized back (3 floats and 1 spare). The
+    // renderer poses it as it draws it; `posed` makes its corners as a
+    // model's, for whoever wants them as they are.
+    static constexpr std::size_t kSkinFloats = 16, kJointFloats = 12;
+    void skin_model(Key name, std::vector<float> bound);
+    // (Giving back the making before's memory, as model_again does.)
+    std::vector<float> pose_model(Key name, std::vector<float> joints);
+    const std::vector<float>* skin_bound(Key name) const;
+    const std::vector<float>* skin_pose(Key name) const;
+    uint64_t skin_revision(Key name) const;  // its bound corners' making (0 for none)
+    uint64_t pose_revision(Key name) const;  // its joints' (0 for none)
+    std::vector<float> posed(Key name) const;
 
     // --- pictures -----------------------------------------------------------------
     // What its things may wear: RGBA pixels, row 0 at the top, kept by name.
@@ -163,6 +184,7 @@ private:
         uint64_t revision = 0;
     };
     std::map<std::string, KeptModel> models_;
+    std::map<std::string, KeptModel> skins_, poses_;
     std::map<std::string, std::shared_ptr<Picture>> pictures_;
     uint64_t picture_revisions_ = 0;
 };

@@ -878,7 +878,7 @@ private:
     struct ShapeMemo {
         uint64_t stamp = 0, made = 0;
         const gl::Mesh* mesh = nullptr;
-        bool modelled = false;
+        bool modelled = false, skinned = false;  // a model; one its joints move (Spatial3D::skin_model)
         Key model;
         // What the mesh was found from (find_shape reads these and nothing
         // else of the thing): a thing whose stamp moved but not these - one
@@ -1322,6 +1322,10 @@ private:
         const gl::Mesh& mesh() const { return shared ? *shared : own; }
     };
     mutable std::map<std::pair<const State*, std::string>, ModelMesh> model_meshes_;
+    // Skins' meshes, their corners as bound (one a skin, sent once), posed on
+    // the card from where their joints are (gl::Mesh::pose).
+    mutable std::map<std::pair<const State*, std::string>, ModelMesh> skin_meshes_;
+    static bool skinned(const Element& e);  // drawn as a skin its joints move
     // The meshes models first seen share, by what they are made of (their
     // corners' digest and count); never changed once sent.
     struct CornersKey {
