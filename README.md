@@ -632,6 +632,19 @@ and the renderer draws round the eye however far it goes. `sgterrain` draws a
 land's map and says what it is; `sgland` draws it as a game would, sky, sun,
 shadows and air (`--fog`).
 
+A land may wear a photographed ground: its `skin` (a picture of its
+state's), `skin_normal` and `skin_surface` (as a thing's), laid flat over the
+world every `tile` metres (2), and laid again turned and 3.2 times larger,
+the two blended by a slow noise across the ground (`tile_break`, 0..1; 0.6),
+so its repeats never line up from far off. It may say where its water stands
+(`wet_level`) and how far up from it the sand is damp (`wet_band`, metres):
+darker and glossier there, the edge ragged. And a land may move with its
+world's time (`drifts` 1: dunes creeping, its ground given again as its time
+goes, `Spatial3D::terrain` again): it is drawn as it was until the ground it
+now is has been sampled in the background, never waited for; any other land
+given again is waited for. (Its grid for the horizon below: `horizon_cells`
+a side, 512 unless it says, up to 2048, for a wide land at a low sun.)
+
 Its land shades itself under a low sun however far off it is: the renderer
 reads the land's heights on a grid round the eye (512 cells a side, out past
 what it draws by as far as it looks toward the sun: the terrain's `horizon`,
@@ -934,6 +947,17 @@ sky colours. The sun's light on everything under them is shadowed by them
 | `clouds.far` | how far out they are drawn, metres | 40000 |
 | `clouds.steps` | steps of each march through them (8..256) | 48 |
 | `clouds.dome` | texels each way of the picture they are marched into | 1024 |
+| `clouds.cirrus` | high, thin cloud of ice drawn out by the wind, a layer of its own above the rest, 0..1 | 0: none |
+| `clouds.cirrus_height`, `.cirrus_size`, `.cirrus_wind`, `.cirrus_dir` | its height, its streaks' size (metres), its own wind and the way it blows | 9000, 4000, 30, 0.9 |
+
+**A world's own weather.** What the weather is belongs to the world, not to
+how it is shown: a world's params `weather.<setting>` (set by its own laws,
+as its time goes) stand over its look's setting of that name - the clouds
+(`weather.clouds.cover`, `weather.clouds.cirrus`, ...), the haze
+(`weather.atmosphere.haze`), the light in the air (`weather.scatter`). A look
+says how a world without weather of its own is shown. Weather moving a
+little at a time remakes the dome a part a frame, as the clouds' drift does;
+only a jump remakes it whole.
 
 They are marched into a picture of the whole sky above (the dome:
 `gl::cloud_dome_fs`; straight up its middle, the horizon its edge), one
@@ -1022,6 +1046,17 @@ look's own exposure (a painting's match holds), and a room seen through a
 doorway is seen with the eye's. The first frame the eye adjusts, and the next
 after `settle_exposure()`, take the measure at once: a shot asks for it on its
 first frame, so it is the same picture however it was come to.
+
+### The lens
+
+A camera may keep a thing sharp and soften the rest round it, as a
+photograph of a small world is: its `focus` (an element of its world, `focus_up`
+metres over where it stands; 1), how far round it on the screen all is sharp
+(`focus_radius`, a part of the screen's height; 0.12), over how much more it
+softens (`focus_fall`; 0.3) and how soft at most (`focus_blur`, levels of the
+picture's mipmaps; 0 none). The eye's own view only: the scene's picture is
+mipmapped, and the composite reads it softer the further from the point,
+eight taps a level wide round each pixel (`sg_land_gl`).
 
 ### Fog where it pools
 

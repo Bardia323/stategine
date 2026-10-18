@@ -409,6 +409,8 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         }
         p.set("uTexel", 1.0f / static_cast<float>(fb_w), 1.0f / static_cast<float>(fb_h));
         p.set("uEdgesSmooth", taa_on() ? 1.0f : 0.0f);
+        p.set("uFocus", focus_[0], focus_[1], focus_[2], focus_[3]);
+        p.set("uFocusFall", focus_fall_);
         screen_.draw();
     };
     // A viewer's feed is the light itself, undeveloped: the eye that looks at

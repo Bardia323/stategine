@@ -241,6 +241,27 @@ int main() {
     field.params().set("own_time", 0.0);
     earth.setting(sg::passes::scene, "scatter", 0.0);
     earth.setting(sg::passes::scene, "atmosphere", 1.0);
+
+    // A world's own weather over its look's (`weather.*` params, set by its
+    // laws): its look says clear, the world says clouded over - and it is.
+    // And high ice drawn out by the wind (cirrus) on a clear sky: whiter
+    // overhead than clear.
+    earth.setting(sg::passes::scene, "clouds.cover", 0.0);
+    sun_at(1.3);
+    shot(ahead, 1.45, 30);
+    const Rgb clear_again = at(0.5, 0.5);
+    field.params().set("weather.clouds.cover", 0.95);
+    shot(ahead, 1.45, 30);
+    const Rgb weathered = at(0.5, 0.5);
+    say("overhead, its look clear, its world clouded", weathered);
+    check(weathered.b - weathered.r < 0.6 * (clear_again.b - clear_again.r), "the world's own weather over its look's: clouded, though its look says clear");
+    field.params().erase(sg::Key{"weather.clouds.cover"});
+    field.params().set("weather.clouds.cirrus", 0.9);
+    shot(ahead, 1.45, 30);
+    const Rgb iced = at(0.5, 0.5);
+    say("overhead, high ice", iced);
+    check(apart(iced, clear_again) > 12.0 && iced.r > clear_again.r, "high ice (cirrus) on a clear sky: whiter overhead");
+    field.params().erase(sg::Key{"weather.clouds.cirrus"});
     ground.params.set(sg::keys::x, 5000.0);
 
     // A look that says `atmosphere` and `clouds.cover` 0 draws as one that

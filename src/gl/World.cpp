@@ -1223,6 +1223,9 @@ void main() {
     else mosh_held_ = false;
     meter_exposure();
     run_bloom();
+    // (What the lens keeps sharp: the picture's mipmaps, for the softer rest.)
+    focus_of(world, eye_cam, aspect);
+    if (focus_[3] > 0.0f) (scene_src_ == &lit_ ? lit_ : resolve_).mipmap();
     composite(fb_w, fb_h);
     card_stamp(kCardPost);
     card_now_ = nullptr;
@@ -1413,6 +1416,33 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
         else if (e.kind == kinds::strewn) ix.strewn.push_back(&e);
     }
     return ix;
+}
+
+void GLWorldView::focus_of(const Spatial3D& world, const Camera& eye, float aspect) {
+    focus_[3] = 0.0f;
+    // A camera that says what it keeps sharp (`focus`: an element of its
+    // world, `focus_up` metres over where it stands, 1 unless it says), how
+    // wide round it on the screen (`focus_radius`, a part of its height,
+    // 0.12), over how much more it softens (`focus_fall`, 0.3), and how soft
+    // (`focus_blur`, levels; 0: none). An eye's own view, not one through a
+    // doorway or a screen's.
+    if (root_ || !world.find(world.camera_id())) return;
+    const Element& cam = world.camera();
+    const double blur = cam.params.num(Key{"focus_blur"}, 0.0);
+    const std::string* on = cam.params.text(Key{"focus"});
+    if (blur <= 0.0 || !on) return;
+    const Element* e = world.find(Key{*on});
+    if (!e || !e->alive) return;
+    const Vec3d at = world_position(world, *e) + Vec3d{0.0, cam.params.num(Key{"focus_up"}, 1.0), 0.0};
+    const gl::Mat4 vp = projection_of(eye, aspect, kNear, 1000.0f) * gl::Mat4::look_at(eye.eye, eye.eye + eye.forward, eye.up);
+    const float* m = vp.m;
+    const float x = static_cast<float>(at.x), y = static_cast<float>(at.y), z = static_cast<float>(at.z);
+    const float cx = m[0] * x + m[4] * y + m[8] * z + m[12], cy = m[1] * x + m[5] * y + m[9] * z + m[13], cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if (cw <= 1e-4f) return;
+    focus_[0] = 0.5f + 0.5f * cx / cw, focus_[1] = 0.5f + 0.5f * cy / cw;
+    focus_[2] = static_cast<float>(std::max(cam.params.num(Key{"focus_radius"}, 0.12), 0.0));
+    focus_[3] = static_cast<float>(std::min(blur, 8.0));
+    focus_fall_ = static_cast<float>(std::max(cam.params.num(Key{"focus_fall"}, 0.3), 1e-3));
 }
 
 }  // namespace sg::render

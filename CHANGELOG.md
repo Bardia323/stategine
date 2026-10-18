@@ -8,6 +8,15 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- For a desert at evening (memory-leak's `desert`, the engine shown off):
+  - A land wears a photographed ground (`skin`, `skin_normal`, `skin_surface`, every `tile` metres), laid a second time turned and larger and blended by a slow noise (`tile_break`), so its repeats break up from far off (`tiled` in the scene shader).
+  - A land is damp by its water (`wet_level`, `wet_band`): darker and glossier up to the band, its edge ragged.
+  - A land drifts with its world's time (`drifts`): given again, its ground and its horizon are sampled in the background and it is drawn as it was meanwhile; the newest finished sample is taken. A land given again is now taken again from its state (`rev`); one the program bound (`bind_terrain`) stays the program's. `horizon_cells` sets its horizon grid (256 to 2048).
+  - A world's own weather (`weather.<setting>` params) stands over its look's: the clouds, the cirrus, the haze, the light in the air (`GLWorldView::weather`). Weather that moves a little at a time remakes the dome a part a frame, not whole.
+  - Cirrus, a second kind of cloud (`clouds.cirrus` and its height, size, wind and way): high, thin ice drawn out into streaks by a wind of its own, lit by the sun through the air at its height, marched into the same dome behind the cumulus.
+  - The lens: a camera keeps a thing sharp (`focus`, `focus_up`, `focus_radius`, `focus_fall`, `focus_blur`) and softens the rest by its distance from it on the screen - a tilt-shift turned round that point, from the scene picture's mipmaps (`uFocus`).
+  - Tests: `sg_land_gl` (worn ground, its repeats broken, damp by its water, drifting, the lens); `sg_sky_gl` (the world's own weather over its look's; cirrus).
+
 - The clouds' shadow falls through the lit air (a look's `scatter`): shafts where they part. The sky and its clouds are made before the air for it, and the air reads their shadow map as the scene does. Their drifting carries the air as the view moving does (a part of each cell lit anew a frame, the rest kept) rather than gathering it from nothing, so the air rests while the world's time stands still; the clouds as the look makes them are what it is gathered again for (`sg_sky_gl`: over black ground, the sun's light in the air under 0.95 cover two thirds of a clear sky's, toned; still while the world is).
 
 - What stands between a sound and the ear (`sg::audio::occlusion`) is a fan of nine rays a hand's breadth across, from round the sound to round the ear, each crossing up to four things - a wall by its material (else plaster), a solid thing by its own (else wood), the land as earth - asked a crossing at a time as one batch (`sg::rays`), the nine averaged: a sound half behind a pillar is half muffled (`sg_audio`: 0.34 of the middle band; wholly behind it 0.01) and goes from heard to hidden as it moves behind it, not at once. Before, one ray, walls alone.

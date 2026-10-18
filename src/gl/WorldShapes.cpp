@@ -158,6 +158,11 @@ std::vector<float> GLWorldView::sample_ground(const std::function<double(double,
     return v;
 }
 
+void GLWorldView::bind_terrain(Key terrain_element, std::function<double(double, double)> height) {
+    TerrainMesh& t = terrains_[terrain_element];
+    t.height = std::move(height), t.bound = true;
+}
+
 void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     auto it = terrains_.find(e.id);
     if (it == terrains_.end() || !it->second.height) return;
@@ -169,10 +174,11 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     const double rev = e.params.num(Key{"rev"}, 0.0);
     const double cx = std::floor(cam.eye.x / snap) * snap, cz = std::floor(cam.eye.z / snap) * snap;
 
-    // A finished resample goes in, if it is still the ground wanted.
+    // A finished resample goes in, if it is still the ground wanted (a land
+    // that drifts: the newest there is).
     if (t.job.valid() && t.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         std::vector<float> v = t.job.get();
-        if (t.job_rev == rev) {
+        if (t.job_rev == rev || e.params.num(Key{"drifts"}, 0.0) > 0.5) {
             t.mesh.update(v);
             t.cx = t.job_cx;
             t.cz = t.job_cz;
@@ -180,7 +186,12 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
         }
     }
     if (t.mesh.valid() && cx == t.cx && cz == t.cz && rev == t.rev) return;
-    if (!t.mesh.valid() || rev != t.rev) {
+    // A land that moves as its world's time goes (`drifts`: dunes creeping)
+    // is drawn as it was until the ground it now is has been sampled, in the
+    // background, as a step aside is; any other land asked again (`rev`) is
+    // waited for.
+    const bool drifts = e.params.num(Key{"drifts"}, 0.0) > 0.5;
+    if (!t.mesh.valid() || (rev != t.rev && !drifts)) {
         // Nothing sensible to draw meanwhile: wait for it.
         if (t.job.valid()) t.job.wait();
         t.mesh.update(sample_ground(t.height, n, reach, step, cx, cz));
@@ -210,8 +221,40 @@ void GLWorldView::draw_terrain(const State& st, const Element& e) {
     scene_->set("uTexMix", 0.0f);
     scene_->set("uGlow", 0.0f);
     const bool land = bind_land(st, e);
+    // Or a photographed ground (`skin`, its `skin_normal` and `skin_surface`):
+    // laid flat over the world every `tile` metres (2 unless it says), its
+    // repeats broken by a second, larger laying (`tile_break`, 0..1; 0.6).
+    static const Key skin{"skin"}, normal{"skin_normal"}, surface{"skin_surface"};
+    bool worn = false, normals = false, surfaced = false;
+    if (!land && e.params.has(skin) && bind_worn(st, e.params.get_or<std::string>(skin, ""), true, 0)) {
+        worn = true;
+        scene_->set("uTexMix", 1.0f);
+        scene_->set("uSkin", 2.0f);
+        scene_->set("uTile", static_cast<float>(e.params.num(Key{"tile"}, 2.0)));
+        scene_->set("uTileBreak", static_cast<float>(std::clamp(e.params.num(Key{"tile_break"}, 0.6), 0.0, 1.0)));
+        scene_->set("uScreenUV", 0.0f);
+        scene_->set("uCRT", 0.0f);
+        if (const std::string* n = e.params.text(normal)) normals = bind_worn(st, *n, false, 10);
+        if (const std::string* s = e.params.text(surface)) surfaced = bind_worn(st, *s, false, 9);
+        scene_->set("uNormalMapOn", normals ? 1.0f : 0.0f);
+        scene_->set("uSurfaceMapOn", surfaced ? 1.0f : 0.0f);
+        if (normals) {
+            scene_->set("uNormalStrength", static_cast<float>(e.params.num(Key{"normal_strength"}, 1.0)));
+            scene_->set("uNormalFlipY", -1.0f);
+        }
+    }
+    // Damp by its water: where it stands (`wet_level`) and how far up
+    // (`wet_band`, metres; 0 none).
+    const double wet_band = e.params.num(Key{"wet_band"}, 0.0);
+    if (wet_band > 0.0) scene_->set("uWet", static_cast<float>(e.params.num(Key{"wet_level"}, 0.0)), static_cast<float>(wet_band));
     it->second.mesh.draw();
+    if (wet_band > 0.0) scene_->set("uWet", 0.0f, 0.0f);
     if (land) unbind_land();
+    if (worn) {
+        scene_->set("uTexMix", 0.0f), scene_->set("uSkin", 0.0f), scene_->set("uTileBreak", 0.0f);
+        if (normals) scene_->set("uNormalMapOn", 0.0f), scene_->set("uNormalStrength", 1.0f);
+        if (surfaced) scene_->set("uSurfaceMapOn", 0.0f);
+    }
 }
 
 bool GLWorldView::bind_land(const State& st, const Element& e) {

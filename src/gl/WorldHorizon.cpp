@@ -16,13 +16,12 @@
 namespace sg::render {
 
 namespace {
-// The grid's cells a side.
+// The grid's cells a side, unless the terrain says (`horizon_cells`).
 constexpr int kHorizonCells = 512;
 
-// The heights of `height` at the middle of each cell of a grid, `cell`
-// metres a cell from the corner (x0, z0): a row a z.
-std::vector<float> sample_grid(const std::function<double(double, double)>& height, double x0, double z0, double cell) {
-    const int n = kHorizonCells;
+// The heights of `height` at the middle of each cell of a grid `n` cells
+// a side, `cell` metres a cell from the corner (x0, z0): a row a z.
+std::vector<float> sample_grid(const std::function<double(double, double)>& height, int n, double x0, double z0, double cell) {
     std::vector<float> h(static_cast<std::size_t>(n) * n);
     const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
     std::vector<std::thread> pool;
@@ -54,34 +53,47 @@ auto GLWorldView::horizon_for(const std::vector<PlacedRoom>& rooms, const gl::Ve
         if (far <= 0.0) return nullptr;
         // (Another view's eye is not the eye's: as it was made.)
         if (!own) return t.horizon_made ? &t : nullptr;
-        const double half = reach + far, cell = 2.0 * half / kHorizonCells, rev = e->params.num(Key{"rev"}, 0.0);
+        // (A wide land seen far off at a low sun wants more of them: as many
+        // a side as it says, 256 to 2048.)
+        const int n = std::clamp(static_cast<int>(e->params.num(Key{"horizon_cells"}, kHorizonCells)), 256, 2048);
+        if (t.grid_n != n) t.heights.destroy(), t.horizon.destroy(), t.grid_n = n, t.grid_cell = 0, t.horizon_made = false;
+        const double half = reach + far, cell = 2.0 * half / n, rev = e->params.num(Key{"rev"}, 0.0);
         const double ex = eye.x - here.pose.position.x, ez = eye.z - here.pose.position.z;
         // Its corner kept to whole steps of 32 cells, the eye about its middle.
         const double snap = 32.0 * cell;
         const double cx = std::round((ex - half) / snap) * snap, cz = std::round((ez - half) / snap) * snap;
         bool fresh = false;
-        const auto send = [&](const std::vector<float>& h, double x, double z) {
-            if (!t.heights.valid()) t.heights.create(kHorizonCells, kHorizonCells, gl::GL_R32F, 0, false);
+        const auto send = [&](const std::vector<float>& h, double x, double z, double of_rev) {
+            if (!t.heights.valid()) t.heights.create(n, n, gl::GL_R32F, 0, false);
             gl::glBindBuffer(gl::GL_PIXEL_UNPACK_BUFFER, 0);
             t.heights.bind_color(0);
-            gl::glTexSubImage2D(gl::GL_TEXTURE_2D, 0, 0, 0, kHorizonCells, kHorizonCells, gl::GL_RED, gl::GL_FLOAT, h.data());
-            t.grid_x = x, t.grid_z = z, t.grid_cell = cell, t.grid_rev = rev;
+            gl::glTexSubImage2D(gl::GL_TEXTURE_2D, 0, 0, 0, n, n, gl::GL_RED, gl::GL_FLOAT, h.data());
+            t.grid_x = x, t.grid_z = z, t.grid_cell = cell, t.grid_rev = of_rev;
             fresh = true;
         };
-        // A finished resample goes in, if it is still the grid wanted.
+        // A finished resample goes in, if it is still the grid wanted (a
+        // land that drifts: the newest one there is, its time's own).
+        const bool drifts = e->params.num(Key{"drifts"}, 0.0) > 0.5;
         if (t.grid_job.valid() && t.grid_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const std::vector<float> h = t.grid_job.get();
-            if (t.grid_job_rev == rev && t.grid_job_cell == cell) send(h, t.grid_job_x, t.grid_job_z);
+            if ((t.grid_job_rev == rev || drifts) && t.grid_job_cell == cell) send(h, t.grid_job_x, t.grid_job_z, t.grid_job_rev);
         }
-        if (t.grid_rev != rev || t.grid_cell != cell) {
+        if (drifts && t.grid_cell == cell && t.grid_rev != rev && !t.grid_job.valid()) {
+            // A land that moves as its time goes: read again in the
+            // background, this one drawn with meanwhile.
+            t.grid_job_x = cx, t.grid_job_z = cz, t.grid_job_cell = cell, t.grid_job_rev = rev;
+            t.grid_job = std::async(std::launch::async, [height = t.height, n, cx, cz, cell] { return sample_grid(height, n, cx, cz, cell); });
+        } else if (drifts && t.grid_cell == cell && t.grid_rev != rev) {
+            // (One under way: the next is asked for once it is in.)
+        } else if (t.grid_rev != rev || t.grid_cell != cell) {
             // None yet, or the land asks to be read again: wait for it.
             if (t.grid_job.valid()) t.grid_job.wait(), t.grid_job = {};
-            send(sample_grid(t.height, cx, cz, cell), cx, cz);
+            send(sample_grid(t.height, n, cx, cz, cell), cx, cz, rev);
         } else if (!t.grid_job.valid() && (std::fabs(ex - (t.grid_x + half)) > 0.25 * half || std::fabs(ez - (t.grid_z + half)) > 0.25 * half)) {
             // The eye gone out of the middle of it: a grid round it, made in
             // the background - this one is drawn with meanwhile.
             t.grid_job_x = cx, t.grid_job_z = cz, t.grid_job_cell = cell, t.grid_job_rev = rev;
-            t.grid_job = std::async(std::launch::async, [height = t.height, cx, cz, cell] { return sample_grid(height, cx, cz, cell); });
+            t.grid_job = std::async(std::launch::async, [height = t.height, n, cx, cz, cell] { return sample_grid(height, n, cx, cz, cell); });
         }
         // The sun's bearing: none overhead (nothing is made for it; no land
         // hides a sun that high), else made again once it turns a little.
@@ -90,7 +102,7 @@ auto GLWorldView::horizon_for(const std::vector<PlacedRoom>& rooms, const gl::Ve
         const float bx = sun_dir.x / across, bz = sun_dir.z / across;
         if (!fresh && t.horizon_made && bx * t.bearing_x + bz * t.bearing_z > 0.99999f) return &t;
         if (!horizon_prog_) horizon_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::horizon_fs(), "horizon");
-        if (!t.horizon.valid()) t.horizon.create(kHorizonCells, kHorizonCells, gl::GL_RG32F, 0, false);
+        if (!t.horizon.valid()) t.horizon.create(n, n, gl::GL_RG32F, 0, false);
         gl::glDisable(gl::GL_DEPTH_TEST);
         gl::glDisable(gl::GL_CULL_FACE);
         gl::glDisable(gl::GL_BLEND);
@@ -98,7 +110,7 @@ auto GLWorldView::horizon_for(const std::vector<PlacedRoom>& rooms, const gl::Ve
         const gl::Program& p = *horizon_prog_;
         p.use();
         p.set("uHeights", 0);
-        p.set("uHorizonGrid", static_cast<float>(kHorizonCells), static_cast<float>(cell));
+        p.set("uHorizonGrid", static_cast<float>(n), static_cast<float>(cell));
         p.set("uHorizonSun", bx, bz);
         t.horizon.bind();
         t.heights.bind_color(0);
@@ -116,7 +128,7 @@ void GLWorldView::horizon_to(const gl::Program& p, const TerrainMesh* t, const P
         p.set("uHorizonAt", 0.0f, 0.0f, 1.0f, 0.0f);
         return;
     }
-    const double width = t->grid_cell * kHorizonCells;
+    const double width = t->grid_cell * t->grid_n;
     p.set("uHorizonMap", unit);
     p.set("uHorizonAt", static_cast<float>(t->grid_x + here.pose.position.x), static_cast<float>(t->grid_z + here.pose.position.z),
           static_cast<float>(1.0 / width), 1.0f);

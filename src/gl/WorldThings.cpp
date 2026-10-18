@@ -111,6 +111,11 @@ void GLWorldView::ready_worn(const std::vector<Spatial3D*>& worlds) {
     for (const Spatial3D* w : worlds) {
         if (!w) continue;
         for (const Element& e : w->elements()) {
+            // (A photographed ground too: its pictures laid over the land.)
+            if (e.kind == terrain_kind() && e.params.has(skin)) {
+                want(*w, e.params.text(skin), true), want(*w, e.params.text(normal), false), want(*w, e.params.text(surface), false);
+                continue;
+            }
             if (e.kind != kinds::mesh || e.params.num(uv, 0.0) <= 0.5 || !e.params.has(skin)) continue;
             const bool photo = e.params.num(smooth, 0.0) > 0.5 || e.params.has(normal) || e.params.has(surface);
             if (photo) want(*w, e.params.text(skin), true);

@@ -353,9 +353,7 @@ public:
     // resampled when the function itself changes. It is called from several
     // threads at once, in the background while the game goes on, so it must
     // be safe to call while the game is changing its state.
-    void bind_terrain(Key terrain_element, std::function<double(double, double)> height) {
-        terrains_[terrain_element].height = std::move(height);
-    }
+    void bind_terrain(Key terrain_element, std::function<double(double, double)> height);
 
     // Draw a highlight on one element for this frame (a "you can use this" cue).
     void highlight(Key element_id) { highlight_ = element_id; }
@@ -582,6 +580,8 @@ private:
 
     struct TerrainMesh {
         std::function<double(double, double)> height;
+        bool bound = false;     // the program's (bind_terrain), not the state's own
+        double taken_rev = -1;  // the element's `rev` the state's own ground was taken at
         gl::Mesh mesh;
         double cx = 1e300, cz = 1e300, rev = -1;
         // A resample under way in the background, and where it is centred.
@@ -598,6 +598,7 @@ private:
         double grid_x = 0, grid_z = 0, grid_cell = 0, grid_rev = -1;
         double grid_job_x = 0, grid_job_z = 0, grid_job_cell = 0, grid_job_rev = -1;
         gl::RenderTarget heights, horizon;
+        int grid_n = 512;  // its cells a side
         float bearing_x = 0, bearing_z = 0;
         bool horizon_made = false;
     };
@@ -1319,6 +1320,12 @@ private:
     double setting(const Mix& m, Key pass, const char* name, double fallback) const {
         return fader_.value(m, pass, Key{name}, fallback);
     }
+    // A world's own weather over what its look says of it: the world's
+    // `weather.<name>`, where it says (set by its own laws as its time
+    // goes: the clouds, the haze, the air - what the weather is), else its
+    // look's scene setting `name` (how a world without weather of its own is
+    // shown).
+    double weather(const State* world, const Mix& m, const char* name, double fallback) const;
 
     // Every uniform the standard look and the looks in the blend give this
     // pass, weighted, and set. `name.x/.y/.z` components become a vector.
@@ -1566,7 +1573,7 @@ private:
     struct Atmosphere {
         float weight = 0, scale = 0.001f, altitude = 0.2f, sun = 12, haze = 1, ground = 0.3f;
     };
-    Atmosphere atmosphere_of(const Mix& look) const;
+    Atmosphere atmosphere_of(const Mix& look, const State* world = nullptr) const;
     // And its clouds as a volume (`clouds.cover` and the rest; cloud_dome_fs):
     // heights in metres over the ground, the wind in metres a second and the
     // way it blows (radians), the dome's texels each way.
@@ -1574,8 +1581,12 @@ private:
         float cover = 0, base = 1500, top = 4000, density = 1, size = 6000, fray = 0.35f, bright = 1, wind = 8, wind_dir = 0.6f,
               lean = 600, far = 40000;
         int steps = 48, dome = 1024;
+        // High, thin cloud of ice drawn out by the wind (`clouds.cirrus`,
+        // 0..1): a layer of its own above the rest, at `cirrus_height`,
+        // its streaks `cirrus_size` across, carried by a wind of its own.
+        float cirrus = 0, cirrus_height = 9000, cirrus_size = 4000, cirrus_wind = 30, cirrus_dir = 0.9f;
     };
-    Clouds clouds_of(const Mix& look) const;
+    Clouds clouds_of(const Mix& look, const State* world = nullptr) const;
     struct Sky {
         gl::RenderTarget transmittance, multiple, view;
         uint64_t air = 0, seen = 0;  // what the air, and the sky view, were made for
@@ -1586,6 +1597,8 @@ private:
         gl::RenderTarget dome[2];
         int dome_now = 0, part = 0;
         uint64_t clouds = 0, dome_frame = 0;
+        Clouds dome_clouds;  // the clouds as they were last marched (their weather moving on: a part made again, not all of it)
+        float dome_haze = 0;
         gl::Vec3 dome_eye, dome_sun;
         double dome_time = 0;
         uint32_t spin = 0;
@@ -2004,6 +2017,10 @@ private:
     // the scene with it laid on. `scene_src_` is what the post chain reads.
     gl::RenderTarget depth_, ao_a_, ao_b_, lit_;
     bool fog_depth_ = false;  // this frame's composite reads depth_ (uFogBloom, uDof, uHalation)
+    // What the eye's lens keeps sharp this frame (its camera's `focus`): the
+    // composite's uFocus and uFocusFall (blur 0: all of it sharp).
+    float focus_[4] = {0, 0, 0, 0}, focus_fall_ = 0;
+    void focus_of(const Spatial3D& world, const Camera& eye, float aspect);
     // The lamps the eye sees this frame, on the screen (a look's halation
     // gathers round them): where (0..1), how far along the view, their light.
     static constexpr int kHaloLamps = 16;

@@ -14,23 +14,36 @@
 
 namespace sg::render {
 
-auto GLWorldView::atmosphere_of(const Mix& look) const -> Atmosphere {
+double GLWorldView::weather(const State* world, const Mix& m, const char* name, double fallback) const {
+    if (world) {
+        const Key k{std::string("weather.") + name};
+        if (world->params().has(k)) return world->params().num(k);
+    }
+    return setting(m, passes::scene, name, fallback);
+}
+
+auto GLWorldView::atmosphere_of(const Mix& look, const State* world) const -> Atmosphere {
     Atmosphere a;
     a.weight = std::clamp(static_cast<float>(setting(look, passes::scene, "atmosphere", 0.0)), 0.0f, 1.0f);
     if (a.weight <= 0.0f) return a;
     a.scale = std::max(static_cast<float>(setting(look, passes::scene, "atmosphere.scale", a.scale)), 1e-6f);
     a.altitude = std::clamp(static_cast<float>(setting(look, passes::scene, "atmosphere.altitude", a.altitude)), 0.0f, 90.0f);
     a.sun = std::max(static_cast<float>(setting(look, passes::scene, "atmosphere.sun", a.sun)), 0.0f);
-    a.haze = std::max(static_cast<float>(setting(look, passes::scene, "atmosphere.haze", a.haze)), 0.0f);
+    a.haze = std::max(static_cast<float>(weather(world, look, "atmosphere.haze", a.haze)), 0.0f);
     a.ground = std::clamp(static_cast<float>(setting(look, passes::scene, "atmosphere.ground", a.ground)), 0.0f, 1.0f);
     return a;
 }
 
-auto GLWorldView::clouds_of(const Mix& look) const -> Clouds {
+auto GLWorldView::clouds_of(const Mix& look, const State* world) const -> Clouds {
     Clouds c;
-    const auto said = [&](const char* name, float fallback) { return static_cast<float>(setting(look, passes::scene, name, fallback)); };
+    const auto said = [&](const char* name, float fallback) { return static_cast<float>(weather(world, look, name, fallback)); };
     c.cover = std::clamp(said("clouds.cover", 0.0f), 0.0f, 1.0f);
-    if (c.cover <= 0.0f) return c;
+    c.cirrus = std::clamp(said("clouds.cirrus", 0.0f), 0.0f, 1.0f);
+    if (c.cover <= 0.0f && c.cirrus <= 0.0f) return c;
+    c.cirrus_height = std::max(said("clouds.cirrus_height", c.cirrus_height), 1000.0f);
+    c.cirrus_size = std::max(said("clouds.cirrus_size", c.cirrus_size), 100.0f);
+    c.cirrus_wind = said("clouds.cirrus_wind", c.cirrus_wind);
+    c.cirrus_dir = said("clouds.cirrus_dir", c.cirrus_dir);
     c.base = std::max(said("clouds.base", c.base), 0.0f);
     c.top = std::max(said("clouds.top", c.top), c.base + 100.0f);
     c.density = std::max(said("clouds.density", c.density), 0.0f);
@@ -48,7 +61,7 @@ auto GLWorldView::clouds_of(const Mix& look) const -> Clouds {
 
 auto GLWorldView::sky_for(const Spatial3D* world, const Atmosphere& a, const Clouds& clouds, const gl::Vec3& sun_dir, const gl::Vec3& sun_color,
                           const gl::Vec3& eye, double time, const Mix& look) -> const Sky* {
-    if (a.weight <= 0.0f && clouds.cover <= 0.0f) return nullptr;
+    if (a.weight <= 0.0f && clouds.cover <= 0.0f && clouds.cirrus <= 0.0f) return nullptr;
     // (Skies no view has asked for in a while let go.)
     for (auto it = skies_.begin(); it != skies_.end();)
         it = it->second->used + 600 < frame_count_ ? skies_.erase(it) : std::next(it);
@@ -56,7 +69,7 @@ auto GLWorldView::sky_for(const Spatial3D* world, const Atmosphere& a, const Clo
     if (!slot) slot = std::make_unique<Sky>();
     Sky& s = *slot;
     s.used = frame_count_;
-    s.atmosphere = a.weight > 0.0f, s.cloudy = clouds.cover > 0.0f;
+    s.atmosphere = a.weight > 0.0f, s.cloudy = clouds.cover > 0.0f || clouds.cirrus > 0.0f;
     gl::glDisable(gl::GL_DEPTH_TEST);
     gl::glDisable(gl::GL_CULL_FACE);
     gl::glDisable(gl::GL_BLEND);
@@ -140,10 +153,17 @@ void GLWorldView::make_dome(Sky& s, const Atmosphere& a, const Clouds& clouds, c
     // far for it to stand: the clouds or the air as the look says, the eye
     // moved more than a few tens of metres at once, world time gone back or
     // on by more than a few seconds, the sun turned more than a little.
+    // (What its weather may move by a little at a time - how much of the
+    // sky the clouds cover, how thick they are, the haze - is not in this:
+    // moving as a world's weather goes, a part of it is made again each
+    // frame, as when they drift. A jump is: see `turned` below.)
     uint64_t of = 1469598103934665603ULL;
-    for (float f : {clouds.cover, clouds.base, clouds.top, clouds.density, clouds.size, clouds.fray, clouds.bright, clouds.wind, clouds.wind_dir,
-                    clouds.lean, clouds.far, static_cast<float>(clouds.steps), a.weight, a.scale, a.altitude, a.sun, a.haze, a.ground})
+    for (float f : {clouds.base, clouds.top, clouds.size, clouds.fray, clouds.bright, clouds.wind, clouds.wind_dir, clouds.lean, clouds.far,
+                    static_cast<float>(clouds.steps), clouds.cirrus_height, clouds.cirrus_size, clouds.cirrus_wind, clouds.cirrus_dir, a.weight,
+                    a.scale, a.altitude, a.sun, a.ground})
         of = mix_bits(of, f);
+    const Clouds& was = s.dome_clouds;
+    const float turned = std::abs(clouds.cover - was.cover) + std::abs(clouds.cirrus - was.cirrus) + 0.25f * std::abs(clouds.density - was.density);
     const gl::Vec3 sun = gl::normalize(sun_dir + gl::Vec3{0.0f, 1e-4f, 0.0f});
     const gl::Vec3 moved = eye - s.dome_eye;
     // Its texels are the clouds at the world time each was last made, a
@@ -156,11 +176,14 @@ void GLWorldView::make_dome(Sky& s, const Atmosphere& a, const Clouds& clouds, c
     // clouds that stand still, however many frames are drawn.
     const double went = std::abs(time - s.dome_time) * (std::abs(static_cast<double>(clouds.wind)) + 0.4);
     if (of != s.clouds || gl::dot(moved, moved) > 50.0f * 50.0f || time < s.dome_time || went > 0.5 ||
-        gl::dot(sun, s.dome_sun) < std::cos(0.1f))
+        gl::dot(sun, s.dome_sun) < std::cos(0.1f) || turned > 0.05f)
         fresh = true;
-    const bool same = !fresh && went == 0.0 && gl::dot(moved, moved) == 0.0f && sun.x == s.dome_sun.x && sun.y == s.dome_sun.y && sun.z == s.dome_sun.z;
+    const bool same = !fresh && went == 0.0 && gl::dot(moved, moved) == 0.0f && sun.x == s.dome_sun.x && sun.y == s.dome_sun.y &&
+                      sun.z == s.dome_sun.z && turned == 0.0f && a.haze == s.dome_haze;
     s.still = same ? s.still + 1 : 0;
-    s.clouds = of, s.dome_eye = eye, s.dome_time = time, s.dome_sun = sun;
+    s.clouds = of, s.dome_eye = eye, s.dome_time = time, s.dome_sun = sun, s.dome_haze = a.haze;
+    // (Its weather as last marched: moved by more than a little, all of it again.)
+    if (fresh || std::abs(clouds.cover - was.cover) + std::abs(clouds.cirrus - was.cirrus) > 0.0f) s.dome_clouds = clouds;
     // Nothing it is made for moved - not the world's time, the eye or the sun
     // - for long enough that every texel has been made four times over: it
     // rests, as it is (and its shadow with it), until something does.
@@ -189,6 +212,11 @@ void GLWorldView::make_dome(Sky& s, const Atmosphere& a, const Clouds& clouds, c
     p.set("uCloudDrift", drift);
     p.set("uCloudLean", lean_x, lean_z);
     p.set("uCloudSteps", clouds.steps);
+    // The cirrus, carried by its own wind (wrapped as the rest are).
+    const double cwrap = static_cast<double>(clouds.cirrus_size) * 100.0, ccarried = static_cast<double>(clouds.cirrus_wind) * time;
+    p.set("uCirrus", clouds.cirrus, clouds.cirrus_height, clouds.cirrus_size, clouds.cirrus_dir);
+    p.set("uCirrusDrift", static_cast<float>(std::fmod(-ccarried * std::cos(clouds.cirrus_dir), cwrap)),
+          static_cast<float>(std::fmod(-ccarried * std::sin(clouds.cirrus_dir), cwrap)));
     p.set("uSunDir", sun_dir);
     p.set("uSunColor", sun_color);
     const auto colour = [&](const char* name, float x, float y, float z) {

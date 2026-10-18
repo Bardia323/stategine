@@ -195,11 +195,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (placed.room)
             for (const auto& e : placed.room->elements())
                 if (e.alive && e.kind == terrain_kind()) {
-                    // The state's own ground, unless the program bound one.
+                    // The state's own ground, unless the program bound one -
+                    // taken again when the element says it is another (`rev`).
                     TerrainMesh& t = terrains_[e.id];
-                    if (!t.height)
+                    if (!t.bound && (!t.height || t.taken_rev != e.params.num(Key{"rev"}, 0.0)))
                         if (const auto* space = dynamic_cast<const Spatial3D*>(placed.room))
-                            if (const Spatial3D::Height* h = space->ground(e.id)) t.height = *h;
+                            if (const Spatial3D::Height* h = space->ground(e.id)) t.height = *h, t.taken_rev = e.params.num(Key{"rev"}, 0.0);
                     ensure_terrain(e, cam);
                 }
     // The strongest lamps get a shadow map each. What the scene shader is told
@@ -857,8 +858,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
     // this eye and this world's time, as they must be -
     // before the air, which their shadow falls through.
-    const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first);
-    const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first);
+    // (Its weather the world's own where it says: State::params `weather.*`.)
+    const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first, rooms.front().room);
+    const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first, rooms.front().room);
     const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
     const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
     // The air of this view, lit by its lamps (air_fs) - when its look says
@@ -867,7 +869,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // costs little, and kept while nothing it is made from moves) - a room's
     // haze is what is seen of it from any way. (A mirror's picture has none.)
     const Air* air = nullptr;
-    const float scatter = baking_ || mirroring_ ? 0.0f : static_cast<float>(setting(first, passes::scene, "scatter", 0.0));
+    const float scatter = baking_ || mirroring_ ? 0.0f : static_cast<float>(weather(rooms.front().room, first, "scatter", 0.0));
     if (scatter > 0.0f) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
