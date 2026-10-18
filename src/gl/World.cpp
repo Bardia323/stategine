@@ -1,4 +1,7 @@
 #include "sg/gl/World.hpp"
+#include <cstring>
+#include "sg/domains/Shapes.hpp"
+#include "sg/core/Cache.hpp"
 
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Walk.hpp"
@@ -265,6 +268,68 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
         for (std::thread& t : hands) t.join();
     }
     for (Ways& x : ways) x.mesh->set_tangents(x.made);
+    // And the fewer faces each model is drawn with from further off
+    // (Quality::lod), for each model first seen as it is (one made again
+    // since is drawn whole: its corners are not these): made by a hand of
+    // their own, below the frame's, and kept on disk - not waited for.
+    if (q_.lod) {
+        // (One hand at a time: one at work already stopped, what it made taken.)
+        if (fewer_work_) {
+            fewer_work_->stop = true;
+            if (fewer_work_->hand.joinable()) fewer_work_->hand.join();
+            take_fewer();
+            fewer_work_.reset();
+        }
+        auto work = std::make_unique<FewerWork>();
+        static const Key model_key{"model"}, uv_key{"uv"};
+        for (Spatial3D* w : worlds)
+            if (w)
+                for (const Element& e : w->elements()) {
+                    if (!e.alive || e.kind != kinds::mesh || skinned(e) || e.params.num(uv_key, 0.0) > 0.5 || !e.params.is(Key{"shape"}, "model"))
+                        continue;
+                    const Key name{e.params.get_or<std::string>(model_key, "")};
+                    const std::vector<float>* corners = w->model(name);
+                    if (!corners || corners->size() < kFewerCorners * 8) continue;
+                    const gl::Mesh& mesh = shape_of(*w, e);
+                    const auto made = model_meshes_.find({w, name.str()});
+                    if (made == model_meshes_.end() || made->second.shared != &mesh || fewer_.count(&mesh) ||
+                        std::any_of(work->jobs.begin(), work->jobs.end(), [&](const FewerWork::Job& j) { return j.mesh == &mesh; }))
+                        continue;
+                    work->jobs.push_back(FewerWork::Job{&mesh, *corners});
+                }
+        if (!work->jobs.empty()) {
+            FewerWork* w = work.get();
+            w->hand = std::thread([w] {
+                cache::background_priority();
+                for (FewerWork::Job& j : w->jobs) {
+                    if (w->stop) return;
+                    std::vector<std::vector<float>> made;
+                    std::size_t before = j.corners.size();
+                    for (float tol : kFewerErrors) {
+                        if (w->stop) return;
+                        const Digest key = Hasher{}.text("fewer 2").bytes(j.corners.data(), j.corners.size() * sizeof(float)).number(tol).digest();
+                        std::string bytes;
+                        std::vector<float> fewer;
+                        if (cache::load("fewer", key, bytes) && bytes.size() % (8 * sizeof(float)) == 0) {
+                            fewer.resize(bytes.size() / sizeof(float));
+                            std::memcpy(fewer.data(), bytes.data(), bytes.size());
+                        } else {
+                            fewer = shapes::fewer(j.corners, tol);
+                            cache::store("fewer", key, std::string_view(reinterpret_cast<const char*>(fewer.data()), fewer.size() * sizeof(float)));
+                        }
+                        // (Only what is fewer by a fifth or more is worth a level.)
+                        if (fewer.empty() || fewer.size() * 5 > before * 4) break;
+                        before = fewer.size();
+                        made.push_back(std::move(fewer));
+                    }
+                    std::lock_guard<std::mutex> hold(w->lock);
+                    w->done.emplace_back(j.mesh, std::move(made));
+                }
+                w->finished = true;
+            });
+            fewer_work_ = std::move(work);
+        }
+    }
     // And the views of the worlds seen whole through `own_look` doorways
     // (a city out of a window), each drawn once from the world's own eye:
     // made now, not when the window first comes into sight.
@@ -493,11 +558,37 @@ void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal
     wp.own->eye_override_ = nullptr;
 }
 
+bool GLWorldView::lod_pending() const {
+    if (!fewer_work_) return false;
+    std::lock_guard<std::mutex> hold(fewer_work_->lock);
+    return !fewer_work_->finished || !fewer_work_->done.empty();
+}
+
+void GLWorldView::take_fewer() {
+    if (!fewer_work_) return;
+    std::vector<std::pair<const gl::Mesh*, std::vector<std::vector<float>>>> done;
+    {
+        std::lock_guard<std::mutex> hold(fewer_work_->lock);
+        done.swap(fewer_work_->done);
+    }
+    for (auto& [mesh, made] : done) {
+        auto& levels = fewer_[mesh];
+        for (std::size_t k = 0; k < made.size(); ++k) {
+            auto f = std::make_unique<Fewer>();
+            f->mesh.create(made[k]);
+            f->error = kFewerErrors[k];
+            levels.push_back(std::move(f));
+        }
+    }
+}
+
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
     // A mesh that is no skin has no joints: what its vertex stage reads for
     // them, where its corners do not say (none of a skin's: posed_by_joints).
     gl::glVertexAttrib4f(11, 0.0f, 0.0f, 0.0f, 0.0f);
     gl::glVertexAttrib4f(12, 0.0f, 0.0f, 0.0f, 0.0f);
+    // (Models' fewer faces made since the last frame, given to the card.)
+    if (!root_) take_fewer();
     // A room that says it is seen from one of its own (its camera's
     // `seen_from`: an element of it - a camera hung there, chosen by whatever
     // stages it) is drawn from there; what walks it is still its camera.

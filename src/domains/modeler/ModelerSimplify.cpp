@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "ModelerKernel.hpp"
+#include "sg/domains/Shapes.hpp"
 
 namespace sg::sculpt::kernel {
 
@@ -257,3 +258,56 @@ void simplify(Geom& g, double tol, std::size_t target, const std::vector<char>* 
 }
 
 }  // namespace sg::sculpt::kernel
+
+namespace sg::shapes {
+
+std::vector<float> fewer(const std::vector<float>& corners, double tol) {
+    using namespace sculpt::kernel;
+    const std::size_t n = corners.size() / 8;
+    if (n < 3) return {};
+    Geom g;
+    g.p.reserve(n);
+    g.t.reserve(n);
+    // What each point was given - its normals and uvs, one a corner it was
+    // (more than one where an edge is hard, or a seam) - by where it is.
+    const auto key = [](const float* c) {
+        return std::array<long long, 3>{std::llround(c[0] * 1e6), std::llround(c[1] * 1e6), std::llround(c[2] * 1e6)};
+    };
+    std::map<std::array<long long, 3>, std::vector<const float*>> given;
+    for (std::size_t i = 0; i < n; ++i) {
+        const float* c = &corners[i * 8];
+        g.p.push_back(V3{c[0], c[1], c[2]});
+        g.t.push_back(int(i));
+        given[key(c)].push_back(c);
+    }
+    weld(g);
+    const std::size_t had = g.t.size();
+    simplify(g, tol, 0);
+    if (g.t.empty() || g.t.size() >= had) return {};
+    // Every point left is a point it had: each corner given back the normal
+    // and uv it had there - of those, the one nearest the way its face now
+    // faces - so it is shaded as it was.
+    std::vector<float> out;
+    out.reserve(g.t.size() * 8);
+    for (std::size_t f = 0; f + 2 < g.t.size(); f += 3) {
+        const V3 p[3] = {g.p[std::size_t(g.t[f])], g.p[std::size_t(g.t[f + 1])], g.p[std::size_t(g.t[f + 2])]};
+        V3 fn = cross(p[1] - p[0], p[2] - p[0]);
+        if (len(fn) < 1e-14) continue;
+        fn = unit(fn);
+        for (int c = 0; c < 3; ++c) {
+            const float at[3] = {float(p[c].x), float(p[c].y), float(p[c].z)};
+            const float* best = nullptr;
+            double most = -2.0;
+            if (const auto it = given.find(key(at)); it != given.end())
+                for (const float* k : it->second) {
+                    const double d = dot(V3{k[3], k[4], k[5]}, fn);
+                    if (d > most) most = d, best = k;
+                }
+            if (best) out.insert(out.end(), {at[0], at[1], at[2], best[3], best[4], best[5], best[6], best[7]});
+            else out.insert(out.end(), {at[0], at[1], at[2], float(fn.x), float(fn.y), float(fn.z), 0.f, 0.f});
+        }
+    }
+    return out;
+}
+
+}  // namespace sg::shapes

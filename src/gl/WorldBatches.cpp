@@ -411,7 +411,7 @@ bool GLWorldView::batch_skinned(const State& st, const Element& e) {
     return true;
 }
 
-void GLWorldView::batch_crate(const State& st, const Element& e) { append_record(st, e, batch_for(shape_of(st, e))); }
+void GLWorldView::batch_crate(const State& st, const Element& e) { append_record(st, e, batch_for(shape_seen(st, e))); }
 
 void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
     Placed& p = placed_of(st, e);

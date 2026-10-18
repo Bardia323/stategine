@@ -39,6 +39,7 @@ const Setting kSettings[] = {
     {"pack", nullptr, nullptr, &Quality::pack, "what things wear sent to the card packed, a quarter of the memory (true/false)"},
     {"skip_unseen", nullptr, nullptr, &Quality::skip_unseen, "views through doorways the eye cannot see left out by the card (true/false)"},
     {"lamp_cells", nullptr, nullptr, &Quality::lamp_cells, "each part of a view asks only the lamps whose range reaches it (true/false)"},
+    {"lod", nullptr, nullptr, &Quality::lod, "a model far off drawn with fewer faces, where no pixel would show the difference (true/false)"},
 };
 std::string trimmed(const std::string& s) {
     std::size_t a = 0, b = s.size();

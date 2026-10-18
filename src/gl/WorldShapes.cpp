@@ -306,6 +306,29 @@ const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) cons
     return posed(m);
 }
 
+const gl::Mesh& GLWorldView::shape_seen(const State& st, const Element& e) const {
+    const gl::Mesh& m = shape_of(st, e);
+    if (!q_.lod || fewer_.empty() || lod_px_ <= 0.0f) return m;
+    const auto it = fewer_.find(&m);
+    if (it == fewer_.end() || it->second.empty()) return m;
+    static const Key uv_key{"uv"};
+    if (e.params.num(uv_key, 0.0) > 0.5) return m;
+    // How far off, and how big (its box's longest way: what its model's
+    // units are on the picture at most).
+    const gl::Mat4& b = box_matrix(st, e).m;
+    const gl::Vec3 away = gl::Vec3{b.m[12], b.m[13], b.m[14]} - cam_eye_;
+    const float d = std::sqrt(gl::dot(away, away));
+    const float size = std::sqrt(std::max({b.m[0] * b.m[0] + b.m[1] * b.m[1] + b.m[2] * b.m[2], b.m[4] * b.m[4] + b.m[5] * b.m[5] + b.m[6] * b.m[6],
+                                           b.m[8] * b.m[8] + b.m[9] * b.m[9] + b.m[10] * b.m[10]}));
+    const gl::Mesh* seen = &m;
+    for (const auto& f : it->second) {
+        if (f->error * size * lod_px_ >= 0.35f * d) break;
+        seen = &f->mesh;
+    }
+    if (seen != &m) ++times_.lod_drawn;
+    return *seen;
+}
+
 bool GLWorldView::skinned(const Element& e) {
     static const Key skinned_key{"skinned"};
     return e.params.num(skinned_key, 0.0) > 0.5;

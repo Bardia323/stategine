@@ -58,6 +58,15 @@ struct Quality {
     // same; what is saved is the lamps a part of the view need not ask.
     // (Lamps that say no range light everywhere.)
     bool lamp_cells=true;
+    // A model seen from further off drawn with fewer faces (sg::shapes::fewer):
+    // made after `warm`, by a hand of their own below the frame's, kept on
+    // disk, each fewer by no more than it moves its surface, and drawn only
+    // where that is under a third of a pixel on the picture - so the picture
+    // is the same but for a few edge pixels. For a model of a few hundred
+    // faces or more, not worn by its own uvs. Off unless said: it pays where
+    // much is seen far off (open land, a city across a valley), and costs a
+    // world seen close (memory, and a core for a while at the start).
+    bool lod=false;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

@@ -1212,6 +1212,20 @@ played; `set_timing` finishes the card between stages instead, which shows
 where a frame stalls but slows every frame it measures. Both are how the
 machine is, not how the world is: neither is written into any state.
 
+**Far off, fewer faces** (`GLQuality::lod`, `lod` in render.conf; off unless
+said). A model of a few hundred faces or more is made again with fewer
+(`sg::shapes::fewer`: edges collapsed where that moves its surface least,
+each corner given back the normal and uv it had there), at three bounds on
+how far a level may move it - made after `warm` by a hand of its own, below
+the frame's, kept on disk by the corners it was made from, and given to the
+card as each is done (until then a model is drawn whole; `lod_pending` says
+whether any are still to come). A thing is drawn with the coarsest level
+whose bound is under a third of a pixel on the picture it is in (`FrameTimes::lod_drawn`):
+the same picture but for a few edge pixels (`sg_lod_gl`). Not for a model
+worn by its own uvs, nor a skin. It pays where much is seen far off; a world
+seen close pays for it (Memory Leak: 440 levels, 71 MB on disk, no frame
+faster), so it is asked for.
+
 ### Threads: lanes and hands
 
 The machine has many cores, and a frame need not wait on one. There is one

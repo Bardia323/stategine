@@ -123,6 +123,8 @@
 #include <set>
 #include <string>
 #include <future>
+#include <atomic>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -202,6 +204,7 @@ public:
         int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;
         int air_built = 0;  // views' air gathered again (air_fs): none while nothing it is made from moves  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
         int skies_made = 0;   // skies' pictures made again (a look's `atmosphere`): none while the sun and the eye's height stay
+        int lod_drawn = 0;    // things drawn with fewer faces, far enough off that no pixel shows it (Quality::lod)
         int domes_made = 0;   // clouds' domes made whole again (a look's `clouds.cover`): none while nothing jumps (a part of each is made every frame)
         int views_asked = 0;  // views drawn only if the card finds their doorway seen (Quality::skip_unseen)
         double asked_ms = 0;  // spent asking (ask_doorways), on the CPU
@@ -234,6 +237,9 @@ public:
     // to belongs to that state, and switching its look is how they adjust.
     void attend(const State* s) { attend_ = s; }
     const FrameTimes& times() const { return times_; }
+    // Whether models' fewer faces (Quality::lod) are still being made, or
+    // made and not yet given to the card (the next frame gives them).
+    bool lod_pending() const;
 
     // Supply a transient interpolation interval. No interval accumulates into
     // shader time. Zero keeps fades still; world time is declared by Temporal.
@@ -1326,6 +1332,40 @@ private:
     // the card from where their joints are (gl::Mesh::pose).
     mutable std::map<std::pair<const State*, std::string>, ModelMesh> skin_meshes_;
     static bool skinned(const Element& e);  // drawn as a skin its joints move
+    // A model's meshes with fewer faces (Quality::lod, sg::shapes::fewer),
+    // each with how far it moves the surface (in the model's own units), the
+    // coarsest last: made in warm, by the mesh they stand for.
+    struct Fewer {
+        gl::Mesh mesh;
+        float error = 0.0f;
+    };
+    mutable std::map<const gl::Mesh*, std::vector<std::unique_ptr<Fewer>>> fewer_;
+    // Made by a hand of their own, below the frame's priority, from the
+    // models warm found (their corners copied: a model made again meanwhile
+    // is another), and given to the card a few a frame as they are done
+    // (take_fewer) - never waited for: until then a model is drawn whole.
+    struct FewerWork {
+        struct Job {
+            const gl::Mesh* mesh;
+            std::vector<float> corners;
+        };
+        std::vector<Job> jobs;
+        std::vector<std::pair<const gl::Mesh*, std::vector<std::vector<float>>>> done;
+        std::mutex lock;
+        std::atomic<bool> stop{false}, finished{false};
+        std::thread hand;
+        ~FewerWork() {
+            stop = true;
+            if (hand.joinable()) hand.join();
+        }
+    };
+    std::unique_ptr<FewerWork> fewer_work_;
+    void take_fewer();
+    static constexpr std::size_t kFewerCorners = 3 * 400;              // a model of fewer faces is drawn whole
+    static constexpr float kFewerErrors[3] = {0.002f, 0.006f, 0.02f};  // how far each may move its surface
+    // What a thing is drawn with on this picture: its shape - or, far enough
+    // off, the coarsest of its fewer that moves it less than half a pixel.
+    const gl::Mesh& shape_seen(const State& st, const Element& e) const;
     // The meshes models first seen share, by what they are made of (their
     // corners' digest and count); never changed once sent.
     struct CornersKey {

@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- Far off, fewer faces (`GLQuality::lod`, `lod` in render.conf; off unless said). `sg::shapes::fewer(corners, tol)`: a model made again with fewer faces by sculpt's simplifier, no point moved further than `tol`, each corner given back the normal and uv it had. After `warm`, every model of 400 faces or more not worn by its own uvs is given three levels (bounds of 0.2%, 0.6% and 2% of its size) by a hand of its own below the frame's priority, kept on disk (`sg::cache` "fewer"), handed to the card as each is done (`lod_pending`); a thing is drawn with the coarsest whose bound is under a third of a pixel (`shape_seen`, `FrameTimes::lod_drawn`). The same picture but for a few edge pixels (`sg_lod_gl`). Off unless asked: Memory Leak, seen close, made 440 levels (71 MB) and drew no frame faster.
+
 - A picture with mipmaps given again (`gl::Texture::upload`: a screen's picture painted anew) goes through a buffer of its own (`GL_PIXEL_UNPACK_BUFFER`, taken anew each time), so the card copies it and makes its levels without the processor waiting on either: 1024 x 768, 0.88 ms of the processor, 0.49; 2048 x 1536, 3.0 ms, 1.6 (RTX 3090 Ti). Without mipmaps a plain upload stays the quicker, and stays.
 - A skin's box as posed is found from each corner once, laid out for it when the skin is read, in floats, by all four of its joints at once: what was left of skinning on the processor, a third of it.
 

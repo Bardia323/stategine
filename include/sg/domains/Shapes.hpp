@@ -80,4 +80,16 @@ std::vector<float> fit(std::vector<float> v, Vec3d& size, const Vec3d& within_lo
 std::vector<float> fit(std::vector<float> v, Vec3d& size);
 std::vector<float> fit(std::vector<float> v, Vec3d& size, const Vec3d& within_lo, const Vec3d& within_hi);
 
+// The same model with fewer faces, for seeing from further off: edges
+// collapsed where that moves the surface least (sculpt's simplify - every
+// point left a point it had), while no point moves more than `tol` (in the
+// model's own units: the unit box's, for a fitted one). Its open edges stay
+// where they are; its faces turn no way round. Each corner is a point the
+// model had, given back the normal and uv it had there (of those, where a
+// hard edge or a seam gave it more than one, the one nearest the way its face
+// now faces): shaded as it was. Its uvs stretch over larger faces now - for a
+// model worn by its own uvs, a picture may move a little. Empty if it cannot
+// be made fewer.
+std::vector<float> fewer(const std::vector<float>& corners, double tol);
+
 }  // namespace sg::shapes

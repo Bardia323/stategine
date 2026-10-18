@@ -304,7 +304,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         const std::string* smap = uv ? e.params.text(surface_key) : nullptr;
         const bool normals = nmap && bind_worn(st, *nmap, false, 10);
         const bool surface = smap && bind_worn(st, *smap, false, 9);
-        const gl::Mesh& mesh = shape_of(st, e);
+        const gl::Mesh& mesh = normals ? shape_of(st, e) : shape_seen(st, e);
         if (normals && !mesh.tangents_made()) mesh.set_tangents(tangents_of(st, e));
         scene_->set("uCutout", cut);
         scene_->set("uTwoSided", two);
@@ -352,7 +352,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
             set_skin_maps(*scene_, &bound);
         }
-        shape_of(st, e).draw();
+        shape_seen(st, e).draw();
         if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
@@ -360,7 +360,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         return;
     }
     scene_->set("uTexMix", 0.0f);
-    shape_of(st, e).draw();
+    shape_seen(st, e).draw();
     if (mirror != 0.0f) scene_->set("uMirror", 0.0f);
 }
 
