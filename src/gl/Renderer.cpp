@@ -138,8 +138,28 @@ void Texture::create(int w, int h, bool mipmaps, bool srgb, bool pixel) {
 
 void Texture::upload(const std::vector<unsigned char>& rgba) {
     glBindTexture(GL_TEXTURE_2D, id_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    if (mipmaps_) glGenerateMipmap(GL_TEXTURE_2D);
+    const auto bytes = static_cast<GLsizeiptr>(std::size_t(w_) * std::size_t(h_) * 4);
+    if (!mipmaps_ || static_cast<GLsizeiptr>(rgba.size()) < bytes) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        if (mipmaps_) glGenerateMipmap(GL_TEXTURE_2D);
+        return;
+    }
+    // (Its buffer taken anew - the old one the card may still be reading -
+    // written, and read by the card as it copies; then its levels made.
+    // Without mipmaps a plain upload is the quicker: measured.)
+    if (!unpack_) glGenBuffers(1, &unpack_);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpack_);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, bytes, nullptr, GL_STREAM_DRAW);
+    if (void* to = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, bytes, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) {
+        std::memcpy(to, rgba.data(), static_cast<std::size_t>(bytes));
+        glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    } else {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    }
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glGenerateMipmap(GL_TEXTURE_2D);
 }
 
 void Texture::create_packed(const render::Packed& p) {

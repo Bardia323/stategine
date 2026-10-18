@@ -80,6 +80,10 @@ public:
     // `pixel`: pixel art - each texel a hard square, nearest, repeating.
     void create(int w, int h, bool mipmaps = false, bool srgb = false, bool pixel = false);
 
+    // Its picture given again (w x h RGBA). One with mipmaps goes through a
+    // buffer of its own (GL_PIXEL_UNPACK_BUFFER, taken anew each time), so
+    // the card copies it and makes its levels without the processor waiting
+    // on either: a screen's picture painted again, half the time it took.
     void upload(const std::vector<unsigned char>& rgba);
 
     // Made from a picture packed for the card (sg/render/Pack.hpp): BC7
@@ -107,6 +111,7 @@ private:
     int h_ = 0;
     bool mipmaps_ = false;
     bool packed_ = false;
+    GLuint unpack_ = 0;  // the buffer its picture is given through (mipmapped)
 };
 
 // Interleaved position(3), normal(3), uv(2).

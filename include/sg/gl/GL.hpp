@@ -126,6 +126,10 @@ constexpr GLenum GL_QUERY_WAIT = 0x8E13;
 // A buffer read by a shader as a picture one texel high (core since 3.1).
 constexpr GLenum GL_TEXTURE_BUFFER = 0x8C2A;
 constexpr GLenum GL_CURRENT_PROGRAM = 0x8B8D;
+// A buffer a picture is read from as it is uploaded (core since 2.1), and
+// how one is written into (3.0).
+constexpr GLenum GL_PIXEL_UNPACK_BUFFER = 0x88EC;
+constexpr GLbitfield GL_MAP_WRITE_BIT = 0x0002, GL_MAP_INVALIDATE_BUFFER_BIT = 0x0008;
 constexpr GLenum GL_R32UI = 0x8236;
 constexpr GLenum GL_STREAM_DRAW = 0x88E0;
 // Pictures of whole numbers, read by a shader as they are (words of bits).
@@ -229,6 +233,8 @@ constexpr GLenum GL_UNSIGNED_INT = 0x1405;
     X(void, GetUniformiv, (GLuint, GLint, GLint*))                                            \
     X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))                                        \
     X(void, BufferSubData, (GLenum, GLintptr, GLsizeiptr, const void*))                       \
+    X(void*, MapBufferRange, (GLenum, GLintptr, GLsizeiptr, GLbitfield))                      \
+    X(GLboolean, UnmapBuffer, (GLenum))                                                       \
     X(void, TexBuffer, (GLenum, GLenum, GLuint))                                              \
     X(void, GenQueries, (GLsizei, GLuint*))                                                   \
     X(void, DeleteQueries, (GLsizei, const GLuint*))                                          \

@@ -279,6 +279,11 @@ struct SkinData {
     std::vector<std::string> names;  // the skin's joints, in its order
     std::vector<Key> keys;           // the same, named once
     std::vector<M4> inverse_bind;
+    // Each corner once, laid out for its box as posed (Being::pose_skin):
+    // where it was bound, the four joints that move it - the one after the
+    // last for none - and how much each does; kReach floats a corner.
+    static constexpr std::size_t kReach = 11;
+    std::vector<float> reach;
     // Its picture: the base colour its material wears, by its uvs (none: 0 x 0).
     int image_w = 0, image_h = 0;
     std::vector<unsigned char> image;
@@ -696,6 +701,15 @@ static const SkinData* skin_of(const Element& skin) {
                     }
                 }
                 slot->moved.push_back(uint32_t(slot->moves.size()));
+                const float none = float(slot->names.size());
+                for (uint32_t v : slot->corners) {
+                    const Vec3d& p = slot->pos[v];
+                    float c[SkinData::kReach] = {float(p.x), float(p.y), float(p.z), none, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f};
+                    std::size_t k = 0;
+                    for (uint32_t i = slot->moved[v]; i < slot->moved[v + 1] && k < 4; ++i, ++k)
+                        c[3 + k] = float(slot->moves[i].joint), c[7 + k] = float(slot->moves[i].weight);
+                    slot->reach.insert(slot->reach.end(), c, c + SkinData::kReach);
+                }
             }
         }
     }
@@ -833,29 +847,30 @@ void Being::pose_skin(Key skin_id, Fitted& fitted, std::vector<float>& joints) c
     std::vector<M4> m;
     moves_now(*this, sd, *s, m);
     // Its box as posed: where each corner goes, by the joints that weigh on
-    // it, and nothing more (its normals and triangles are the drawer's).
-    Vec3d lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
-    bool any = false;
-    for (uint32_t v : sd.corners) {
-        if (v >= sd.pos.size()) continue;
-        const Vec3d& pos = sd.pos[v];
-        const SkinData::Move* mv = sd.moves.data() + sd.moved[v];
-        const SkinData::Move* end = sd.moves.data() + sd.moved[v + 1];
-        Vec3d p = pos;
-        if (mv != end) {
-            p = Vec3d{};
-            for (; mv != end; ++mv) {
-                const M4& a = m[mv->joint];
-                p = p + Vec3d{a.m[0] * pos.x + a.m[4] * pos.y + a.m[8] * pos.z + a.m[12], a.m[1] * pos.x + a.m[5] * pos.y + a.m[9] * pos.z + a.m[13],
-                              a.m[2] * pos.x + a.m[6] * pos.y + a.m[10] * pos.z + a.m[14]} *
-                            mv->weight;
-            }
-        }
-        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
-        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
-        any = true;
+    // it, and nothing more (its normals and triangles are the drawer's) -
+    // each joint's move three rows of four, the one after the last nothing,
+    // and every corner by all four of its joints, weighed (none by nought).
+    thread_local std::vector<float> rows;
+    rows.assign((m.size() + 1) * 12, 0.f);
+    for (std::size_t j = 0; j <= m.size(); ++j) {
+        const M4 a = j < m.size() ? m[j] : M4{};
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 4; ++c) rows[j * 12 + std::size_t(r * 4 + c)] = float(a.m[c * 4 + r]);
     }
-    if (!any) lo = hi = Vec3d{};
+    float lo3[3] = {1e30f, 1e30f, 1e30f}, hi3[3] = {-1e30f, -1e30f, -1e30f};
+    const std::size_t corners = sd.reach.size() / SkinData::kReach;
+    for (std::size_t i = 0; i < corners; ++i) {
+        const float* c = &sd.reach[i * SkinData::kReach];
+        float p[3] = {0.f, 0.f, 0.f};
+        for (int k = 0; k < 4; ++k) {
+            const float w = c[7 + k];
+            const float* a = &rows[std::size_t(c[3 + k]) * 12];
+            for (int r = 0; r < 3; ++r) p[r] += w * (a[r * 4] * c[0] + a[r * 4 + 1] * c[1] + a[r * 4 + 2] * c[2] + a[r * 4 + 3]);
+        }
+        for (int r = 0; r < 3; ++r) lo3[r] = std::min(lo3[r], p[r]), hi3[r] = std::max(hi3[r], p[r]);
+    }
+    Vec3d lo{lo3[0], lo3[1], lo3[2]}, hi{hi3[0], hi3[1], hi3[2]};
+    if (corners == 0) lo = hi = Vec3d{};
     const Vec3d sz{std::max(hi.x - lo.x, 1e-6), std::max(hi.y - lo.y, 1e-6), std::max(hi.z - lo.z, 1e-6)};
     fitted.lo = lo, fitted.hi = hi, fitted.size = sz;
     // Each joint's move, then fitted into that box as skinned() fits it (its
