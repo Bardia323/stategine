@@ -842,7 +842,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uShadowCount", unshadowed ? 0 : static_cast<int>(only ? n : std::min(shadowed, n)));
         for (std::size_t k = 0; k < n; ++k) {
             const std::size_t i = only ? (*only)[k] : k;
-            lamp_to(p, k, lights[i]);
+            lamp_to(p, k, lights[i], sun_air_);
             p.set(light_uniform(k, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(k, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
             p.set(light_uniform(k, 18), cube_of[i]);
@@ -861,6 +861,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // (Its weather the world's own where it says: State::params `weather.*`.)
     const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first, rooms.front().room);
     const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first, rooms.front().room);
+    // Its suns as they reach the ground through its air (white over none),
+    // set with the lights below - the colour of what they light is the
+    // light's: low, it is red.
+    sun_air_ = {1.0f, 1.0f, 1.0f};
+    if (atmosphere.weight > 0.0f) {
+        const gl::Vec3 t = through_air(atmosphere, gl::normalize(sun_dir + gl::Vec3{0.0f, 1e-4f, 0.0f}).y);
+        sun_air_ = gl::Vec3{1.0f, 1.0f, 1.0f} + (t - gl::Vec3{1.0f, 1.0f, 1.0f}) * atmosphere.weight;
+    }
     const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
     const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
     // The air of this view, lit by its lamps (air_fs) - when its look says

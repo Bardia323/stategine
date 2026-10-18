@@ -828,7 +828,8 @@ private:
     std::unique_ptr<gl::Program> relight_prog_, relight_sh_prog_;
     // A light's own uniforms as light `i` of a program that lights
     // (lights_glsl): all but its shadow maps'.
-    static void lamp_to(const gl::Program& p, std::size_t i, const Light& l);
+    // (A sun's light times `sun_air`: as much as gets down through a planet's air.)
+    static void lamp_to(const gl::Program& p, std::size_t i, const Light& l, const gl::Vec3& sun_air = gl::Vec3{1.0f, 1.0f, 1.0f});
     // What the views that relight do not draw (relight_room: what moves).
     const std::unordered_set<Key>* hidden_ = nullptr;
     // A room relit: its boxes' surroundings drawn for the shell as it is,
@@ -1574,6 +1575,13 @@ private:
         float weight = 0, scale = 0.001f, altitude = 0.2f, sun = 12, haze = 1, ground = 0.3f;
     };
     Atmosphere atmosphere_of(const Mix& look, const State* world = nullptr) const;
+    // How much of a sun's light, of each colour, the planet's air `a` lets
+    // down to the ground with the sun `up` (the sine of its height) - its
+    // molecules, haze and ozone, as the sky's pictures have them; and the
+    // frame's (white where the look has no planet's sky): what its suns'
+    // light is times.
+    static gl::Vec3 through_air(const Atmosphere& a, float up);
+    gl::Vec3 sun_air_{1.0f, 1.0f, 1.0f};
     // And its clouds as a volume (`clouds.cover` and the rest; cloud_dome_fs):
     // heights in metres over the ground, the wind in metres a second and the
     // way it blows (radians), the dome's texels each way.

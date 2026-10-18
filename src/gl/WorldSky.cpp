@@ -34,6 +34,27 @@ auto GLWorldView::atmosphere_of(const Mix& look, const State* world) const -> At
     return a;
 }
 
+gl::Vec3 GLWorldView::through_air(const Atmosphere& a, float up) {
+    // Along the way to the sun from the ground (its height `altitude`, km),
+    // out to the top of the air (100 km over the ground): how much each
+    // colour is taken - the same air as atmosphere_glsl's air_here.
+    constexpr double kGround = 6360.0, kTop = 6460.0;
+    const double r = kGround + a.altitude, mu = std::clamp(static_cast<double>(up), -1.0, 1.0);
+    // (Below the horizon: the planet itself between.)
+    if (mu < -std::sqrt(std::max(0.0, 1.0 - (kGround / r) * (kGround / r)))) return {0.0f, 0.0f, 0.0f};
+    const double far = -r * mu + std::sqrt(std::max(0.0, r * r * (mu * mu - 1.0) + kTop * kTop));
+    constexpr int kSteps = 64;
+    double depth[3] = {0, 0, 0};
+    const double ray[3] = {5.802e-3, 13.558e-3, 33.1e-3}, ozone[3] = {0.650e-3, 1.881e-3, 0.085e-3};
+    for (int k = 0; k < kSteps; ++k) {
+        const double t = (k + 0.5) * far / kSteps;
+        const double h = std::sqrt(r * r + t * t + 2.0 * r * t * mu) - kGround;
+        const double rr = std::exp(-std::max(h, 0.0) / 8.0), mm = std::exp(-std::max(h, 0.0) / 1.2), oo = std::max(0.0, 1.0 - std::abs(h - 25.0) / 15.0);
+        for (int c = 0; c < 3; ++c) depth[c] += (ray[c] * rr + 4.40e-3 * mm * a.haze + ozone[c] * oo) * far / kSteps;
+    }
+    return {static_cast<float>(std::exp(-depth[0])), static_cast<float>(std::exp(-depth[1])), static_cast<float>(std::exp(-depth[2]))};
+}
+
 auto GLWorldView::clouds_of(const Mix& look, const State* world) const -> Clouds {
     Clouds c;
     const auto said = [&](const char* name, float fallback) { return static_cast<float>(weather(world, look, name, fallback)); };

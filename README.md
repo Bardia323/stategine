@@ -634,9 +634,10 @@ shadows and air (`--fog`).
 
 A land may wear a photographed ground: its `skin` (a picture of its
 state's), `skin_normal` and `skin_surface` (as a thing's), laid flat over the
-world every `tile` metres (2), and laid again turned and 3.2 times larger,
-the two blended by a slow noise across the ground (`tile_break`, 0..1; 0.6),
-so its repeats never line up from far off. It may say where its water stands
+world every `tile` metres (2), never the same twice: each cell of it read
+from a place of the picture of its own, crossing over to the next in the
+middle of the cell (`tile_break`, 0..1, how narrowly; 0.6), its tone moving
+slowly across the land - so nothing repeats from far off. It may say where its water stands
 (`wet_level`) and how far up from it the sand is damp (`wet_band`, metres):
 darker and glossier there, the edge ragged. And a land may move with its
 world's time (`drifts` 1: dunes creeping, its ground given again as its time
@@ -949,6 +950,11 @@ sky colours. The sun's light on everything under them is shadowed by them
 | `clouds.dome` | texels each way of the picture they are marched into | 1024 |
 | `clouds.cirrus` | high, thin cloud of ice drawn out by the wind, a layer of its own above the rest, 0..1 | 0: none |
 | `clouds.cirrus_height`, `.cirrus_size`, `.cirrus_wind`, `.cirrus_dir` | its height, its streaks' size (metres), its own wind and the way it blows | 9000, 4000, 30, 0.9 |
+
+A sun under a planet's sky lights the ground with what of it gets down
+through the air at its height in the sky (the same air as the sky's
+pictures): red when it is low, none once set. Say its colour as it is above
+the air; what it lights takes its colour from the light.
 
 **A world's own weather.** What the weather is belongs to the world, not to
 how it is shown: a world's params `weather.<setting>` (set by its own laws,

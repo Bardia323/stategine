@@ -20,10 +20,12 @@ void GLWorldView::aim_rays(const Spatial3D& first) {
     rays_tan_ = std::tan(half);
 }
 
-void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l) {
+void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l, const gl::Vec3& sun_air) {
     p.set(light_uniform(i, 0), l.pos);
     p.set(light_uniform(i, 1), l.dir);
-    p.set(light_uniform(i, 2), l.color);
+    // (A sun under a planet's sky: as much of its light as gets through the
+    // air to the ground - red low down, as an evening's is.)
+    p.set(light_uniform(i, 2), l.sun ? gl::Vec3{l.color.x * sun_air.x, l.color.y * sun_air.y, l.color.z * sun_air.z} : l.color);
     p.set(light_uniform(i, 3), l.power);
     p.set(light_uniform(i, 4), std::cos(l.inner));
     p.set(light_uniform(i, 5), std::cos(l.outer));

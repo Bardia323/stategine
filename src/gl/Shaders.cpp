@@ -1120,6 +1120,28 @@ vec4 clouds_along(vec3 dir, float jitter) {
     return vec4(light * fade, mix(1.0, through, fade));
 }
 
+// A smooth noise of the plane that never repeats (values on a lattice,
+// smoothed), and five octaves of it, each turned from the last: 0..1.
+float cirrus_hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float cirrus_noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cirrus_hash(i), cirrus_hash(i + vec2(1.0, 0.0)), u.x), mix(cirrus_hash(i + vec2(0.0, 1.0)), cirrus_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float cirrus_fbm(vec2 p) {
+    float sum = 0.0, a = 0.5;
+    const mat2 turn = mat2(0.8, -0.6, 0.6, 0.8);
+    for (int i = 0; i < 5; ++i) {
+        sum += a * cirrus_noise(p);
+        p = turn * p * 2.03 + vec2(17.1, 3.3);
+        a *= 0.5;
+    }
+    return sum / 0.97;
+}
+
 // High cloud of ice the way `dir`: a thin layer, drawn out along its wind
 // into streaks (the noise read stretched across the wind, short along it),
 // lit by the sun through the air at its height - brightest looking towards
@@ -1132,9 +1154,18 @@ vec4 cirrus_along(vec3 dir) {
     vec3 p = uEye + dir * t;
     float c = cos(uCirrus.w), s = sin(uCirrus.w);
     vec2 w = vec2(c * p.x + s * p.z, -s * p.x + c * p.z) + vec2(c * uCirrusDrift.x + s * uCirrusDrift.y, -s * uCirrusDrift.x + c * uCirrusDrift.y);
-    vec3 q = vec3(w.x * 0.25, 0.37, w.y * 2.2) / uCirrus.z;
-    float n = dot(texture(uCloudNoise, q).rgb, vec3(0.55, 0.3, 0.15)) * 0.7 + 0.3 * texture(uCloudNoise, q * 3.1 + vec3(0.21, 0.5, 0.13)).g;
-    float d = smoothstep(1.0 - 0.75 * uCirrus.x, 1.0 - 0.75 * uCirrus.x + 0.35, n) * (0.35 + 0.45 * uCirrus.x);
+    // Made of a noise that never repeats (a lattice's values, smoothed,
+    // octave over octave each turned from the last) - no picture tiled
+    // over the sky. Its streaks long along the wind and fine across it,
+    // ridged so each is a fibre with an edge; bent a little as the wind up
+    // there bends; in patches with the sky open between; frayed.
+    float size = uCirrus.z;
+    w.y += (cirrus_fbm(w / (size * 7.0) + 3.7) - 0.5) * size * 0.9;
+    float patches = smoothstep(0.62 - 0.32 * uCirrus.x, 0.86 - 0.24 * uCirrus.x, cirrus_fbm(w / (size * 3.5) + 11.3));
+    float fibre = cirrus_fbm(vec2(w.x / (size * 1.4), w.y / (size * 0.11)) + 5.1);
+    float ridge = 1.0 - abs(2.0 * fibre - 1.0);
+    float strands = smoothstep(0.45, 0.95, ridge) * (0.55 + 0.45 * cirrus_fbm(vec2(w.x / (size * 0.5), w.y / (size * 0.06)) + 9.9));
+    float d = strands * patches * (0.45 + 0.4 * uCirrus.x);
     d *= 1.0 - smoothstep(0.55, 1.0, t / (uCloudShape.w * 2.0));
     if (d <= 1e-4) return vec4(0.0, 0.0, 0.0, 1.0);
     vec3 sun = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
@@ -1770,15 +1801,25 @@ vec2 world_uv() {
     return vec2(w.x, -w.y);
 }
 // A picture read where it is laid - and, laid over the world with
-// `uTileBreak`, a second laying of it too (turned, 3.2 times larger),
-// the two blended by a slow noise across the ground: its repeats, seen
-// from far over a wide floor or a land, never line up.
+// `uTileBreak`, never the same twice: each cell of it (a picture's size)
+// read from a place of the picture of its own, chosen by the cell, the
+// cells' edges crossing over each other in a narrow band (a fifth of a cell,
+// the picture's own steps kept so its levels hold) - so no cell is its
+// neighbour again and nothing lines up from far off. (Its features keep
+// their way: wind's ripples run as the wind does in every cell.)
+vec2 tile_hash(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
 vec4 tiled(sampler2D s, vec2 uv) {
-    vec4 one = texture(s, uv);
-    if (uTileBreak <= 0.0 || uSkin < 1.5 || uSkin > 2.5) return one;
-    vec2 other = mat2(0.8, -0.6, 0.6, 0.8) * uv * 0.3125 + vec2(0.37, 0.71);
-    float w = smoothstep(0.3, 0.7, noise(vRoom.xz * (0.11 / max(uTile, 1e-3)))) * uTileBreak;
-    return mix(one, texture(s, other), w);
+    if (uTileBreak <= 0.0 || uSkin < 1.5 || uSkin > 2.5) return texture(s, uv);
+    vec2 i = floor(uv), f = fract(uv), dx = dFdx(uv), dy = dFdy(uv);
+    vec4 a = textureGrad(s, uv + tile_hash(i), dx, dy);
+    vec4 b = textureGrad(s, uv + tile_hash(i + vec2(1.0, 0.0)), dx, dy);
+    vec4 c = textureGrad(s, uv + tile_hash(i + vec2(0.0, 1.0)), dx, dy);
+    vec4 d = textureGrad(s, uv + tile_hash(i + vec2(1.0, 1.0)), dx, dy);
+    float band = 0.1 + 0.4 * (1.0 - uTileBreak);
+    // (The second neighbour of each cell is the one after it: each cell's
+    // own reading holds from its middle, and gives way at its far edge.)
+    vec2 m = smoothstep(vec2(0.0), vec2(1.0), (f - 0.5 + band) / (2.0 * band));
+    return mix(mix(a, b, m.x), mix(c, d, m.x), m.y);
 }
 
 // The eye's distance from the planet's middle, in its kilometres (kept
@@ -2324,6 +2365,9 @@ void main() {
         // (A model's own picture, or a screen's - but a screen keeps its pixels.)
         if (!framed_skin && uTexels > 0.0 && uScreenUV < 0.5 && uCRT < 0.5) uv = texel_snap(uv, min(uTexels * 2.0, float(textureSize(uTex, 0).y)));
         vec4 texel = framed_skin ? skin_texel(uTex) : tiled(uTex, uv);
+        // (A land's ground, its tone moving slowly across it.)
+        if (uTileBreak > 0.0 && uSkin > 1.5 && uSkin < 2.5)
+            texel.rgb *= mix(1.0, 0.86 + 0.28 * noise(vRoom.xz * 0.013 + 4.1) * (0.7 + 0.3 * noise(vRoom.xz * 0.061)), uTileBreak);
         if (framed_skin && uSurfaceMapOn > 0.5) surface_at = skin_texel(uSurfaceMap);
         if (framed_skin && uNormalMapOn > 0.5) mapped = true, height_steps = skin_height_steps();
         if (!framed_skin) {
@@ -2864,6 +2908,8 @@ uniform float uRaw;  // 1: the light itself, undeveloped (a viewer's film: the e
 // over how much more it goes from sharp to that (uFocusFall).
 uniform vec4  uFocus;
 uniform float uFocusFall;
+uniform float uFringe;     // the lens's colour fringe: pixels the red and the blue part at the frame's corner (0: none)
+uniform float uHalation;   // film's red glow round what is brightest (0: none)
 )") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -2889,6 +2935,13 @@ vec3 focused(vec2 uv) {
 
 void main() {
     vec3 scene = focused(vUV);
+    // (Its colours parted towards the edges, red out and blue in, as a
+    // lens's glass bends them unevenly.)
+    if (uFringe > 0.0) {
+        vec2 d = vUV - 0.5, off = d * dot(d, d) * 2.0 * uFringe * uTexel;
+        scene = vec3(focused(vUV + off).r, scene.g, focused(vUV - off).b);
+    }
+    if (uHalation > 0.0) scene += texture(uBloom, vUV).rgb * vec3(1.0, 0.32, 0.12) * uHalation;
     if (uRaw > 0.5) {
         // (Its bloom is the developing eye's own, laid on what it sees.)
         FragColor = vec4(scene + texture(uBloom, vUV).rgb * fog_bloom(vUV) + godrays(vUV), 1.0);
