@@ -160,9 +160,20 @@ Sh9 GLWorldView::capture(const Spatial3D& room, const Vec3d& at, int size) {
 std::vector<ProbeBake> GLWorldView::bake_probes(const Spatial3D& room, int size, int bounces) {
     std::vector<ProbeBake> out;
     const auto& probes = index_of(room).probes;
-    std::vector<Key> lamps;
-    for (const Element* l : index_of(room).lights)
-        if (l->alive && l->params.num(Key{"sun"}) < 0.5 && l->params.num(Key{"indirect"}) < 0.5) lamps.push_back(l->id.key());
+    // What is baked: each lamp alone; and each sun alone from each of its
+    // ways (sg::sun_ways), blended by the way it is when it is drawn.
+    struct Lit {
+        Key lamp;
+        int way;
+        std::string name() const { return way < 0 ? lamp.str() : lamp.str() + "@" + std::to_string(way); }
+    };
+    std::vector<Lit> lamps;
+    for (const Element* l : index_of(room).lights) {
+        if (!l->alive || l->params.num(Key{"indirect"}) >= 0.5) continue;
+        if (l->params.num(Key{"sun"}) < 0.5) lamps.push_back({l->id.key(), -1});
+        else
+            for (int k = 0; k < static_cast<int>(sun_ways().size()); ++k) lamps.push_back({l->id.key(), k});
+    }
     if (probes.empty()) return out;
     size = std::clamp(size, 4, 256);
     bounces = std::clamp(bounces, 1, 4);
@@ -207,7 +218,7 @@ std::vector<ProbeBake> GLWorldView::bake_probes(const Spatial3D& room, int size,
     for (int pass = 0; pass < bounces; ++pass) {
         std::vector<std::vector<Sh9>> next(lamps.size(), std::vector<Sh9>(probes.size()));
         for (std::size_t li = 0; li < lamps.size(); ++li) {
-            baker.solo_ = lamps[li];
+            baker.solo_ = lamps[li].lamp, baker.solo_way_ = lamps[li].way;
             baker.lights_memo_.clear();
             baker.probe_override_ = pass > 0 ? &seen[li] : nullptr;
             for (std::size_t pi = 0; pi < probes.size(); ++pi)
@@ -216,7 +227,7 @@ std::vector<ProbeBake> GLWorldView::bake_probes(const Spatial3D& room, int size,
         seen = std::move(next);
     }
     baker.probe_override_ = nullptr;
-    baker.solo_ = Key{};
+    baker.solo_ = Key{}, baker.solo_way_ = -1;
     baker.lights_memo_.clear();
     baker.shadow_sets_.clear();
     baker.room_casters_.clear();
@@ -227,8 +238,8 @@ std::vector<ProbeBake> GLWorldView::bake_probes(const Spatial3D& room, int size,
         pb.probe = probes[pi]->id.key();
         pb.digest = probe_digest(room, *probes[pi]);
         for (std::size_t li = 0; li < lamps.size(); ++li) {
-            pb.sets[lamps[li].str()] = seen[li][pi];
-            bytes += pb.probe.str() + "\t" + lamps[li].str() + "\t" + seen[li][pi].text() + "\n";
+            pb.sets[lamps[li].name()] = seen[li][pi];
+            bytes += pb.probe.str() + "\t" + lamps[li].name() + "\t" + seen[li][pi].text() + "\n";
         }
         out.push_back(std::move(pb));
     }

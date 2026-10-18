@@ -119,16 +119,77 @@ std::map<std::string, Sh9> probe_sets(const Element& probe, bool* readable) {
     return out;
 }
 
+const std::vector<Vec3d>& sun_ways() {
+    static const std::vector<Vec3d> ways = [] {
+        std::vector<Vec3d> w{{0.0, 1.0, 0.0}};
+        for (double up : {0.12, 0.45, 0.9})
+            for (int k = 0; k < 8; ++k) {
+                const double round = k * 0.78539816339744831;
+                w.push_back({std::cos(up) * std::cos(round), std::sin(up), std::cos(up) * std::sin(round)});
+            }
+        return w;
+    }();
+    return ways;
+}
+
+std::vector<double> sun_blend(const Vec3d& toward) {
+    const std::vector<Vec3d>& ways = sun_ways();
+    std::vector<double> w(ways.size(), 0.0);
+    double sum = 0.0;
+    // (Each way's share falling off with the angle from it: within a way's
+    // neighbours, nothing of the far side of the sky.)
+    for (std::size_t k = 0; k < ways.size(); ++k) sum += w[k] = std::exp(40.0 * (dot(toward, ways[k]) - 1.0));
+    for (double& v : w) v /= std::max(sum, 1e-300);
+    return w;
+}
+
+namespace {
+// A set's name: its lamp's, and for a sun's the way it was baked from (-1:
+// none) - false if the way is no number.
+bool set_name(const std::string& name, std::string& lamp, int& way) {
+    const std::size_t at = name.find('@');
+    lamp = name.substr(0, at), way = -1;
+    if (at == std::string::npos) return true;
+    char* end = nullptr;
+    const long k = std::strtol(name.c_str() + at + 1, &end, 10);
+    if (end == name.c_str() + at + 1 || *end != '\0') return false;
+    way = static_cast<int>(k);
+    return true;
+}
+// As the renderer reads a lamp: white-ish unless it says, at 1.
+Rgb light_now(const Element& l) {
+    const double i = l.params.num(keys::intensity, 1.0);
+    return Rgb{i * l.params.num(keys::r, 1.0), i * l.params.num(keys::g, 0.93), i * l.params.num(keys::b, 0.82)};
+}
+}  // namespace
+
 Sh9 probe_light(const State& world, const Element& probe) { return probe_light(world, probe_sets(probe)); }
 
 Sh9 probe_light(const State& world, const std::map<std::string, Sh9>& sets) {
     Sh9 out;
-    for (const auto& [light, set] : sets) {
-        const Element* l = world.find(Key{light});
+    // Each sun's blend of its ways, worked out once.
+    std::map<std::string, std::vector<double>> blends;
+    for (const auto& [name, set] : sets) {
+        std::string lamp;
+        int way = -1;
+        if (!set_name(name, lamp, way)) continue;
+        const Element* l = world.find(Key{lamp});
         if (!l || !l->alive || l->kind != kinds::light) continue;
-        // (As the renderer reads a lamp: white-ish unless it says, at 1.)
-        const double i = l->params.num(keys::intensity, 1.0);
-        out.add(set, Rgb{i * l->params.num(keys::r, 1.0), i * l->params.num(keys::g, 0.93), i * l->params.num(keys::b, 0.82)});
+        if (way < 0) {
+            out.add(set, light_now(*l));
+            continue;
+        }
+        if (way >= static_cast<int>(sun_ways().size())) continue;
+        auto b = blends.find(lamp);
+        if (b == blends.end()) {
+            // Towards it: against the way it shines, turned as it hangs.
+            const Vec3d shines = turn(world_pose(world, *l), {l->params.num(Key{"dx"}), l->params.num(Key{"dy"}, -1.0), l->params.num(Key{"dz"})});
+            b = blends.emplace(lamp, sun_blend(unit(shines * -1.0))).first;
+        }
+        const double share = b->second[static_cast<std::size_t>(way)];
+        if (share < 1e-6) continue;
+        const Rgb c = light_now(*l);
+        out.add(set, Rgb{c.r * share, c.g * share, c.b * share});
     }
     return out;
 }
@@ -196,8 +257,13 @@ std::vector<std::string> probe_faults(const State& world) {
         if (!readable) out.push_back("probe " + name + ": a set of it is not 27 numbers");
         for (const auto& [light, sh] : sets) {
             if (!sh.finite()) out.push_back("probe " + name + ": its set for " + light + " is not finite");
-            const Element* l = world.find(Key{light});
+            std::string lamp;
+            int way = -1;
+            const bool named = set_name(light, lamp, way);
+            const Element* l = world.find(Key{lamp});
             if (!l || !l->alive || l->kind != kinds::light) out.push_back("probe " + name + ": it holds a set for " + light + ", which is no lamp here");
+            else if (!named || (way >= 0 && (l->params.num(Key{"sun"}) < 0.5 || way >= static_cast<int>(sun_ways().size()))))
+                out.push_back("probe " + name + ": it holds a set for " + light + ", which is no way of a sun here");
         }
         const std::string* baked = e->params.text(Key{"digest"});
         if (baked && !baked->empty() && *baked != probe_digest(world, *e))

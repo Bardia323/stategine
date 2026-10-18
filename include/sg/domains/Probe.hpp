@@ -8,7 +8,9 @@
 // 2), lamp by lamp: a set for each lamp it was baked with, lit alone at
 // unit strength in white. Light adds, so what arrives now is each lamp's set
 // times that lamp's light now (its `intensity` and colour): a lamp switched,
-// dimmed or recoloured needs no bake. The look's own light from all round
+// dimmed or recoloured needs no bake. A sun goes round, so it is baked from
+// each of a set of ways (sun_ways) and what it gives is those sets blended
+// by the way it is now (its own dx dy dz - no hour is read). The look's own light from all round
 // (its sky and ground) is the look's, as it is now, and is added to it where
 // the probe is drawn: no set is kept of it, so it is never stale.
 //
@@ -69,6 +71,18 @@ Element& add_probe(Spatial3D& world, Key id, Vec3d base, Vec3d size, double soft
 std::vector<const Element*> probes_of(const State& world);
 
 inline Key probe_set_key(Key light) { return Key{"sh." + light.str()}; }
+
+// A sun goes round, so its light on a probe is baked from each of these ways
+// towards it (unit vectors: straight up, then eight round at each of three
+// heights - low, middling, high): its sets `sh.<sun>@<k>`, k the way's
+// place here. What a sun gives a probe now is its sets near the way it is
+// towards it now (its own dx dy dz, turned as it hangs - whatever moves it;
+// no hour is read), blended, times its light now.
+const std::vector<Vec3d>& sun_ways();
+inline Key sun_set_key(Key sun, int way) { return Key{"sh." + sun.str() + "@" + std::to_string(way)}; }
+// How much of each way's set a sun towards `toward` (unit) takes: the ways
+// near it, summing to 1.
+std::vector<double> sun_blend(const Vec3d& toward);
 
 // The sets a probe keeps, by the lamp each is of; and whether they read as numbers.
 std::map<std::string, Sh9> probe_sets(const Element& probe, bool* readable = nullptr);

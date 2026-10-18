@@ -1059,7 +1059,12 @@ probe gives now is each set times its lamp's `intensity` and colour now: a
 lamp switched, dimmed or recoloured needs no bake.
 
 `GLWorldView::bake_probes(room)` makes the sets: for each probe and each of
-the room's own lamps (not a sun, not one standing in for bounce), the room
+the room's own lamps (not one standing in for bounce) - and each of its own
+suns from each of 25 ways towards it (`sg::sun_ways`: straight up, and
+eight round at each of three heights; sets `sh.<sun>@<k>`), what it gives
+when drawn the sets near the way it is then towards it blended
+(`sg::sun_blend`), times its light then: its way is its own, whatever moves
+it, and no hour is read - the room
 seen every way from the probe's middle (a cube, 32 pixels a face) lit by
 that lamp alone - nothing glowing of itself, no light from all round, no air,
 nothing through its doorways - taken to harmonics; then again with the probes

@@ -2,6 +2,8 @@
 // doorways, and how much of a doorway what stands in it covers.
 #include "sg/gl/World.hpp"
 
+#include "sg/domains/Probe.hpp"
+
 #include "WorldHash.hpp"
 
 namespace sg::render {
@@ -56,8 +58,13 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
         if (!placed.lit || !same_pose(placed.lit_at, pose)) placed.light = light_of(room, e, pose), placed.lit_at = pose, placed.lit = true;
         Light l = placed.light;
         if (baking_) {
-            // Baking a probe: the one lamp, at 1, in white - whatever it is now.
-            if (e.id != solo_ || l.sun || l.indirect) continue;
+            // Baking a probe: the one lamp, at 1, in white - whatever it is now;
+            // a sun from the way it is baked from.
+            if (e.id != solo_ || l.indirect || l.sun != (solo_way_ >= 0)) continue;
+            if (l.sun) {
+                const Vec3d way = sun_ways()[static_cast<std::size_t>(solo_way_)];
+                l.dir = {static_cast<float>(-way.x), static_cast<float>(-way.y), static_cast<float>(-way.z)};
+            }
             l.color = {1.0f, 1.0f, 1.0f};
             l.power = 26.0f;
             out.push_back(l);

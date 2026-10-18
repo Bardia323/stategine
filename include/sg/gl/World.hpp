@@ -739,9 +739,11 @@ private:
     // Baking (bake_probes): this view draws its room lit by the lamp `solo_`
     // alone, at 1 in white, nothing glowing, no light from all round, none
     // through its doorways - the probes, if it says, lit as the first
-    // bounce saw them.
+    // bounce saw them. A sun is baked from one of its ways (`solo_way_`,
+    // sg::sun_ways; -1 a lamp), shining as from there.
     bool baking_ = false;
     Key solo_;
+    int solo_way_ = -1;
     const std::vector<Sh9>* probe_override_ = nullptr;
     std::unique_ptr<GLWorldView> baker_;  // the view that bakes, kept
     std::unique_ptr<GLWorldView> lamp_seer_, sun_seer_;  // the view that draws lamps' cubes of distances (relight_probes), kept

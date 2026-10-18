@@ -188,5 +188,53 @@ int main() {
     t1 = Clock::now();
     std::printf("  nothing moved: relit in %.2f ms\n", ms(t0, t1));
     check(ms(t0, t1) < 5.0, "nothing moved: nothing drawn, next to nothing done");
+
+    // A sun, baked from each of its ways and blended by the way it is: by a
+    // wall in the open, a probe on its east side holds more of a low sun
+    // from the east (the ground round it lit, the wall's face too) than of
+    // one from the west (the wall's shadow over it). The way is the sun's
+    // own (its dx dy dz): turned, no bake.
+    {
+        sg::StateGraph cg;
+        auto& court = cg.add<sg::Spatial3D>("court");
+        court.params().set("sky", 1.0);
+        cg.set_initial("court");
+        court.fixture("ground", 0.0, -0.1, 0.0).params.set(sg::keys::sx, 30.0).set(sg::keys::sy, 0.1).set(sg::keys::sz, 30.0);
+        court.wall("wall", {0.0, 1.5, 0.0}, 0.3, 3.0, 12.0);
+        court.light("sun", {0.0, 30.0, 0.0}, 1.0, 1.0, 1.0);
+        court.find(sg::Key{"sun"})->params.set("sun", 1.0).set(sg::keys::intensity, 1.0);
+        sg::add_probe(court, "east", {1.5, 0.0, 0.0}, {2.0, 3.0, 2.0}, 0.5);
+        const auto sun_from = [&](double x, double up) {
+            court.find(sg::Key{"sun"})->params.set("dx", -x * std::cos(up)).set("dy", -std::sin(up)).set("dz", 0.0);
+        };
+        const auto held = [&] {
+            const sg::Sh9 sh = sg::probe_light(court, court.element(sg::Key{"east"}));
+            return luma(sh.irradiance({0, 1, 0})) + luma(sh.irradiance({-1, 0, 0}));
+        };
+        sun_from(1.0, 0.3);
+        const auto sun_bakes = view.bake_probes(court, 32, 2);
+        check(sun_bakes.size() == 1 && sun_bakes[0].sets.size() == sg::sun_ways().size() && sun_bakes[0].sets.count("sun@0") == 1,
+              "a sun baked: a set from each of its ways");
+        sg::bake_into(court, sun_bakes);
+        const double from_east = held();
+        sun_from(-1.0, 0.3);
+        const double from_west = held();
+        std::printf("  a low sun from the east: %.4f; from the west, over the wall: %.4f\n", from_east, from_west);
+        check(from_east > 1.5 * from_west && from_west > 0.0, "the probe by the wall holds more of a sun on its side than of one behind the wall");
+        sun_from(1.0, 0.3);
+        court.find(sg::Key{"sun"})->params.set(sg::keys::intensity, 0.5);
+        check(std::fabs(held() - 0.5 * from_east) < 1e-6 * from_east + 1e-9, "a sun dimmed gives as much less, with no bake");
+        check(sg::probe_faults(court).empty(), "its sets break no law");
+        court.find(sg::Key{"east"})->params.set("sh.sun@99", sun_bakes[0].sets.at("sun@0").text());
+        check(sg::probe_faults(court).size() == 1, "a set from a way no sun has is named");
+        // The blend: whole at a way, shared between two halfway between them.
+        const std::vector<double> at_way = sg::sun_blend(sg::sun_ways()[3]);
+        double sum = 0.0;
+        for (double w : at_way) sum += w;
+        check(std::fabs(sum - 1.0) < 1e-9 && at_way[3] > 0.8, "a sun at one of its ways takes most of that way's set");
+        const sg::Vec3d a = sg::sun_ways()[3], b = sg::sun_ways()[4];
+        const std::vector<double> between = sg::sun_blend(sg::unit(a + b));
+        check(std::fabs(between[3] - between[4]) < 1e-9 && between[3] > 0.3, "halfway between two, half of each");
+    }
     return ok ? 0 : 1;
 }
