@@ -1276,8 +1276,33 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // carried): only such a thing can stand outside its own room.
         const auto& has_moved = draw_plans_.at(&room).mover;
         const auto moved_one = [&](std::size_t i) { return i < has_moved.size() && has_moved[i] != 0; };
+        // Its still things drawn together, cell by cell, where a cell holds
+        // one seen and none changed (Quality::proxies): its members passed
+        // over below. (Not for a copy of a room, nor what alone has moved.)
+        std::vector<const ProxyCell*> merged;
+        RoomProxies* proxied = q_.proxies && !placed.image && !placed.things_only && !surface_only_ ? proxies_in(room) : nullptr;
+        if (proxied) {
+            proxied->skip.assign(room.elements().size(), 0);
+            for (const auto& c : proxied->cells) {
+                if (!c->merged || c->members.empty()) continue;
+                bool fresh = c->changed == 0, seen = false;
+                for (std::size_t k = 0; fresh && k < c->members.size(); ++k) {
+                    const std::size_t i = c->members[k];
+                    const Element& m = room.elements()[i];
+                    if (!m.alive || m.params.stamp() != c->stamps[k] || moved_one(i) || m.id == highlight_ || (hidden_ && hidden_->count(m.id.key()))) {
+                        fresh = false;
+                        c->changed = frame_count_;
+                    }
+                    seen = seen || std::binary_search(planned.begin(), planned.end(), i);
+                }
+                if (!fresh || !seen) continue;
+                merged.push_back(c.get());
+                for (std::size_t i : c->members) proxied->skip[i] = 1;
+            }
+        }
         for (const auto i : planned) {
             const auto& e=room.elements()[i];
+            if (proxied && proxied->skip[i]) continue;
             if (placed.things_only && !(e.kind == kinds::mesh && moved_one(i) && !is_sprite(e) && !cuts_out(e) && e.params.num(glass_key, 0.0) <= 0.0))
                 continue;
             if (e.kind == kinds::wall && fills_opening(e)) continue;
@@ -1309,6 +1334,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(3, part_at);
         flush_batches(*scene_, true);
+        if (!merged.empty()) draw_proxies(merged);
         if (!uncut.empty()) {
             const int own = std::min(static_cast<int>(clips.size()), kMaxBounds);
             scene_->set("uClipCount", own);

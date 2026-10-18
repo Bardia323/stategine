@@ -414,6 +414,11 @@ bool GLWorldView::batch_skinned(const State& st, const Element& e) {
 void GLWorldView::batch_crate(const State& st, const Element& e) { append_record(st, e, batch_for(shape_seen(st, e))); }
 
 void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
+    const auto& record = record_of(st, e);
+    b.data.insert(b.data.end(), record.begin(), record.end());
+}
+
+const std::array<float, gl::Mesh::kInstanceFloats>& GLWorldView::record_of(const State& st, const Element& e) {
     Placed& p = placed_of(st, e);
     if (!p.recorded) {
         const gl::Mat4& m = box_matrix(st, e).m;
@@ -430,7 +435,7 @@ void GLWorldView::append_record(const State& st, const Element& e, Batch& b) {
         p.record[27] = static_cast<float>(e.params.num(Key{"bend"}, 0.0));  // how far it bends (iMat2.w)
         p.recorded = true;
     }
-    b.data.insert(b.data.end(), p.record.begin(), p.record.end());
+    return p.record;
 }
 
 auto GLWorldView::batch_for(const gl::Mesh& mesh, BoundSurface* skin) -> Batch& {

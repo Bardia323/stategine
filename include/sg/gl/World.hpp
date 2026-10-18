@@ -204,6 +204,9 @@ public:
         int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;
         int air_built = 0;  // views' air gathered again (air_fs): none while nothing it is made from moves  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
         int skies_made = 0;   // skies' pictures made again (a look's `atmosphere`): none while the sun and the eye's height stay
+        int proxied = 0;      // things drawn in their cell's merged mesh (Quality::proxies), and the calls it took
+        int proxy_calls = 0;
+        int proxies_merged = 0;  // cells merged (again) this frame: a few at most
         int lod_drawn = 0;    // things drawn with fewer faces, far enough off that no pixel shows it (Quality::lod)
         int domes_made = 0;   // clouds' domes made whole again (a look's `clouds.cover`): none while nothing jumps (a part of each is made every frame)
         int views_asked = 0;  // views drawn only if the card finds their doorway seen (Quality::skip_unseen)
@@ -1071,6 +1074,35 @@ private:
     bool batch_skinned(const State& st, const Element& e);
     // Its matrix and material, as an instance of its batch (kept until it moves).
     void append_record(const State& st, const Element& e, Batch& b);
+    // A thing's instance record, as a batch carries it (made once a stamp).
+    const std::array<float, gl::Mesh::kInstanceFloats>& record_of(const State& st, const Element& e);
+    // The still things of a room merged, cell by cell (Quality::proxies): each
+    // cell's members (by their index in the room), what each was when merged,
+    // and their corners in two meshes - boxes, whose far sides are not drawn,
+    // and the rest - each corner carrying its thing's record.
+    struct ProxyCell {
+        std::vector<std::size_t> candidates;  // what stands in it that may be merged (by what it is)
+        std::vector<std::size_t> members;     // what was, when it was last merged
+        std::vector<uint64_t> stamps;
+        gl::Mesh boxes, others;
+        bool merged = false, any_boxes = false, any_others = false;
+        uint64_t changed = 0;  // the frame a member was last found changed (0: none since it was merged)
+    };
+    static constexpr std::size_t kProxyCorners = 512;            // a thing of more corners is drawn with others of its shape
+    static constexpr std::size_t kProxyCellCorners = 64 * 1024;  // and no cell merges more
+    int proxy_budget_ = 0;                                       // cells that may still be merged this frame
+    struct RoomProxies {
+        uint64_t structure = 0;
+        std::vector<std::unique_ptr<ProxyCell>> cells;
+        std::vector<char> skip;      // (this draw's: members of the cells drawn whole)
+        std::vector<uint64_t> last;  // each thing's stamp when last merged (one changed since stays out once)
+    };
+    std::map<const Spatial3D*, RoomProxies> proxies_;
+    RoomProxies* proxies_in(const Spatial3D& room);
+    void merge_cell(const Spatial3D& room, RoomProxies& rp, ProxyCell& c);
+    void draw_proxies(const std::vector<const ProxyCell*>& cells);
+    // A thing's corners as its mesh has them (find_shape's, made again on the processor).
+    std::vector<float> corners_for(const State& st, const Element& e) const;
     void upload_skin(BoundSurface& bound);
     // The surface's picture on the card as it is now: packed, while it is the
     // picture that was packed; its pixels, once it has changed.

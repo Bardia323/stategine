@@ -67,6 +67,13 @@ struct Quality {
     // much is seen far off (open land, a city across a valley), and costs a
     // world seen close (memory, and a core for a while at the start).
     bool lod=false;
+    // Still things of a room drawn together: what stands still in each cell
+    // of a room (`proxy_cell` metres, 16 unless the room says), and would be
+    // drawn with others of its shape, merged into one mesh whose every corner
+    // carries its thing's place and make - drawn as they would be, in one
+    // call. A thing that moves, or is changed, is drawn on its own until its
+    // cell has stood still again for a while. The same picture.
+    bool proxies=true;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

@@ -1212,6 +1212,20 @@ played; `set_timing` finishes the card between stages instead, which shows
 where a frame stalls but slows every frame it measures. Both are how the
 machine is, not how the world is: neither is written into any state.
 
+**Still things drawn together** (`GLQuality::proxies`, `proxies` in
+render.conf; on unless said). What stands still in each cell of a room
+(`proxy_cell` metres, 16 unless the room says) and would be drawn with others
+of its shape - a small thing (512 corners or fewer), hung from nothing - is
+merged into a mesh or two (boxes, whose far sides are not drawn, and the
+rest) whose every corner carries its thing's instance record: drawn by the
+same instanced path, every thing as it would be, a cell in a call or two
+(`FrameTimes::proxied`, `proxy_calls`). A cell is merged a frame or two after
+it is first seen - never a room at once (`proxies_merged`). A thing in it
+moved or changed, the cell is drawn as before until it has stood still a
+while, then merged again without what changed. The same picture, to the bit
+(`sg_instancing_gl`: 3600 things, 0.75 ms a frame merged, 2.1 batched).
+Memory Leak's frames 1 to 3% shorter.
+
 **Far off, fewer faces** (`GLQuality::lod`, `lod` in render.conf; off unless
 said). A model of a few hundred faces or more is made again with fewer
 (`sg::shapes::fewer`: edges collapsed where that moves its surface least,

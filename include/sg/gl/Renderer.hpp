@@ -141,6 +141,12 @@ public:
     // back), read at kJointsUnit as it is drawn. `posed`: which making of
     // its joints it holds, kept by whoever poses it.
     void create_bound(const std::vector<float>& verts);
+    // Things merged into one mesh (GLWorldView's proxies): each corner a
+    // model's 8 floats, then its thing's instance record (kInstanceFloats:
+    // its matrix and its make, at attributes 3-9, as draw_instanced gives
+    // them) - drawn with the scene's instanced path, every thing as it would
+    // be, in one call.
+    void create_merged(const std::vector<float>& verts);
     void pose(const std::vector<float>& joints) const;
     mutable uint64_t posed = 0;
 

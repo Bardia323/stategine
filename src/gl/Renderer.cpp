@@ -266,6 +266,31 @@ void Mesh::create_bound(const std::vector<float>& verts) {
     }
 }
 
+void Mesh::create_merged(const std::vector<float>& verts) {
+    constexpr std::size_t k = 8 + kInstanceFloats;
+    count_ = static_cast<GLsizei>(verts.size() / k);
+    if (!vao_) glGenVertexArrays(1, &vao_), glGenBuffers(1, &vbo_);
+    ++made_;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)), verts.data(), GL_STATIC_DRAW);
+    const GLsizei stride = static_cast<GLsizei>(k * sizeof(float));
+    const struct {
+        GLuint at;
+        GLint n;
+        std::size_t from;
+    } parts[] = {{0, 3, 0}, {1, 3, 3}, {2, 2, 6}};
+    for (const auto& p : parts) {
+        glVertexAttribPointer(p.at, p.n, GL_FLOAT, 0, stride, reinterpret_cast<void*>(p.from * sizeof(float)));
+        glEnableVertexAttribArray(p.at);
+    }
+    for (GLuint i = 0; i < 7; ++i) {
+        glVertexAttribPointer(3 + i, 4, GL_FLOAT, 0, stride, reinterpret_cast<void*>((8 + i * 4) * sizeof(float)));
+        glEnableVertexAttribArray(3 + i);
+    }
+    glBindVertexArray(0);
+}
+
 void Mesh::pose(const std::vector<float>& joints) const {
     if (!joints_tex_) return;
     glBindBuffer(GL_TEXTURE_BUFFER, joints_buf_);

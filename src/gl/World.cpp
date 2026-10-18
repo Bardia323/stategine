@@ -589,6 +589,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     gl::glVertexAttrib4f(12, 0.0f, 0.0f, 0.0f, 0.0f);
     // (Models' fewer faces made since the last frame, given to the card.)
     if (!root_) take_fewer();
+    // (And a few rooms' cells merged a frame: Quality::proxies.)
+    if (!root_) proxy_budget_ = 2;
     // A room that says it is seen from one of its own (its camera's
     // `seen_from`: an element of it - a camera hung there, chosen by whatever
     // stages it) is drawn from there; what walks it is still its camera.
