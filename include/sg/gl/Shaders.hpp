@@ -270,6 +270,13 @@ const std::string& cloud_dome_glsl();
 // `cloud_shadow_fs`: that, on the ground round the eye - the map
 // `lights_glsl`'s suns read (`cloud_shadow`) where `uCloudShadowAt` says.
 const std::string& clouds_glsl();
+
+// Fog where a world says it pools (sg/domains/Fog.hpp, four at most): each
+// a box in the world, soft at its sides and top, thinning as it rises, its
+// wisps moved by the time of the world it is in - how thick at a point
+// (`fog_volume_at`) and how deep along a way (`fog_volume_depth`), read by
+// the scene (its fog) and the lit air (how much more light it scatters).
+const std::string& fog_volumes_glsl();
 const char* cloud_shadow_fs();
 const char* cloud_noise_fs();
 const char* cloud_dome_fs();

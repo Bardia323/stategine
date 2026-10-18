@@ -223,7 +223,7 @@ vec3 air_light(float d) {
 const char* air_fs() {
     static const std::string source = std::string(R"(#version 330 core
 out vec4 FragColor;
-)") + lights_glsl() + R"(
+)") + lights_glsl() + fog_volumes_glsl() + R"(
 // Every slice of a view's air at once, each on its own: the light its lamps
 // scatter towards the eye from a metre of the air between that slice and the
 // one before. (air_sum_fs takes each slice's depth and the air before it, and
@@ -249,6 +249,7 @@ uniform float uAirMoved;
 uniform mat4  uAirLastVP;
 uniform vec3  uAirLastEye;
 uniform float uAirAt[64];       // where each slice ends, from the eye (air_slices)
+uniform float uFogGlow;         // how much more of it a metre's depth of fog pooled there scatters (fog_volumes_glsl)
 
 float air_at(float i) { return uAirAt[int(i)]; }
 // Schlick's phase function: how much of light scattered goes off at an
@@ -285,6 +286,9 @@ vec3 slice_light(vec3 dir, vec2 uv, float k, float down) {
     vec3 p = uViewPos + dir * at;
     if (dot(uAirClip.xyz, p) + uAirClip.w < 0.0) continue;
     uvec2 cell = lamp_cell(uv, at);
+    // (More of it scattered where fog pools: its shape as it stands, not its
+    // drift - air gathered again each frame it drifts would never rest.)
+    float pooled = uFogCount > 0 ? 1.0 + uFogGlow * fog_volume_at(p, false) : 1.0;
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
         // Light standing in for what bounces about lights no air of its own;
@@ -297,7 +301,7 @@ vec3 slice_light(vec3 dir, vec2 uv, float k, float down) {
         // Mostly on ahead, some back: two lobes, as haze has.
         float c = dot(dir, l);
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
-        lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
+        lit += uLightColor[i] * (reach * uLightScatter[i] * phase) * pooled;
     }
     }
     lit /= float(max(lit_points, 1));
@@ -740,6 +744,80 @@ void main() {
 }
 
 // --- a world's clouds (GLWorldView::sky_for) ----------------------------------------
+const std::string& fog_volumes_glsl() {
+    static const std::string source = R"(
+const int MAX_FOGS = 4;
+uniform int   uFogCount;
+uniform vec4  uFogAt[MAX_FOGS];    // its base's middle (the world), its yaw
+uniform vec4  uFogSize[MAX_FOGS];  // half its width, its height, half its depth; how dense it is (a metre's depth of it)
+uniform vec4  uFogMake[MAX_FOGS];  // how soft its sides and top (metres), how much thinner a metre up, how much it drifts (0..1), its wisps' size
+uniform vec4  uFogTint[MAX_FOGS];  // its own colour, and whether it has one (else its look's fog's)
+uniform float uFogTime[MAX_FOGS];  // the time of the world it is in, which its wisps move with
+float fog_hash(vec3 c) { return fract(sin(dot(c, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float fog_noise(vec3 p) {
+    vec3 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(fog_hash(i), fog_hash(i + vec3(1, 0, 0)), u.x), mix(fog_hash(i + vec3(0, 1, 0)), fog_hash(i + vec3(1, 1, 0)), u.x), u.y),
+               mix(mix(fog_hash(i + vec3(0, 0, 1)), fog_hash(i + vec3(1, 0, 1)), u.x), mix(fog_hash(i + vec3(0, 1, 1)), fog_hash(i + vec3(1, 1, 1)), u.x), u.y), u.z);
+}
+// `p` (the world) seen from fog `k`'s base, turned as it is.
+vec3 fog_local(int k, vec3 p) {
+    vec3 d = p - uFogAt[k].xyz;
+    float c = cos(uFogAt[k].w), s = sin(uFogAt[k].w);
+    return vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+}
+// How thick fog `k` is at `q` (its own frame): its sides and top soft, its
+// base where it lies, thinner as it rises - and, where `drift` is asked, its
+// wisps where its world's time has carried them.
+float fog_in(int k, vec3 q, bool drift) {
+    vec3 h = uFogSize[k].xyz;
+    float soft = max(uFogMake[k].x, 1e-3);
+    float edge = min(min(h.x - abs(q.x), h.z - abs(q.z)), h.y - q.y);
+    if (q.y < 0.0 || edge <= -soft) return 0.0;
+    float w = smoothstep(-soft, soft, edge) * exp(-uFogMake[k].y * q.y);
+    if (drift && uFogMake[k].z > 0.0) {
+        vec3 r = q / max(uFogMake[k].w, 0.1) + vec3(0.11, 0.03, 0.07) * uFogTime[k];
+        w *= mix(1.0, 2.0 * (0.65 * fog_noise(r) + 0.35 * fog_noise(r * 2.3 + 7.1)), uFogMake[k].z);
+    }
+    return w * uFogSize[k].w;
+}
+// How thick the fogs are at `p` (the world), all together.
+float fog_volume_at(vec3 p, bool drift) {
+    float d = 0.0;
+    for (int k = 0; k < MAX_FOGS; ++k) {
+        if (k >= uFogCount) break;
+        d += fog_in(k, fog_local(k, p), drift);
+    }
+    return d;
+}
+// Their depth along the way from `a` to `b` (the world): each box the way
+// crosses sampled across where it crosses it. In `own`, how much of that is
+// of a fog with its own colour: that colour times its depth, and its depth.
+float fog_volume_depth(vec3 a, vec3 b, out vec4 own) {
+    own = vec4(0.0);
+    float len = length(b - a), depth = 0.0;
+    if (uFogCount == 0 || len < 1e-4) return 0.0;
+    for (int k = 0; k < MAX_FOGS; ++k) {
+        if (k >= uFogCount) break;
+        vec3 qa = fog_local(k, a), d = (fog_local(k, b) - qa) / len;
+        float soft = uFogMake[k].x;
+        vec3 lo = vec3(-uFogSize[k].x - soft, 0.0, -uFogSize[k].z - soft), hi = uFogSize[k].xyz + soft;
+        vec3 inv = 1.0 / mix(d, vec3(1e-6), lessThan(abs(d), vec3(1e-6)));
+        vec3 t0 = (lo - qa) * inv, t1 = (hi - qa) * inv;
+        vec3 tn = min(t0, t1), tf = max(t0, t1);
+        float enter = max(max(tn.x, tn.y), max(tn.z, 0.0)), leave = min(min(tf.x, tf.y), min(tf.z, len));
+        if (leave <= enter) continue;
+        float sum = 0.0;
+        for (int i = 0; i < 6; ++i) sum += fog_in(k, qa + d * mix(enter, leave, (float(i) + 0.5) / 6.0), true);
+        float here = sum / 6.0 * (leave - enter);
+        depth += here;
+        own += vec4(uFogTint[k].rgb, 1.0) * (here * uFogTint[k].w);
+    }
+    return depth;
+}
+)";
+    return source;
+}
+
 const std::string& clouds_glsl() {
     static const std::string source = R"(
 // The clouds as a volume (a look's `clouds.cover`; cloud_dome_fs).
@@ -1219,7 +1297,7 @@ uniform float uFillCut;       // how much of the light from all round (and back 
 uniform float uUnlit;         // 1: what it shows arrives already lit - no light of the room on it (a panel that says `lit` 0)
 uniform float uAdd;           // 1: light added over what is behind it (a panel that says `add`) - the air dims it, adds nothing to it
 uniform float uGlass;         // > 0: glass, this clear - what is behind it seen through it, more of it reflected at a glance (Fresnel)
-)" + lights_glsl() + atmosphere_glsl() + cloud_dome_glsl() + R"(
+)" + lights_glsl() + atmosphere_glsl() + cloud_dome_glsl() + fog_volumes_glsl() + R"(
 // The clouds as a volume (a look's `clouds.cover`): the sky above with them
 // in it (cloud_dome_fs) - their light, and how much is seen through them.
 uniform float uCloudVolume;
@@ -2503,11 +2581,17 @@ void main() {
         if (abs(dn) > 1e-5) t = clamp(-(dot(uDoorPlane.xyz, uViewPos) + uDoorPlane.w) / dn, 0.0, len);
     }
     // (This side's air from the doorway on, eased in where it begins.)
-    float fog = 1.0 - exp(-uFogDensity * max(air_past(len, uFogStart) - air_past(t, uFogStart), 0.0));
+    float air_depth = uFogDensity * max(air_past(len, uFogStart) - air_past(t, uFogStart), 0.0);
+    // And where the way crosses fog pooled in this world (fog_volumes_glsl),
+    // that too - of its own colour where it has one, else of this air's.
+    vec4 own;
+    float pooled = fog_volume_depth(uViewPos + to_frag * (t / max(len, 1e-5)), vWorld, own);
+    float fog = 1.0 - exp(-air_depth - pooled);
     float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
     // Air that takes all at last is the background too: as far as it goes,
     // what is seen is what is beyond the last thing drawn.
-    vec3 haze = uFogColor + uSunColor * toward * 0.25 * (1.0 - uFogFull);
+    vec3 fog_color = (uFogColor * (air_depth + pooled - own.w) + own.rgb) / max(air_depth + pooled, 1e-6);
+    vec3 haze = (air_depth + pooled > 1e-6 ? fog_color : uFogColor) + uSunColor * toward * 0.25 * (1.0 - uFogFull);
     fog = clamp(fog, 0.0, mix(0.85, 1.0, uFogFull));
     if (uAdd > 0.5) {
         // Light added over what is behind: the air between takes some of it,

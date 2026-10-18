@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 
+#include "sg/domains/Fog.hpp"
 #include "sg/domains/Probe.hpp"
 #include "sg/domains/Walk.hpp"
 
@@ -235,7 +236,11 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
     return e;
 }
 
-std::vector<std::string> Spatial3D::faults() const { return probe_faults(*this); }
+std::vector<std::string> Spatial3D::faults() const {
+    std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this);
+    out.insert(out.end(), fogs.begin(), fogs.end());
+    return out;
+}
 
 namespace {
 // A making's number: one count for every state's models, from every thread

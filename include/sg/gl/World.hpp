@@ -1576,6 +1576,19 @@ private:
     // view on unit 14, the transmittance on 15, the clouds' dome on 3 and
     // their shadow on the ground on 2); with none, none of it.
     void sky_to(const gl::Program& p, const Sky* sky, const Atmosphere& a) const;
+    // The fog pooled where a view looks (sg/domains/Fog.hpp): the fogs of
+    // its rooms nearest the eye, kMaxFogs at most, in the world, each with
+    // the time of the world it is in (what its wisps move with) - and `of`,
+    // what they are as they stand, their wisps aside: what the air of the
+    // view is gathered again for.
+    static constexpr int kMaxFogs = 4;
+    struct Pooled {
+        int count = 0;
+        float at[kMaxFogs][4]{}, size[kMaxFogs][4]{}, make[kMaxFogs][4]{}, tint[kMaxFogs][4]{}, time[kMaxFogs]{};
+        uint64_t of = 0;
+    };
+    Pooled pooled_fog(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye) const;
+    static void pooled_to(const gl::Program& p, const Pooled& f);
 
     // How many maps the views seen through doorways may still lay this
     // frame, between them: past it, a map stays as it was last laid (with the
@@ -1685,7 +1698,7 @@ private:
     // (lamps, doorways, terrain), found again only when its structure moves.
     struct KindIndex {
         uint64_t structure = ~uint64_t{0};
-        std::vector<const Element*> lights, portals, terrains, probes;
+        std::vector<const Element*> lights, portals, terrains, probes, fogs;
     };
     mutable std::unordered_map<const State*, KindIndex> kind_index_;
     const KindIndex& index_of(const State& s) const;

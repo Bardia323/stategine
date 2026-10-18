@@ -2,13 +2,15 @@
 // pictures the scene reads the sky and the air between from - and its clouds
 // as a volume (`clouds.cover`) - the dome of the sky above with them in it.
 // Each made again only when what it is made for changes; the dome a part at
-// a time, as the clouds drift with world time.
+// a time, as the clouds drift with world time. And the fog pooled where a
+// view looks (sg/domains/Fog.hpp), for its scene and its air.
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 #include "WorldHash.hpp"
+#include "sg/domains/Fog.hpp"
 
 namespace sg::render {
 
@@ -261,6 +263,69 @@ void GLWorldView::sky_to(const gl::Program& p, const Sky* sky, const Atmosphere&
         p.set("uCloudShadowAt", 0.0f, 0.0f, 1.0f, 0.0f);
     }
     gl::glActiveTexture(gl::GL_TEXTURE0);
+}
+
+auto GLWorldView::pooled_fog(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye) const -> Pooled {
+    Pooled f;
+    // The fogs of the view's rooms nearest the eye (by how far it is from
+    // their boxes, not their middles: one it stands in is the nearest).
+    struct Near {
+        double far;
+        const PlacedRoom* placed;
+        const Element* e;
+        Pose at;
+    };
+    std::vector<Near> found;
+    for (const PlacedRoom& placed : rooms) {
+        if (!placed.room) continue;
+        for (const Element* e : index_of(*placed.room).fogs) {
+            if (!e->alive) continue;
+            const Pose at = compose_pose(placed.pose, pose_of(*placed.room, *e));
+            const double hx = 0.5 * e->params.num(keys::sx, 1.0), hy = 0.5 * e->params.num(keys::sy, 1.0), hz = 0.5 * e->params.num(keys::sz, 1.0);
+            const double dx = at.position.x - eye.x, dy = at.position.y + hy - eye.y, dz = at.position.z - eye.z;
+            found.push_back({std::max(std::sqrt(dx * dx + dy * dy + dz * dz) - std::sqrt(hx * hx + hy * hy + hz * hz), 0.0), &placed, e, at});
+        }
+    }
+    if (found.empty()) return f;
+    std::stable_sort(found.begin(), found.end(), [](const Near& a, const Near& b) { return a.far < b.far; });
+    const StateGraph* graph = graph_ ? graph_ : (root_ ? root_->graph_ : nullptr);
+    uint64_t of = 1469598103934665603ULL;
+    for (const Near& n : found) {
+        if (f.count >= kMaxFogs) break;
+        const Params& p = n.e->params;
+        const int k = f.count++;
+        const bool own = p.has(keys::r) || p.has(keys::g) || p.has(keys::b);
+        const float at[4] = {static_cast<float>(n.at.position.x), static_cast<float>(n.at.position.y), static_cast<float>(n.at.position.z), static_cast<float>(n.at.yaw)};
+        const float size[4] = {static_cast<float>(0.5 * p.num(keys::sx, 1.0)), static_cast<float>(p.num(keys::sy, 1.0)), static_cast<float>(0.5 * p.num(keys::sz, 1.0)),
+                               static_cast<float>(std::max(p.num(Key{"density"}, 0.3), 0.0))};
+        const float make[4] = {static_cast<float>(std::max(p.num(Key{"soft"}, 0.5), 0.0)), static_cast<float>(std::max(p.num(Key{"fall"}, 0.0), 0.0)),
+                               static_cast<float>(std::clamp(p.num(Key{"drift"}, 0.0), 0.0, 1.0)), static_cast<float>(std::max(p.num(Key{"wisp"}, 2.0), 0.1))};
+        const float tint[4] = {static_cast<float>(p.num(keys::r, 0.0)), static_cast<float>(p.num(keys::g, 0.0)), static_cast<float>(p.num(keys::b, 0.0)), own ? 1.0f : 0.0f};
+        for (int i = 0; i < 4; ++i) {
+            f.at[k][i] = at[i], f.size[k][i] = size[i], f.make[k][i] = make[i], f.tint[k][i] = tint[i];
+            of = mix_bits(mix_bits(mix_bits(mix_bits(of, at[i]), size[i]), make[i]), tint[i]);
+        }
+        // (Its wisps move with the time of the world it is in: its own room's.)
+        f.time[k] = static_cast<float>(semantic_time(graph, *n.placed->room));
+    }
+    f.of = fnv(of, static_cast<uint64_t>(f.count));
+    return f;
+}
+
+void GLWorldView::pooled_to(const gl::Program& p, const Pooled& f) {
+    static const char* const at[kMaxFogs] = {"uFogAt[0]", "uFogAt[1]", "uFogAt[2]", "uFogAt[3]"};
+    static const char* const size[kMaxFogs] = {"uFogSize[0]", "uFogSize[1]", "uFogSize[2]", "uFogSize[3]"};
+    static const char* const make[kMaxFogs] = {"uFogMake[0]", "uFogMake[1]", "uFogMake[2]", "uFogMake[3]"};
+    static const char* const tint[kMaxFogs] = {"uFogTint[0]", "uFogTint[1]", "uFogTint[2]", "uFogTint[3]"};
+    static const char* const time[kMaxFogs] = {"uFogTime[0]", "uFogTime[1]", "uFogTime[2]", "uFogTime[3]"};
+    p.set("uFogCount", f.count);
+    for (int k = 0; k < f.count; ++k) {
+        p.set(at[k], f.at[k][0], f.at[k][1], f.at[k][2], f.at[k][3]);
+        p.set(size[k], f.size[k][0], f.size[k][1], f.size[k][2], f.size[k][3]);
+        p.set(make[k], f.make[k][0], f.make[k][1], f.make[k][2], f.make[k][3]);
+        p.set(tint[k], f.tint[k][0], f.tint[k][1], f.tint[k][2], f.tint[k][3]);
+        p.set(time[k], f.time[k]);
+    }
 }
 
 }  // namespace sg::render

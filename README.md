@@ -1007,6 +1007,31 @@ doorway is seen with the eye's. The first frame the eye adjusts, and the next
 after `settle_exposure()`, take the measure at once: a shot asks for it on its
 first frame, so it is the same picture however it was come to.
 
+### Fog where it pools
+
+A look's fog is alike all through its room. A fog (`sg/domains/Fog.hpp`, an
+element of kind `fog`, `sg::add_fog`) says where the air is thicker: a box
+posed as a thing is (x, y, z its base's middle, sx sy sz, yaw), as thick as
+its `density` (a metre's depth of it, as `uFogDensity` is), its sides and top
+fading over `soft` metres (0.5; its base is where it lies, not faded),
+thinner as it rises (`fall`, how much less a metre up; 0), of its own colour
+(`r` `g` `b`) or else its look's fog's. Its wisps, where `drift` says (0..1;
+0), `wisp` metres across (2), are moved by the time of the world it is in
+(`semantic_time`: `own_time` or a drive's Temporal line) - never by frames or
+a clock: still while its world is, and at a world time what a fresh view
+draws at it.
+
+The scene (`gl::fog_volumes_glsl`) adds to the fog along the way from the eye
+to each point what of the fogs it crosses (each crossed box sampled six times
+through where the way is in it), coloured by the fogs' colours as much as
+they make up of the fog. The lit air (a look's `scatter`) scatters more of a
+lamp's light where fog stands (`fog.glow`, as many times more a metre's depth
+of it; 4) - its shape as it stands, not its wisps: air gathered again each
+frame its wisps moved would never rest. A view reads the four fogs of its
+rooms nearest the eye (`GLWorldView::pooled_fog`). A world with none draws
+as before. Its laws are its world's `faults`: thinner than none, a box with
+no size, a drift past the most.
+
 ### Light probes
 
 A room lit only by its look's sky and ground colours is lit alike from end to

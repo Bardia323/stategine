@@ -152,6 +152,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     times_.lights_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lights_from).count();
     cam_eye_ = cam.eye, cam_forward_ = cam.forward, cam_up_ = cam.up;
     guest_pass_ = depth > 0;
+    // The fog pooled where this view looks (a probe's bake sees none).
+    const Pooled pooled = baking_ ? Pooled{} : pooled_fog(rooms, cam.eye);
     // The lamps the eye sees, where they fall on the screen (the eye's own
     // view only): what a halation is gathered round.
     if (depth == 0 && !mirroring_) {
@@ -877,6 +879,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         const int gx = cells((static_cast<int>(vp_w_) + tile - 1) / tile, a.cells_x);
         const int gy = cells((static_cast<int>(vp_h_) + tile - 1) / tile, a.cells_y);
         const float ahead = static_cast<float>(setting(first, passes::scene, "scatter.ahead", 0.5));
+        // How much more of it fog pooled in the air scatters: a metre's
+        // depth of it, as many times more (`fog.glow`).
+        const float fog_glow = std::max(static_cast<float>(setting(first, passes::scene, "fog.glow", 4.0)), 0.0f);
         // How many points of each cell are lit, through its depth (`scatter.steps`).
         const int steps = std::clamp(static_cast<int>(setting(first, passes::scene, "scatter.steps", 1.0)), 1, 16);
         const float density = static_cast<float>(setting(first, passes::scene, "uFogDensity", 0.0));
@@ -900,7 +905,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             of = fnv(fnv(of, maps.layout[i]), maps.still_at[i] != 0 ? maps.still_at[i] : maps.sig[i]);
             for (float f : light_vp[i].m) of = mix_bits(of, f);
         }
-        for (float f : {scatter, ahead, density, start, static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y),
+        // (And the fog pooled in it as it stands - its wisps moving through
+        // the air are not gathered again for: no air would ever rest.)
+        of = fnv(of, pooled.of);
+        for (float f : {scatter, ahead, fog_glow, density, start, static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y),
                         static_cast<float>(clip.normal.z), static_cast<float>(clip.offset), a.near, a.far,
                         static_cast<float>(gx), static_cast<float>(gy), static_cast<float>(steps), unshadowed ? 1.0f : 0.0f, static_cast<float>(lights.size())})
             of = mix_bits(of, f);
@@ -969,6 +977,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set("uAirUnproject", view_proj.inverse());
             p.set("uViewPos", cam.eye);
             p.set("uScatterAhead", ahead);
+            pooled_to(p, pooled);
+            p.set("uFogGlow", fog_glow);
             p.set("uAirClip", static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y), static_cast<float>(clip.normal.z),
                   static_cast<float>(clip.offset));
             // Every slice's own light in one pass; then the slices added up
@@ -1134,6 +1144,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (sky && sky->atmosphere) scene_->set("uAtmo", std::clamp(static_cast<float>(setting(look, passes::scene, "atmosphere", 0.0)), 0.0f, 1.0f));
         scene_->set("uLatticeShift", shift);
         scene_->set("uTime",static_cast<float>(semantic_time(graph_?graph_:(root_?root_->graph_:nullptr),room)));
+        pooled_to(*scene_, pooled);
         // This room's side of each doorway, from the portals as they are now,
         // and whatever the caller cuts away besides.
         int n = 0;

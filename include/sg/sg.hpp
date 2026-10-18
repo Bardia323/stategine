@@ -21,6 +21,7 @@
 #include "sg/core/Typed.hpp"
 #include "sg/domains/Camera.hpp"
 #include "sg/domains/Console.hpp"
+#include "sg/domains/Fog.hpp"
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Probe.hpp"
