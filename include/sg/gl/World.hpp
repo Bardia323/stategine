@@ -97,8 +97,8 @@
 // by the fog the look already has (`uFogDensity`, `uFogStart`); the scene
 // reads it at each pixel's distance. It is gathered for the view of the eye
 // and the views one doorway on - seen through a doorway, only the air beyond
-// it is the far world's - and gathered again only when the view, its lights
-// or their maps move.
+// it is the far world's - and gathered again only when its lights or their
+// maps change; a view that moves carries what was gathered with it.
 //
 // How each pass looks is itself a state: a LookState worn by the room (see
 // domains/Look.hpp). Each room is drawn with its own look, so fog and shaders
@@ -201,8 +201,33 @@ public:
         // made from changes - cheap by construction, for any room.
         int lights_read = 0, casters_listed = 0, indices_built = 0, uniforms_resolved = 0, graph_queries = 0;
         int air_built = 0;  // views' air gathered again (air_fs): none while nothing it is made from moves  // (where a drawing's time goes, on the CPU: before the scene, its setup, rooms' setup, things, batches, doorways)  // reading the lights; going through the casters for each map
+        int skies_made = 0;   // skies' pictures made again (a look's `atmosphere`): none while the sun and the eye's height stay
+        int domes_made = 0;   // clouds' domes made whole again (a look's `clouds.cover`): none while nothing jumps (a part of each is made every frame)
+        int views_asked = 0;  // views drawn only if the card finds their doorway seen (Quality::skip_unseen)
+        double asked_ms = 0;  // spent asking (ask_doorways), on the CPU
+        double own_ms = 0;    // spent drawing windows onto worlds in their own look (draw_own), on the CPU
     };
     void set_timing(bool on) { timing_ = on; }
+    // What the card spent on each stage of a frame, in milliseconds, as the
+    // card itself says: the time it reached each point of the frame, stamped
+    // as the frame is sent and read back a few frames later, once the card
+    // has the answer. Nothing waits for it, so it can stay on while the game
+    // is played (set_timing waits between stages; this never does). `relit`
+    // is the rooms' light from all round worked out again (light_rooms);
+    // `feeds` the screens' worlds; `views` those through doorways; `scene`
+    // the eye's own view, all of it - its `mirrors`, its `shadows` maps, its
+    // `air` gathered and then what it sees, `lit` (each said again on its
+    // own); `post` all after it.
+    // And of the views the eye's picture laid in its doorways, how many were
+    // seen at all once everything else in front of them was drawn: a view
+    // drawn whose doorway nothing of was seen was drawn for nothing.
+    struct CardTimes {
+        double relit = 0, feeds = 0, views = 0, scene = 0, mirrors = 0, shadows = 0, air = 0, lit = 0, post = 0, total = 0;
+        int doors_laid = 0, doors_unseen = 0;
+        uint64_t frame = 0;  // the frame they are of: 0 while none is known
+    };
+    void set_card_timing(bool on);
+    const CardTimes& card_times() const { return card_; }
     // The state the viewer is attending to - an interface they sit at, say.
     // Its active look is laid over every room's own (the uniforms it sets win),
     // blended by the look fader like any look: so what the eyes are adjusted
@@ -498,7 +523,8 @@ private:
         Vec3d env_at;  // where the glass was when last drawn
         // `own_look`: the far side drawn whole, in its own look, from the
         // carried eye - as it will be seen once through (its picture, and
-        // the view that draws it).
+        // the view that draws it) - but only where it is seen on the screen
+        // (own_cut).
         GLWorldView* own = nullptr;  // (own_views_'s, for its world)
         gl::RenderTarget own_out;
         bool own_drawn = false;
@@ -510,13 +536,21 @@ private:
         Vec3d own_at;
         double own_yaw = 0, own_pitch = 0;
         // What its picture was last drawn of (the world as it was, the eye,
-        // the screen's size): drawn again only when that
+        // the screen's size, the part of it seen): drawn again only when that
         // changes - a still sky through a window is not drawn every frame.
         uint64_t own_key = 0;
+        // The part of the screen its picture holds: where the doorway is on
+        // the screen, with a margin - nothing else of it is drawn.
+        Rect own_cut{-1, -1, 1, 1};
     };
     // `wp` given the picture another doorway drew this frame of its world in
-    // its own look from the same eye, if one did (and so not drawn again).
-    bool share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h);
+    // its own look from the same eye, if one did and it holds the part of the
+    // screen `wp` is seen in (and so not drawn again).
+    bool share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h, const Rect& seen);
+    // The part of the screen a window in its own look draws of its world: the
+    // window's rect, with a margin round it for what spreads in from beyond
+    // it (its glow).
+    static Rect own_cut_of(const Rect& seen);
     // A ball window's reflection of `world` round it, kept up to date.
     void capture_glass(const Spatial3D& world, const Element& e, WorldPortal& wp);
 
@@ -1236,6 +1270,9 @@ private:
     // near side of that doorway's plane), and the doorway left out.
     std::vector<HalfSpace> own_clips_;
     Key own_skip_;
+    // And the part of the screen it is seen in (the doorway's rect, with a
+    // margin): only that of its own scene is drawn.
+    Rect own_seen_{-1, -1, 1, 1};
     // What bind_seams bound, and at which revision of the graph.
     std::vector<Key> seam_bound_;
     uint64_t seams_at_ = ~uint64_t{0};
@@ -1344,14 +1381,21 @@ private:
         void forget();  // every map to be laid again
     };
     ShadowSet lightless_maps_;  // what a view asked only what surfaces are binds: one texel, never laid
-    // A view's air, lit by its lamps (air_fs): each slice's own light (laid
-    // eight to a row), the slices added up from the eye (what the scene
-    // reads), and what they were gathered from - gathered again only when
-    // that moves: a still view of a still world gathers them once.
+    // A view's air, lit by its lamps (air_fs): each slice's own light, a
+    // metre of it (laid eight to a row), the slices added up from the eye
+    // (what the scene reads), and what they were lit by - gathered again only
+    // when that moves: a still view of a still world gathers them once. The
+    // air is where it is, not where it is seen from: a view that moves takes
+    // what was gathered with it - each cell's light found where the last
+    // view had it - and lights only a part of each cell's points anew, the
+    // rest over the next frames (kAirCarry).
     struct Air {
-        gl::RenderTarget local;
+        gl::RenderTarget local[2];  // this gathering's, and the last (each a metre of each slice's light)
+        int now = 0;                // which of them holds the last gathering
         gl::LayerArray light;
-        uint64_t of = 0;
+        uint64_t of = 0;            // what it was lit by: the lights, their maps, the air (not where it is seen from)
+        gl::Mat4 seen_vp;           // where it was last gathered from (its view)
+        gl::Vec3 seen_eye;
         uint64_t used = 0;  // the frame a view last asked for it
         float near = 0.3f, far = 60.0f;
         // How many gatherings of what it is made from now are in it, averaged,
@@ -1361,6 +1405,9 @@ private:
         int cells_x = 0, cells_y = 0;  // its cells across and up: only ever more
     };
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
+    // While its view moves: a cell's points lit over this many frames, what
+    // was gathered before kept as much as that many gatherings would.
+    static constexpr int kAirCarry = 4;
     static constexpr int kAirTile = 16;     // pixels of the view to a cell, each way (fewer in a small view: 120 cells across)
     static constexpr int kAirSlices = 64;   // slices out from the eye, each sampled once at a point jittered within it
     static constexpr std::size_t kAirs = 16;  // views' airs kept at once
@@ -1368,6 +1415,60 @@ private:
     std::vector<std::unique_ptr<Air>> air_spares_;  // airs let go, their pictures kept for the next
     std::unique_ptr<gl::Program> air_prog_, air_sum_prog_;
     Air& air_for(const Spatial3D* world);
+
+    // A world's sky as a planet's (a look's `atmosphere`): what its look says
+    // of it, and its three pictures (atmosphere_glsl) with what each was made
+    // for - made again only when that changes: the air's make-up for the
+    // first two, and the sun's height and the eye's for the sky view.
+    struct Atmosphere {
+        float weight = 0, scale = 0.001f, altitude = 0.2f, sun = 12, haze = 1, ground = 0.3f;
+    };
+    Atmosphere atmosphere_of(const Mix& look) const;
+    // And its clouds as a volume (`clouds.cover` and the rest; cloud_dome_fs):
+    // heights in metres over the ground, the wind in metres a second and the
+    // way it blows (radians), the dome's texels each way.
+    struct Clouds {
+        float cover = 0, base = 1500, top = 4000, density = 1, size = 6000, fray = 0.35f, bright = 1, wind = 8, wind_dir = 0.6f,
+              lean = 600, far = 40000;
+        int steps = 48, dome = 1024;
+    };
+    Clouds clouds_of(const Mix& look) const;
+    struct Sky {
+        gl::RenderTarget transmittance, multiple, view;
+        uint64_t air = 0, seen = 0;  // what the air, and the sky view, were made for
+        uint64_t used = 0;           // the frame a view last asked for it
+        // The clouds' dome, the one drawn last and the one before (a part of
+        // it made again each frame from the other), and what it was made for:
+        // the clouds as the look says, from where, when (world time), the sun.
+        gl::RenderTarget dome[2];
+        int dome_now = 0, part = 0;
+        uint64_t clouds = 0, dome_frame = 0;
+        gl::Vec3 dome_eye, dome_sun;
+        double dome_time = 0;
+        uint32_t spin = 0;
+        int still = 0;  // frames nothing it is made for has moved: past enough of them it rests
+        // Their shadow on the ground round the eye (cloud_shadow_fs), made
+        // with the dome each frame: its middle and half its width, metres.
+        gl::RenderTarget shadow;
+        float shadow_x = 0, shadow_z = 0, shadow_half = 0;
+        bool atmosphere = false, cloudy = false;  // what of it there is
+    };
+    std::map<const void*, std::unique_ptr<Sky>> skies_;
+    std::unique_ptr<gl::Program> sky_transmittance_prog_, sky_multiple_prog_, sky_view_prog_, cloud_dome_prog_, cloud_shadow_prog_;
+    gl::LayerArray cloud_noise_;  // the clouds' noise (cloud_noise_fs), made once
+    // The sky of `world` seen from `eye` at world time `time`, with its sun
+    // that way (`sun_dir`, towards it, and `sun_color`), made as it must be -
+    // null when its look has neither a planet's sky nor clouds.
+    const Sky* sky_for(const Spatial3D* world, const Atmosphere& a, const Clouds& clouds, const gl::Vec3& sun_dir, const gl::Vec3& sun_color,
+                       const gl::Vec3& eye, double time, const Mix& look);
+    // Its clouds' dome made again, a sixteenth of it - or all of it, when
+    // what it was made for has moved too far for the rest to stand.
+    void make_dome(Sky& s, const Atmosphere& a, const Clouds& clouds, const gl::Vec3& sun_dir, const gl::Vec3& sun_color, const gl::Vec3& eye,
+                   double time, const Mix& look);
+    // Its pictures and what the look says of it, on a scene program (the sky
+    // view on unit 14, the transmittance on 15, the clouds' dome on 3 and
+    // their shadow on the ground on 2); with none, none of it.
+    void sky_to(const gl::Program& p, const Sky* sky, const Atmosphere& a) const;
 
     // How many maps the views seen through doorways may still lay this
     // frame, between them: past it, a map stays as it was last laid (with the
@@ -1651,7 +1752,7 @@ private:
     GLWorldView& own_view_of(const Spatial3D* world);
     // A camera of a room, seen from the frame the room is placed in.
     static Camera placed_camera(const Camera& c, const Pose& at);
-    void draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h);
+    void draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h, const Rect& seen = Rect{-1, -1, 1, 1});
     void trade_scratch(GLWorldView& with);
     void make_scratch(int w, int h);
     // Where the composite writes: the screen, or a feed's picture.
@@ -1929,6 +2030,119 @@ private:
     bool timing_ = false;
     const State* attend_ = nullptr;
     mutable FrameTimes times_;  // (counted from const questions too)
+    // The card's own clock (set_card_timing): for each of the last few frames,
+    // a stamp at each point of it, asked for as it was sent - read once the
+    // card has answered the last of them, never waited for.
+    enum CardPoint {
+        kCardStart, kCardRelit, kCardFeeds, kCardViews, kCardMirrors, kCardShadowsFrom, kCardShadowsTo, kCardAir, kCardScene, kCardPost,
+        kCardPoints
+    };
+    struct CardFrame {
+        gl::GLuint stamp[kCardPoints] = {};
+        bool laid[kCardPoints] = {};
+        std::vector<gl::GLuint> doors;  // whether any of each doorway laid was seen (made as needed)
+        std::size_t doors_asked = 0;
+        uint64_t frame = 0;  // 0: free
+        CardFrame() = default;
+        CardFrame(const CardFrame&) = delete;
+        CardFrame& operator=(const CardFrame&) = delete;
+        ~CardFrame();
+    };
+    static constexpr std::size_t kCardFrames = 4;
+    std::array<CardFrame, kCardFrames> card_frames_{};
+    CardFrame* card_now_ = nullptr;  // the frame being stamped (null: none)
+    bool card_on_ = false;
+    CardTimes card_;
+    // A stamp at `at` in the frame being sent, if the card's clock is on.
+    void card_stamp(CardPoint at);
+    // Begin a frame's stamps (in the slot it was last read from), and take
+    // what the card has answered for any frame before it.
+    void card_begin();
+    void card_read();
+    // The doorways the eye's picture laid a view in this frame (draw_portal),
+    // each where it was laid; asked, once the picture is whole, whether any
+    // of each is seen (card_doors).
+    std::vector<gl::Mat4> card_doorways_;
+    void card_doors(const gl::Mat4& view_proj, bool reversed);
+
+    // Doorways the eye cannot see (Quality::skip_unseen). Before the views
+    // are drawn, what stands in the rooms the eye is in - their shells,
+    // walls and what stands in them, at the size of a hand or more - is laid
+    // as depth alone, at half the screen's size, from the eye; each doorway a
+    // view is drawn through is asked of it whether any of it is seen (a
+    // little nearer the eye and a little wider than it is: when in doubt,
+    // seen). A view whose doorway is not seen is planned and its shadow maps
+    // and air kept as ever - they are kept from frame to frame and must be
+    // what they say - but the card leaves out what it would draw of it: its
+    // scene, the views seen through it, what is made out of their samples
+    // (gate_now_, glBeginConditionalRender). Nothing is asked where a mirror
+    // is planned: a doorway hidden from the eye may be seen in one.
+    struct Asked {
+        const Spatial3D* room = nullptr;
+        Camera cam;
+        const std::vector<Key>* openings = nullptr;  // its doorways made one with the eye's room: no view
+        bool sheafed = false;                        // part of a space made one (its shell as the room draws it)
+    };
+    void ask_doorways(const std::vector<Asked>& rooms, float aspect);
+    // This frame's question for each doorway a view is drawn through, by the
+    // view's path ("/<doorway>"); asked again each frame.
+    std::unordered_map<std::string, gl::GLuint> doorway_asked_;
+    std::vector<gl::GLuint> questions_;  // made once, asked again each frame
+    gl::RenderTarget occluders_;
+    // What stands in a room that hides what is behind it - its walls, and
+    // what nothing is seen through and hangs off nothing (a thing that hangs
+    // off another moves with it, and its own stamp does not say so: left out,
+    // so in doubt a doorway is seen) - each with its shape, where it is and
+    // how big, worked out again only when its own stamp moves; the list
+    // found again only when the room's structure moves.
+    // They are sent to the card once, a run for each shape, and again only
+    // when one of them, or the room's own shell, has changed.
+    struct Occluder {
+        const Element* element = nullptr;
+        const gl::Mesh* shape = nullptr;
+        gl::Mat4 model;
+        float radius = 0.0f;
+        uint64_t stamp = ~uint64_t{0};
+        bool alive = false;
+    };
+    struct RoomOccluders {
+        uint64_t structure = ~uint64_t{0}, shell = ~uint64_t{0};
+        std::vector<Occluder> list;
+        std::vector<std::pair<const gl::Mesh*, std::pair<std::size_t, std::size_t>>> runs;  // each shape's: first, how many
+        std::unique_ptr<gl::InstanceBuffer> buffer;
+        gl::GLuint stream = 0;
+    };
+    std::unordered_map<const Spatial3D*, RoomOccluders> occluders_of_;
+    // A room's occluders, sent to the card as they are now (`shell`: its floor,
+    // walls and ceiling as the room draws them).
+    RoomOccluders& occluders_in(const Spatial3D& room, bool shell);
+    gl::GLuint gate_now_ = 0;  // the question what is being drawn now is left out by, if not seen (0: none)
+    gl::GLuint gate_of(const std::string& path) const;
+
+    // Which of the frame's lamps can light each part of the view being drawn
+    // (Quality::lamp_cells; lights_glsl's lamp_cell): the view cut into
+    // cells, about kLampCell pixels across and up, and kLampShells shells out
+    // from the eye, each holding two words of bits, a bit a lamp. A lamp whose
+    // light ends (`range`) is set only in the cells its range reaches; every
+    // other lamp in all of them. Made again only when the view or its lamps
+    // move; none at all where fewer than kLampCellsFrom lamps say a range
+    // (what so few could save is less than the cells cost).
+    struct LampCells {
+        gl::GLuint tex = 0;               // this view's: one of `ring`, in turn
+        std::vector<gl::GLuint> ring;     // (never one the card may still be reading made again)
+        std::size_t next = 0;
+        int cx = 0, cy = 0;
+        float near = 0.1f, far = 100.0f;
+        uint64_t key = 0;
+        bool on = false;  // the view being drawn has cells
+        std::vector<uint32_t> bits;
+    };
+    LampCells lamp_cells_;
+    static constexpr int kLampCell = 64, kLampShells = 16, kLampCellsFrom = 4;
+    static constexpr std::size_t kLampCellRing = 32;
+    void lamp_cells(const std::vector<Light>& lights, const gl::Mat4& view_proj, const gl::Vec3& eye, float zfar, bool images);
+    // The cells to a program that lights (unit 11).
+    void lamp_cells_to(const gl::Program& p) const;
     // Per room: which of its things move, and so may stand half through a
     // doorway (draw_straddlers). Made again only when what says so changed -
     // the room's structure, or what a thing says of it (`says`, looked at

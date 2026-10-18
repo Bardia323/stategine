@@ -104,6 +104,58 @@ int main() {
         if (lit_air[i] > 40 && lit_air[i] > 2 * lit_air[i + 1] && lit_air[i] > 2 * lit_air[i + 2]) ++reds;
     check(reds > 40, "a mirror seen through a doorway shows, through the doorway behind it, the room the eye is in (" + std::to_string(reds) +
                          " pixels of the red wall)");
+
+    // A window in its own look draws only the part of the screen it is seen
+    // in: what is seen through it is what a view through it shows - near,
+    // far (a small window), and as the eye moves - and none of it is left
+    // undrawn. (Its own picture, developed in its own look and taken back
+    // through the tone curve, differs from a view's by a few levels.)
+    hazy.setting(sg::passes::scene, "scatter", 0.0);
+    const auto apart = [](const std::vector<unsigned char>& x, const std::vector<unsigned char>& y) {
+        double d = 0.0;
+        for (std::size_t i = 0; i < x.size(); ++i) d += std::abs(static_cast<int>(x[i]) - static_cast<int>(y[i]));
+        return d / static_cast<double>(x.size() / 3);
+    };
+    const auto black = [](const std::vector<unsigned char>& x) {
+        int n = 0;
+        for (std::size_t i = 0; i < x.size(); i += 3) n += x[i] + x[i + 1] + x[i + 2] == 0;
+        return n;
+    };
+    for (const auto& [z, x] : std::vector<std::pair<double, double>>{{3.7, 7.0}, {5.6, 7.0}, {5.6, 6.2}}) {
+        eye.params.set(sg::keys::z, z).set(sg::keys::x, x);
+        a.element("pa").params.set("own_look", 0.0);
+        const auto viewed = picture();
+        a.element("pa").params.set("own_look", 1.0);
+        const auto own = picture();
+        a.element("pa").params.set("own_look", 0.0);
+        const double d = apart(viewed, own);
+        const int holes = black(own) - black(viewed);
+        check(d < 6.0 && holes <= 0, "a window in its own look, the eye at z " + std::to_string(z) + " x " + std::to_string(x) +
+                                           ", shows what a view through it shows (" + std::to_string(d) + " levels a pixel apart, " +
+                                           std::to_string(holes) + " pixels more of nothing)");
+    }
+
+    // A doorway the eye cannot see (Quality::skip_unseen): a screen stood
+    // between the eye and it. Its view is asked of what stands before it and
+    // left out by the card - the picture is the picture all the same, and
+    // with the screen gone the view is drawn as ever.
+    eye.params.set(sg::keys::z, 3.7).set(sg::keys::x, 7.0);
+    sg::render::GLQuality asking = view.quality(), drawing = view.quality();
+    asking.skip_unseen = true, drawing.skip_unseen = false;
+    sg::Element& blocker = a.fixture("blocker", 7.0, 0.0, 2.0);
+    blocker.params.set(sg::keys::sx, 6.0).set(sg::keys::sy, 3.0).set(sg::keys::sz, 0.3);
+    for (const bool hidden : {true, false}) {
+        blocker.alive = hidden;
+        view.set_quality(drawing);
+        const auto drawn = picture();
+        view.set_quality(asking);
+        const auto asked_picture = picture();
+        const int asked = view.times().views_asked;
+        const double d = apart(drawn, asked_picture);
+        check(asked > 0 && d < 0.05, std::string(hidden ? "a doorway hidden" : "a doorway in sight") + ": its view asked (" + std::to_string(asked) +
+                                         "), the picture as it is with every view drawn (" + std::to_string(d) + " levels a pixel apart)");
+    }
+    blocker.alive = false;
     for (const auto& why : g.validate()) std::printf("  %s\n", why.c_str());
     check(g.validate().empty(), "and the rooms are one graph, glued by their seams");
     return ok ? 0 : 1;

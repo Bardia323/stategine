@@ -273,10 +273,10 @@ const char* GLWorldView::light_uniform(std::size_t i, int field) {
                                        "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
                                        "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
                                        "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame", "uLightRange",
-                                       "uLightLayer", "uLightCube"};
-        std::array<std::array<std::string, 19>, kMaxLights> n;
+                                       "uLightLayer", "uLightCube", "uLightIn"};
+        std::array<std::array<std::string, 20>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 19; ++f)
+            for (int f = 0; f < 20; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;

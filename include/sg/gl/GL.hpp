@@ -31,6 +31,7 @@ constexpr GLenum GL_LEQUAL = 0x0203;
 constexpr GLenum GL_EQUAL = 0x0202;
 constexpr GLenum GL_LESS = 0x0201;
 constexpr GLenum GL_GREATER = 0x0204;
+constexpr GLenum GL_GEQUAL = 0x0206;
 constexpr GLenum GL_LOWER_LEFT = 0x8CA1;
 constexpr GLenum GL_NEGATIVE_ONE_TO_ONE = 0x935E;
 constexpr GLenum GL_ZERO_TO_ONE = 0x935F;
@@ -115,6 +116,21 @@ constexpr GLenum GL_FRAGMENT_SHADER = 0x8B30;
 constexpr GLenum GL_VERTEX_SHADER = 0x8B31;
 constexpr GLenum GL_COMPILE_STATUS = 0x8B81;
 constexpr GLenum GL_LINK_STATUS = 0x8B82;
+// Questions put to the card (core since 3.3): when it got to a point of the
+// frame, and whether anything drawn passed the depth test.
+constexpr GLenum GL_TIMESTAMP = 0x8E28;
+constexpr GLenum GL_QUERY_RESULT = 0x8866;
+constexpr GLenum GL_QUERY_RESULT_AVAILABLE = 0x8867;
+constexpr GLenum GL_ANY_SAMPLES_PASSED = 0x8C2F;
+constexpr GLenum GL_QUERY_WAIT = 0x8E13;
+// A buffer read by a shader as a picture one texel high (core since 3.1).
+constexpr GLenum GL_TEXTURE_BUFFER = 0x8C2A;
+constexpr GLenum GL_R32UI = 0x8236;
+constexpr GLenum GL_STREAM_DRAW = 0x88E0;
+// Pictures of whole numbers, read by a shader as they are (words of bits).
+constexpr GLenum GL_RG32UI = 0x823C;
+constexpr GLenum GL_RG_INTEGER = 0x8228;
+constexpr GLenum GL_UNSIGNED_INT = 0x1405;
 
 // --- entry points -------------------------------------------------------------
 #define SG_GL_FUNCS(X)                                                                        \
@@ -210,6 +226,17 @@ constexpr GLenum GL_LINK_STATUS = 0x8B82;
     X(void, GetUniformfv, (GLuint, GLint, GLfloat*))                                          \
     X(void, GetUniformiv, (GLuint, GLint, GLint*))                                            \
     X(void, Scissor, (GLint, GLint, GLsizei, GLsizei))                                        \
+    X(void, BufferSubData, (GLenum, GLintptr, GLsizeiptr, const void*))                       \
+    X(void, TexBuffer, (GLenum, GLenum, GLuint))                                              \
+    X(void, GenQueries, (GLsizei, GLuint*))                                                   \
+    X(void, DeleteQueries, (GLsizei, const GLuint*))                                          \
+    X(void, BeginQuery, (GLenum, GLuint))                                                     \
+    X(void, EndQuery, (GLenum))                                                               \
+    X(void, QueryCounter, (GLuint, GLenum))                                                   \
+    X(void, GetQueryObjectiv, (GLuint, GLenum, GLint*))                                       \
+    X(void, GetQueryObjectui64v, (GLuint, GLenum, std::uint64_t*))                            \
+    X(void, BeginConditionalRender, (GLuint, GLenum))                                         \
+    X(void, EndConditionalRender, ())                                                         \
     X(void, Finish, ())
 
 #define SG_GL_DECLARE(ret, name, args) inline ret(*gl##name) args = nullptr;

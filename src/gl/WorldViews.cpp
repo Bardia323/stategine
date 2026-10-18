@@ -69,7 +69,7 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
         // seen: what is seen of it from the corridor is what is seen once
         // in the room, and stepping in changes nothing in it.
         if (e.params.num(Key{"own_look"}, 0.0) > 0.5 && !root_ && !in_mirror) {
-            if (!share_own(it->second, there, target_w_, target_h_)) draw_own(world, e, it->second, there, target_w_, target_h_);
+            if (!share_own(it->second, there, target_w_, target_h_, r)) draw_own(world, e, it->second, there, target_w_, target_h_, r);
             it->second.own_drawn = true;
             own_shown_now_.push_back(it->second.world);
             ++times_.portal_views;
@@ -185,8 +185,12 @@ void GLWorldView::draw_views(const Spatial3D& world, float aspect) {
         const Through way = back && !j.wp->back.empty() ? through(*j.portal, *j.wp->world, *back, there) : Through{};
         cull_ = way.sides;
         cull_.push_back(spatial::HalfSpace{{cut.normal.x, cut.normal.y, cut.normal.z}, cut.offset});
+        // (Seen only through the doorway it is first seen through: left out
+        // by the card where that one is not seen - ask_doorways.)
+        gate_now_ = gate_of(j.key.substr(0, j.key.find('/', 1)));
         draw_world(seen(*j.wp->world), there, aspect, n.target, j.depth + 1, way.znear,
                    back ? back->id.key() : Key{}, {cut});
+        gate_now_ = 0;
         cull_.clear();
         host_air_.on = false;
         sub_ = Rect{-1, -1, 1, 1};
@@ -387,6 +391,9 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         const int glass = depth == 0 ? mirror_of(e) : 0;
         if (glass) scene_->set("uGlassMirror", static_cast<float>(glass));
         quad_.draw();
+        // (The card's clock asks, once the eye's picture is whole, whether
+        // any of this doorway is seen: card_doors.)
+        if (depth == 0 && !mirroring_ && card_now_) card_doorways_.push_back(last_model_);
         if (glass) scene_->set("uGlassMirror", 0.0f);
         if (in_mirror) scene_->set("uSeenFrom", 0.0f);
         if (undim) scene_->set("uUndim", 0.0f);

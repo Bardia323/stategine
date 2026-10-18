@@ -62,6 +62,31 @@ uniform float uLightRange[MAX_LIGHTS];    // how far a lamp's light goes, ending
 uniform float uLightLayer[MAX_LIGHTS];    // the first layer of its shadow maps, or < 0 for none
 uniform float uLightCube[MAX_LIGHTS];     // 1: a lamp with no cone, its maps six, a face of a cube round it each
 
+// Which lamps reach which part of the view (GLWorldView::lamp_cells): the
+// view cut into cells across and up, and shells out from the eye, each
+// saying - two words of bits, a bit a lamp of the frame's - which of them
+// can light anything in it. A lamp whose light ends (its `range`) is left out
+// where its range does not reach: it gives nothing there.
+uniform int   uLightIn[MAX_LIGHTS];       // lamp i's place among the frame's lamps (< 0: everywhere)
+uniform usampler2D uLampCells;
+uniform vec4  uLampCellGrid;              // cells across, up, shells; 1 when there are cells (0: every lamp everywhere)
+uniform vec2  uLampShells;                // where the shells begin and end, from the eye
+// The cell a point of the view (`uv`, 0..1 across it) at distance `d` is in.
+uvec2 lamp_cell(vec2 uv, float d) {
+    if (uLampCellGrid.w < 0.5) return uvec2(0xFFFFFFFFu);
+    ivec2 cells = ivec2(uLampCellGrid.xy);
+    ivec2 at = clamp(ivec2(floor(uv * uLampCellGrid.xy)), ivec2(0), cells - 1);
+    int shells = int(uLampCellGrid.z);
+    int s = d <= uLampShells.x ? 0 : clamp(int(floor(log(d / uLampShells.x) / log(uLampShells.y / uLampShells.x) * float(shells))), 0, shells - 1);
+    return texelFetch(uLampCells, ivec2(at.x, at.y + s * cells.y), 0).xy;
+}
+bool lamp_in(uvec2 cell, int i) {
+    int k = uLightIn[i];
+    if (k < 0) return true;
+    uint word = k < 32 ? cell.x : cell.y;
+    return ((word >> uint(k & 31)) & 1u) != 0u;
+}
+
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 // The first `uShadowCount` lights each have depth maps, layers of one array
 // (from `uLightLayer`: one, or six for a lamp with no cone): where each sees
@@ -113,12 +138,25 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
     return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
 }
 
+// How much of a sun's light (from `l`) gets through the clouds over `p` (a
+// look's `clouds.cover`): read off the map of their shadow on the ground
+// round the eye (cloud_shadow_fs) where the way to the sun from `p` meets
+// it. 1 where there are none.
+uniform sampler2D uCloudShadowMap;
+uniform vec4 uCloudShadowAt;  // the map's middle (x, z), half its width (metres); w 1 where there is one
+float cloud_shadow(vec3 p, vec3 l) {
+    if (uCloudShadowAt.w <= 0.0 || l.y <= 0.02) return 1.0;
+    vec2 g = p.xz - l.xz * (p.y / l.y);
+    return texture(uCloudShadowMap, (g - uCloudShadowAt.xy) / (2.0 * uCloudShadowAt.z) + 0.5).r;
+}
+
 // How much of light `i` reaches `p` - its power, as it falls off with the
 // distance, its cone and its doorway - and which way it is (`l`, towards it).
 float light_reach(int i, vec3 p, out vec3 l) {
     if (uLightSun[i] > 0.5) {
         l = normalize(-uLightDir[i]);
-        return uLightPower[i] * through_gate(i, p, l, true);
+        // (Under the clouds, as much as gets through them.)
+        return uLightPower[i] * through_gate(i, p, l, true) * cloud_shadow(p, l);
     }
     vec3 toLight = uLightPos[i] - p;
     float dist = length(toLight);
@@ -186,34 +224,33 @@ const char* air_fs() {
     static const std::string source = std::string(R"(#version 330 core
 out vec4 FragColor;
 )") + lights_glsl() + R"(
-// Every slice of a view's air at once, each on its own: what its lamps light
-// of the air between that slice and the one before, scattered towards the
-// eye and dimmed by the air before it. (air_sum_fs adds them up.) A cell for
-// each sixteen pixels of the view; the slices go out from the eye in steps
-// that widen as they go, as detail does. They are laid side by side, eight
-// to a row: a pixel of this picture is a cell of one slice.
+// Every slice of a view's air at once, each on its own: the light its lamps
+// scatter towards the eye from a metre of the air between that slice and the
+// one before. (air_sum_fs takes each slice's depth and the air before it, and
+// adds them up.) A cell for each sixteen pixels of the view; the slices go
+// out from the eye in steps that widen as they go, as detail does. They are
+// laid side by side, eight to a row: a pixel of this picture is a cell of one
+// slice.
 uniform vec2  uAirCells;        // cells across the view, and up it
 uniform vec4  uAir;             // the first slice's distance, the last's, how many slices
 uniform mat4  uAirUnproject;    // the view's clip space back to the world
 uniform vec3  uViewPos;
-uniform float uFogDensity;      // the air, as the scene fogs it: thick
-uniform float uFogStart;        // and clear near the eye
-// How much of the way to `d` is in the air that begins `start` from the
-// eye: eased in over half `start` either side of where it begins, so the
-// place it begins draws no line (on a ceiling, a ring round the eye).
-float air_past(float d, float start) {
-    float w = 0.5 * start;
-    float x = d - start;
-    if (w <= 0.0) return max(x, 0.0);
-    return x >= w ? x : (x <= -w ? 0.0 : (x + w) * (x + w) / (4.0 * w));
-}
-uniform float uScatter;         // how much of the light through it a metre of it scatters
 uniform float uScatterAhead;    // how much of that goes on ahead (-1..1, 0 every way alike)
 uniform vec4  uAirClip;         // only the air on this plane's side is this view's (a doorway's far side)
 uniform float uAirSpin;         // which gathering this is: each samples its cells at other points
-uniform int   uAirSteps;        // points of each cell lit, spread through its depth (a thin beam is caught)
+uniform int   uAirSteps;        // points of each cell, spread through its depth (a thin beam is caught)
+uniform vec2  uAirPoints;       // which of them this gathering lights: from the first, every so many
+// What was gathered before (a metre of each slice's light, laid as this is),
+// kept as much as `uAirKeep` says; and where it was gathered from - unless
+// it was from here (`uAirMoved` 0), when each cell is where it was.
+uniform sampler2D uAirLast;
+uniform float uAirKeep;
+uniform float uAirMoved;
+uniform mat4  uAirLastVP;
+uniform vec3  uAirLastEye;
+uniform float uAirAt[64];       // where each slice ends, from the eye (air_slices)
 
-float air_at(float i) { return uAir.x * pow(uAir.y / uAir.x, i / (uAir.z - 1.0)); }
+float air_at(float i) { return uAirAt[int(i)]; }
 // Schlick's phase function: how much of light scattered goes off at an
 // angle whose cosine is `c` from the way it was going.
 float schlick(float c, float g) {
@@ -235,23 +272,24 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 // and down, not at its middle: a lamp's shaft crossing the cells is caught by
 // some and missed by their neighbours, a fine grain, never caught or missed by
 // a whole slice at once (bands along the walls, at one distance from the eye).
-vec3 slice_light(vec3 dir, float k, float down) {
-    // The air thins towards the eye, out to where the fog starts: clear close
-    // by, thickening smoothly - never a wall at that distance, where a lamp's
-    // glow would stop short round whoever is looking.
+vec3 slice_light(vec3 dir, vec2 uv, float k, float down) {
     float a = k < 0.5 ? 0.0 : air_at(k - 1.0), b = air_at(k);
     if (b <= a) return vec3(0.0);
     float ahead = clamp(uScatterAhead, -0.9, 0.9);
     vec3 lit = vec3(0.0);
-    int steps = max(uAirSteps, 1);
-    for (int j = 0; j < 16; ++j) {
+    int steps = max(uAirSteps, 1), every = max(int(uAirPoints.y), 1), lit_points = 0;
+    for (int j = int(uAirPoints.x); j < 16; j += every) {
     if (j >= steps) break;
-    vec3 p = uViewPos + dir * mix(a, b, (float(j) + down) / float(steps));
+    ++lit_points;
+    float at = mix(a, b, (float(j) + down) / float(steps));
+    vec3 p = uViewPos + dir * at;
     if (dot(uAirClip.xyz, p) + uAirClip.w < 0.0) continue;
+    uvec2 cell = lamp_cell(uv, at);
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
-        // Light standing in for what bounces about lights no air of its own.
-        if (uLightIndirect[i] > 0.5 || uLightScatter[i] <= 0.0) continue;
+        // Light standing in for what bounces about lights no air of its own;
+        // and a lamp whose light ends before this part of the view, none.
+        if (uLightIndirect[i] > 0.5 || uLightScatter[i] <= 0.0 || !lamp_in(cell, i)) continue;
         vec3 l;
         float reach = light_reach(i, p, l);
         if (reach <= 1e-5) continue;
@@ -262,13 +300,29 @@ vec3 slice_light(vec3 dir, float k, float down) {
         lit += uLightColor[i] * (reach * uLightScatter[i] * phase);
     }
     }
-    lit /= float(steps);
-    // (Pi: the lights carry it folded in, as the scene's diffuse does.)
-    float m = 0.5 * (a + b);
-    float t = exp(-uFogDensity * air_past(m, uFogStart));
-    float near = uFogStart > 0.0 ? smoothstep(0.0, uFogStart, m) : 1.0;
-    vec3 s = lit * (3.14159265 * uScatter * (b - a) * t * near);
-    return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
+    lit /= float(max(lit_points, 1));
+    return any(isnan(lit)) || any(isinf(lit)) ? vec3(0.0) : lit;
+}
+
+// What was gathered before of the air at `p`, from where it was gathered:
+// the slice holding that distance (and the next, by how far between them it
+// lies) of the cell it was seen in. False where the last view did not see it.
+bool air_before(vec3 p, ivec2 cells, out vec3 kept) {
+    vec4 c = uAirLastVP * vec4(p, 1.0);
+    if (c.w <= 1e-4) return false;
+    vec2 uv = c.xy / c.w * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) return false;
+    float d = length(p - uAirLastEye);
+    // (A slice ends at air_at(k), so the middle of slice k is at k - 0.5.)
+    float s = d <= uAir.x ? 0.0 : log(d / uAir.x) / log(uAir.y / uAir.x) * (uAir.z - 1.0) + 0.5;
+    if (s > uAir.z) return false;
+    s = clamp(s, 0.0, uAir.z - 1.0);
+    int k0 = int(floor(s)), k1 = min(k0 + 1, int(uAir.z) - 1);
+    ivec2 at = clamp(ivec2(uv * vec2(cells)), ivec2(0), cells - 1);
+    vec3 a = texelFetch(uAirLast, at + ivec2(k0 % 8, k0 / 8) * cells, 0).rgb;
+    vec3 b = texelFetch(uAirLast, at + ivec2(k1 % 8, k1 / 8) * cells, 0).rgb;
+    kept = mix(a, b, s - float(k0));
+    return true;
 }
 
 void main() {
@@ -283,7 +337,22 @@ void main() {
     vec2 uv = (cell + 0.5 + across) / uAirCells;
     vec4 far = uAirUnproject * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
     vec3 dir = normalize(far.xyz / far.w - uViewPos);
-    FragColor = vec4(slice_light(dir, k, fract(ign(seed + vec2(41.0, 7.0)) + step3.z)), 1.0);
+    vec3 now = slice_light(dir, uv, k, fract(ign(seed + vec2(41.0, 7.0)) + step3.z));
+    // Kept: what was gathered of this cell before - where it was, seen from
+    // here; else where its middle was seen from the last view.
+    vec3 kept = vec3(0.0);
+    float keep = 0.0;
+    if (uAirKeep > 0.0) {
+        if (uAirMoved < 0.5) {
+            kept = texelFetch(uAirLast, px, 0).rgb, keep = uAirKeep;
+        } else {
+            vec2 mid = (cell + 0.5) / uAirCells;
+            vec4 m = uAirUnproject * vec4(mid * 2.0 - 1.0, 1.0, 1.0);
+            float a = k < 0.5 ? 0.0 : air_at(k - 1.0), b = air_at(k);
+            if (air_before(uViewPos + normalize(m.xyz / m.w - uViewPos) * (0.5 * (a + b)), cells, kept)) keep = uAirKeep;
+        }
+    }
+    FragColor = vec4(mix(now, kept, keep), 1.0);
 }
 )";
     return source.c_str();
@@ -426,22 +495,518 @@ const char* air_sum_fs() {
     return R"(#version 330 core
 layout(location = 0) out vec4 Slice[8];
 // Eight slices of a view's air, each what the slices from the eye to it
-// gathered (air_fs, laid eight to a row in uAirLocal): the light the air
+// gathered (air_fs, a metre of each laid eight to a row in uAirLocal) - each
+// as deep as it is, and dimmed by the air before it: the light the air
 // scatters towards the eye up to that distance.
 uniform sampler2D uAirLocal;
 uniform vec2 uAirCells;  // cells across the view, and up it
 uniform int uAirGroup;   // the first of the eight
+// What a metre of each slice gives of itself: how deep it is, dimmed by the
+// air before it, as much as the air scatters (worked out once a gathering: air_slices).
+uniform float uAirWeight[64];
+vec3 slice_of(ivec2 at, ivec2 cells, int k) {
+    vec3 s = texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb * uAirWeight[k];
+    return any(isnan(s)) || any(isinf(s)) ? vec3(0.0) : s;
+}
 void main() {
     ivec2 cells = ivec2(uAirCells), at = ivec2(gl_FragCoord.xy);
     vec3 sum = vec3(0.0);
-    for (int k = 0; k < uAirGroup; ++k) sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
+    for (int k = 0; k < uAirGroup; ++k) sum += slice_of(at, cells, k);
     for (int j = 0; j < 8; ++j) {
-        int k = uAirGroup + j;
-        sum += texelFetch(uAirLocal, at + ivec2(k % 8, k / 8) * cells, 0).rgb;
+        sum += slice_of(at, cells, uAirGroup + j);
         Slice[j] = vec4(sum, 1.0);
     }
 }
 )";
+}
+
+// --- a planet's air (GLWorldView::sky_for) ------------------------------------------
+const std::string& atmosphere_glsl() {
+    static const std::string source = R"(
+// A planet's air, in kilometres: its ground, and the top of its air.
+const float kGroundR = 6360.0, kTopR = 6460.0;
+const float kPi = 3.14159265;
+// What a kilometre of it takes out of the light at the ground, each colour:
+// its molecules (Rayleigh: all they take scattered), its haze (Mie: a little
+// of what it takes kept) and its ozone (kept, none scattered).
+const vec3  kRayleigh = vec3(5.802, 13.558, 33.1) * 1e-3;
+const float kMieScatter = 3.996e-3, kMieTakes = 4.40e-3;
+const vec3  kOzone = vec3(0.650, 1.881, 0.085) * 1e-3;
+uniform float uAtmoHaze;    // the haze, as many times the usual
+uniform float uAtmoGround;  // how much of the light on it the ground gives back
+uniform sampler2D uAtmoTransmittance;
+uniform sampler2D uAtmoMultiple;
+
+// The air `h` kilometres up: what it scatters (molecules, haze) and what it
+// takes in all - each thinning as it goes up, the ozone thickest at 25 km.
+struct AirHere { vec3 rayleigh; float mie; vec3 takes; };
+AirHere air_here(float h) {
+    float r = exp(-max(h, 0.0) / 8.0), m = exp(-max(h, 0.0) / 1.2), o = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
+    AirHere a;
+    a.rayleigh = kRayleigh * r;
+    a.mie = kMieScatter * m * uAtmoHaze;
+    a.takes = a.rayleigh + vec3(kMieTakes * m * uAtmoHaze) + kOzone * o;
+    return a;
+}
+
+// How far a ray from `r` from the planet's middle, `mu` the cosine of its
+// angle from straight up, goes to the sphere of radius `big` round it (from
+// inside: its far side); whether it meets the ground, and how far it goes to it.
+float to_sphere(float r, float mu, float big) { return max(0.0, -r * mu + sqrt(max(r * r * (mu * mu - 1.0) + big * big, 0.0))); }
+bool meets_ground(float r, float mu) { return mu < 0.0 && r * r * (mu * mu - 1.0) + kGroundR * kGroundR >= 0.0; }
+float to_ground(float r, float mu) { return max(0.0, -r * mu - sqrt(max(r * r * (mu * mu - 1.0) + kGroundR * kGroundR, 0.0))); }
+
+// A picture's pixels from its first to its last, as 0 to 1 (each end a
+// pixel's middle, so what is at an end is read exactly there), and back.
+vec2 texel_to_unit(vec2 at, vec2 size) { return (at - 0.5) / (size - 1.0); }
+vec2 unit_to_texel(vec2 u, vec2 size) { return (u * (size - 1.0) + 0.5) / size; }
+
+// Where in the transmittance picture the way from (r, mu) to the top of the
+// air is (Bruneton's: across, how far it goes, of the least and most a way
+// from that height could; up, how high), and back.
+vec2 transmittance_uv(float r, float mu) {
+    float H = sqrt(kTopR * kTopR - kGroundR * kGroundR), rho = sqrt(max(r * r - kGroundR * kGroundR, 0.0));
+    float d = to_sphere(r, mu, kTopR), dmin = kTopR - r, dmax = rho + H;
+    return vec2(clamp((d - dmin) / max(dmax - dmin, 1e-4), 0.0, 1.0), clamp(rho / H, 0.0, 1.0));
+}
+void transmittance_at(vec2 uv, out float r, out float mu) {
+    float H = sqrt(kTopR * kTopR - kGroundR * kGroundR), rho = H * uv.y;
+    r = sqrt(rho * rho + kGroundR * kGroundR);
+    float dmin = kTopR - r, dmax = rho + H, d = dmin + uv.x * (dmax - dmin);
+    mu = d <= 0.0 ? 1.0 : clamp((H * H - rho * rho - d * d) / (2.0 * r * d), -1.0, 1.0);
+}
+vec3 to_top(float r, float mu) {
+    return texture(uAtmoTransmittance, unit_to_texel(transmittance_uv(r, mu), vec2(textureSize(uAtmoTransmittance, 0)))).rgb;
+}
+// What gets through of the sun's light to (r) from its way (mu): none where
+// the ground is in the way.
+vec3 light_through(float r, float mu) { return meets_ground(r, mu) ? vec3(0.0) : to_top(r, mu); }
+// What gets through along the whole of the way from (r, mu) out: to the top
+// of the air, or to the ground (the way back up from it, less the eye's).
+vec3 whole_way(float r, float mu) {
+    if (!meets_ground(r, mu)) return to_top(r, mu);
+    float d = to_ground(r, mu), mu_d = (r * mu + d) / kGroundR;
+    return min(to_top(kGroundR, -mu_d) / max(to_top(r, -mu), vec3(1e-6)), vec3(1.0));
+}
+
+// How much of the light scattered goes each way, by the cosine of its turn:
+// by molecules (Rayleigh), and by haze, mostly on ahead (Cornette-Shanks, g 0.8).
+float rayleigh_phase(float c) { return 3.0 / (16.0 * kPi) * (1.0 + c * c); }
+float mie_phase(float c) {
+    const float g = 0.8;
+    float k = 3.0 / (8.0 * kPi) * (1.0 - g * g) / (2.0 + g * g);
+    return k * (1.0 + c * c) / pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5);
+}
+
+// The light scattered twice and more at (r) for the sun at (mu_s), a sun's
+// worth of it (the multiple scattering picture: across the sun's height, up
+// the point's).
+vec3 multiple_at(float r, float mu_s) {
+    vec2 u = vec2(mu_s * 0.5 + 0.5, clamp((r - kGroundR) / (kTopR - kGroundR), 0.0, 1.0));
+    return texture(uAtmoMultiple, unit_to_texel(u, vec2(textureSize(uAtmoMultiple, 0)))).rgb;
+}
+
+// The sky view picture: up it, the angle from straight up - its lower half
+// above the horizon, its upper half below it, each finest at the horizon;
+// across, the turn from the sun's way round, finest near the sun. Seen from
+// `r` from the planet's middle.
+float sky_view_zenith(float v, float r) {
+    float beta = acos(clamp(sqrt(max(r * r - kGroundR * kGroundR, 0.0)) / r, -1.0, 1.0)), horizon = kPi - beta;
+    if (v < 0.5) {
+        float c = 1.0 - 2.0 * v;
+        return horizon * (1.0 - c * c);
+    }
+    float c = 2.0 * v - 1.0;
+    return horizon + beta * c * c;
+}
+vec2 sky_view_uv(vec3 dir, vec3 sun, float r) {
+    float beta = acos(clamp(sqrt(max(r * r - kGroundR * kGroundR, 0.0)) / r, -1.0, 1.0)), horizon = kPi - beta;
+    float z = acos(clamp(dir.y, -1.0, 1.0));
+    float v = z < horizon ? 0.5 * (1.0 - sqrt(max(1.0 - z / horizon, 0.0))) : 0.5 + 0.5 * sqrt(max((z - horizon) / max(beta, 1e-4), 0.0));
+    float la = length(dir.xz), lb = length(sun.xz);
+    float turn = la < 1e-5 || lb < 1e-5 ? 0.0 : acos(clamp(dot(dir.xz, sun.xz) / (la * lb), -1.0, 1.0));
+    return vec2(sqrt(turn / kPi), v);
+}
+)";
+    return source;
+}
+
+const char* atmosphere_transmittance_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + atmosphere_glsl() + R"(
+uniform vec2 uAtmoSize;
+// How much of the light gets through from each height, each way, to the
+// top of the air: the air it passes, added up along the way (40 steps).
+void main() {
+    float r, mu;
+    transmittance_at(texel_to_unit(gl_FragCoord.xy, uAtmoSize), r, mu);
+    float len = to_sphere(r, mu, kTopR), dt = len / 40.0;
+    vec3 depth = vec3(0.0);
+    for (int i = 0; i < 40; ++i) {
+        float t = (float(i) + 0.5) * dt;
+        depth += air_here(sqrt(r * r + t * t + 2.0 * r * mu * t) - kGroundR).takes * dt;
+    }
+    FragColor = vec4(exp(-depth), 1.0);
+}
+)";
+    return source.c_str();
+}
+
+const char* atmosphere_multiple_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + atmosphere_glsl() + R"(
+uniform vec2 uAtmoSize;
+// The light scattered twice and more at a height for a height of the sun
+// (after Hillaire, 2020): along 64 ways out from the point, the sun's light
+// scattered once towards it (l), and the share of what reaches it that the
+// air on the way scatters at all (f) - each averaged over the ways; and,
+// taking every further order of scattering as that share of the one
+// before, all of them at once: l / (1 - f). The ground gives back its share.
+void main() {
+    vec2 u = texel_to_unit(gl_FragCoord.xy, uAtmoSize);
+    float mu_s = u.x * 2.0 - 1.0, r = mix(kGroundR + 0.01, kTopR - 0.01, u.y);
+    vec3 sun = vec3(sqrt(max(1.0 - mu_s * mu_s, 0.0)), mu_s, 0.0);
+    vec3 l = vec3(0.0), f = vec3(0.0);
+    const int kWays = 8, kSteps = 20;
+    for (int i = 0; i < kWays; ++i)
+        for (int j = 0; j < kWays; ++j) {
+            // (Spread evenly over the sphere: equal bands of height, equal turns.)
+            float cy = 1.0 - 2.0 * (float(i) + 0.5) / float(kWays), ph = 2.0 * kPi * (float(j) + 0.5) / float(kWays);
+            float sy = sqrt(max(1.0 - cy * cy, 0.0));
+            vec3 dir = vec3(sy * cos(ph), cy, sy * sin(ph));
+            bool ground = meets_ground(r, cy);
+            float len = ground ? to_ground(r, cy) : to_sphere(r, cy, kTopR), dt = len / float(kSteps);
+            vec3 through = vec3(1.0);
+            for (int k = 0; k < kSteps; ++k) {
+                vec3 p = vec3(0.0, r, 0.0) + dir * ((float(k) + 0.5) * dt);
+                float rp = length(p);
+                AirHere a = air_here(rp - kGroundR);
+                vec3 scatters = a.rayleigh + vec3(a.mie), takes = max(a.takes, vec3(1e-7)), step_through = exp(-takes * dt);
+                vec3 lit = scatters * light_through(rp, dot(p / rp, sun)) / (4.0 * kPi);
+                l += through * (lit - lit * step_through) / takes;
+                f += through * (scatters - scatters * step_through) / takes;
+                through *= step_through;
+            }
+            if (ground) {
+                vec3 up = normalize(vec3(0.0, r, 0.0) + dir * len);
+                float lit = max(dot(up, sun), 0.0);
+                l += through * light_through(kGroundR, dot(up, sun)) * lit * uAtmoGround / kPi;
+            }
+        }
+    l /= float(kWays * kWays), f /= float(kWays * kWays);
+    FragColor = vec4(l / max(vec3(1.0) - f, vec3(1e-3)), 1.0);
+}
+)";
+    return source.c_str();
+}
+
+const char* atmosphere_sky_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + atmosphere_glsl() + R"(
+uniform vec2 uAtmoSize;
+uniform float uAtmoEye;     // the eye's distance from the planet's middle, km
+uniform float uAtmoSunUp;   // the sine of the sun's height over the horizon
+// The sky seen from the eye every way, a sun's worth of light: along each
+// way out to the top of the air or the ground (30 steps, closer near the
+// eye), the sun's light that gets to each point scattered towards the eye
+// once - by molecules and by haze, each its own way - and the light
+// scattered there more than once (multiple_at), as much as gets to the eye.
+void main() {
+    vec2 u = texel_to_unit(gl_FragCoord.xy, uAtmoSize);
+    float r = uAtmoEye, zenith = sky_view_zenith(u.y, r), turn = kPi * u.x * u.x;
+    vec3 dir = vec3(sin(zenith) * cos(turn), cos(zenith), sin(zenith) * sin(turn));
+    vec3 sun = vec3(sqrt(max(1.0 - uAtmoSunUp * uAtmoSunUp, 0.0)), uAtmoSunUp, 0.0);
+    float len = meets_ground(r, dir.y) ? to_ground(r, dir.y) : to_sphere(r, dir.y, kTopR);
+    float c = dot(dir, sun), pr = rayleigh_phase(c), pm = mie_phase(c);
+    vec3 through = vec3(1.0), l = vec3(0.0);
+    const int kSteps = 30;
+    for (int k = 0; k < kSteps; ++k) {
+        float s = (float(k) + 0.5) / float(kSteps), t = len * s * s, dt = len * 2.0 * s / float(kSteps);
+        vec3 p = vec3(0.0, r, 0.0) + dir * t;
+        float rp = length(p), mu_s = dot(p / rp, sun);
+        AirHere a = air_here(rp - kGroundR);
+        vec3 takes = max(a.takes, vec3(1e-7)), step_through = exp(-takes * dt);
+        vec3 lit = (a.rayleigh * pr + vec3(a.mie * pm)) * light_through(rp, mu_s) + (a.rayleigh + vec3(a.mie)) * multiple_at(rp, mu_s);
+        l += through * (lit - lit * step_through) / takes;
+        through *= step_through;
+    }
+    FragColor = vec4(l, 1.0);
+}
+)";
+    return source.c_str();
+}
+
+// --- a world's clouds (GLWorldView::sky_for) ----------------------------------------
+const std::string& clouds_glsl() {
+    static const std::string source = R"(
+// The clouds as a volume (a look's `clouds.cover`; cloud_dome_fs).
+uniform sampler3D uCloudNoise;  // their noise (cloud_noise_fs)
+uniform vec4  uCloudLayer;      // their base and top (metres over the ground), how much of the sky they cover, how dense
+uniform vec4  uCloudShape;      // metres across the noise, how much their edges fray, how bright, how far they are drawn (metres)
+uniform vec3  uCloudDrift;      // how far the wind has carried them and they have boiled up, metres (from world time)
+uniform vec2  uCloudLean;       // how far their tops lean along the wind, metres
+// What a metre of cloud as dense as 1 takes out of the light - all of it
+// scattered: a cloud keeps none.
+const float kCloudTakes = 0.04;
+
+// How dense the cloud is at `p` (world metres), `h` over the ground: none
+// past where its cover says; rounded at its base and its top, the top the
+// higher the thicker the cover; billowed by the noise; frayed at its edges
+// (wispy near its base) unless `rough` - which is all a ray towards the sun
+// far from the point needs.
+float cloud_at(vec3 p, float h, bool rough) {
+    float hf = (h - uCloudLayer.x) / (uCloudLayer.y - uCloudLayer.x);
+    if (hf < 0.0 || hf > 1.0) return 0.0;
+    vec3 q = (vec3(p.x, h, p.z) + uCloudDrift + vec3(uCloudLean.x, 0.0, uCloudLean.y) * hf) / uCloudShape.x;
+    float cover = texture(uCloudNoise, vec3(q.xz * 0.23, 0.13)).r * 0.6 + texture(uCloudNoise, vec3(q.xz * 0.61 + 0.37, 0.71)).g * 0.4;
+    // (The noise spread over 0..1 first: most of it lies between a third and two thirds.)
+    cover = clamp((cover - 0.3) / 0.45, 0.0, 1.0);
+    cover = smoothstep(1.0 - uCloudLayer.z, 1.0 - uCloudLayer.z + 0.3, cover) * min(uCloudLayer.z * 4.0, 1.0);
+    if (cover <= 0.0) return 0.0;
+    // Its billows, as high as the cover is thick and thinning as they rise,
+    // kept where they stand above what the cover leaves of them - and even
+    // under a full cover only the stronger of them: a cloud, not a column.
+    float tall = mix(0.3, 1.0, cover);
+    float profile = smoothstep(0.0, 0.08, hf) * (1.0 - smoothstep(tall * 0.3, tall, hf));
+    float keep = 0.7 * cover;
+    float d = clamp((texture(uCloudNoise, q).r * profile - (1.0 - keep)) / max(keep, 1e-3), 0.0, 1.0) * cover;
+    if (d <= 0.0 || rough) return d * uCloudLayer.w;
+    float fray = dot(texture(uCloudNoise, q * 5.3 + vec3(0.0, uCloudDrift.y / uCloudShape.x, 0.0)).gba, vec3(0.625, 0.25, 0.125));
+    fray = mix(1.0 - fray, fray, smoothstep(0.05, 0.4, hf)) * uCloudShape.y;
+    return clamp((d - fray) / max(1.0 - fray, 1e-3), 0.0, 1.0) * uCloudLayer.w;
+}
+
+// How much of the sun's light (from `l`) gets through the clouds to `p`
+// (world metres): the cloud on the way, eight steps through their layer
+// (near the eye the planet's curve is nothing).
+float through_clouds(vec3 p, vec3 l) {
+    if (l.y <= 0.02 || p.y >= uCloudLayer.y) return 1.0;
+    float t0 = max(uCloudLayer.x - p.y, 0.0) / l.y, t1 = (uCloudLayer.y - p.y) / l.y, dt = (t1 - t0) / 8.0, depth = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        vec3 q = p + l * (t0 + (float(k) + 0.5) * dt);
+        depth += cloud_at(q, q.y, false) * dt;
+    }
+    // (Never all of it: some comes on through the cloud, scattered ahead.)
+    return max(exp(-depth * kCloudTakes), 0.1);
+}
+)";
+    return source;
+}
+
+const std::string& cloud_dome_glsl() {
+    static const std::string source = R"(
+// The sky above as a square (an octahedron's upper half laid flat): straight
+// up its middle, the horizon all round its edge.
+vec3 dome_dir(vec2 uv) {
+    vec2 f = uv * 2.0 - 1.0, d = vec2(f.x + f.y, f.x - f.y) * 0.5;
+    return normalize(vec3(d.x, max(1.0 - abs(d.x) - abs(d.y), 0.0), d.y));
+}
+vec2 dome_uv(vec3 dir) {
+    vec3 n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-6);
+    return vec2(n.x + n.z, n.x - n.z) * 0.5 + 0.5;
+}
+)";
+    return source;
+}
+
+const char* cloud_noise_fs() {
+    return R"(#version 330 core
+layout(location = 0) out vec4 Layer[8];
+// The clouds' noise, a volume that repeats each way: its shape (red: a
+// gradient noise with the gaps between cells cut out of it, so it billows)
+// and cells at three sizes for fraying its edges (green, blue, alpha:
+// Worley's, each the next finer). Eight of its slices a pass.
+uniform int uNoiseGroup;   // the first of them
+uniform float uNoiseSize;  // its texels each way
+uint scramble(uint h) {
+    h ^= h >> 16; h *= 0x7feb352du;
+    h ^= h >> 15; h *= 0x846ca68bu;
+    return h ^ (h >> 16);
+}
+vec3 lattice(ivec3 c) {
+    uint h = scramble(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u);
+    return vec3(float(h & 1023u), float((h >> 10) & 1023u), float((h >> 20) & 1023u)) / 1023.0;
+}
+// Near a point scattered one to a cell, 1; as far as a cell from every one,
+// 0 (`n` cells across the whole, going on from the other side past an edge).
+float cells(vec3 p, int n) {
+    vec3 q = p * float(n), f = fract(q);
+    ivec3 c = ivec3(floor(q));
+    float best = 1e9;
+    for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                ivec3 o = ivec3(x, y, z);
+                vec3 d = vec3(o) + lattice((c + o + n) % n) - f;
+                best = min(best, dot(d, d));
+            }
+    return 1.0 - clamp(sqrt(best), 0.0, 1.0);
+}
+float cells_of(vec3 p, int n) { return cells(p, n) * 0.625 + cells(p, n * 2) * 0.25 + cells(p, n * 4) * 0.125; }
+// Perlin's gradient noise, `n` cells across the whole and repeating: about -1..1.
+float gradient(vec3 p, int n) {
+    vec3 q = p * float(n), f = fract(q), u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    ivec3 c = ivec3(floor(q));
+    float v[8];
+    for (int i = 0; i < 8; ++i) {
+        ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        v[i] = dot(normalize(lattice((c + o) % n) * 2.0 - 1.0 + vec3(1e-4)), f - vec3(o));
+    }
+    return mix(mix(mix(v[0], v[1], u.x), mix(v[2], v[3], u.x), u.y), mix(mix(v[4], v[5], u.x), mix(v[6], v[7], u.x), u.y), u.z);
+}
+void main() {
+    for (int k = 0; k < 8; ++k) {
+        vec3 p = vec3(gl_FragCoord.xy, float(uNoiseGroup + k) + 0.5) / uNoiseSize;
+        float smooth_part = (gradient(p, 4) * 0.5 + gradient(p, 8) * 0.25 + gradient(p, 16) * 0.125) / 0.875 * 0.7 + 0.5;
+        float billows = cells_of(p, 4);
+        float shape = clamp((smooth_part - billows + 1.0) / (2.0 - billows), 0.0, 1.0);
+        Layer[k] = vec4(shape, billows, cells_of(p, 8), cells_of(p, 16));
+    }
+}
+)";
+}
+
+const char* cloud_shadow_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + clouds_glsl() + R"(
+// The clouds' shadow on the ground round the eye: at each texel's spot on
+// the ground (height 0), how much of the sun's light gets through them.
+uniform vec2 uMapSize;
+uniform vec4 uCloudShadowAt;  // the map's middle (x, z), half its width (metres)
+uniform vec3 uSunDir;         // towards the sun
+void main() {
+    vec2 at = uCloudShadowAt.xy + ((gl_FragCoord.xy / uMapSize) * 2.0 - 1.0) * uCloudShadowAt.z;
+    FragColor = vec4(through_clouds(vec3(at.x, 0.0, at.y), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0, 0.0, 1.0);
+}
+)";
+    return source.c_str();
+}
+
+const char* cloud_dome_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+out vec4 FragColor;
+)") + atmosphere_glsl() + cloud_dome_glsl() + clouds_glsl() + R"(
+uniform sampler2D uDomeLast;    // the dome as it was
+uniform sampler2D uAtmoSky;     // the planet's sky (atmosphere_sky_fs), where it is drawn
+uniform vec2  uDomeSize;
+uniform int   uDomePart;        // which texel of each four by four is made again (-1: all)
+uniform float uDomeKeep;        // how much of what was there is kept where it is made again
+uniform float uSpin;            // a number for this frame, so each march begins somewhere else
+uniform vec3  uEye;             // where the dome is seen from, metres
+uniform float uPlanet;          // the planet's radius, metres
+uniform int   uCloudSteps;
+uniform vec3  uSunDir, uSunColor;
+uniform vec3  uSkyTop, uSkyHorizon; // the sky's own colours, for the light from all round where the planet's sky is not drawn
+uniform float uAtmo, uAtmoScale, uAtmoAltitude, uAtmoSun;
+
+
+// How far a way from `r` from the planet's middle, at `mu`, goes to the
+// sphere of radius `big` round it, from inside - worked out so as to lose
+// nothing to a planet's metres.
+float out_of(float r, float mu, float big) {
+    float d = (big - r) * (big + r), s = sqrt((r * mu) * (r * mu) + d);
+    return mu > 0.0 ? d / (s + r * mu) : s - r * mu;
+}
+// Henyey-Greenstein's: how much of the light goes `c` (a cosine) off its way.
+float lobe(float g, float c) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * kPi * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
+}
+
+// The planet's sky that way, as bright as its sun, from `r` km.
+vec3 planet_sky(vec3 dir, vec3 sun, float r) {
+    return texture(uAtmoSky, unit_to_texel(sky_view_uv(dir, sun, r), vec2(textureSize(uAtmoSky, 0)))).rgb * uSunColor * uAtmoSun;
+}
+
+// The clouds seen the way `dir` from the eye: the light they send (as
+// much of it as gets through the air on the way, and the air's own light in
+// front of them) and how much of what is behind them is seen through.
+vec4 clouds_along(vec3 dir, float jitter) {
+    if (dir.y <= 0.0 || uEye.y >= uCloudLayer.x) return vec4(0.0, 0.0, 0.0, 1.0);
+    float r = uPlanet + uEye.y;
+    float t0 = out_of(r, dir.y, uPlanet + uCloudLayer.x);
+    if (t0 >= uCloudShape.w) return vec4(0.0, 0.0, 0.0, 1.0);
+    float t1 = min(out_of(r, dir.y, uPlanet + uCloudLayer.y), t0 + uCloudShape.w * 0.5);
+    vec3 sun = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
+    float c = dot(dir, sun);
+    // The sun's light at the clouds, and the light from all round: the sky
+    // above, the ground below - the planet's, where it is drawn; else the look's.
+    float rk = clamp(kGroundR + uAtmoAltitude + (uEye.y + 0.5 * (uCloudLayer.x + uCloudLayer.y)) * uAtmoScale, kGroundR + 0.001, kTopR - 0.01);
+    vec3 sunlight = uSunColor * 10.0, above = (uSkyTop + uSkyHorizon) * 0.7, below = uSkyHorizon * 0.45;
+    if (uAtmo > 0.0) {
+        sunlight = mix(sunlight, uSunColor * uAtmoSun * light_through(rk, sun.y), uAtmo);
+        vec3 sky_above = 0.5 * (planet_sky(vec3(0.0, 1.0, 0.0), sun, rk) + planet_sky(normalize(vec3(sun.z, 0.3, -sun.x)), sun, rk));
+        above = mix(above, sky_above, uAtmo);
+        below = mix(below, sky_above * 0.15 + sunlight * max(sun.y, 0.0) * uAtmoGround / kPi * 0.5, uAtmo);
+    }
+    float dt = (t1 - t0) / float(uCloudSteps), through = 1.0, weight = 0.0, far_sum = 0.0;
+    vec3 light = vec3(0.0);
+    for (int k = 0; k < 256; ++k) {
+        if (k >= uCloudSteps || through < 0.01) break;
+        float t = t0 + (float(k) + jitter) * dt;
+        vec3 at = vec3(dir.x * t, r + dir.y * t, dir.z * t);
+        float h = length(at) - uPlanet;
+        vec3 p = uEye + dir * t;
+        float d = cloud_at(p, h, false);
+        if (d <= 0.0) continue;
+        // How much cloud is between it and the sun: six steps, each twice the last.
+        float depth = 0.0, s = 0.0, len = 30.0;
+        for (int j = 0; j < 6; ++j) {
+            vec3 q = p + sun * (s + 0.5 * len);
+            vec3 qa = at + sun * (s + 0.5 * len);
+            depth += cloud_at(q, length(qa) - uPlanet, j > 2) * len;
+            s += len, len *= 2.0;
+        }
+        // Scattered once and more: each octave taking less of the light,
+        // spreading it wider, giving less of it - most on ahead, some back.
+        float sunlit = 0.0, takes = kCloudTakes * depth, a = 1.0, b = 1.0, g = 1.0;
+        for (int o = 0; o < 3; ++o) {
+            sunlit += b * mix(lobe(0.8 * g, c), lobe(-0.25 * g, c), 0.25) * exp(-takes * a);
+            a *= 0.5, b *= 0.5, g *= 0.5;
+        }
+        // Dark at a thin edge seen from the sun's side: light that gets in
+        // must first be scattered by a little cloud (the powder look).
+        sunlit *= mix(1.0, 1.0 - exp(-d * kCloudTakes * 100.0), 0.5 * (1.0 - c));
+        float hf = (h - uCloudLayer.x) / (uCloudLayer.y - uCloudLayer.x);
+        // (The light from all round darker low in it, under the cloud above.)
+        vec3 here = (sunlight * sunlit + mix(below, above, hf * hf) * 0.7) * uCloudShape.z;
+        float step_through = exp(-d * kCloudTakes * dt);
+        light += through * here * (1.0 - step_through);
+        weight += through * (1.0 - step_through), far_sum += t * through * (1.0 - step_through);
+        through *= step_through;
+    }
+    // Seen through the planet's air: as much of their light as gets through
+    // to the eye, and the air's own light in front of them, for as much of
+    // the sky as they hide.
+    if (uAtmo > 0.0 && weight > 1e-4) {
+        float dist = far_sum / weight, km = dist * uAtmoScale;
+        float re = clamp(kGroundR + uAtmoAltitude + uEye.y * uAtmoScale, kGroundR + 0.001, kTopR - 0.01);
+        vec3 near = exp(-air_here(uAtmoAltitude + (uEye.y + 0.5 * dir.y * dist) * uAtmoScale).takes * km);
+        vec3 air = planet_sky(dir, sun, re) * (1.0 - near) / max(vec3(1.0) - whole_way(re, dir.y), vec3(1e-3));
+        light = mix(light, (1.0 - through) * air + near * light, uAtmo);
+    }
+    // (Fading out towards as far as they are drawn.)
+    float fade = 1.0 - smoothstep(0.6, 1.0, t0 / uCloudShape.w);
+    return vec4(light * fade, mix(1.0, through, fade));
+}
+
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec4 last = texelFetch(uDomeLast, px, 0);
+    if (uDomePart >= 0 && (px.x % 4) + 4 * (px.y % 4) != uDomePart) {
+        FragColor = last;
+        return;
+    }
+    float jitter = fract(52.9829189 * fract(dot(vec2(px) + uSpin * vec2(5.588238, 3.1416), vec2(0.06711056, 0.00583715))));
+    vec4 now = clouds_along(dome_dir((vec2(px) + 0.5) / uDomeSize), jitter);
+    FragColor = uDomeKeep > 0.0 ? mix(now, last, uDomeKeep) : now;
+}
+)";
+    return source.c_str();
 }
 
 // --- relighting a room's light from all round (GLWorldView::relight_room) ----------
@@ -654,7 +1219,18 @@ uniform float uFillCut;       // how much of the light from all round (and back 
 uniform float uUnlit;         // 1: what it shows arrives already lit - no light of the room on it (a panel that says `lit` 0)
 uniform float uAdd;           // 1: light added over what is behind it (a panel that says `add`) - the air dims it, adds nothing to it
 uniform float uGlass;         // > 0: glass, this clear - what is behind it seen through it, more of it reflected at a glance (Fresnel)
-)" + lights_glsl() + R"(
+)" + lights_glsl() + atmosphere_glsl() + cloud_dome_glsl() + R"(
+// The clouds as a volume (a look's `clouds.cover`): the sky above with them
+// in it (cloud_dome_fs) - their light, and how much is seen through them.
+uniform float uCloudVolume;
+uniform sampler2D uCloudDome;
+// The sky, and the air between the eye and what it sees, as a planet's (a
+// look's `atmosphere`): this much of them, 0 none.
+uniform float uAtmo;
+uniform float uAtmoScale;     // kilometres of the planet to a metre of the world
+uniform float uAtmoAltitude;  // how high the world's 0 is over its ground, km
+uniform float uAtmoSun;       // how bright the sun is in it
+uniform sampler2D uAtmoSky;   // the sky seen from the eye every way (atmosphere_sky_fs)
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -1024,12 +1600,40 @@ vec2 world_uv() {
     return vec2(w.x, -w.y);
 }
 
+// The eye's distance from the planet's middle, in its kilometres (kept
+// within its air).
+float atmo_eye() { return clamp(kGroundR + uAtmoAltitude + uViewPos.y * uAtmoScale, kGroundR + 0.001, kTopR - 0.01); }
+// The planet's sky seen from the eye that way, as bright as its sun.
+vec3 atmo_sky(vec3 dir) {
+    vec3 sun = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
+    return texture(uAtmoSky, unit_to_texel(sky_view_uv(dir, sun, atmo_eye()), vec2(textureSize(uAtmoSky, 0)))).rgb * uSunColor * uAtmoSun;
+}
+// The planet's air between the eye and what it sees `len` metres off that
+// way: as much of what is there as gets through, and as much of the sky's
+// light that way as this stretch of the air has of the whole way's.
+vec3 atmo_between(vec3 color, vec3 dir, float len) {
+    float r = atmo_eye(), km = len * uAtmoScale;
+    vec3 near = exp(-air_here(r - kGroundR + 0.5 * dir.y * km).takes * km);
+    vec3 far = whole_way(r, dir.y);
+    vec3 light = atmo_sky(dir) * (1.0 - near) / max(1.0 - far, vec3(1e-3));
+    return mix(color, color * near + light, uAtmo);
+}
+
 vec3 sky(vec3 dir) {
     float t = clamp(dir.y, -1.0, 1.0);
     vec3 c = mix(uSkyHorizon, uSkyTop, pow(max(t, 0.0), 0.45));
     c = mix(c, uSkyHorizon * 0.8, clamp(-t * 5.0, 0.0, 1.0));  // below the horizon, haze
     float s = max(dot(dir, normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0);
     c += uSunColor * (pow(s, 1200.0) * 40.0 + pow(s, 24.0) * 0.35 + pow(s, 4.0) * 0.1);
+    // The planet's own sky, as much of it as the look says: its sun's disc
+    // as much of the sun as gets through the air to the eye (its glow round
+    // it is the haze's, in the sky view).
+    vec3 sunlit = uSunColor;
+    if (uAtmo > 0.0) {
+        vec3 through = light_through(atmo_eye(), dir.y);
+        c = mix(c, atmo_sky(dir) + uSunColor * through * pow(s, 1200.0) * 40.0, uAtmo);
+        sunlit = mix(sunlit, uSunColor * light_through(atmo_eye(), normalize(uSunDir + vec3(0.0, 1e-4, 0.0)).y), uAtmo);
+    }
     // Clouds: a layer overhead, seen in perspective, drifting; lit on the
     // side towards the sun and gold at the rim, their undersides shaded,
     // thinning into the haze at the horizon.
@@ -1041,7 +1645,9 @@ vec3 sky(vec3 dir) {
         vec3 sd = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
         float toward = max(dot(dir, sd), 0.0);
         vec3 cloud = mix(uCloudColor, uCloudShade, thick * 0.8);
-        cloud += uSunColor * (pow(toward, 6.0) * 0.8 + pow(toward, 40.0) * 1.2) * (1.0 - thick * 0.6);
+        // (Under the planet's sky, lit by as much of the sun as gets through
+        // its air: gold low in the evening.)
+        cloud += sunlit * (pow(toward, 6.0) * 0.8 + pow(toward, 40.0) * 1.2) * (1.0 - thick * 0.6);
         c = mix(c, cloud, cover * smoothstep(0.0, 0.12, dir.y));
     }
     // Stars: one in a few thousand cells of the sky's grid lit, twinkling,
@@ -1057,6 +1663,12 @@ vec3 sky(vec3 dir) {
             c += vec3(0.8, 0.85, 1.0) * smoothstep(0.35, 0.0, d) * bright * twinkle * uStars *
                  smoothstep(0.0, 0.25, dir.y);
         }
+    }
+    // The clouds as a volume, over all of it: as much of the sky behind them
+    // as is seen through them, and their light (thinning into the horizon).
+    if (uCloudVolume > 0.0 && dir.y > 0.0) {
+        vec4 cloud = texture(uCloudDome, dome_uv(dir));
+        c = mix(c, c * cloud.a + cloud.rgb, uCloudVolume * smoothstep(0.0, 0.03, dir.y));
     }
     return c;
 }
@@ -1737,8 +2349,11 @@ void main() {
     vec3 probe_given = uProbeCount > 0 ? probe_light(vLit, n, 2.0 / 3.0, 0.25, probe_cover) : vec3(0.0);
 
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
+    // (A lamp whose light ends before this part of the view gives it nothing.)
+    uvec2 cell_here = lamp_cell(gl_FragCoord.xy / uViewport, length(vLit - uViewPos));
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
+        if (!lamp_in(cell_here, i)) continue;
         // Light let in through a doorway reaches a door's leaf, half in the
         // room beyond, as that room's own does: nothing this side's shadow
         // maps hold stands between them. And a bounce let in stands for that
@@ -1906,6 +2521,8 @@ void main() {
     // And the light of this world's lamps that its air scatters towards the
     // eye on the way (air_light: none unless its look says the air scatters).
     color += air_light(len);
+    // And the planet's air on the way, as much of it as the look says.
+    if (uAtmo > 0.0) color = atmo_between(color, to_frag / max(len, 1e-5), len);
     if (uHostFog.w > 0.5) color = mix(color, uHostFogColor, clamp(1.0 - exp(-uHostFog.x * max(t - uHostFog.y, 0.0)), 0.0, mix(0.85, 1.0, uHostFog.z)));
     }
 

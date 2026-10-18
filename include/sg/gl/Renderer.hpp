@@ -341,8 +341,9 @@ public:
     ~LayerArray() { release(); }
 
     // `layers` pictures `w` x `h` (half floats), a multiple of kGroup. True
-    // if it was made anew.
-    bool ensure(int w, int h, int layers, bool volume = false);
+    // if it was made anew. `tiles`: read past an edge, it goes on from the
+    // other (a pattern that repeats), not the edge again.
+    bool ensure(int w, int h, int layers, bool volume = false, bool tiles = false);
 
     // Draw into layers kGroup * group .. kGroup * group + kGroup - 1.
     void bind_group(int group) const;
@@ -359,6 +360,7 @@ private:
     GLuint tex_ = 0;
     GLenum target_ = GL_TEXTURE_2D_ARRAY;
     int w_ = 0, h_ = 0, layers_ = 0;
+    bool tiles_ = false;
 };
 
 }  // namespace sg::gl

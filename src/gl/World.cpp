@@ -411,12 +411,21 @@ GLWorldView& GLWorldView::own_view_of(const Spatial3D* world) {
     return *v;
 }
 
-bool GLWorldView::share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h) {
+GLWorldView::Rect GLWorldView::own_cut_of(const Rect& seen) {
+    if (seen.empty()) return seen;
+    const float mx = 0.08f + 0.15f * (seen.x1 - seen.x0), my = 0.08f + 0.15f * (seen.y1 - seen.y0);
+    return Rect{std::max(seen.x0 - mx, -1.0f), std::max(seen.y0 - my, -1.0f), std::min(seen.x1 + mx, 1.0f), std::min(seen.y1 + my, 1.0f)};
+}
+
+bool GLWorldView::share_own(WorldPortal& wp, const Element& eye, int fb_w, int fb_h, const Rect& seen) {
     const Vec3d at = position_of(eye);
     const double yaw = eye.params.num(keys::yaw), pitch = eye.params.num(keys::pitch);
+    const Rect need = own_cut_of(seen);
     for (auto& [id, other] : worlds_) {
         if (&other == &wp || !other.own_drawn || other.world != wp.world || other.own_pic != &other.own_out || !other.own_out.valid()) continue;
         if (other.own_out.width() != fb_w || other.own_out.height() != fb_h) continue;
+        // (Only a picture that holds the part of the screen this one is seen in.)
+        if (need.x0 < other.own_cut.x0 || need.y0 < other.own_cut.y0 || need.x1 > other.own_cut.x1 || need.y1 > other.own_cut.y1) continue;
         const Vec3d d = at - other.own_at;
         if (d.x * d.x + d.y * d.y + d.z * d.z > 1e-8 || std::fabs(std::remainder(yaw - other.own_yaw, 6.283185307179586)) > 1e-6 ||
             std::fabs(pitch - other.own_pitch) > 1e-6)
@@ -427,17 +436,21 @@ bool GLWorldView::share_own(WorldPortal& wp, const Element& eye, int fb_w, int f
     return false;
 }
 
-void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h) {
+void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal& wp, Element& eye, int fb_w, int fb_h, const Rect& seen) {
     wp.own = &own_view_of(wp.world);
     if (!wp.own_out.valid() || wp.own_out.width() != fb_w || wp.own_out.height() != fb_h)
         wp.own_out.create(fb_w, fb_h, gl::GL_SRGB8_ALPHA8, 0, false), wp.own_key = 0;
-    // (Held: nothing in it changed - its world's data, the eye, the size -
-    // since it was last drawn: the same picture would be drawn again.)
+    // Only the part of the screen the window is seen in is drawn: a window
+    // across the room costs what of the screen it covers, not all of it.
+    const Rect cut = own_cut_of(seen);
+    // (Held: nothing in it changed - its world's data, the eye, the size, the
+    // part of the screen - since it was last drawn: the same picture would be
+    // drawn again.)
     uint64_t key = 1469598103934665603ULL;
     const auto mix = [&key](uint64_t v) { key = (key ^ v) * 1099511628211ULL; };
     mix(wp.world->data_version());
     for (double v : {position_of(eye).x, position_of(eye).y, position_of(eye).z, eye.params.num(keys::yaw), eye.params.num(keys::pitch), eye.params.num(keys::roll),
-                     eye.params.num(keys::fov, 60.0), double(fb_w), double(fb_h)})
+                     eye.params.num(keys::fov, 60.0), double(fb_w), double(fb_h), double(cut.x0), double(cut.y0), double(cut.x1), double(cut.y1)})
         mix(static_cast<uint64_t>(std::llround(v * 1e5)));
     if (key == wp.own_key && wp.own_out.valid() && wp.own_key != 0) {
         wp.own_pic = &wp.own_out;
@@ -464,7 +477,12 @@ void GLWorldView::draw_own(const Spatial3D& world, const Element& e, WorldPortal
     else if (wp.own->scratch_lent_) wp.own->scratch_lent_ = false, wp.own->make_scratch(fb_w, fb_h);
     // (Moved as this view is: it is shown at the screen's pixels.)
     wp.own->jitter_x_ = jitter_x_, wp.own->jitter_y_ = jitter_y_;
+    wp.own->own_seen_ = cut;
+    const auto own_from = std::chrono::steady_clock::now();
     wp.own->render(*wp.world, fb_w, fb_h);
+    times_.own_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - own_from).count();
+    wp.own->own_seen_ = Rect{-1, -1, 1, 1};
+    wp.own_cut = cut;
     wp.own_pic = &wp.own_out;
     wp.own_at = position_of(eye), wp.own_yaw = eye.params.num(keys::yaw), wp.own_pitch = eye.params.num(keys::pitch);
     if (lend) wp.own->trade_scratch(*this);
@@ -562,9 +580,13 @@ void main() {
     if (fb_w <= 0 || fb_h <= 0 || rooms.empty() || !rooms.front().room) return;
     world_time_ = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
     aim_rays(*rooms.front().room);
+    // (The card's clock stamps the eye's own frames only: a view drawn for
+    // another is part of that one's.)
+    if (!root_ && !baking_) card_begin(), card_stamp(kCardStart);
     // The light from all round of each room seen, relit before anything of
     // this frame is drawn (relighting draws).
     if (!root_ && !baking_) light_rooms(rooms);
+    card_stamp(kCardRelit);
     // Feeds the graph declares: an open embedding of a 3D state in a
     // `feed` portal. Those it no longer declares go. Only the view on
     // the screen keeps them; the views it draws feeds and far rooms with
@@ -700,6 +722,7 @@ void main() {
     }
     const double feeds_ms =
         timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
+    card_stamp(kCardFeeds);
     ensure_resources();
     ensure_targets(fb_w, fb_h);
     advance_fades();
@@ -843,6 +866,17 @@ void main() {
     }
     eye_override_ = own_override;
     }
+    // The doorways the eye cannot see, asked of what stands before them
+    // (Quality::skip_unseen): what their views would draw is left out by the
+    // card. Never where the eye has a mirror, which may see one the eye
+    // cannot. (A mirror in a view is seen only if its doorway is.)
+    doorway_asked_.clear();
+    const auto eye_mirrors = mirror_plans_.find(std::string());
+    if (q_.skip_unseen && !root_ && !baking_ && surface_only_ == 0 && (eye_mirrors == mirror_plans_.end() || eye_mirrors->second.empty())) {
+        std::vector<Asked> asked;
+        for (const Host& h : hosts) asked.push_back(Asked{h.room, h.cam, h.openings, h.room != hosts.front().room || rooms.front().sheafed});
+        ask_doorways(asked, aspect);
+    }
     bool views_drawn = false;
     for (const Host& host : hosts) {
     const Spatial3D& world = *host.room;
@@ -892,7 +926,7 @@ void main() {
             // seen once through it, pixel for pixel.
             // (The next doorway onto the same world from the same eye shows
             // the same picture: drawn once.)
-            if (!share_own(wp, eye, fb_w, fb_h)) draw_own(world, e, wp, eye, fb_w, fb_h);
+            if (!share_own(wp, eye, fb_w, fb_h, shown)) draw_own(world, e, wp, eye, fb_w, fb_h, shown);
             wp.own_drawn = true;
             own_shown_now_.push_back(wp.world);
             ++times_.portal_views;
@@ -938,8 +972,12 @@ void main() {
         const Through way = !screen && !e.params.has(Key{"ball"}) && back && !wp.back.empty() ? through(e, *wp.world, *back, guest_cam) : Through{};
         cull_ = way.sides;
         for (const HalfSpace& h : clips) cull_.push_back(spatial::HalfSpace{{h.normal.x, h.normal.y, h.normal.z}, h.offset});
+        // (Left out by the card if its doorway is not seen: ask_doorways.)
+        const gl::GLuint gate = gate_of(path);
+        gate_now_ = gate;
         draw_world(seen(*wp.world), guest_cam, aspect, scene_ms(),
                    /*depth=*/1, way.znear, back ? back->id.key() : Key{}, clips);
+        gate_now_ = 0;
         cull_.clear();
         wp.fx = vp_w_ / static_cast<float>(scene_ms().width()), wp.fy = vp_h_ / static_cast<float>(scene_ms().height());
         sub_ = Rect{-1, -1, 1, 1};
@@ -948,8 +986,10 @@ void main() {
         path_.clear();
         const float view_near = drawn_near_, view_far = drawn_far_;
         const bool cut = scissor_to(cut_, scene_ms().width(), scene_ms().height());
+        if (gate) gl::glBeginConditionalRender(gate, gl::GL_QUERY_WAIT);
         scene_ms().blit_to(view.target);
         scene_ms().blit_depth_to(view.target);
+        if (gate) gl::glEndConditionalRender();
         if (cut) gl::glDisable(gl::GL_SCISSOR_TEST);
         cut_ = Rect{-1, -1, 1, 1};
         wp.shown = &view.target;
@@ -958,6 +998,7 @@ void main() {
     }
     eye_override_ = own_override;
     }
+    card_stamp(kCardViews);
     times_.portals = since(t0);
     t0 = mark();
 
@@ -967,13 +1008,30 @@ void main() {
     // the anchor's of a space glued into one.)
     const Camera drawn_cam = placed_camera(eye_cam, rooms.front().pose);
     draw_mirrors(rooms, drawn_cam, aspect);
+    card_stamp(kCardMirrors);
+    // A view seen only in part (a window in its own look: own_seen_) draws
+    // only that part of its scene; the rest is cleared, so what spreads in
+    // from beyond the part (its glow) spreads from nothing.
+    const bool in_part = own_seen_.x0 > -1.0f || own_seen_.y0 > -1.0f || own_seen_.x1 < 1.0f || own_seen_.y1 < 1.0f;
+    if (in_part) {
+        scene_ms().bind();
+        gl::glDisable(gl::GL_SCISSOR_TEST);
+        gl::glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+        cut_ = own_seen_;
+    }
     draw_world(rooms, drawn_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
+    if (in_part) cut_ = Rect{-1, -1, 1, 1};
+    card_stamp(kCardScene);
     times_.scene_cpu = since(t0);
     if (timing_) gl::glFinish();
     times_.scene = since(t0);
     t0 = mark();
 
+    // (Seen only in part: only that part made out of its samples.)
+    const bool resolve_part = scissor_to(own_seen_, scene_ms().width(), scene_ms().height());
     scene_ms().blit_to(resolve_);
+    if (resolve_part) gl::glDisable(gl::GL_SCISSOR_TEST);
     }
     scene_src_ = &resolve_;
     const double ao = setting(post_, passes::composite, "ao", 0.0);
@@ -988,13 +1046,19 @@ void main() {
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0 || setting(post_, passes::composite, "uDof", 0.0) > 0.0 ||
                  setting(post_, passes::composite, "uHalation", 0.0) > 0.0;
     const double mosh = eye_view() ? setting(post_, passes::composite, "mosh", 0.0) : 0.0;
-    if ((fog_depth_ || taa_on() || mosh > 0.0) && ao <= 0.0) scene_ms().blit_depth_to(depth_);
+    if ((fog_depth_ || taa_on() || mosh > 0.0) && ao <= 0.0) {
+        const bool depth_part = scissor_to(own_seen_, scene_ms().width(), scene_ms().height());
+        scene_ms().blit_depth_to(depth_);
+        if (depth_part) gl::glDisable(gl::GL_SCISSOR_TEST);
+    }
     if (taa_on()) run_taa();
     if (mosh > 0.0) run_mosh(static_cast<float>(std::min(mosh, 1.0)));
     else mosh_held_ = false;
     meter_exposure();
     run_bloom();
     composite(fb_w, fb_h);
+    card_stamp(kCardPost);
+    card_now_ = nullptr;
     if (timing_) gl::glFinish();
     times_.post = since(t0);
     highlight_ = Key{};

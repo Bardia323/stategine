@@ -37,6 +37,8 @@ const Setting kSettings[] = {
     {"pixel", &Quality::pixel, nullptr, nullptr, "how many of the screen's pixels, each way, a pixel of the picture takes (1: the screen's own; 2, 3: an older day's)"},
     {"sheafify", nullptr, nullptr, &Quality::sheafify, "every doorway whose rooms agree made one space, not only those that say `sheaf` (true/false)"},
     {"pack", nullptr, nullptr, &Quality::pack, "what things wear sent to the card packed, a quarter of the memory (true/false)"},
+    {"skip_unseen", nullptr, nullptr, &Quality::skip_unseen, "views through doorways the eye cannot see left out by the card (true/false)"},
+    {"lamp_cells", nullptr, nullptr, &Quality::lamp_cells, "each part of a view asks only the lamps whose range reaches it (true/false)"},
 };
 std::string trimmed(const std::string& s) {
     std::size_t a = 0, b = s.size();

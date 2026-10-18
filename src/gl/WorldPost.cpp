@@ -164,8 +164,16 @@ void GLWorldView::run_ao(float strength, float radius) {
 
 void GLWorldView::run_bloom() {
     gl::glDisable(gl::GL_DEPTH_TEST);
+    // A view seen only in part (own_seen_: a window in its own look) gathers
+    // its glow only there: the rest of its pictures is nothing.
+    if (scissor_to(own_seen_, bloom_b_.width(), bloom_b_.height())) {
+        gl::glDisable(gl::GL_SCISSOR_TEST);
+        bloom_b_.bind();
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+    }
     bloom_a_.bind();
     gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+    const bool part = scissor_to(own_seen_, bloom_a_.width(), bloom_a_.height());
     const gl::Program& bright = *program_for(post_.shown(), passes::bright);
     bright.use();
     apply_uniforms(bright, post_, passes::bright);
@@ -191,6 +199,8 @@ void GLWorldView::run_bloom() {
         bloom_b_.bind_color(0);
         screen_.draw();
     }
+    // (The wide glow's levels are small: whole.)
+    if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
     run_wide_bloom(static_cast<float>(setting(post_, passes::blur, "wide", 0.5)));
 }
 
@@ -341,6 +351,8 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         gl::glViewport(0, 0, fb_w, fb_h);
     }
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    // (Seen only in part: composited only there.)
+    const bool part = scissor_to(own_seen_, fb_w, fb_h);
     scene_src_->bind_color(0);
     bloom_a_.bind_color(1);
     if (fog_depth_) depth_.bind_depth(2);
@@ -404,6 +416,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
     // not once for the look it was drawn in and again for the look it is seen in.
     if (viewer_feed_) {
         draw(*program_for(standard_, passes::composite));
+        if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
         if (fin.on()) finish(fb_w, fb_h, fin);
         gl::glEnable(gl::GL_DEPTH_TEST);
         return;
@@ -455,6 +468,7 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         draw(*e.first);
         gl::glDisable(gl::GL_BLEND);
     }
+    if (part) gl::glDisable(gl::GL_SCISSOR_TEST);
     if (fin.on()) finish(fb_w, fb_h, fin);
     gl::glEnable(gl::GL_DEPTH_TEST);
 }

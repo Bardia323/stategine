@@ -215,6 +215,42 @@ const char* air_fs();
 // its own: the light gathered up to each slice's distance.
 const char* air_sum_fs();
 
+// The air of a world as a planet's atmosphere (a look's `atmosphere`): air
+// whose molecules scatter blue more than red (Rayleigh), whose haze scatters
+// all alike and mostly on ahead (Mie), and whose ozone takes some orange out,
+// each thinning with height. Worked out into three small pictures - how much
+// of the light gets through from any height any way (transmittance), the
+// light scattered more than once at each height for each height of the sun
+// (multiple scattering), and the sky seen from the eye every way (sky view) -
+// made in that order (after Hillaire's method, 2020), then read by the scene:
+// its sky, and the air between the eye and what it sees (aerial perspective).
+const std::string& atmosphere_glsl();
+const char* atmosphere_transmittance_fs();
+const char* atmosphere_multiple_fs();
+const char* atmosphere_sky_fs();
+
+// A world's clouds as a volume (a look's `clouds.cover`): a layer of cloud
+// between two heights over the planet, where cloud is said by a coverage
+// that drifts with the wind, a height profile that rounds each cloud's base
+// and lifts its top as the cover thickens, and a noise that billows it and
+// frays its edges - lit by the sun through the cloud between (Beer), in two
+// lobes (on ahead and back), with what is scattered more than once (in
+// octaves), and by the sky above and the ground below. Marched into a
+// picture of the whole sky above (the dome: straight up its middle, the
+// horizon its edge), a sixteenth of it each frame, so a turning eye costs
+// nothing and every view of the world, and its mirrors, see the same clouds.
+// `cloud_dome_glsl`: the dome's way from a point of it, and back.
+// `cloud_noise_fs`: the noise, made once (eight slices of a volume a pass).
+const std::string& cloud_dome_glsl();
+// `clouds_glsl`: how dense they are anywhere (`cloud_at`), and how much of
+// the sun gets through them to a point under them (`through_clouds`).
+// `cloud_shadow_fs`: that, on the ground round the eye - the map
+// `lights_glsl`'s suns read (`cloud_shadow`) where `uCloudShadowAt` says.
+const std::string& clouds_glsl();
+const char* cloud_shadow_fs();
+const char* cloud_noise_fs();
+const char* cloud_dome_fs();
+
 // Temporal antialiasing: this frame's picture (uCurrent, its view moved by
 // uJitter, in clip units) and what was made of the frames before
 // (uHistory), found where each pixel was last frame by its depth (uDepth)

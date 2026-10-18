@@ -45,6 +45,19 @@ struct Quality {
     // stands; one that is not (a ring that does not close, a world in its
     // own look) is a view as ever.
     bool sheafify=false;
+    // A view through a doorway the eye cannot see - hidden behind a wall of
+    // its room, or what stands before it - is left out by the card: the
+    // rooms the eye is in are laid as depth alone first, and each doorway
+    // asked of it (never where a mirror is planned, which may see a doorway
+    // the eye cannot). What the view keeps from frame to frame (its shadow
+    // maps, its air) is kept as ever.
+    bool skip_unseen=true;
+    // Each part of a view asks only the lamps that can light it: a lamp whose
+    // light ends (`range`) is left out where its range does not reach, the
+    // view cut into cells and shells out from the eye. The picture is the
+    // same; what is saved is the lamps a part of the view need not ask.
+    // (Lamps that say no range light everywhere.)
+    bool lamp_cells=true;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

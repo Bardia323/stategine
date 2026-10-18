@@ -34,6 +34,46 @@ void depth_rect(const gl::Mat4& vp, const gl::Vec3& c, float r, int n, int rect[
     rect[2] = std::clamp(static_cast<int>(std::ceil((x1 + 1.0f) * h)) + 1, 0, n);
     rect[3] = std::clamp(static_cast<int>(std::ceil((y1 + 1.0f) * h)) + 1, 0, n);
 }
+
+// A view's air, slice by slice (air_fs, air_sum_fs): where each slice ends,
+// from the eye - out from `near` to `far` in steps that widen as they go -
+// and what a metre of it gives of itself: as deep as the slice is, dimmed by
+// the fog before it, thinned towards the eye out to where the fog starts
+// (clear close by, thickening smoothly - never a wall at that distance, where
+// a lamp's glow would stop short round whoever is looking), times how much a
+// metre of the air scatters. (Pi: the lights carry it folded in, as the
+// scene's diffuse does.) The same for every cell: worked out once a gathering.
+template <int N>
+void air_slices(float near, float far, float density, float start, float scatter, float (&at)[N], float (&weight)[N]) {
+    // How much of the way to `d` is in the air that begins `start` from the
+    // eye: eased in over half `start` either side of where it begins, so the
+    // place it begins draws no line (on a ceiling, a ring round the eye).
+    const auto past = [&](float d) {
+        const float w = 0.5f * start, x = d - start;
+        if (w <= 0.0f) return std::max(x, 0.0f);
+        return x >= w ? x : (x <= -w ? 0.0f : (x + w) * (x + w) / (4.0f * w));
+    };
+    for (int k = 0; k < N; ++k) at[k] = near * std::pow(far / near, static_cast<float>(k) / static_cast<float>(N - 1));
+    for (int k = 0; k < N; ++k) {
+        const float a = k == 0 ? 0.0f : at[k - 1], b = at[k], m = 0.5f * (a + b);
+        const float t = std::exp(-density * past(m));
+        float fade = 1.0f;
+        if (start > 0.0f) {
+            const float x = std::clamp(m / start, 0.0f, 1.0f);
+            fade = x * x * (3.0f - 2.0f * x);
+        }
+        weight[k] = 3.14159265f * scatter * std::max(b - a, 0.0f) * t * fade;
+    }
+}
+// The names of a uniform array's elements, made once.
+template <int N>
+const std::array<std::string, N>& element_names(const char* array) {
+    static std::map<std::string, std::array<std::string, N>> made;
+    auto& names = made[array];
+    if (names[0].empty())
+        for (int i = 0; i < N; ++i) names[static_cast<std::size_t>(i)] = std::string(array) + "[" + std::to_string(i) + "]";
+    return names;
+}
 }  // namespace
 
 void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera& cam, float aspect, gl::RenderTarget& target, int depth, float znear, Key skip_portal, const std::vector<HalfSpace>& clips) {
@@ -257,8 +297,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             if (!r.image) taa_rooms_.emplace_back(r.room, frame_of(r.pose));
     }
 
+    // Which lamps can light each part of this view (Quality::lamp_cells).
+    lamp_cells(lights, view_proj, cam.eye, zfar, std::any_of(rooms.begin(), rooms.end(), [](const PlacedRoom& r) { return r.image; }));
+
     if (timing_) gl::glFinish();
     const auto shadow_start = std::chrono::steady_clock::now();
+    // (The card's clock: the eye's own maps, not a mirror's or a view's.)
+    const bool eye_maps = depth == 0 && !mirroring_;
+    if (eye_maps) card_stamp(kCardShadowsFrom);
     // --- shadow depth, one pass per shadowed lamp ------------------------
     // Each world seen (the room, and whatever a portal shows) keeps its own
     // maps, and a map is drawn again only when its lamp has moved or
@@ -741,6 +787,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     times_.layers_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - layers_from).count();
     gl::glDisable(gl::GL_CLIP_DISTANCE0);
     gl::glCullFace(gl::GL_BACK);
+    if (eye_maps) card_stamp(kCardShadowsTo);
     if (timing_) {
         gl::glFinish();
         times_.shadows += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - shadow_start).count();
@@ -785,8 +832,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set(light_uniform(k, 12), unshadowed ? -1.0f : near_of[i]);
             p.set(light_uniform(k, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
             p.set(light_uniform(k, 18), cube_of[i]);
+            p.set(light_uniform(k, 19), i < kAllLights ? static_cast<int>(i) : -1);
         }
         p.set("uShadowMaps", 1);
+        lamp_cells_to(p);
     };
     // The air of this view, lit by its lamps (air_fs) - when its look says
     // its air scatters: in the eye's own view and in every view through a
@@ -835,9 +884,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // Only the air beyond the doorway it is seen through is this view's:
         // this side of it is the other world's, lit by that one's lamps.
         const HalfSpace clip = clips.empty() ? HalfSpace{{0, 0, 0}, 1.0} : clips.front();
-        // What it is gathered from: the view, the lights and their maps, the air.
+        // What it is lit by: the lights and their maps, the air - not where it
+        // is seen from (a view that moves carries what was gathered, below).
         uint64_t of = 1469598103934665603ULL;
-        for (float f : view_proj.m) of = mix_bits(of, f);
         for (const Light& l : lights)
             for (float f : {l.pos.x, l.pos.y, l.pos.z, l.dir.x, l.dir.y, l.dir.z, l.color.x, l.color.y, l.color.z, l.power, l.inner, l.outer,
                             l.falloff, l.scatter, l.frame_w, l.frame_h, l.frame_soft, l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w, l.gate_h, l.open,
@@ -875,17 +924,24 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (Each slice's own light laid eight to a row, a pixel a cell.)
         constexpr int group = gl::LayerArray::kGroup;
         bool made = a.light.ensure(gx, gy, kAirSlices, /*volume=*/true);
-        if (!a.local.valid() || a.local.width() != gx * group || a.local.height() != gy * (kAirSlices / group)) {
-            a.local.create(gx * group, gy * (kAirSlices / group), gl::GL_RGBA16F, 0, false);
-            made = true;
-        }
-        // Gathered again when what it is made from moves - and, while nothing
-        // does, again and again, each time at other points of each cell,
-        // averaged, until there are enough to stand for the whole of each
-        // cell: then it rests. (One gathering alone, each cell sampled at one
-        // point, is noise that stands still on the screen near a lamp.)
+        for (gl::RenderTarget& local : a.local)
+            if (!local.valid() || local.width() != gx * group || local.height() != gy * (kAirSlices / group)) {
+                local.create(gx * group, gy * (kAirSlices / group), gl::GL_RGBA16F, 0, false);
+                made = true;
+            }
+        // Gathered again when what it is lit by changes, from nothing - and,
+        // while nothing does, again and again, each time at other points of
+        // each cell, averaged, until there are enough to stand for the whole
+        // of each cell: then it rests. (One gathering alone, each cell sampled
+        // at one point, is noise that stands still on the screen near a lamp.)
+        // Seen from somewhere else, the air is the same air: what was gathered
+        // is carried to where this view has each cell of it, and kept as much
+        // as kAirCarry gatherings would be; each cell's points are lit a part
+        // at a time, the next part the next frame.
         if (made || a.of != of) a.gathered = 0;
-        if (a.gathered < kAirGatherings) {
+        const bool moved = a.gathered > 0 && std::memcmp(a.seen_vp.m, view_proj.m, sizeof view_proj.m) != 0;
+        if (moved) a.gathered = std::min(a.gathered, kAirCarry - 1);
+        if (a.gathered < kAirGatherings || moved) {
             a.of = of;
             if (!air_prog_) {
                 air_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::air_fs(), "air");
@@ -906,34 +962,46 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             else light_uniforms(p);
             maps.array.bind_depth(1);
             p.set("uAir", a.near, a.far, static_cast<float>(kAirSlices), 1.0f);
+            float slice_at[kAirSlices], slice_weight[kAirSlices];
+            air_slices(a.near, a.far, density, start, scatter, slice_at, slice_weight);
+            const auto& at_names = element_names<kAirSlices>("uAirAt");
+            for (int k = 0; k < kAirSlices; ++k) p.set(at_names[static_cast<std::size_t>(k)].c_str(), slice_at[k]);
             p.set("uAirUnproject", view_proj.inverse());
             p.set("uViewPos", cam.eye);
-            p.set("uFogDensity", density);
-            p.set("uFogStart", start);
-            p.set("uScatter", scatter);
             p.set("uScatterAhead", ahead);
             p.set("uAirClip", static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y), static_cast<float>(clip.normal.z),
                   static_cast<float>(clip.offset));
             // Every slice's own light in one pass; then the slices added up
             // from the eye, eight at a time, no pass waiting on another.
             p.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
-            p.set("uAirSpin", static_cast<float>(a.spin++ % 4096u));
+            const uint32_t spin = a.spin++;
+            p.set("uAirSpin", static_cast<float>(spin % 4096u));
+            // Which of a cell's points (`steps` through its depth) this
+            // gathering lights: all of them, still; moving, every kAirCarry-th
+            // of them, from a different one each frame.
+            const int part = moved ? kAirCarry : 1;
             p.set("uAirSteps", steps);
-            a.local.bind();
-            if (a.gathered > 0) {
-                // Into the average: this gathering one part in as many as there are now.
-                gl::glEnable(gl::GL_BLEND);
-                gl::glBlendColor(0.0f, 0.0f, 0.0f, 1.0f / static_cast<float>(a.gathered + 1));
-                gl::glBlendFunc(gl::GL_CONSTANT_ALPHA, gl::GL_ONE_MINUS_CONSTANT_ALPHA);
-            }
+            p.set("uAirPoints", static_cast<float>(moved ? static_cast<int>(spin % static_cast<uint32_t>(kAirCarry)) : 0), static_cast<float>(part));
+            // What was gathered, as much of it kept as the gatherings in it
+            // stand for; where it was gathered from, to find each cell in it.
+            p.set("uAirKeep", a.gathered > 0 ? static_cast<float>(a.gathered) / static_cast<float>(a.gathered + 1) : 0.0f);
+            p.set("uAirMoved", moved ? 1.0f : 0.0f);
+            p.set("uAirLastVP", a.seen_vp);
+            p.set("uAirLastEye", a.seen_eye);
+            p.set("uAirLast", 6);
+            a.local[a.now].bind_color(6);
+            a.now ^= 1;
+            a.local[a.now].bind();
             screen_.draw();
-            gl::glDisable(gl::GL_BLEND);
+            a.seen_vp = view_proj, a.seen_eye = cam.eye;
             ++a.gathered;
             const gl::Program& sum = *air_sum_prog_;
             sum.use();
             sum.set("uAirLocal", 5);
             sum.set("uAirCells", static_cast<float>(gx), static_cast<float>(gy));
-            a.local.bind_color(5);
+            const auto& weight_names = element_names<kAirSlices>("uAirWeight");
+            for (int k = 0; k < kAirSlices; ++k) sum.set(weight_names[static_cast<std::size_t>(k)].c_str(), slice_weight[k]);
+            a.local[a.now].bind_color(5);
             for (int g = 0; g < kAirSlices / group; ++g) {
                 a.light.bind_group(g);
                 sum.set("uAirGroup", g * group);
@@ -944,6 +1012,30 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         a.light.bind_color(5);
         gl::glActiveTexture(gl::GL_TEXTURE0);
         air = &a;
+    }
+    if (eye_maps) card_stamp(kCardAir);
+    // The sky's sun: this room's own, not one seen through a door.
+    gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
+    for (std::size_t i = 0; i < lights.size(); ++i)
+        if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
+            sun_dir = gl::normalize(lights[i].dir) * -1.0f;
+            sun_color = lights[i].color;
+        }
+    // And the sky as a planet's, and its clouds as a volume, where the look
+    // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
+    // this eye and this world's time, as they must be.
+    const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first);
+    const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first);
+    const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
+    const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
+    // A view whose doorway the eye may not see (ask_doorways): what it draws
+    // from here on is left out by the card where the doorway is not seen.
+    // Its maps and air, above, are drawn whatever: they are kept from frame
+    // to frame and must be what they say.
+    const bool gated = gate_now_ != 0 && depth > 0 && !mirroring_;
+    if (gated) {
+        gl::glBeginConditionalRender(gate_now_, gl::GL_QUERY_WAIT);
+        ++times_.views_asked;
     }
     target.bind();
     bool cut = false;
@@ -998,16 +1090,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uDim", 0.0f);
         p.set("uSurfaceOnly", surface_only_);
         light_uniforms(p);
-        gl::Vec3 sun_dir{0, 1, 0}, sun_color{0, 0, 0};
-        for (std::size_t i = 0; i < lights.size(); ++i) {
-            // The sky's sun is this room's own, not one seen through a door.
-            if (lights[i].sun && !lights[i].gated && sun_color.x == 0.0f && sun_color.y == 0.0f && sun_color.z == 0.0f) {
-                sun_dir = gl::normalize(lights[i].dir) * -1.0f;
-                sun_color = lights[i].color;
-            }
-        }
         p.set("uSunDir", sun_dir);
         p.set("uSunColor", sun_color);
+        sky_to(p, sky, atmosphere);
         p.set("uViewPos", cam.eye);
         p.set("uTime", static_cast<float>(world_time_));
         p.set("uShadowTexel", 1.0f / static_cast<float>(maps.array.size()),
@@ -1045,6 +1130,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const auto prepare = [&](const Mix& look, const gl::Vec3& shift, const PlacedRoom& placed, const Spatial3D& room) {
         apply_uniforms(*scene_, look, passes::scene);
         apply_attended(*scene_, passes::scene);
+        // (As much of the planet's sky as this room's look says, under the view's.)
+        if (sky && sky->atmosphere) scene_->set("uAtmo", std::clamp(static_cast<float>(setting(look, passes::scene, "atmosphere", 0.0)), 0.0f, 1.0f));
         scene_->set("uLatticeShift", shift);
         scene_->set("uTime",static_cast<float>(semantic_time(graph_?graph_:(root_?root_->graph_:nullptr),room)));
         // This room's side of each doorway, from the portals as they are now,
@@ -1335,10 +1422,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(5, part_at);
     }
+    if (eye_maps) card_doors(drawn_proj, reversed);
+    else card_doorways_.clear();
     if (depth == 0) lay_deep_views();
     for (int i = 0; i < kMaxBounds; ++i)
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
     if (part || cut) gl::glDisable(gl::GL_SCISSOR_TEST);
+    if (gated) gl::glEndConditionalRender();
     set_frame(Pose{});
 }
 

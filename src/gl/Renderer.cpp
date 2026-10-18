@@ -489,19 +489,17 @@ void ShadowArray::release() {
     layers_ = 0;
 }
 
-bool LayerArray::ensure(int w, int h, int layers, bool volume) {
+bool LayerArray::ensure(int w, int h, int layers, bool volume, bool tiles) {
     const GLenum target = volume ? GL_TEXTURE_3D : GL_TEXTURE_2D_ARRAY;
-    if (tex_ != 0 && w == w_ && h == h_ && layers == layers_ && target == target_) return false;
+    if (tex_ != 0 && w == w_ && h == h_ && layers == layers_ && target == target_ && tiles == tiles_) return false;
     release();
-    w_ = w, h_ = h, layers_ = layers, target_ = target;
+    w_ = w, h_ = h, layers_ = layers, target_ = target, tiles_ = tiles;
     glGenTextures(1, &tex_);
     glBindTexture(target, tex_);
     glTexImage3D(target, 0, static_cast<GLint>(GL_RGBA16F), w, h, layers, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
     glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    for (GLenum wrap : {GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_WRAP_R}) glTexParameteri(target, wrap, tiles ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     // A framebuffer for each group of layers, each layer of it an output:
     // made once, so drawing into them changes no attachment.
     GLenum outputs[kGroup];

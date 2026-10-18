@@ -832,11 +832,93 @@ shadowed by its own map, dimmed by the look's fog (`uFogDensity`,
 a doorway's view has only the air beyond the doorway - this side of it is
 this side's. It is gathered for the eye's view and for every view through a
 doorway, however deep (each at its own pixels, so a small one costs little;
-a mirror's picture has none), and again only when the view, its lights or their shadow maps move
-(`FrameTimes::air_built`). Every cell of every slice is lit in one pass,
-and the slices are added up in eight: a gathering costs about a tenth of a
-millisecond at 2560 x 1440 - in the lab's dev room, within what one run
-differs from the next.
+a mirror's picture has none). Its lights or their shadow maps changed, it
+is gathered again from nothing (`FrameTimes::air_built`); still, it is
+gathered a few times more at other points of each cell, averaged, and then
+rests. The air is where it is, not where it is seen from: a view that moves
+carries what was gathered - each cell's light found where the last view had
+it, a metre of each slice kept so a slice of another depth takes it as its
+own - and lights only a part of each cell's points anew each frame, the rest
+over the next three (`kAirCarry`), kept as much as four gatherings would be.
+Every cell of every slice is lit in one pass, and the slices are added up in
+eight. Memory Leak's air (cells of 6 pixels, 4 points each) cost the card 14
+ms a frame at 2560 x 1440 while walked through, gathered whole each frame;
+carried, 4 ms - the same picture once still.
+
+**A planet's sky** (scene pass settings). The sky, and the air between the
+eye and what it sees, as a planet's: air whose molecules scatter blue more
+than red, whose haze scatters on ahead, and whose ozone takes some orange
+out, each thinning as it goes up. Blue overhead at noon and pale at the
+horizon; at sunset red low towards the sun and dark overhead, the sun's disc
+reddened by the air it is seen through, the clouds lit gold; far things seen
+through the air faded towards the sky's colour that way.
+
+| Setting | Means | Unless it says |
+| --- | --- | --- |
+| `atmosphere` | how much of the sky and the air between is the planet's, 0..1 | 0: none, and nothing is made |
+| `atmosphere.scale` | kilometres of the planet to a metre of the world: more, and a small world's distances are seen through more air | 0.001 (a metre a metre) |
+| `atmosphere.altitude` | how high the world's 0 is over the planet's ground, in kilometres | 0.2 |
+| `atmosphere.sun` | how bright the sun is in it (the sky is lit by the sun light's colour times this) | 12 |
+| `atmosphere.haze` | the haze, as many times the usual | 1 |
+| `atmosphere.ground` | how much of the light on it the ground gives back | 0.3 |
+
+It is worked out into three small pictures (after Hillaire's method, 2020;
+`gl::atmosphere_glsl`): how much light gets through from any height any way
+(transmittance), the light scattered more than once at each height for each
+height of the sun, and the sky seen from the eye every way. The first two
+are made again only when the air's make-up changes, the third when the sun's
+height or the eye's does (`FrameTimes::skies_made`) - turning the eye makes
+nothing. The sun is the room's own sun light; the clouds (`uClouds`) and the
+stars are drawn over it as before. A look saying `atmosphere` 0 draws exactly
+as one saying nothing of it (`sg_sky_gl`).
+
+**Clouds as a volume** (scene pass settings). A layer of cloud between two
+heights over the ground: where there is cloud is said by a cover that drifts
+with the wind, each cloud's base rounded and its top the higher the thicker
+the cover, billowed by a noise and frayed at its edges, leaning as it rises.
+Lit by the sun through the cloud between - mostly on ahead, some back, and
+scattered more than once - and by the sky above and the ground below: under
+a planet's sky (`atmosphere`) by its sun as it reaches them and its sky's
+light, and seen through its air; else by the sun light and the look's own
+sky colours. The sun's light on everything under them is shadowed by them
+(never all of it: a tenth comes on through).
+
+| Setting | Means | Unless it says |
+| --- | --- | --- |
+| `clouds.cover` | how much of the sky they cover, 0..1 | 0: none, and nothing is made |
+| `clouds.base`, `clouds.top` | the layer's bottom and top, metres over the world's 0 | 1500, 4000 |
+| `clouds.density` | how dense | 1 |
+| `clouds.size` | metres across the noise they are shaped from: more, and larger clouds | 6000 |
+| `clouds.fray` | how much their edges fray, 0..1 | 0.35 |
+| `clouds.bright` | how bright | 1 |
+| `clouds.wind`, `clouds.wind_dir` | how fast the wind carries them (metres a second of world time) and which way (radians) | 8, 0.6 |
+| `clouds.lean` | how far their tops lean along the wind, metres | 600 |
+| `clouds.far` | how far out they are drawn, metres | 40000 |
+| `clouds.steps` | steps of each march through them (8..256) | 48 |
+| `clouds.dome` | texels each way of the picture they are marched into | 1024 |
+
+They are marched into a picture of the whole sky above (the dome:
+`gl::cloud_dome_fs`; straight up its middle, the horizon its edge), one
+texel of every four by four each frame, each kept half and half with what
+it was - so a turning eye costs nothing, and every view of the world and its
+mirrors see the same clouds. Their noise is a volume made once on the card
+(`gl::cloud_noise_fs`). Their time is the world's alone - the state's
+`own_time` or its drive's Temporal line, as `uTime` is (`semantic_time`),
+never the renderer's frames or a clock: a world whose time stands still has
+clouds that stand still, and the dome rests once every texel has been made
+four times over; what is drawn at a world time is what a fresh view draws at
+it. Its texels stand behind the world's time by at most sixteen frames, kept
+with what they were the less the faster the clouds go; it is made whole
+again when they go more than half a metre a frame (world time run fast),
+when world time goes back, when the clouds or the air are said otherwise,
+the eye moves more than 50 m at once or the sun turns more than 0.1 rad
+(`FrameTimes::domes_made`). Their shadow on the ground is a map 16 km
+across round the eye (`gl::cloud_shadow_fs`), made with the dome each frame
+and read once by each sun's light (`cloud_shadow`).
+About half a millisecond of the card a frame at 2560 x 1440 (RTX 3090 Ti).
+Not yet: an eye in or above the clouds (it sees none), the lit air's shafts
+under them. A look saying `clouds.cover` 0 draws exactly as one saying
+nothing of it (`sg_sky_gl`).
 
 **Grade and curve** (composite uniforms, in every composite that pastes
 `gl::film_glsl()`: its `tonemap` grades first). In scene light, before any
@@ -1109,6 +1191,16 @@ and is thrown away and found again when what it was found on changes:
 portal of 100K objects costs 0.5 ms a frame idle and 1.6 ms with 1% changing,
 against 72 ms carrying everything; with every object changing, still less
 than half. A graph verified again unchanged costs about 45% of a fresh check.
+
+**Where a frame's time goes on the card.** `GLWorldView::set_card_timing(true)`
+has the card stamp each stage of the eye's frame as it is sent - the rooms'
+light from all round relit, the screens' worlds, the views through doorways,
+the eye's own scene (and its shadow maps), what comes after - and
+`card_times()` says what each cost, read back a frame or two later once the
+card has answered. Nothing waits for it, so it can stay on while the game is
+played; `set_timing` finishes the card between stages instead, which shows
+where a frame stalls but slows every frame it measures. Both are how the
+machine is, not how the world is: neither is written into any state.
 
 ### Threads: lanes and hands
 
