@@ -45,10 +45,12 @@ int main() {
     sg::Element& eye = room.camera();
     eye.params.set(sg::keys::x, 7.0).set(sg::keys::y, 3.2).set(sg::keys::z, 13.5).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, -0.5);
 
-    const auto run = [&](bool instancing, bool merged, double& ms, int& draws, int& batched) {
+    int culled = 0;
+    const auto run = [&](bool instancing, bool merged, double& ms, int& draws, int& batched, bool on_card = false) {
         sg::render::GLQuality q;
         q.instancing = instancing;
         q.proxies = merged;
+        q.gpu_cull = on_card;
         sg::render::GLWorldView view(q);
         view.set_fixed_step(1.0 / 60.0);
         view.prepare(g);
@@ -62,6 +64,7 @@ int main() {
         draws = view.times().draws, batched = view.times().instanced + view.times().proxied;
         view.set_timing(true);
         view.render(room, W, H);
+        culled = view.times().culled_on_card;
         const auto& t = view.times();
         std::printf("  %s: shadows %.2f  scene %.2f (cpu %.2f)  post %.2f ms\n", !instancing ? "one call each" : merged ? "merged" : "batched", t.shadows,
                     t.scene, t.scene_cpu, t.post);
@@ -106,6 +109,20 @@ int main() {
                 merged_diff, merged_worst);
     check(merged_diff < 0.25 && merged_worst < 24, "merged a cell at a time, the picture is the same");
     check(draws_merged <= draws_batch && merged_things > 1000, "and it takes no more calls than batched");
+    // And merged, its things culled by the card itself where it can (GL 4.3).
+    double ms_card = 0;
+    int draws_card = 0, card_things = 0;
+    const auto on_card = run(true, true, ms_card, draws_card, card_things, true);
+    double card_diff = 0;
+    int card_worst = 0;
+    for (std::size_t i = 0; i < one.size(); ++i) {
+        const int d = std::abs(static_cast<int>(one[i]) - static_cast<int>(on_card[i]));
+        card_diff += d, card_worst = std::max(card_worst, d);
+    }
+    card_diff /= static_cast<double>(one.size());
+    std::printf("culled on the card: %.2f ms/frame (%d calls, %d culled); differs by %.3f on average, %d at most\n", ms_card, draws_card, culled,
+                card_diff, card_worst);
+    check(card_diff < 0.25 && card_worst < 24, "culled on the card, the picture is the same");
     // A thing in a merged cell moved: drawn where it is now, on its own, the
     // frame it moves - the picture of it all drawn a call a thing.
     {

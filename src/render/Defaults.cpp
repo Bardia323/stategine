@@ -39,6 +39,7 @@ const Setting kSettings[] = {
     {"pack", nullptr, nullptr, &Quality::pack, "what things wear sent to the card packed, a quarter of the memory (true/false)"},
     {"skip_unseen", nullptr, nullptr, &Quality::skip_unseen, "views through doorways the eye cannot see left out by the card (true/false)"},
     {"lamp_cells", nullptr, nullptr, &Quality::lamp_cells, "each part of a view asks only the lamps whose range reaches it (true/false)"},
+    {"gpu_cull", nullptr, nullptr, &Quality::gpu_cull, "merged cells' things culled by the card itself, where it can (GL 4.3) (true/false)"},
     {"proxies", nullptr, nullptr, &Quality::proxies, "still things of a room's cells drawn together, each cell in a call or two (true/false)"},
     {"lod", nullptr, nullptr, &Quality::lod, "a model far off drawn with fewer faces, where no pixel would show the difference (true/false)"},
 };

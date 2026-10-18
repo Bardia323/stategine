@@ -1234,7 +1234,14 @@ it is first seen - never a room at once (`proxies_merged`). A thing in it
 moved or changed, the cell is drawn as before until it has stood still a
 while, then merged again without what changed. The same picture, to the bit
 (`sg_instancing_gl`: 3600 things, 0.75 ms a frame merged, 2.1 batched).
-Memory Leak's frames 1 to 3% shorter.
+Memory Leak's frames 1 to 3% shorter. On a card that does its own work (GL
+4.3, or a 3.3 context given compute, storage buffers and indirect draws -
+`GLQuality::gpu_cull`, `gpu_cull` in render.conf; off unless said), each
+merged cell's things are culled by the card: a pass writes, for every thing
+of the cell, a draw of its corners or of none by whether its ball is in the
+view, and the cell is drawn by those draws in one call - the processor doing
+nothing a thing (`FrameTimes::culled_on_card`, read back only while timed).
+The same picture (`sg_instancing_gl`: 72 of 3600 culled on the card).
 
 **Far off, fewer faces** (`GLQuality::lod`, `lod` in render.conf; off unless
 said). A model of a few hundred faces or more is made again with fewer

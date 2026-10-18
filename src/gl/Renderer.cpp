@@ -291,6 +291,14 @@ void Mesh::create_merged(const std::vector<float>& verts) {
     glBindVertexArray(0);
 }
 
+void Mesh::draw_commands(GLuint commands, GLsizei count) const {
+    if (!glMultiDrawArraysIndirect) return;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, commands);
+    glMultiDrawArraysIndirect(GL_TRIANGLES, nullptr, count, 0);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+}
+
 void Mesh::pose(const std::vector<float>& joints) const {
     if (!joints_tex_) return;
     glBindBuffer(GL_TEXTURE_BUFFER, joints_buf_);

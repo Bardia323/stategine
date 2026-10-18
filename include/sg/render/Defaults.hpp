@@ -74,6 +74,12 @@ struct Quality {
     // call. A thing that moves, or is changed, is drawn on its own until its
     // cell has stood still again for a while. The same picture.
     bool proxies=true;
+    // And on a card that does its own work (GL 4.3): each merged cell's
+    // things culled by the card - what of a cell is out of the view, or too
+    // small to see, not drawn - its draws said by the card to itself, the
+    // processor doing nothing a thing. Off unless said; where the card cannot,
+    // nothing changes.
+    bool gpu_cull=false;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

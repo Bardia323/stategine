@@ -206,7 +206,8 @@ public:
         int skies_made = 0;   // skies' pictures made again (a look's `atmosphere`): none while the sun and the eye's height stay
         int proxied = 0;      // things drawn in their cell's merged mesh (Quality::proxies), and the calls it took
         int proxy_calls = 0;
-        int proxies_merged = 0;  // cells merged (again) this frame: a few at most
+        int proxies_merged = 0;
+        int culled_on_card = 0;  // merged cells' draws the card culled for itself (Quality::gpu_cull)  // cells merged (again) this frame: a few at most
         int made_late = 0;     // things' shapes first made as a frame drew them (none, warmed)
         int warmed_ahead = 0;  // and made ahead, beside the frame (warm_ahead)
         int lod_drawn = 0;    // things drawn with fewer faces, far enough off that no pixel shows it (Quality::lod)
@@ -1100,6 +1101,11 @@ private:
         std::vector<uint64_t> stamps;
         gl::Mesh boxes, others;
         bool merged = false, any_boxes = false, any_others = false;
+        // Where each member's corners are in its mesh, and the ball round it
+        // in its room (x y z, radius), for culling on the card: a mesh's
+        // members, then the draws the card says to itself for them.
+        std::vector<float> spans[2], balls[2];
+        gl::GLuint ball_buffer[2] = {0, 0}, span_buffer[2] = {0, 0}, draws[2] = {0, 0};
         uint64_t changed = 0;  // the frame a member was last found changed (0: none since it was merged)
     };
     static constexpr std::size_t kProxyCorners = 512;            // a thing of more corners is drawn with others of its shape
@@ -1120,6 +1126,12 @@ private:
     RoomProxies* proxies_in(const Spatial3D& room);
     void merge_cell(const Spatial3D& room, RoomProxies& rp, ProxyCell& c);
     void draw_proxies(const std::vector<const ProxyCell*>& cells);
+    // Culling on the card (Quality::gpu_cull): whether it can, its program,
+    // and the view's planes (each x y z w, in the room's frame) it culls by.
+    bool gpu_culls();
+    gl::GLuint cull_program_ = 0;
+    int gpu_cull_state_ = 0;  // 0 not asked, 1 can, -1 cannot
+    void cull_on_card(const ProxyCell& c, int which);
     // A thing's corners as its mesh has them (find_shape's, made again on the processor).
     std::vector<float> corners_for(const State& st, const Element& e) const;
     void upload_skin(BoundSurface& bound);

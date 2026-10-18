@@ -147,6 +147,10 @@ public:
     // them) - drawn with the scene's instanced path, every thing as it would
     // be, in one call.
     void create_merged(const std::vector<float>& verts);
+    // Its corners drawn by the draws the card wrote for itself into
+    // `commands` (`count` of them, each four numbers: corners, instances,
+    // first corner, first instance) - culled on the card (GL 4.3).
+    void draw_commands(GLuint commands, GLsizei count) const;
     void pose(const std::vector<float>& joints) const;
     mutable uint64_t posed = 0;
 

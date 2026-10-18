@@ -115,6 +115,7 @@ constexpr GLenum GL_DRAW_FRAMEBUFFER = 0x8CA9;
 constexpr GLenum GL_FRAGMENT_SHADER = 0x8B30;
 constexpr GLenum GL_VERTEX_SHADER = 0x8B31;
 constexpr GLenum GL_COMPILE_STATUS = 0x8B81;
+constexpr GLenum GL_VERSION = 0x1F02;
 constexpr GLenum GL_LINK_STATUS = 0x8B82;
 // Questions put to the card (core since 3.3): when it got to a point of the
 // frame, and whether anything drawn passed the depth test.
@@ -170,6 +171,8 @@ constexpr GLenum GL_UNSIGNED_INT = 0x1405;
     X(void, GetProgramiv, (GLuint, GLenum, GLint*))                                           \
     X(void, GetProgramInfoLog, (GLuint, GLsizei, GLsizei*, GLchar*))                          \
     X(void, UseProgram, (GLuint))                                                             \
+    X(void, Uniform4fv, (GLint, GLsizei, const GLfloat*))                                     \
+    X(void, Uniform1ui, (GLint, GLuint))                                                      \
     X(void, DeleteProgram, (GLuint))                                                          \
     X(GLint, GetUniformLocation, (GLuint, const GLchar*))                                     \
     X(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*))                    \
@@ -253,6 +256,14 @@ SG_GL_FUNCS(SG_GL_DECLARE)
 // Where the driver has it (GL 4.5, or ARB_clip_control): how clip space's
 // depth is taken - for depth reversed (Renderer.hpp, reversed_depth).
 inline void (*glClipControl)(GLenum, GLenum) = nullptr;
+// Where the driver has them (GL 4.3): work the card does on its own, and
+// draws it says the number of itself - for culling on the card (Quality::gpu_cull).
+constexpr GLenum GL_COMPUTE_SHADER = 0x91B9, GL_SHADER_STORAGE_BUFFER = 0x90D2, GL_DRAW_INDIRECT_BUFFER = 0x8F3F;
+constexpr GLbitfield GL_SHADER_STORAGE_BARRIER_BIT = 0x2000, GL_COMMAND_BARRIER_BIT = 0x40;
+inline void (*glDispatchCompute)(GLuint, GLuint, GLuint) = nullptr;
+inline void (*glMemoryBarrier)(GLbitfield) = nullptr;
+inline void (*glBindBufferBase)(GLenum, GLuint, GLuint) = nullptr;
+inline void (*glMultiDrawArraysIndirect)(GLenum, const void*, GLsizei, GLsizei) = nullptr;
 
 using ProcLoader = void* (*)(const char*);
 
@@ -265,6 +276,10 @@ inline void load(ProcLoader loader) {
     SG_GL_FUNCS(SG_GL_LOAD)
 #undef SG_GL_LOAD
     glClipControl = reinterpret_cast<void (*)(GLenum, GLenum)>(loader("glClipControl"));
+    glDispatchCompute = reinterpret_cast<void (*)(GLuint, GLuint, GLuint)>(loader("glDispatchCompute"));
+    glMemoryBarrier = reinterpret_cast<void (*)(GLbitfield)>(loader("glMemoryBarrier"));
+    glBindBufferBase = reinterpret_cast<void (*)(GLenum, GLuint, GLuint)>(loader("glBindBufferBase"));
+    glMultiDrawArraysIndirect = reinterpret_cast<void (*)(GLenum, const void*, GLsizei, GLsizei)>(loader("glMultiDrawArraysIndirect"));
 }
 
 // What keeps a window answering while the engine works long with it waiting
