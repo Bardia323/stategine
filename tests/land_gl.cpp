@@ -184,6 +184,24 @@ int main() {
         std::printf("the ground round an eye: as many cells as %.0f a side; moved on, %zu far corners shared, %zu of them moved\n", cells, far_shared, far_moved);
         check(far_shared > 1000 && far_moved < far_shared / 20, "the ground round a moving eye: its points stay where they are in the world, as high");
         check(cells > 200.0 && cells < 450.0, "the ground round an eye: about as many cells as asked");
+        // And it faces one way at a point however many triangles have it -
+        // where one square meets the next most of all (each square's edge
+        // faced half as steep as the ground there: a line of other light
+        // round every square, going where the eye went).
+        {
+            std::map<std::pair<long long, long long>, std::size_t> facing;
+            double widest = 0.0;
+            for (std::size_t i = 0; i + 8 <= a.size(); i += 8) {
+                const auto [it, fresh] = facing.try_emplace({std::llround(a[i] * 1000.0), std::llround(a[i + 2] * 1000.0)}, i);
+                if (fresh) continue;
+                const float* p = &a[it->second + 3];
+                const float* q = &a[i + 3];
+                const double c = (p[0] * q[0] + p[1] * q[1] + p[2] * q[2]) / std::sqrt((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) * (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]));
+                widest = std::max(widest, std::acos(std::clamp(c, -1.0, 1.0)) * 180.0 / 3.14159265358979);
+            }
+            std::printf("the ground round an eye faces one way at a point: %.3f degrees the most between two of its triangles there\n", widest);
+            check(widest < 0.5, "the ground round an eye faces one way where squares meet");
+        }
 
         // (The height of the ground as drawn - its triangles as they are - at
         // a place: the triangles over it found in a grid of 4 m bins.)

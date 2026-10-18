@@ -133,11 +133,12 @@ std::vector<float> GLWorldView::sample_ground(const std::function<double(double,
     int levels = 1;
     while (m * step * std::ldexp(1.0, levels - 1) < reach && levels < 24) ++levels;
     const int side = 2 * m + 1;  // points a side of each square
+    const int wide = side + 4;   // and two more each way beyond it: which way its edge faces is as true as anywhere else
     struct Square {
         double s = 0, x0 = 0, z0 = 0;   // its spacing, its corner
         int hole_i0 = 0, hole_i1 = 0;   // the cells cut out of it (the square inside), across
         int hole_j0 = 0, hole_j1 = 0;   // and along; none if equal
-        std::vector<double> h;          // the heights of its points, a row a z
+        std::vector<double> h;          // the heights of its points and two beyond, a row a z
     };
     std::vector<Square> sq(static_cast<std::size_t>(levels));
     for (int L = 0; L < levels; ++L) {
@@ -150,17 +151,17 @@ std::vector<float> GLWorldView::sample_ground(const std::function<double(double,
             q.hole_i0 = static_cast<int>(std::lround((in.x0 - q.x0) / q.s)), q.hole_i1 = q.hole_i0 + m;
             q.hole_j0 = static_cast<int>(std::lround((in.z0 - q.z0) / q.s)), q.hole_j1 = q.hole_j0 + m;
         }
-        q.h.assign(static_cast<std::size_t>(side) * side, 0.0);
+        q.h.assign(static_cast<std::size_t>(wide) * wide, 0.0);
     }
     // Every point of every square, on every core at once.
     const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
     std::vector<std::thread> pool;
     for (int w = 0; w < workers; ++w)
         pool.emplace_back([&, w] {
-            for (int r = w; r < levels * side; r += workers) {
-                Square& q = sq[static_cast<std::size_t>(r / side)];
-                const int j = r % side;
-                for (int i = 0; i < side; ++i) q.h[static_cast<std::size_t>(j) * side + i] = height(q.x0 + i * q.s, q.z0 + j * q.s);
+            for (int r = w; r < levels * wide; r += workers) {
+                Square& q = sq[static_cast<std::size_t>(r / wide)];
+                const int j = r % wide;
+                for (int i = 0; i < wide; ++i) q.h[static_cast<std::size_t>(j) * wide + i] = height(q.x0 + (i - 2) * q.s, q.z0 + (j - 2) * q.s);
             }
         });
     for (std::thread& th : pool) th.join();
@@ -170,7 +171,7 @@ std::vector<float> GLWorldView::sample_ground(const std::function<double(double,
     for (int L = 0; L < levels; ++L) {
         const Square& q = sq[static_cast<std::size_t>(L)];
         const bool last = L + 1 == levels;
-        const auto hgt = [&](int i, int j) { return q.h[static_cast<std::size_t>(std::clamp(j, 0, side - 1)) * side + std::clamp(i, 0, side - 1)]; };
+        const auto hgt = [&](int i, int j) { return q.h[static_cast<std::size_t>(std::clamp(j + 2, 0, wide - 1)) * wide + std::clamp(i + 2, 0, wide - 1)]; };
         // Which way the ground faces at a point, from its neighbours `k`
         // cells off (1: its own spacing; 2: the next square's).
         const auto facing = [&](int i, int j, int k) {
