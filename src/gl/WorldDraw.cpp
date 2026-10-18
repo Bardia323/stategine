@@ -853,6 +853,14 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // The land toward the sun, as much of it as hides it (horizon_for):
     // made by the eye's own view, read as made by every other.
     const TerrainMesh* horizon = sun_color.x + sun_color.y + sun_color.z > 0.0f ? horizon_for(rooms, cam.eye, sun_dir, depth == 0 && !mirroring_) : nullptr;
+    // The sky as a planet's, and its clouds as a volume, where the look
+    // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
+    // this eye and this world's time, as they must be -
+    // before the air, which their shadow falls through.
+    const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first);
+    const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first);
+    const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
+    const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
     // The air of this view, lit by its lamps (air_fs) - when its look says
     // its air scatters: in the eye's own view and in every view through a
     // doorway, however deep (each gathered at its own pixels, so a small one
@@ -922,6 +930,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (And the fog pooled in it as it stands - its wisps moving through
         // the air are not gathered again for: no air would ever rest.)
         of = fnv(of, pooled.of);
+        // (And the clouds as the look makes them - not as they drift: that
+        // carries the air, as the view moving does, below.)
+        if (sky && sky->cloudy) of = fnv(of, sky->clouds);
         // (And the land's horizon, as it was made: where, for which bearing.)
         if (horizon)
             for (float f : {static_cast<float>(horizon->grid_x), static_cast<float>(horizon->grid_z), static_cast<float>(horizon->grid_cell), horizon->bearing_x,
@@ -966,7 +977,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // as kAirCarry gatherings would be; each cell's points are lit a part
         // at a time, the next part the next frame.
         if (made || a.of != of) a.gathered = 0;
-        const bool moved = a.gathered > 0 && std::memcmp(a.seen_vp.m, view_proj.m, sizeof view_proj.m) != 0;
+        // The clouds drifting over (their shadow on it moving with its
+        // world's time) carry it as the view moving does: still while that
+        // world is, it rests.
+        const bool drifted = sky && sky->cloudy && a.cloud_time != sky->dome_time;
+        const bool moved = a.gathered > 0 && (std::memcmp(a.seen_vp.m, view_proj.m, sizeof view_proj.m) != 0 || drifted);
         if (moved) a.gathered = std::min(a.gathered, kAirCarry - 1);
         if (a.gathered < kAirGatherings || moved) {
             a.of = of;
@@ -999,6 +1014,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             pooled_to(p, pooled);
             p.set("uFogGlow", fog_glow);
             horizon_to(p, horizon, rooms.front(), 4);
+            // (Under the clouds, their shadow: shafts where they part.)
+            if (sky && sky->cloudy) {
+                p.set("uCloudShadowMap", 2);
+                p.set("uCloudShadowAt", sky->shadow_x, sky->shadow_z, sky->shadow_half, 1.0f);
+                sky->shadow.bind_color(2);
+                gl::glActiveTexture(gl::GL_TEXTURE0);
+            } else {
+                p.set("uCloudShadowAt", 0.0f, 0.0f, 1.0f, 0.0f);
+            }
+            a.cloud_time = sky && sky->cloudy ? sky->dome_time : -1.0;
             p.set("uAirClip", static_cast<float>(clip.normal.x), static_cast<float>(clip.normal.y), static_cast<float>(clip.normal.z),
                   static_cast<float>(clip.offset));
             // Every slice's own light in one pass; then the slices added up
@@ -1044,13 +1069,6 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         air = &a;
     }
     if (eye_maps) card_stamp(kCardAir);
-    // And the sky as a planet's, and its clouds as a volume, where the look
-    // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
-    // this eye and this world's time, as they must be.
-    const Atmosphere atmosphere = surface_only_ ? Atmosphere{} : atmosphere_of(first);
-    const Clouds clouds = surface_only_ || baking_ ? Clouds{} : clouds_of(first);
-    const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
-    const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
     // A view whose doorway the eye may not see (ask_doorways): what it draws
     // from here on is left out by the card where the doorway is not seen.
     // Its maps and air, above, are drawn whatever: they are kept from frame

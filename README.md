@@ -952,11 +952,13 @@ when world time goes back, when the clouds or the air are said otherwise,
 the eye moves more than 50 m at once or the sun turns more than 0.1 rad
 (`FrameTimes::domes_made`). Their shadow on the ground is a map 16 km
 across round the eye (`gl::cloud_shadow_fs`), made with the dome each frame
-and read once by each sun's light (`cloud_shadow`).
+and read once by each sun's light (`cloud_shadow`) - in the lit air too (a
+look's `scatter`): shafts where they part. Their drifting carries the air as
+the view moving does, never gathering it from nothing, so it rests while the
+world's time stands still. (The sky is made before the air for it.)
 About half a millisecond of the card a frame at 2560 x 1440 (RTX 3090 Ti).
-Not yet: an eye in or above the clouds (it sees none), the lit air's shafts
-under them. A look saying `clouds.cover` 0 draws exactly as one saying
-nothing of it (`sg_sky_gl`).
+Not yet: an eye in or above the clouds (it sees none). A look saying
+`clouds.cover` 0 draws exactly as one saying nothing of it (`sg_sky_gl`).
 
 **Grade and curve** (composite uniforms, in every composite that pastes
 `gl::film_glsl()`: its `tonemap` grades first). In scene light, before any

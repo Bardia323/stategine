@@ -207,6 +207,40 @@ int main() {
     say("the ground in the open", open), say("the ground under the clouds", shaded);
     check(shaded.g < 0.6 * open.g, "the ground under a clouded sky is in their shadow");
     field.find(sg::Key{"sun"})->params.set(sg::keys::intensity, 1.0);
+
+    // The air lit by the sun (the look's `scatter`), seen over black ground:
+    // under a clouded sky, their shadow falls through it too - less of it
+    // lit. (What it adds, scatter on against off, clear and clouded.) And it
+    // rests while the world's time stands still.
+    ground.params.set("r", 0.0).set("g", 0.0).set("b", 0.0).set("roughness", 1.0);
+    earth.setting(sg::passes::scene, "atmosphere", 0.0);  // (the planet's air aside: the lamps' alone)
+    const auto air_added = [&](double cover) {
+        earth.setting(sg::passes::scene, "clouds.cover", cover);
+        earth.setting(sg::passes::scene, "scatter", 0.0);
+        shot(ahead, -0.8, 40);
+        const Rgb without = at(0.5, 0.3);
+        earth.setting(sg::passes::scene, "scatter", 0.02);
+        shot(ahead, -0.8, 40);
+        const Rgb with = at(0.5, 0.3);
+        return (with.r + with.g + with.b) - (without.r + without.g + without.b);
+    };
+    const double air_clear = air_added(0.0), air_clouded = air_added(0.95);
+    std::printf("the sun's light in the air: clear %.1f, under the clouds %.1f\n", air_clear, air_clouded);
+    // (What the air adds is measured after the picture is toned, which
+    // gives more levels to what it adds over the darker, clouded ground: the
+    // same light in both would come out more under the clouds.)
+    check(air_clear > 5.0 && air_clouded < 0.8 * air_clear, "the clouds' shadow falls through the lit air too");
+    field.params().set("own_time", 300.0);
+    earth.setting(sg::passes::scene, "clouds.cover", 0.5);
+    shot(ahead, -0.25, 120);
+    const std::vector<unsigned char> air_rested = px;
+    shot(ahead, -0.25, 1);
+    int air_stirred = 0;
+    for (std::size_t i = 0; i < px.size(); ++i) air_stirred = std::max(air_stirred, std::abs(static_cast<int>(px[i]) - static_cast<int>(air_rested[i])));
+    check(air_stirred == 0, "its world's time standing still, the lit air under the clouds rests (" + std::to_string(air_stirred) + " levels a frame on)");
+    field.params().set("own_time", 0.0);
+    earth.setting(sg::passes::scene, "scatter", 0.0);
+    earth.setting(sg::passes::scene, "atmosphere", 1.0);
     ground.params.set(sg::keys::x, 5000.0);
 
     // A look that says `atmosphere` and `clouds.cover` 0 draws as one that

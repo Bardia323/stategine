@@ -1545,6 +1545,7 @@ private:
         int gathered = 0;
         uint32_t spin = 0;
         int cells_x = 0, cells_y = 0;  // its cells across and up: only ever more
+        double cloud_time = -1.0;      // the world's time of the clouds' shadow it was last gathered under
     };
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
     // While its view moves: a cell's points lit over this many frames, what
