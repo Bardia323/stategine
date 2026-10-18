@@ -504,6 +504,15 @@ guessing (`--view ball|cube|slab` for a close look):
    worn as `sgmat` reads it (`sg::mat`), never a reader of a game's own. A new `surface` kind or generator is an engine
    change - a row in docs/materials.md and an `sgmat` picture with it.
 
+Detail finer than a pixel is never drawn as detail: a surface's pattern
+(ripples, weave, fibres) is shown only where a pixel holds it - judged by
+how much of the surface a pixel takes, not by how fast a warped pattern
+turns, which shows it in streaks - and finer it becomes the roughness or
+the mean it averages to. Sand at a distance is smooth. And the scene
+shader is at the card's limit of uniforms (1024 registers on some): a new
+one is packed into one a kind of thing already has (a land's `uLand`), or
+it does not build and the built-in look is drawn instead.
+
 ## Joining two projects
 
 Bringing one stategine project into another (a game into a sandbox, two

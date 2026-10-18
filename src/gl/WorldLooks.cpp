@@ -209,8 +209,13 @@ void GLWorldView::check_look(const LookState& look, std::vector<std::string>& ou
         const PassProgram& slot = resolved_[look.id()][pass];
         if (!slot.error.empty()) {
             const std::string& e = slot.error;
-            out.push_back(tag + pass.str() + " shader does not build, so the built-in is used - " +
-                          e.substr(0, e.find('\n')));
+            // (Its first error's line too - some drivers head their log
+            // with a line that says nothing.)
+            const std::size_t at = e.find("error");
+            const std::size_t line = at == std::string::npos ? 0 : e.rfind('\n', at);
+            const std::size_t from = line == std::string::npos ? 0 : line + 1;
+            out.push_back(tag + pass.str() + " shader does not build, so the built-in is used - " + e.substr(0, e.find('\n')) +
+                          (from > 0 ? " " + e.substr(from, e.find('\n', from) - from) : std::string()));
             continue;
         }
         const Element* el = look.find(pass);

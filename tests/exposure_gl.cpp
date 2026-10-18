@@ -5,7 +5,7 @@
 // sixteen times as brightly is seen about as bright, where with a fixed
 // exposure it is blown out. The eye eases there - never more than its rate a
 // frame - and settles at once on a first frame or when asked: the same
-// picture however it was come to.
+// picture however it was come to - and at a cut (the camera's `shot`).
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -135,5 +135,15 @@ int main() {
     const Picture asked = shot(view);
     const Picture once = shot(fresh);
     check(asked.differs(once) <= 1.0, "settled, a shot is the same picture however it was come to");
+
+    // A cut (the camera's `shot` changed): the light gone down with it, the
+    // eye does not ease open over the frames after - it takes the new
+    // shot's measure at once, as a shot is exposed for itself.
+    for (int i = 0; i < 3; ++i) shot(view);
+    lamp.params.set(sg::keys::intensity, 0.6);
+    eye.params.set("shot", 2.0);
+    shot(view);
+    std::printf("  cut: %.2f stops, the dim room settled at %.2f\n", view.exposure_stops(), dim_stops);
+    check(std::abs(view.exposure_stops() - dim_stops) < 0.05, "a cut: the eye takes the new shot's measure at once");
     return ok ? 0 : 1;
 }

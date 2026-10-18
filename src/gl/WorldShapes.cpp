@@ -110,44 +110,75 @@ void GLWorldView::draw_sky(const Camera& cam, float zfar) {
     sphere_.draw();
 }
 
-std::vector<float> GLWorldView::sample_ground(const std::function<double(double, double)>& height, int n, double reach, double step, double cx, double cz) {
-    const int half = n / 2;
+// Where the ground is sampled along one of its ways, round `c`: `step`
+// apart near it, further apart the further out (as far apart as a grid of
+// n cells reaching `reach` would have them there, growing evenly) - but
+// every point on the world's own lattice for its spacing, each spacing a
+// doubling of the last and begun only where the coarser lattice lands on
+// the finer. So a point sampled is at the same place in the world wherever
+// the eye stands, and has the same height: the eye moving on only adds
+// points at the edges of each spacing and takes others away there - the
+// far dunes never slide under their samples, never wobble.
+static std::vector<double> ground_lattice(double c, int n, double reach, double step) {
+    const int half = std::max(1, n / 2);
     const double grow = std::max(0.0, (reach - step * half) / (static_cast<double>(half) * half));
-    std::vector<double> off(static_cast<std::size_t>(n + 1));
-    for (int i = 0; i <= n; ++i) {
-        const double k = i - half, a = std::fabs(k);
-        off[static_cast<std::size_t>(i)] = (k < 0 ? -1.0 : 1.0) * (step * a + grow * a * a);
+    // (The spacing the even growth gives at a distance d from the middle.)
+    const auto wanted = [&](double d) { return std::sqrt(step * step + 4.0 * grow * d); };
+    // (Counted in steps, so the lattices are exact.)
+    const long long mid = std::llround(c / step);
+    std::vector<long long> out, back;
+    for (int dir : {1, -1}) {
+        std::vector<long long>& side = dir > 0 ? out : back;
+        long long x = mid, s = 1;
+        while (static_cast<double>(std::llabs(x - mid)) * step < reach) {
+            // Coarser once it is wanted, and once this point is on the
+            // coarser lattice too.
+            while (wanted(static_cast<double>(std::llabs(x - mid)) * step) >= 1.4142 * static_cast<double>(s) * step && s < (1LL << 40) && x % (2 * s) == 0) s *= 2;
+            x += dir * s;
+            side.push_back(x);
+        }
     }
-    const auto at = [n](int i, int j) { return static_cast<std::size_t>(j) * static_cast<std::size_t>(n + 1) + static_cast<std::size_t>(i); };
-    std::vector<double> hgt(static_cast<std::size_t>((n + 1) * (n + 1)));
+    std::vector<double> at;
+    at.reserve(out.size() + back.size() + 1);
+    for (auto it = back.rbegin(); it != back.rend(); ++it) at.push_back(static_cast<double>(*it) * step);
+    at.push_back(static_cast<double>(mid) * step);
+    for (long long x : out) at.push_back(static_cast<double>(x) * step);
+    return at;
+}
+
+std::vector<float> GLWorldView::sample_ground(const std::function<double(double, double)>& height, int n, double reach, double step, double cx, double cz) {
+    const std::vector<double> xs = ground_lattice(cx, n, reach, step), zs = ground_lattice(cz, n, reach, step);
+    const int nx = static_cast<int>(xs.size()) - 1, nz = static_cast<int>(zs.size()) - 1;
+    const auto at = [nx](int i, int j) { return static_cast<std::size_t>(j) * static_cast<std::size_t>(nx + 1) + static_cast<std::size_t>(i); };
+    std::vector<double> hgt(xs.size() * zs.size());
     const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
     std::vector<std::thread> pool;
     for (int w = 0; w < workers; ++w)
         pool.emplace_back([&, w] {
-            for (int j = w; j <= n; j += workers)
-                for (int i = 0; i <= n; ++i)
-                    hgt[at(i, j)] = height(cx + off[static_cast<std::size_t>(i)], cz + off[static_cast<std::size_t>(j)]);
+            for (int j = w; j <= nz; j += workers)
+                for (int i = 0; i <= nx; ++i)
+                    hgt[at(i, j)] = height(xs[static_cast<std::size_t>(i)], zs[static_cast<std::size_t>(j)]);
         });
     for (std::thread& th : pool) th.join();
     std::vector<gl::Vec3> nrm(hgt.size());
-    for (int j = 0; j <= n; ++j)
-        for (int i = 0; i <= n; ++i) {
-            const int i0 = std::max(0, i - 1), i1 = std::min(n, i + 1);
-            const int j0 = std::max(0, j - 1), j1 = std::min(n, j + 1);
-            const double dx = (hgt[at(i1, j)] - hgt[at(i0, j)]) / (off[static_cast<std::size_t>(i1)] - off[static_cast<std::size_t>(i0)]);
-            const double dz = (hgt[at(i, j1)] - hgt[at(i, j0)]) / (off[static_cast<std::size_t>(j1)] - off[static_cast<std::size_t>(j0)]);
+    for (int j = 0; j <= nz; ++j)
+        for (int i = 0; i <= nx; ++i) {
+            const int i0 = std::max(0, i - 1), i1 = std::min(nx, i + 1);
+            const int j0 = std::max(0, j - 1), j1 = std::min(nz, j + 1);
+            const double dx = (hgt[at(i1, j)] - hgt[at(i0, j)]) / (xs[static_cast<std::size_t>(i1)] - xs[static_cast<std::size_t>(i0)]);
+            const double dz = (hgt[at(i, j1)] - hgt[at(i, j0)]) / (zs[static_cast<std::size_t>(j1)] - zs[static_cast<std::size_t>(j0)]);
             nrm[at(i, j)] = gl::normalize({static_cast<float>(-dx), 1.0f, static_cast<float>(-dz)});
         }
     std::vector<float> v;
-    v.reserve(static_cast<std::size_t>(n) * n * 6 * 8);
+    v.reserve(static_cast<std::size_t>(nx) * nz * 6 * 8);
     const auto put = [&](int i, int j) {
         const std::size_t k = at(i, j);
-        const float x = static_cast<float>(cx + off[static_cast<std::size_t>(i)]);
-        const float z = static_cast<float>(cz + off[static_cast<std::size_t>(j)]);
+        const float x = static_cast<float>(xs[static_cast<std::size_t>(i)]);
+        const float z = static_cast<float>(zs[static_cast<std::size_t>(j)]);
         v.insert(v.end(), {x, static_cast<float>(hgt[k]), z, nrm[k].x, nrm[k].y, nrm[k].z, x * 0.1f, z * 0.1f});
     };
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < nz; ++j)
+        for (int i = 0; i < nx; ++i) {
             put(i, j);
             put(i, j + 1);
             put(i + 1, j + 1);
@@ -246,9 +277,14 @@ void GLWorldView::draw_terrain(const State& st, const Element& e) {
     // Damp by its water: where it stands (`wet_level`) and how far up
     // (`wet_band`, metres; 0 none).
     const double wet_band = e.params.num(Key{"wet_band"}, 0.0);
-    if (wet_band > 0.0) scene_->set("uWet", static_cast<float>(e.params.num(Key{"wet_level"}, 0.0)), static_cast<float>(wet_band));
+    // And its sand's ripples (surface 8): how far apart (`ripple`, metres;
+    // 0 as sand has them, a hand; below 0 none) and the way the wind that
+    // laid them blew (`ripple_dir`, radians round from +x towards +z).
+    static const Key ripple{"ripple"}, ripple_dir{"ripple_dir"};
+    scene_->set("uLand", static_cast<float>(e.params.num(Key{"wet_level"}, 0.0)), static_cast<float>(std::max(wet_band, 0.0)),
+                static_cast<float>(e.params.num(ripple, 0.0)), static_cast<float>(e.params.num(ripple_dir, 0.0)));
     it->second.mesh.draw();
-    if (wet_band > 0.0) scene_->set("uWet", 0.0f, 0.0f);
+    scene_->set("uLand", 0.0f, 0.0f, 0.0f, 0.0f);
     if (land) unbind_land();
     if (worn) {
         scene_->set("uTexMix", 0.0f), scene_->set("uSkin", 0.0f), scene_->set("uTileBreak", 0.0f);

@@ -639,7 +639,12 @@ from a place of the picture of its own, crossing over to the next in the
 middle of the cell (`tile_break`, 0..1, how narrowly; 0.6), its tone moving
 slowly across the land - so nothing repeats from far off. It may say where its water stands
 (`wet_level`) and how far up from it the sand is damp (`wet_band`, metres):
-darker and glossier there, the edge ragged. And a land may move with its
+darker and glossier there, the edge ragged. A land of sand (`surface` 8) may
+ask for wind ripples (`ripple`, metres apart; `ripple_dir`): in its normal,
+shown only as near as a pixel can hold them (docs/materials.md). The ground
+round the eye is sampled on the world's own lattice - each point a multiple
+of its spacing, the spacing doubling outwards - so the eye moving on never
+slides the far ground under its samples. And a land may move with its
 world's time (`drifts` 1: dunes creeping, its ground given again as its time
 goes, `Spatial3D::terrain` again): it is drawn as it was until the ground it
 now is has been sampled in the background, never waited for; any other land
@@ -1051,7 +1056,10 @@ a state or its time - and eased by the transient interval as fades are
 look's own exposure (a painting's match holds), and a room seen through a
 doorway is seen with the eye's. The first frame the eye adjusts, and the next
 after `settle_exposure()`, take the measure at once: a shot asks for it on its
-first frame, so it is the same picture however it was come to.
+first frame, so it is the same picture however it was come to. A camera's cut (its `shot` changed) asks for it too. What glows (the
+bloom's `uThreshold`, and the film's halation with it) is as bright as the
+adjusted eye sees it: an eye stopped down for a bright desert glows only at
+what is bright there.
 
 ### The lens
 
@@ -1062,7 +1070,13 @@ metres over where it stands; 1), how far round it on the screen all is sharp
 softens (`focus_fall`; 0.3) and how soft at most (`focus_blur`, levels of the
 picture's mipmaps; 0 none). The eye's own view only: the scene's picture is
 mipmapped, and the composite reads it softer the further from the point,
-eight taps a level wide round each pixel (`sg_land_gl`).
+each pixel a filled disc of it as wide as it is out of focus (24 taps in a
+sunflower's spiral, a level finer than the disc) (`sg_land_gl`).
+
+A camera says when its shot changes (`shot`, any number - a cut whenever it
+is another): what the eye made of the frames before is let go (its
+smoothing over frames), and it takes the new shot's light at once rather
+than easing to it (`sg_exposure_gl`).
 
 ### Fog where it pools
 

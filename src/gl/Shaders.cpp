@@ -1141,6 +1141,20 @@ float cirrus_fbm(vec2 p) {
     }
     return sum / 0.97;
 }
+// The same, each octave finer than a pixel holds (`fw`: how far the noise
+// goes across one, at its first octave) let go to its mean - fine fibres
+// far off are a haze of them, not a moire.
+float cirrus_fbm(vec2 p, float fw) {
+    float sum = 0.0, a = 0.5;
+    const mat2 turn = mat2(0.8, -0.6, 0.6, 0.8);
+    for (int i = 0; i < 5; ++i) {
+        float keep = 1.0 - smoothstep(0.2, 0.55, fw);
+        sum += a * mix(0.5, cirrus_noise(p), keep);
+        p = turn * p * 2.03 + vec2(17.1, 3.3);
+        a *= 0.5, fw *= 2.03;
+    }
+    return sum / 0.97;
+}
 
 // High cloud of ice the way `dir`: a thin layer, drawn out along its wind
 // into streaks (the noise read stretched across the wind, short along it),
@@ -1162,9 +1176,13 @@ vec4 cirrus_along(vec3 dir) {
     float size = uCirrus.z;
     w.y += (cirrus_fbm(w / (size * 7.0) + 3.7) - 0.5) * size * 0.9;
     float patches = smoothstep(0.62 - 0.32 * uCirrus.x, 0.86 - 0.24 * uCirrus.x, cirrus_fbm(w / (size * 3.5) + 11.3));
-    float fibre = cirrus_fbm(vec2(w.x / (size * 1.4), w.y / (size * 0.11)) + 5.1);
+    vec2 fine = fwidth(w);
+    vec2 q1 = vec2(w.x / (size * 1.4), w.y / (size * 0.11)), q2 = vec2(w.x / (size * 0.5), w.y / (size * 0.06));
+    float fw1 = max(fine.x / (size * 1.4), fine.y / (size * 0.11)), fw2 = max(fine.x / (size * 0.5), fine.y / (size * 0.06));
+    float fibre = cirrus_fbm(q1 + 5.1, fw1);
     float ridge = 1.0 - abs(2.0 * fibre - 1.0);
-    float strands = smoothstep(0.45, 0.95, ridge) * (0.55 + 0.45 * cirrus_fbm(vec2(w.x / (size * 0.5), w.y / (size * 0.06)) + 9.9));
+    // (Too fine to hold, the ridged fibres are their mean: a veil.)
+    float strands = mix(smoothstep(0.45, 0.95, ridge), 0.3, smoothstep(0.25, 0.6, fw1)) * (0.55 + 0.45 * cirrus_fbm(q2 + 9.9, fw2));
     float d = strands * patches * (0.45 + 0.4 * uCirrus.x);
     d *= 1.0 - smoothstep(0.55, 1.0, t / (uCloudShape.w * 2.0));
     if (d <= 1e-4) return vec4(0.0, 0.0, 0.0, 1.0);
@@ -1399,7 +1417,8 @@ uniform float uTexMix;        // 0 albedo only, 1 texture only
 uniform float uSkin;          // 1: a box wearing a texture atlas, a cell a face (skin_uv); 2: a picture tiled over the world (world_uv)
 uniform float uTile;          // with uSkin 2: the metres of the world one picture covers
 uniform float uTileBreak;     // with uSkin 2: how much a second laying of it, turned and larger, breaks its repeats (0..1)
-uniform vec2  uWet;           // a land's water: where it stands (y, its room's frame), how far up from it the ground is damp (0: none)
+uniform vec4  uLand;          // a land's own: where its water stands (y, its room's frame), how far up from it the ground is damp (0: none);
+                              // its sand's wind ripples (surface 8): how far apart (metres; 0: none), the way the wind blew (radians from +x towards +z)
 uniform float uSkinTile;      // with uSkin 1: metres of the thing a cell covers, its pattern going on round it; 0: a face the whole cell
 uniform vec3  uSkinSize;      // with uSkinTile: the thing's size
 uniform float uSkinBlend;     // with uSkin 1: 0 a face its own cell; 1 a curve soft between the cells of the ways it faces
@@ -1841,19 +1860,32 @@ vec3 atmo_between(vec3 color, vec3 dir, float len) {
     return mix(color, color * near + light, uAtmo);
 }
 
+// The sun's own disc seen `s` (the cosine) off its middle: as wide as the
+// sun is from here (half a degree across), its edge darker than its middle
+// as a star's limb is, its edge a pixel soft - and far brighter than any
+// sky (its glow round it is the lens's and the haze's, not the disc's).
+float sun_disc(float s) {
+    const float r = 0.00465;  // radians, its radius
+    float a = sqrt(max(2.0 * (1.0 - s), 0.0));  // radians off its middle (small)
+    float edge = max(fwidth(a), 2e-4);
+    float on = 1.0 - smoothstep(r - edge, r + edge, a);
+    float mu = sqrt(max(1.0 - (a * a) / (r * r), 0.0));
+    return on * (1.0 - 0.6 * (1.0 - mu)) * 600.0;
+}
+
 vec3 sky(vec3 dir) {
     float t = clamp(dir.y, -1.0, 1.0);
     vec3 c = mix(uSkyHorizon, uSkyTop, pow(max(t, 0.0), 0.45));
     c = mix(c, uSkyHorizon * 0.8, clamp(-t * 5.0, 0.0, 1.0));  // below the horizon, haze
     float s = max(dot(dir, normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0);
-    c += uSunColor * (pow(s, 1200.0) * 40.0 + pow(s, 24.0) * 0.35 + pow(s, 4.0) * 0.1);
+    c += uSunColor * (sun_disc(s) + pow(s, 24.0) * 0.35 + pow(s, 4.0) * 0.1);
     // The planet's own sky, as much of it as the look says: its sun's disc
     // as much of the sun as gets through the air to the eye (its glow round
     // it is the haze's, in the sky view).
     vec3 sunlit = uSunColor;
     if (uAtmo > 0.0) {
         vec3 through = light_through(atmo_eye(), dir.y);
-        c = mix(c, atmo_sky(dir) + uSunColor * through * pow(s, 1200.0) * 40.0, uAtmo);
+        c = mix(c, atmo_sky(dir) + uSunColor * through * sun_disc(s), uAtmo);
         sunlit = mix(sunlit, uSunColor * light_through(atmo_eye(), normalize(uSunDir + vec3(0.0, 1e-4, 0.0)).y), uAtmo);
     }
     // Clouds: a layer overhead, seen in perspective, drifting; lit on the
@@ -2216,6 +2248,23 @@ vec3 room_material(out float rough_mod) {
 
 vec3 surface_albedo(out float rough_mod);
 
+// How a heap of grains scatters a lamp's light, over the smooth surface's
+// (1 for anything but sand, surface 8): each grain a little ball lit on
+// one side, so the heap is lit flatter than a smooth surface would be
+// (Oren and Nayar's rough diffuse, the grains' slopes spread 25 degrees),
+// brighter looking away from the light than towards it; and brightest of
+// all with the light straight behind the eye, where every grain hides its
+// own shadow (the opposition surge, a few degrees wide).
+float grains(vec3 n, vec3 l, vec3 v, float ndl, float ndv) {
+    if (mSurface < 7.5 || mSurface > 8.5) return 1.0;
+    const float s2 = 0.19;  // (0.436 rad)^2
+    const float A = 1.0 - 0.5 * s2 / (s2 + 0.33), B = 0.45 * s2 / (s2 + 0.09);
+    float s = max(dot(l, v) - ndl * ndv, 0.0);
+    float rough = A + B * s / max(max(ndl, ndv), 1e-3);
+    float g = acos(clamp(dot(l, v), -1.0, 1.0));
+    return rough * (1.0 + 0.3 * exp(-g / 0.07));
+}
+
 vec3 ground_albedo(out float rough_mod) {
     vec2 p = vRoom.xz;
     vec4 w = texture(uTex, (p - uSplatRect.xy) * uSplatRect.zw);
@@ -2265,23 +2314,25 @@ vec3 surface_albedo(out float rough_mod) {
         return mAlbedo * grain * mix(0.82, 1.06, height);
     }
     if (mSurface > 7.5) {
-        // Sand, rippled by the wind, giving way to banded rock where the
-        // ground is steep. The ripples fade out before they would alias.
+        // Sand: one colour, as a dune's sand is - sorted by the wind, not
+        // speckled. What it shows is its shape and the light on it (its
+        // ripples are in its normal, its grains in how it scatters: main);
+        // only a slip face, fresh from its avalanches, a shade lighter, and
+        // the tone drifting over hundreds of metres. Banded rock where the
+        // ground is steeper than sand can lie.
         vec3 n = normalize(vNormal);
         vec2 p = vRoom.xz;
-        float arg = dot(p, vec2(0.8, 0.6)) * 21.0 + noise(p * 0.35) * 6.0;
-        float fade = clamp(1.5 - fwidth(arg) * 0.6, 0.0, 1.0);
-        float ripple = 0.5 + 0.5 * sin(arg);
-        float grain = noise(p * 37.0);
-        vec3 sand = mAlbedo * (0.93 + 0.09 * (ripple - 0.5) * fade + 0.07 * (grain - 0.5) * fade)
-                  * (0.9 + 0.2 * noise(p * 0.04));
+        float slip = smoothstep(0.95, 0.86, n.y);
+        vec3 sand = mAlbedo * (1.0 + 0.05 * slip) * (0.96 + 0.08 * noise(p * 0.0035 + 2.3));
         float strata = 0.5 + 0.5 * sin(vRoom.y * 2.6 + noise(p * 0.15) * 2.5);
         vec3 rock = vec3(0.50, 0.30, 0.20) * (0.72 + 0.32 * strata) * (0.85 + 0.2 * noise(p * 2.0 + vRoom.y));
-        // Wind: pale veils of sand streaming over the ground, downwind.
+        // Wind: pale veils of sand streaming over the ground, downwind -
+        // where they are finer than a pixel, gone.
         vec2 w = p * vec2(0.35, 1.2) + vec2(uTime * 1.7, uTime * 0.3);
+        float fade = 1.0 - smoothstep(0.3, 1.2, length(fwidth(w)));
         float drift = smoothstep(0.55, 0.9, noise(w) * 0.7 + noise(w * 3.1 + 7.0) * 0.3) * uWind;
         sand = mix(sand, mAlbedo * 1.12 + 0.02, drift * 0.35 * fade);
-        float steep = smoothstep(0.3, 0.5, 1.0 - n.y);
+        float steep = smoothstep(0.38, 0.5, 1.0 - n.y);
         rough_mod = 0.25;
         return mix(sand, rock, steep);
     }
@@ -2475,9 +2526,9 @@ void main() {
     // Damp by its water (a land that says where its water stands): darker
     // and glossier the nearer the waterline, as wet sand is - its edge
     // ragged, as the water left it.
-    if (uWet.y > 0.0) {
-        float above = vRoom.y - uWet.x + (noise(vRoom.xz * 0.9) - 0.5) * uWet.y * 0.6;
-        float wet = 1.0 - smoothstep(0.0, uWet.y, above);
+    if (uLand.y > 0.0) {
+        float above = vRoom.y - uLand.x + (noise(vRoom.xz * 0.9) - 0.5) * uLand.y * 0.6;
+        float wet = 1.0 - smoothstep(0.0, uLand.y, above);
         albedo *= mix(1.0, 0.5, wet);
         roughness = mix(roughness, 0.22, wet * 0.85);
     }
@@ -2564,8 +2615,47 @@ void main() {
         n = normalize(n - vec3(slope.x, 0.0, slope.y));
         bent = true;
     }
+    // Sand's wind ripples, where a land asks for them: crests across the
+    // wind as far apart as it says (a hand, as sand has them), fifteen times as long as they stand high, a long gentle side
+    // the wind comes up and a short steep one it leaves by; their crests
+    // wandering, now and then two running into one - none on a slip face,
+    // where the sand has avalanched smooth, nor on what is steeper still.
+    // Seen only as near as a pixel can hold them: further off they are what
+    // makes the sand a little rougher than smooth, and the sand is smooth.
+    float sand_unseen = 0.0;  // slope variance of ripples finer than the pixel, given to the roughness
+    if (mSurface > 7.5 && mSurface < 8.5 && uLand.z > 0.0 && face_n.y > 0.85) {
+        float lambda = uLand.z;
+        vec2 wind = vec2(cos(uLand.w), sin(uLand.w));
+        vec2 p = vRoom.xz;
+        float along = dot(p, wind), across = dot(p, vec2(-wind.y, wind.x));
+        // (Wandering: the crests bent along their length, and the spacing
+        // a little wider here than there, so crests now and then merge.)
+        float wander = lambda * (2.4 * (noise(vec2(across, along * 0.25) / (lambda * 9.0) + 3.1) - 0.5)
+                               + 0.9 * (noise(vec2(across, along * 0.4) / (lambda * 3.2) + 8.7) - 0.5));
+        float spacing = lambda * (1.0 + 0.16 * (noise(p / (lambda * 40.0) + 5.3) - 0.5));
+        float phase = (along + wander) / spacing;
+        // (Drawn only where each takes a dozen pixels or more, gone by six:
+        // finer, they would beat against the pixels in false whorls. How many
+        // is how much ground a pixel takes, its longer way - not how fast
+        // their wandering phase turns, which would show them in streaks.)
+        float foot = max(length(dFdx(p)), length(dFdy(p))) / spacing;
+        float held = 1.0 - smoothstep(0.08, 0.17, foot);
+        float lies = smoothstep(0.85, 0.92, face_n.y);
+        // (Their slope along the wind: up the long side, 70% of each, down
+        // the short; eased where they turn, as a crest is rounded.)
+        const float stoss = 0.7, tall = 1.0 / 15.0;
+        float f = fract(phase);
+        float up = tall / stoss, down = -tall / (1.0 - stoss);
+        float s = mix(up, down, smoothstep(stoss - 0.06, stoss + 0.04, f)) ;
+        s = mix(s, up, smoothstep(0.96, 1.0, f));
+        float k = held * lies;
+        n = normalize(n - vec3(wind.x, 0.0, wind.y) * (s * k));
+        bent = k > 0.0 || bent;
+        // (Their slopes' spread: tall^2 (1/stoss + 1/(1-stoss)); twice that GGX's.)
+        sand_unseen = 2.0 * tall * tall * (1.0 / stoss + 1.0 / (1.0 - stoss)) * lies * (1.0 - held);
+    }
     float ndv = clamp(dot(n, v), 1e-3, 1.0);
-    float a2 = roughness * roughness * roughness * roughness;
+    float a2 = roughness * roughness * roughness * roughness + sand_unseen;
     // Specular antialiasing (Kaplanyan & Hill): where the normal turns fast
     // across a pixel - a rounded edge thinner than a pixel - the highlight is
     // widened by as much, or it flickers from pixel to pixel and steps.
@@ -2646,7 +2736,7 @@ void main() {
         float d = a2 / (denom * denom + 1e-7);
         float vis = 0.5 / mix(2.0 * ndl * ndv, ndl + ndv, sqrt(a2));
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
-        vec3 lobe = diffuse * (1.0 - f) + d * vis * f * spec_k;
+        vec3 lobe = diffuse * (1.0 - f) * grains(n, l, v, ndl, ndv) + d * vis * f * spec_k;
 
         // (Light standing in for bounce is the probes' where they hold: their
         // bake saw the bounce itself, and it would count twice.)
@@ -2916,21 +3006,24 @@ float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
 // The scene as the lens sees it: sharp round its point of focus, softer the
 // further from it on the screen (a tilt-shift turned round that point, as a
-// small world's photograph is) - read from the picture's mipmaps, a ring of
-// eight taps the width of the level so no level's squares show.
+// small world's photograph is) - each point a disc of the picture as wide as
+// it is out of focus, filled: taps spread over it evenly (a sunflower's
+// spiral), each read from the mipmap a level finer than the disc so they
+// overlap and no copy of an edge stands apart from another.
 vec3 focused(vec2 uv) {
     vec3 sharp = texture(uScene, uv).rgb;
     if (uFocus.w <= 0.0) return sharp;
     vec2 d = (uv - uFocus.xy) * vec2(uTexel.y / uTexel.x, 1.0);
     float k = smoothstep(uFocus.z, uFocus.z + max(uFocusFall, 1e-3), length(d));
     if (k <= 0.0) return sharp;
-    float lod = k * uFocus.w, reach = exp2(lod) * 1.5;
-    vec3 sum = textureLod(uScene, uv, lod).rgb * 2.0;
-    for (int i = 0; i < 8; ++i) {
-        float a = float(i) * 0.78539816 + 0.3927;
-        sum += textureLod(uScene, uv + vec2(cos(a), sin(a)) * reach * uTexel, lod).rgb;
+    float lod = k * uFocus.w, reach = exp2(lod) * 1.25;
+    float level = max(lod - 1.5, 0.0);
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 24; ++i) {
+        float a = float(i) * 2.3999632, r = sqrt((float(i) + 0.5) / 24.0) * reach;
+        sum += textureLod(uScene, uv + vec2(cos(a), sin(a)) * r * uTexel, level).rgb;
     }
-    return mix(sharp, sum * 0.1, smoothstep(0.0, 0.2, k));
+    return mix(sharp, sum / 24.0, smoothstep(0.0, 0.2, k));
 }
 
 void main() {
@@ -2941,7 +3034,14 @@ void main() {
         vec2 d = vUV - 0.5, off = d * dot(d, d) * 2.0 * uFringe * uTexel;
         scene = vec3(focused(vUV + off).r, scene.g, focused(vUV - off).b);
     }
-    if (uHalation > 0.0) scene += texture(uBloom, vUV).rgb * vec3(1.0, 0.32, 0.12) * uHalation;
+    // (Film's halation: the light of what is brightest come back through the
+    // film red, round it - seen where it falls on what is darker, lost on
+    // what is as bright.)
+    if (uHalation > 0.0) {
+        vec3 glow = texture(uBloom, vUV).rgb;
+        float under = 1.0 - smoothstep(0.25, 1.0, luma(scene * uExposure));
+        scene += glow * vec3(1.0, 0.32, 0.12) * uHalation * under;
+    }
     if (uRaw > 0.5) {
         // (Its bloom is the developing eye's own, laid on what it sees.)
         FragColor = vec4(scene + texture(uBloom, vUV).rgb * fog_bloom(vUV) + godrays(vUV), 1.0);

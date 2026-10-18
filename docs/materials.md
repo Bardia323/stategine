@@ -68,7 +68,7 @@ a floor's planks keep their size however big the floor.
 | 5 | brushed metal (35% metal, smoother) | 15 | metal plate: seams, diamond tread |
 | 6 | moulded plastic: speckle, dark edges | 16 | grass |
 | 7 | fabric: a weave, averaged away when fine | 17 | marble: slabs, wandering veins |
-| 8 | sand rippled by wind, rock where steep | 18 | water (waves in its normal) |
+| 8 | sand: one colour, lit as grains are; rock where steeper than sand lies | 18 | water (waves in its normal) |
 | 9 | sky: not lit, not fogged | 19 | ground of a land (`sg::terrain`'s layers) |
 | | | 20 | earth: clods, stones |
 
@@ -78,6 +78,22 @@ x, z, strength, now)` (`sg/domains/Ripple.hpp`) keeps the last 16 in its
 params, each where it began and when - its world's time - so the water at a
 world time is the same however it was come to; drawn until it dies away
 (6 s), a few crests leaving at a walking pace.
+
+Sand (8) is what a dune is made of: one colour, the colour the wind sorted
+it to - a slip face a shade lighter, fresh from its avalanches, the tone
+drifting over hundreds of metres - and lit as a heap of grains is: flatter
+than a smooth surface (Oren and Nayar's rough diffuse, the grains' slopes
+spread 25 degrees), brighter looking away from the light than towards it,
+brightest with the sun straight behind the eye (the opposition surge). What
+it shows is its shape and the light on it; give it a colour as sand
+reflects (a dune's orange sand about 0.66, 0.47, 0.30) and the light makes
+the rest. A land of it may ask for wind ripples (`ripple`, metres apart - a
+hand, 0.11, as sand has them; `ripple_dir`, radians the wind blew): in its
+normal, never its colour - crests across the wind, fifteen times as long as
+they stand high, a long gentle side and a short steep one, wandering, now
+and then two running into one - drawn only where a pixel holds a dozen or
+more, finer given to its roughness, so from any way off the sand is
+smooth, as it is. None on a slip face.
 
 A new kind is an engine change: a branch in the shader's `surface_albedo` or
 `room_material`, keyed on the next free number, a row here, and an

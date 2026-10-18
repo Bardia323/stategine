@@ -669,6 +669,15 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
             return;
         }
     }
+    // A cut (its camera's `shot` changed - whoever stages it says so): what
+    // the eye made of the frames before is not of this picture - its
+    // smoothing over frames begins again, and it takes the light's measure
+    // at once rather than adjusting to it, as each shot is exposed for itself.
+    if (!root_ && !requested.empty() && requested.front().room) {
+        const double shot = requested.front().room->camera().params.num(Key{"shot"}, 0.0);
+        if (shot_known_ && shot != shot_) taa_held_ = false, exposure_.settle = true;
+        shot_ = shot, shot_known_ = true;
+    }
     // Drawn at a part of the screen's size, and laid on it in squares: the
     // eye's own view only (a view drawn for another is that one's size).
     if (q_.pixel > 1 && !root_ && !output_ && !baking_ && surface_only_ == 0 && fb_w > 0 && fb_h > 0) {

@@ -6,11 +6,13 @@
 // stands (`wet_level`, `wet_band`) is darker by the waterline than up the
 // bank; and one that drifts with its world's time (`drifts`: its ground a
 // function of that time, given again) is drawn as it now is a few frames on,
-// never waiting for it - and as it was until then.
+// never waiting for it - and as it was until then. The ground round an eye
+// that moves on is sampled at the same points of the world, as high.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -154,6 +156,31 @@ int main() {
     const int soft_middle = contrast(0.5, 0.5), soft_edge = contrast(0.12, 0.2);
     std::printf("the stripes' contrast: sharp %d middle, %d edge; focused %d middle, %d edge\n", sharp_middle, sharp_edge, soft_middle, soft_edge);
     check(soft_middle > 0.85 * sharp_middle && soft_edge < 0.6 * sharp_edge, "a lens keeps what it is on sharp, and softens what is far from it");
+
+    // The ground sampled round an eye, and again round it a few metres on:
+    // every point of the second that the first had too is the same point,
+    // with the same height - the far ground does not slide under its samples
+    // as the eye goes (dunes do not wobble); and it is as many points as the
+    // cells asked for, near enough.
+    {
+        const auto dunes = [](double x, double z) { return 20.0 * std::sin(x * 0.04) * std::cos(z * 0.031) + 3.0 * std::sin(x * 0.3 + z * 0.2); };
+        const std::vector<float> a = sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 100.0, 40.0);
+        const std::vector<float> b = sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 102.0, 37.0);
+        std::map<std::pair<long long, long long>, float> first;
+        for (std::size_t i = 0; i + 8 <= a.size(); i += 8) first[{std::llround(a[i] * 1000.0), std::llround(a[i + 2] * 1000.0)}] = a[i + 1];
+        std::size_t shared = 0, far_shared = 0, moved = 0;
+        for (std::size_t i = 0; i + 8 <= b.size(); i += 8) {
+            const auto it = first.find({std::llround(b[i] * 1000.0), std::llround(b[i + 2] * 1000.0)});
+            if (it == first.end()) continue;
+            ++shared;
+            if (std::hypot(b[i] - 100.0, b[i + 2] - 40.0) > 500.0) ++far_shared;
+            if (std::fabs(it->second - b[i + 1]) > 1e-4f) ++moved;
+        }
+        const double cells = std::sqrt(static_cast<double>(a.size() / 48));
+        std::printf("the ground round an eye: %.0f cells a side; moved on, %zu corners shared (%zu far), %zu changed\n", cells, shared, far_shared, moved);
+        check(far_shared > 1000 && moved == 0, "the ground round a moving eye: its points stay where they are in the world, as high");
+        check(cells > 250.0 && cells < 500.0, "the ground round an eye: about as many cells as asked");
+    }
 
     std::printf(ok ? "all ok\n" : "FAILED\n");
     return ok ? 0 : 1;

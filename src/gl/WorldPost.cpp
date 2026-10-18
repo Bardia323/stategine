@@ -177,6 +177,11 @@ void GLWorldView::run_bloom() {
     const gl::Program& bright = *program_for(post_.shown(), passes::bright);
     bright.use();
     apply_uniforms(bright, post_, passes::bright);
+    // How bright a thing must be to glow is as the eye sees it: an eye
+    // adjusted down for a bright place (the gain under 1) glows only at what
+    // is bright for there - not at all of a sunlit desert.
+    if (const float gain = exposure_gain(); gain != 1.0f)
+        bright.set("uThreshold", static_cast<float>(setting(post_, passes::bright, "uThreshold", q_.bloom_threshold)) / std::max(gain, 1e-6f));
     bright.set("uScene", 0);
     scene_src_->bind_color(0);
     screen_.draw();

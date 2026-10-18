@@ -420,6 +420,13 @@ public:
     };
     static std::vector<ProbeBox> grid_of(const Spatial3D& room);
 
+    // The ground round (cx, cz): about `n` cells across, `step` metres apart
+    // at the middle, widening to `reach` - each point on the world's own
+    // lattice for its spacing, so the eye moving on never slides the ground
+    // under its samples. Sampled on every core at once.
+    static std::vector<float> sample_ground(const std::function<double(double, double)>& height, int n, double reach,
+                                            double step, double cx, double cz);
+
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
 
@@ -950,10 +957,6 @@ private:
     // The sky: a sphere round the viewer, inside the far plane, unlit.
     void draw_sky(const Camera& cam, float zfar);
 
-    // The ground round (cx, cz): `n` cells across, `step` metres apart at the
-    // middle, widening to `reach`. Sampled on every core at once.
-    static std::vector<float> sample_ground(const std::function<double(double, double)>& height, int n, double reach,
-                                            double step, double cx, double cz);
 
     // Keep the ground centred on the viewer. When they have moved a grid step
     // the ground is resampled in the background, and the ground already there
@@ -1820,6 +1823,9 @@ private:
     gl::RenderTarget taa_history_[2];
     int taa_front_ = 0;
     bool taa_held_ = false;
+    // The eye's camera's `shot` last frame: when it changes, a cut.
+    double shot_ = 0.0;
+    bool shot_known_ = false;
     float jitter_x_ = 0.0f, jitter_y_ = 0.0f;
     gl::Mat4 taa_vp_ = gl::Mat4::identity(), taa_last_vp_ = gl::Mat4::identity();
     const void* taa_world_ = nullptr;

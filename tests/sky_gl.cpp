@@ -11,7 +11,8 @@
 // the ground under them is in their shadow; turning the eye never makes
 // their dome whole again; their time is the world's alone - still when it
 // is, moved when it goes on, and at a world time the same as a fresh view's. A look that says `atmosphere` and `clouds.cover` 0
-// draws exactly as one that says nothing of them.
+// draws exactly as one that says nothing of them. The sun's disc is the
+// sun's size: half a degree.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -278,5 +279,23 @@ int main() {
     int most = 0;
     for (std::size_t i = 0; i < px.size(); ++i) most = std::max(most, std::abs(static_cast<int>(px[i]) - static_cast<int>(off[i])));
     check(most == 0, "a look saying `atmosphere` and `clouds.cover` 0 draws as one saying nothing of them (" + std::to_string(most) + " levels at most apart)");
+
+    // The sun's own disc, looked straight at through a long lens (6 degrees
+    // of the picture's height): as wide as the sun is from here, half a
+    // degree - some 22 pixels across, its glow round it aside - not a lamp
+    // of several degrees.
+    // (Off to the side of the blocks, a few degrees up.)
+    const double aside = ahead + 0.5;
+    sun.params.set("dx", -std::cos(aside) * std::cos(0.15)).set("dy", -std::sin(0.15)).set("dz", -std::sin(aside) * std::cos(0.15));
+    eye.params.set(sg::keys::fov, 6.0);
+    shot(aside, 0.15, 20);
+    eye.params.set(sg::keys::fov, 60.0);
+    int across = 0;
+    for (int i = 0; i < W; ++i) {
+        const unsigned char* p = &px[(static_cast<std::size_t>(H / 2) * W + i) * 3];
+        if (p[0] >= 250 && p[1] >= 240) ++across;
+    }
+    std::printf("the sun's disc: %d pixels across (22 its own)\n", across);
+    check(across >= 12 && across <= 45, "the sun's disc is as wide as the sun is: half a degree");
     return ok ? 0 : 1;
 }
