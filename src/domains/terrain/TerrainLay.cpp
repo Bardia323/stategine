@@ -122,24 +122,55 @@ std::size_t lay(Spatial3D& world, const std::string& name, std::shared_ptr<const
             }
             things[t].push_back(std::move(m));
         }
+    const auto leafy = [](const std::string& material) { return material == "leaf" || material == "needles" || material == "grass"; };
     Dice tint(17);
+    // Strewn: each variant's placings kept once, by name, and each part of it
+    // one element for all of them - placed, turned, sized and shaded as each
+    // placing's fixtures would be.
+    std::vector<std::vector<std::vector<float>>> strewn(things.size());
+    for (std::size_t t = 0; t < things.size(); ++t) strewn[t].resize(things[t].size());
     for (std::size_t k = 0; k < L.placed.size(); ++k) {
         const Placed& p = L.placed[k];
         const Made& m = things[std::size_t(p.thing)][std::size_t(p.variant)];
         // Stood by its recipe's origin: its foot turned and sized as it is.
         const Vec3d at = p.at + turn(Pose{{0, 0, 0}, p.yaw}, m.model->foot() * p.scale);
         const double shade = 0.85 + 0.3 * tint.next();
+        if (L.strewn > 0) {
+            strewn[std::size_t(p.thing)][std::size_t(p.variant)].insert(
+                strewn[std::size_t(p.thing)][std::size_t(p.variant)].end(),
+                {float(at.x), float(at.y), float(at.z), float(p.yaw), float(p.scale), float(shade)});
+            made += m.meshes.size();
+            continue;
+        }
         for (std::size_t q = 0; q < m.meshes.size(); ++q) {
             const sculpt::Part& part = m.model->parts[q];
             Element& e = world.fixture(Key{name + "." + L.things[std::size_t(p.thing)].name + "." + std::to_string(k) + "." + std::to_string(q)}, at.x, at.y, at.z);
             e.params.set(keys::sx, m.sizes[q].x * p.scale).set(keys::sy, m.sizes[q].y * p.scale).set(keys::sz, m.sizes[q].z * p.scale);
             e.params.set(keys::yaw, p.yaw).set("shape", std::string("model")).set("model", m.meshes[q]).set("laid_by", name);
             const Look lk = look_of(part.material);
-            set_colour(e, lk.colour * (part.material == "leaf" || part.material == "needles" || part.material == "grass" ? shade : 1.0));
+            set_colour(e, lk.colour * (leafy(part.material) ? shade : 1.0));
             e.params.set("roughness", lk.rough).set("surface", double(lk.surface)).set("material", part.material);
             ++made;
         }
     }
+    for (std::size_t t = 0; t < things.size(); ++t)
+        for (std::size_t v = 0; v < things[t].size(); ++v) {
+            if (strewn[t][v].empty()) continue;
+            const Made& m = things[t][v];
+            const std::string of = name + "." + L.things[t].name + "." + std::to_string(v + 1);
+            world.placings(Key{of + ".placings"}, std::move(strewn[t][v]));
+            for (std::size_t q = 0; q < m.meshes.size(); ++q) {
+                const sculpt::Part& part = m.model->parts[q];
+                Element& e = world.add_element(Key{of + "." + std::to_string(q)}, kinds::strewn);
+                set_position(e, {0.0, 0.0, 0.0});
+                e.params.set(keys::sx, m.sizes[q].x).set(keys::sy, m.sizes[q].y).set(keys::sz, m.sizes[q].z);
+                e.params.set("shape", std::string("model")).set("model", m.meshes[q]).set("placings", of + ".placings").set("laid_by", name);
+                e.params.set("far", L.strewn).set("shaded", leafy(part.material) ? 1.0 : 0.0);
+                const Look lk = look_of(part.material);
+                set_colour(e, lk.colour);
+                e.params.set("roughness", lk.rough).set("surface", double(lk.surface)).set("material", part.material);
+            }
+        }
     return made;
 }
 
@@ -295,10 +326,10 @@ struct In {
 
 std::string to_bytes(const Land& L) {
     Out o;
-    o.put(uint32_t(0x4C414E44)), o.put(uint32_t(1));
+    o.put(uint32_t(0x4C414E44)), o.put(uint32_t(2));
     o.put(L.x0), o.put(L.z0), o.put(L.w), o.put(L.d), o.put(L.cell), o.put(L.nx), o.put(L.nz);
     o.vec(L.h), o.vec(L.wet), o.vec(L.road), o.vec(L.water);
-    o.put(L.beyond), o.put(L.over), o.put(uint8_t(L.to_beyond));
+    o.put(L.beyond), o.put(L.over), o.put(uint8_t(L.to_beyond)), o.put(L.strewn);
     o.put(uint64_t(L.layers.size()));
     for (const Layer& l : L.layers) o.text(l.name), o.put(l.surface), o.v3(l.colour);
     o.vec(L.splat);
@@ -326,11 +357,11 @@ std::string to_bytes(const Land& L) {
 
 bool from_bytes(const std::string& bytes, Land& L) {
     In in{bytes};
-    if (in.get<uint32_t>() != 0x4C414E44 || in.get<uint32_t>() != 1) return false;
+    if (in.get<uint32_t>() != 0x4C414E44 || in.get<uint32_t>() != 2) return false;
     L.x0 = in.get<double>(), L.z0 = in.get<double>(), L.w = in.get<double>(), L.d = in.get<double>(), L.cell = in.get<double>();
     L.nx = in.get<int>(), L.nz = in.get<int>();
     L.h = in.vec<float>(), L.wet = in.vec<float>(), L.road = in.vec<float>(), L.water = in.vec<float>();
-    L.beyond = in.get<double>(), L.over = in.get<double>(), L.to_beyond = in.get<uint8_t>() != 0;
+    L.beyond = in.get<double>(), L.over = in.get<double>(), L.to_beyond = in.get<uint8_t>() != 0, L.strewn = in.get<double>();
     const uint64_t nl = in.get<uint64_t>();
     for (uint64_t k = 0; k < nl && in.ok; ++k) {
         Layer l;

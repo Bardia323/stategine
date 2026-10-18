@@ -19,6 +19,10 @@
 
 namespace sg {
 
+namespace kinds {
+inline const Key strewn{"strewn"};  // many of one thing (Spatial3D::placings)
+}
+
 class SpatialState : public State {
 public:
     SpatialState(Key id, int dims);
@@ -146,6 +150,23 @@ public:
     uint64_t pose_revision(Key name) const;  // its joints' (0 for none)
     std::vector<float> posed(Key name) const;
 
+    // --- things strewn by the many -----------------------------------------------
+    // Many of one thing where a rule put them (sg::terrain::lay's things,
+    // laid `strewn`): an element of kind `strewn` (`shape` = "model", `model`
+    // its model, sx sy sz its size at a scale of 1, its material as a
+    // thing's) stands for all of them, each at one of the placings it names
+    // (`placings`) - kept here by name, as a model's corners are, made as the
+    // state is built: kStrewFloats a placing, its foot's x y z (in the
+    // element's frame), its yaw, its scale and its shade (what its colour is
+    // times, where the element says `shaded`). Not an element a placing: a
+    // wood of a hundred thousand trees is a few elements, and no law, ray or
+    // walker reads them one by one (they are not solid). The renderer draws
+    // those near the eye (sg/gl, out to the element's `far`).
+    static constexpr std::size_t kStrewFloats = 6;
+    void placings(Key name, std::vector<float> at);
+    const std::vector<float>* placings(Key name) const;
+    uint64_t placings_revision(Key name) const;  // its making (0 for none)
+
     // --- pictures -----------------------------------------------------------------
     // What its things may wear: RGBA pixels, row 0 at the top, kept by name.
     // A box with `skin` = a picture's name wears it tiled across its faces,
@@ -184,7 +205,7 @@ private:
         uint64_t revision = 0;
     };
     std::map<std::string, KeptModel> models_;
-    std::map<std::string, KeptModel> skins_, poses_;
+    std::map<std::string, KeptModel> skins_, poses_, placings_;
     std::map<std::string, std::shared_ptr<Picture>> pictures_;
     uint64_t picture_revisions_ = 0;
 };

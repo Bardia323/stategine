@@ -528,6 +528,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             } else if (e.kind == kinds::portal) {
                 caster.set("uModel", frame_matrix_ * portal_frame_model(room, e).m);
                 cube_.draw();
+            } else if (e.kind == kinds::strewn && q_.instancing) {
+                // (Those near the eye: out to `cast_far`, 60 m unless it says.)
+                strewn_into(room, e, nullptr, static_cast<float>(e.params.num(Key{"cast_far"}, 60.0)));
             }
         }
         if (room_now < rooms.size()) flush_batches(caster, false);
@@ -1352,6 +1355,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                     draw_wall_element(room, e);
             } else if (e.kind == kinds::light) {
                 draw_lamp(room, e);
+            } else if (e.kind == kinds::strewn && q_.instancing) {
+                // (Each by its cells: those in view, out to its `far`.)
+                Frustum seen_here = view;
+                seen_here.planes.insert(seen_here.planes.end(), cull_.begin(), cull_.end());
+                strewn_into(room, e, &seen_here, static_cast<float>(e.params.num(Key{"far"}, 250.0)));
             }
         }
         lap(3, part_at);

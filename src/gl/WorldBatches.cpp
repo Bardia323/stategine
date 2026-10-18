@@ -458,7 +458,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
     instance_stream_.clear();
     for (Batch& b : batches_) {
         if (b.data.empty()) continue;
-        if (scene && b.data.size() > k) nearest_first(b.data);
+        if (scene && b.data.size() > k && !b.ordered) nearest_first(b.data);
         instance_stream_.insert(instance_stream_.end(), b.data.begin(), b.data.end());
     }
     const gl::GLuint stream = instance_stream_.empty() ? 0 : instances_.upload(instance_stream_);
@@ -502,6 +502,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
         if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
+        b.ordered = false;
     }
     if (any) p.set("uInstanced", 0);
     if (scene) gl::glDisable(gl::GL_CULL_FACE);

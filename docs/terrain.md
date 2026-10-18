@@ -20,7 +20,12 @@ strewn on it. `terrain::lay(world, name, land)` puts all of it in a 3D state:
 - roads and water are models (asphalt with painted lines; water shallow at the
   shore, dark where deep, ruffled or still);
 - each thing's variants are made by the modeller (`sculpt::made`, kept on
-  disk), and each placing is a fixture per part, coloured by its material.
+  disk), and each placing is a fixture per part, coloured by its material -
+  or, where the recipe says `strewn far`, each part of each variant is one
+  element of kind `strewn` standing for all its placings (kept by the state,
+  `Spatial3D::placings`), drawn by the renderer out to `far` metres from the
+  eye, in cells, instanced, the same picture: a wood of thousands of trees a
+  few elements, for every law, plan and walker that reads them all.
 
 Laid again, what was laid by that name is taken away first. The world should
 be open to the sky (`sky` = 1); its air (fog, `scatter`) and its light are
@@ -58,6 +63,7 @@ scattering are settled once every height is made.
 | `layer name surface [colour=] [height=] [slope=] [wet=] [road=] [water=] [noise=] [patch=] [cover=] [soft=]` | what covers the land where its ranges say. The first is everywhere; each after is laid over those before; four at most |
 | `thing name [variants=n] : recipe / recipe ...` | a thing to strew: a modeller recipe (lines split by ` / `), `$v` its variant 1..n |
 | `scatter name [density=] [count=] [height= slope= wet= road= water=] [scale=a,b] [spacing=] [sink=] [seed=] [most=]` | the thing strewn where the ranges say: `density` to 100 square metres on a jittered grid (never closer than `spacing`), sized at random in `scale`, sunk `sink` |
+| `strewn far` | its things laid strewn: one element a part of each variant for all its placings, drawn out to `far` metres from the eye (its shadows out to `cast_far`, 60) |
 
 Ranges are `lo,hi`, either end left open (`road=6,` is six metres off a road
 and further). `slope` is in degrees; `road` and `water` are metres from their

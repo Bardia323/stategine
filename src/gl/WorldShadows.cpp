@@ -362,6 +362,20 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
         rc.extras_key = fnv(fnv(rc.extras_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
         rc.extras.push_back(c);
     }
+    // Things strewn by the many: those near the eye cast (strewn_into) -
+    // which they are moves with it, a cell at a time.
+    for (const Element* ep : ix.strewn) {
+        const Element& e = *ep;
+        if (!e.alive || e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+        Caster c;
+        c.room = rc.room, c.element = &e;
+        uint64_t w = strewn_cells(room, e).made;
+        w = mix_bits(w, std::floor(cam_eye_.x / 16.0f));
+        w = mix_bits(w, std::floor(cam_eye_.z / 16.0f));
+        c.where = w;
+        rc.extras_key = fnv(fnv(rc.extras_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
+        rc.extras.push_back(c);
+    }
     for (const Element* ep : ix.portals) {
         const Element& e = *ep;
         // (`cast` 0: it throws no shadow - as a thing that says so throws none.)

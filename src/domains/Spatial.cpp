@@ -276,6 +276,20 @@ uint64_t Spatial3D::model_revision(Key name) const {
     return it == models_.end() ? 0 : it->second.revision;
 }
 
+void Spatial3D::placings(Key name, std::vector<float> at) {
+    placings_[name.str()] = {std::make_shared<std::vector<float>>(std::move(at)), next_making()};
+}
+
+const std::vector<float>* Spatial3D::placings(Key name) const {
+    const auto it = placings_.find(name.str());
+    return it == placings_.end() ? nullptr : it->second.corners.get();
+}
+
+uint64_t Spatial3D::placings_revision(Key name) const {
+    const auto it = placings_.find(name.str());
+    return it == placings_.end() ? 0 : it->second.revision;
+}
+
 void Spatial3D::skin_model(Key name, std::vector<float> bound) {
     skins_[name.str()] = {std::make_shared<std::vector<float>>(std::move(bound)), next_making()};
 }

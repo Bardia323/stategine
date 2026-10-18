@@ -64,7 +64,7 @@ DrawLists draw_lists(const Spatial3D &room) {
             out.solids.push_back(i);
         else if (e.kind == kinds::portal)
             out.portals.push_back(i);
-        else if (e.kind == kinds::light || e.kind == Key{"terrain"})
+        else if (e.kind == kinds::light || e.kind == Key{"terrain"} || e.kind == kinds::strewn)
             out.unbounded.push_back(i);
     }
     return out;
@@ -622,6 +622,33 @@ DrawInstance instance(const State &s, const Element &e) {
     d.model = box_transform(s, e);
     return d;
 }
+// Things strewn by the many: each placing an instance of the element, as a
+// fixture placed, turned and sized so would be.
+void strewn_instances(const Spatial3D &s, const Element &e, std::vector<DrawInstance> &out) {
+    const std::vector<float> *at = s.placings(Key{e.params.get_or<std::string>(Key{"placings"}, "")});
+    if (!at)
+        return;
+    const DrawInstance base = instance(s, e);
+    const Pose frame = world_pose(s, e);
+    const bool shaded = e.params.num("shaded") > 0.5;
+    for (std::size_t i = 0; i + Spatial3D::kStrewFloats <= at->size(); i += Spatial3D::kStrewFloats) {
+        const float *p = &(*at)[i];
+        DrawInstance d = base;
+        d.size = base.size * p[4];
+        d.pose = compose_pose(frame, Pose{{p[0], p[1] + 0.5 * d.size.y, p[2]}, p[3], 0.0, 0.0});
+        if (shaded)
+            d.colour = {d.colour.r * p[5], d.colour.g * p[5], d.colour.b * p[5]};
+        using spatial::projection::Mat4;
+        using spatial::projection::Vec3;
+        auto turn = Mat4::rotate_y(static_cast<float>(d.pose.yaw));
+        if (!upright(d.pose))
+            turn = turn * Mat4::rotate_z(static_cast<float>(d.pose.pitch)) * Mat4::rotate_x(static_cast<float>(d.pose.roll));
+        d.model = Mat4::translate(Vec3{static_cast<float>(d.pose.position.x), static_cast<float>(d.pose.position.y),
+                                       static_cast<float>(d.pose.position.z)}) *
+                  turn * Mat4::scale(Vec3{static_cast<float>(d.size.x), static_cast<float>(d.size.y), static_cast<float>(d.size.z)});
+        out.push_back(d);
+    }
+}
 } // namespace
 ViewPlan view_plan(const StateGraph &g, const State &root, const std::vector<PlacedRoom> &placements) {
     if (g.find(root.id()) != &root)
@@ -682,9 +709,13 @@ ViewPlan view_plan(const StateGraph &g, const State &root, const std::vector<Pla
             const auto lists = draw_lists(*placed.room);
             for (auto i : lists.solids)
                 room.instances.push_back(instance(*placed.room, placed.room->elements()[i]));
-            for (auto i : lists.unbounded)
-                if (placed.room->elements()[i].kind == kinds::light)
-                    room.lights.push_back(&placed.room->elements()[i]);
+            for (auto i : lists.unbounded) {
+                const auto &e = placed.room->elements()[i];
+                if (e.kind == kinds::light)
+                    room.lights.push_back(&e);
+                else if (e.kind == kinds::strewn)
+                    strewn_instances(*placed.room, e, room.instances);
+            }
             for (auto i : lists.portals) {
                 const auto &p = placed.room->elements()[i];
                 for (const auto &em : g.embeddings())

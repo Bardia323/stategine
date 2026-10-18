@@ -141,6 +141,10 @@ struct Land {
     std::vector<Water> waters;
     std::vector<Thing> things;
     std::vector<Placed> placed;
+    // Its things laid strewn (`strewn far`): each part of each variant one
+    // element of kind `strewn` for all its placings, drawn out to `far`
+    // metres from the eye (0: each placing's parts fixtures of their own).
+    double strewn = 0;
     std::string errors;  // what the recipe got wrong, a line each
 
     // The height anywhere (between the points, bilinear; past the edge, as
@@ -169,7 +173,9 @@ std::string preset(const std::string& name);
 // Put the land in a 3D state, its things named `<name>...`: its ground (the
 // state's terrain `<name>`, drawn with its layers), its roads and water (as
 // models), and every thing scattered on it (its parts as fixtures, each
-// thing's variants made by the modeller - `files` for what they import).
+// thing's variants made by the modeller - `files` for what they import; or,
+// where the recipe says `strewn far`, each part of each variant one element
+// of kind `strewn` for all its placings, Spatial3D::placings).
 // Laid again, what was laid before is taken away first. The state should be
 // open to the sky (`sky` = 1) to be seen as land. Returns the things made.
 std::size_t lay(Spatial3D& world, const std::string& name, std::shared_ptr<const Land> land, const sculpt::Files* files = nullptr);

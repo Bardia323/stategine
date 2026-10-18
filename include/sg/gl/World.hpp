@@ -212,6 +212,7 @@ public:
         int made_late = 0;     // things' shapes first made as a frame drew them (none, warmed)
         int warmed_ahead = 0;  // and made ahead, beside the frame (warm_ahead)
         int lod_drawn = 0;    // things drawn with fewer faces, far enough off that no pixel shows it (Quality::lod)
+        int strewn = 0;       // things strewn by the many drawn (Spatial3D::placings), in view and within their `far`
         int domes_made = 0;   // clouds' domes made whole again (a look's `clouds.cover`): none while nothing jumps (a part of each is made every frame)
         int views_asked = 0;  // views drawn only if the card finds their doorway seen (Quality::skip_unseen)
         double asked_ms = 0;  // spent asking (ask_doorways), on the CPU
@@ -1099,7 +1100,25 @@ private:
         const gl::Mesh* mesh;
         std::vector<float> data;  // gl::Mesh::kInstanceFloats a thing
         BoundSurface* skin = nullptr;  // a texture all of them wear, each in its own frame
+        bool ordered = false;          // laid nearest first already (strewn things, by their cells)
     };
+    // Things strewn by the many (WorldStrewn.cpp): a strewn element's
+    // placings laid into cells of the ground, each its instance record -
+    // made again only when its placings are made again or it moves.
+    struct StrewnCells {
+        uint64_t made = 0;
+        struct Cell {
+            gl::Vec3 lo, hi;
+            std::vector<float> records;
+        };
+        std::vector<Cell> cells;
+    };
+    std::unordered_map<uint64_t, StrewnCells> strewn_;
+    std::vector<std::pair<float, std::size_t>> order_strewn_;
+    const StrewnCells& strewn_cells(const Spatial3D& room, const Element& e);
+    // Its cells within `far` of the eye and in `view` (none: every way) into
+    // its model's batch, nearest first.
+    void strewn_into(const Spatial3D& room, const Element& e, const Frustum* view, float far);
     // A mesh wearing a texture in its own frame goes with the others of its
     // shape wearing the same one: its frame is its own matrix.
     bool batch_skinned(const State& st, const Element& e);
@@ -1722,7 +1741,7 @@ private:
     // (lamps, doorways, terrain), found again only when its structure moves.
     struct KindIndex {
         uint64_t structure = ~uint64_t{0};
-        std::vector<const Element*> lights, portals, terrains, probes, fogs;
+        std::vector<const Element*> lights, portals, terrains, probes, fogs, strewn;
     };
     mutable std::unordered_map<const State*, KindIndex> kind_index_;
     const KindIndex& index_of(const State& s) const;

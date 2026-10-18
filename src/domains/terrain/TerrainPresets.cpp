@@ -126,6 +126,7 @@ std::string words() {
            "layer name surface [colour height slope wet road water noise scale soft]\n"
            "thing name [variants=n] : <modeller recipe, lines split by / ; $v the variant>\n"
            "scatter name [density|count height slope wet road water scale spacing sink seed most]\n"
+           "strewn far   its things laid as one element a part for all their placings, drawn out to far metres\n"
            "let name value   $name   # comment\n";
 }
 

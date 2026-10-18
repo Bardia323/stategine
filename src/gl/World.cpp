@@ -1403,13 +1403,14 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
     KindIndex& ix = kind_index_[&s];
     if (ix.structure == s.structure()) return ix;
     ix.structure = s.structure();
-    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear(), ix.fogs.clear();
+    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear(), ix.fogs.clear(), ix.strewn.clear();
     for (const Element& e : s.elements()) {
         if (e.kind == kinds::light) ix.lights.push_back(&e);
         else if (e.kind == kinds::portal) ix.portals.push_back(&e);
         else if (e.kind == terrain_kind()) ix.terrains.push_back(&e);
         else if (e.kind == kinds::probe) ix.probes.push_back(&e);
         else if (e.kind == kinds::fog) ix.fogs.push_back(&e);
+        else if (e.kind == kinds::strewn) ix.strewn.push_back(&e);
     }
     return ix;
 }

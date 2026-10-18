@@ -262,7 +262,7 @@ const gl::Mesh& GLWorldView::shape_of(const State& st, const Element& e) const {
 }
 
 const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) const {
-    if (e.kind != kinds::mesh) return cube_;
+    if (e.kind != kinds::mesh && e.kind != kinds::strewn) return cube_;
     // Asked every frame, in every pass, of every thing: remembered while
     // the thing's parameters, or what its mesh is made of, hold.
     ShapeMemo& memo = slot_of(e).shape;

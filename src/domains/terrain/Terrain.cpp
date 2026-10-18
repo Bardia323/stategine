@@ -329,6 +329,8 @@ private:
             sized(p[0], p[1], opt(a, "cell", 1), at.x, at.z);
         } else if (head == "seed") {
             if (need(1)) seed = uint32_t(p[0]);
+        } else if (head == "strewn") {
+            if (need(1)) land.strewn = std::max(p[0], 0.0);
         } else if (head == "beyond") {
             if (!need(1)) return;
             land.to_beyond = true, land.beyond = p[0], land.over = opt(a, "over", 50);
