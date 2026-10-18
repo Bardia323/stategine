@@ -227,6 +227,15 @@ int main() {
         check(sg::probe_faults(court).empty(), "its sets break no law");
         court.find(sg::Key{"east"})->params.set("sh.sun@99", sun_bakes[0].sets.at("sun@0").text());
         check(sg::probe_faults(court).size() == 1, "a set from a way no sun has is named");
+        // A lamp whose name has an @ in it is that lamp's set, as it always was.
+        court.find(sg::Key{"east"})->params.erase(sg::Key{"sh.sun@99"});
+        court.find(sg::Key{"sun"})->params.set(sg::keys::intensity, 0.0);
+        court.light("lamp@2", {1.0, 2.0, 0.0}, 1.0, 1.0, 1.0);
+        court.find(sg::Key{"east"})->params.set("sh.lamp@2", sun_bakes[0].sets.at("sun@0").text());
+        // (The bake is stale now - a lamp was added after it - and says so; no more.)
+        const auto court_faults = sg::probe_faults(court);
+        check(!says(court_faults, "lamp@2") && luma(sg::probe_light(court, court.element(sg::Key{"east"})).irradiance({0, 1, 0})) > 0.0,
+              "a lamp named with an @ keeps its own set");
         // The blend: whole at a way, shared between two halfway between them.
         const std::vector<double> at_way = sg::sun_blend(sg::sun_ways()[3]);
         double sum = 0.0;

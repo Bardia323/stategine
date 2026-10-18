@@ -145,11 +145,14 @@ std::vector<double> sun_blend(const Vec3d& toward) {
 
 namespace {
 // A set's name: its lamp's, and for a sun's the way it was baked from (-1:
-// none) - false if the way is no number.
-bool set_name(const std::string& name, std::string& lamp, int& way) {
-    const std::size_t at = name.find('@');
-    lamp = name.substr(0, at), way = -1;
+// none) - false if the way is no number. A name that is a lamp of `world`
+// whole is that lamp's, whatever is in it (a lamp may be named `a@1`).
+bool set_name(const State& world, const std::string& name, std::string& lamp, int& way) {
+    const std::size_t at = name.rfind('@');
+    lamp = name, way = -1;
     if (at == std::string::npos) return true;
+    if (const Element* whole = world.find(Key{name}); whole && whole->kind == kinds::light) return true;
+    lamp = name.substr(0, at);
     char* end = nullptr;
     const long k = std::strtol(name.c_str() + at + 1, &end, 10);
     if (end == name.c_str() + at + 1 || *end != '\0') return false;
@@ -172,7 +175,7 @@ Sh9 probe_light(const State& world, const std::map<std::string, Sh9>& sets) {
     for (const auto& [name, set] : sets) {
         std::string lamp;
         int way = -1;
-        if (!set_name(name, lamp, way)) continue;
+        if (!set_name(world, name, lamp, way)) continue;
         const Element* l = world.find(Key{lamp});
         if (!l || !l->alive || l->kind != kinds::light) continue;
         if (way < 0) {
@@ -259,7 +262,7 @@ std::vector<std::string> probe_faults(const State& world) {
             if (!sh.finite()) out.push_back("probe " + name + ": its set for " + light + " is not finite");
             std::string lamp;
             int way = -1;
-            const bool named = set_name(light, lamp, way);
+            const bool named = set_name(world, light, lamp, way);
             const Element* l = world.find(Key{lamp});
             if (!l || !l->alive || l->kind != kinds::light) out.push_back("probe " + name + ": it holds a set for " + light + ", which is no lamp here");
             else if (!named || (way >= 0 && (l->params.num(Key{"sun"}) < 0.5 || way >= static_cast<int>(sun_ways().size()))))
