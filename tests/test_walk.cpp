@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 static int failures = 0;
 static void check(bool ok, const std::string& what) {
@@ -33,6 +34,32 @@ void steps(const sg::State& s, const sg::field::Solver& f, sg::Element& w, const
 }  // namespace
 
 int main() {
+    {
+        // Many rays at once answer as each alone does, in the order asked -
+        // a wide batch across the cores as a short one on its own.
+        sg::Spatial3D s(Key{"rays"});
+        s.terrain(Key{"land"}, [](double x, double z) { return 0.3 * std::sin(x * 0.4) + 0.2 * std::cos(z * 0.3); });
+        for (int i = 0; i < 12; ++i) s.wall(Key{"w" + std::to_string(i)}, {-6.0 + i, 1.0, 2.0 * std::sin(i * 1.3)}, 0.4, 2.0, 0.6, 0.3 * i);
+        std::vector<sg::RayAsk> asks;
+        for (int i = 0; i < 600; ++i) {
+            const double a = i * 0.731, b = -0.2 - 0.6 * std::fmod(i * 0.377, 1.0);
+            asks.push_back({{-7.0 + std::fmod(i * 0.913, 14.0), 2.5, -4.0 + std::fmod(i * 0.517, 8.0)}, {std::cos(a), b, std::sin(a)}, 9.0});
+        }
+        const std::vector<sg::RayHit> wide = sg::rays(s, asks);
+        int same = 0, hits = 0, walls = 0;
+        for (std::size_t i = 0; i < asks.size(); ++i) {
+            Vec3d hit, normal;
+            double dist = 0;
+            Key what;
+            const bool met = sg::ray(s, asks[i].eye, asks[i].dir, asks[i].reach, hit, normal, &dist, &what);
+            const sg::RayHit& w = wide[i];
+            if (met == w.hit && (!met || (dist == w.dist && what == w.what && hit.x == w.at.x && normal.y == w.normal.y))) ++same;
+            hits += met ? 1 : 0, walls += met && what.str()[0] == 'w' ? 1 : 0;
+        }
+        check(same == static_cast<int>(asks.size()) && hits > 300 && walls > 20,
+              "600 rays at once answer as each alone (" + std::to_string(same) + " the same; " + std::to_string(hits) + " met something, " +
+                  std::to_string(walls) + " a wall)");
+    }
     {
         // Land steeper than a walker stands on slides it down, and it cannot
         // walk up it; land it stands on holds it. And stepped off an edge, it

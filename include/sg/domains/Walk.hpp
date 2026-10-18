@@ -50,6 +50,23 @@ struct Stride {
 bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist = nullptr,
          Key* what = nullptr);
 
+// Many rays at once: what stops them gathered once for all of them, each
+// answered as `ray` answers it alone, in the order asked. A wide batch goes
+// across the cores, each ray on its own - the same answers whatever ran
+// them. (A ray's procedure, as a device would run it: its inputs the
+// state's own, its answer a function of them.)
+struct RayAsk {
+    Vec3d eye, dir;
+    double reach = 1.0;
+};
+struct RayHit {
+    bool hit = false;
+    Vec3d at, normal;
+    double dist = 0.0;
+    Key what;
+};
+std::vector<RayHit> rays(const State& space, const std::vector<RayAsk>& asks);
+
 // What stops whoever stands at `walker`'s eye in `space`: they are put
 // clear of every solid - their feet, their middle and their head each a ball
 // `radius` round - and let through what a doorway opens. The one answer to

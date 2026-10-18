@@ -148,10 +148,18 @@ std::vector<Event> pace(const Spatial3D& host, const Being& b, const Vec3d& velo
     const double go_x = self.num("go_x"), go_z = self.num("go_z");
     Params told;
     bool changed = false;
-    const auto down_at = [&](double x, double z, double reach, Vec3d& hit, Vec3d& normal, Key* what) {
-        const Vec3d from{at.x + x * c - z * s, at.y + 0.5 * reach, at.z + x * s + z * c};
-        return ray(host, from, {0, -1, 0}, reach, hit, normal, nullptr, what);
+    // Every ray it asks, at once (sg::rays): what stops them gathered once.
+    std::vector<RayAsk> asks;
+    const auto down_at = [&](double x, double z, double reach) {
+        asks.push_back({{at.x + x * c - z * s, at.y + 0.5 * reach, at.z + x * s + z * c}, {0, -1, 0}, reach});
     };
+    struct Foot {
+        const Element* goal;
+        std::string tip;
+        double x, z;
+        bool down;
+    };
+    std::vector<Foot> feet;
     for (const Element& g : b.elements()) {
         if (g.kind != Key{"goal"} || g.params.num("plants") < 0.5) continue;
         const std::string tip = g.params.get_or<std::string>("tip", "");
@@ -159,30 +167,37 @@ std::vector<Event> pace(const Spatial3D& host, const Being& b, const Vec3d& velo
         double x = g.params.num(keys::x), z = g.params.num(keys::z);
         if (down && g.params.num("asked") > 0.5 && std::hypot(x - g.params.num("asked_x"), z - g.params.num("asked_z")) < 0.03) continue;
         if (!down) x += go_x * 0.2, z += go_z * 0.2;
-        const double leg = g.params.num("leg", 0.9);
-        Vec3d hit, normal{0, 1, 0};
-        Key what;
-        const bool met = down_at(x, z, leg, hit, normal, &what);
-        const double floor = met ? hit.y - at.y : 0.0;
+        feet.push_back({&g, tip, x, z, down});
+        down_at(x, z, g.params.num("leg", 0.9));
+    }
+    const double off[4][2] = {{0.3, 0}, {-0.3, 0}, {0, 0.3}, {0, -0.3}};
+    for (const auto& o : off) down_at(o[0], o[1], 1.0);
+    const std::vector<RayHit> met = rays(host, asks);
+    for (std::size_t f = 0; f < feet.size(); ++f) {
+        const Foot& foot = feet[f];
+        const Element& g = *foot.goal;
+        const RayHit& r = met[f];
+        const Vec3d normal = r.hit ? r.normal : Vec3d{0, 1, 0};
+        const double floor = r.hit ? r.at.y - at.y : 0.0;
         // (The way it faces, turned into the being's frame as its travel is.)
         const double nx = normal.x * c + normal.z * s, nz = -normal.x * s + normal.z * c;
         std::string on;
-        if (met && !what.empty())
-            if (const Element* e = host.find(what)) on = e->params.get_or<std::string>("ground", what.str());
+        if (r.hit && !r.what.empty())
+            if (const Element* e = host.find(r.what)) on = e->params.get_or<std::string>("ground", r.what.str());
+        const std::string& tip = foot.tip;
         told.set(Key{"floor_" + tip}, floor).set(Key{"tilt_" + tip + "_x"}, nx).set(Key{"tilt_" + tip + "_z"}, nz).set(Key{"on_" + tip}, on);
-        told.set(Key{"asked_" + tip + "_x"}, x).set(Key{"asked_" + tip + "_z"}, z);
+        told.set(Key{"asked_" + tip + "_x"}, foot.x).set(Key{"asked_" + tip + "_z"}, foot.z);
         if (std::fabs(floor - g.params.num("floor_to")) > 1e-3 || std::fabs(nx - g.params.num("tilt_to_x")) > 1e-3 ||
-            std::fabs(nz - g.params.num("tilt_to_z")) > 1e-3 || !down)
+            std::fabs(nz - g.params.num("tilt_to_z")) > 1e-3 || !foot.down)
             changed = true;
     }
     {
-        double h[4];
         bool all = true;
-        const double off[4][2] = {{0.3, 0}, {-0.3, 0}, {0, 0.3}, {0, -0.3}};
-        for (int k = 0; k < 4 && all; ++k) {
-            Vec3d hit, normal;
-            all = down_at(off[k][0], off[k][1], 1.0, hit, normal, nullptr);
-            h[k] = hit.y;
+        double h[4];
+        for (int k = 0; k < 4; ++k) {
+            const RayHit& r = met[feet.size() + static_cast<std::size_t>(k)];
+            all = all && r.hit;
+            h[k] = r.at.y;
         }
         const double ahead = all ? std::atan2(h[0] - h[1], 0.6) : 0.0, side = all ? std::atan2(h[2] - h[3], 0.6) : 0.0;
         told.set("slope_ahead", ahead).set("slope_side", side);

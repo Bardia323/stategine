@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
 
 #include "sg/spatial/Math.hpp"
 
@@ -193,18 +194,21 @@ struct Grounds {
 };
 }  // namespace
 
-bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist, Key* what) {
-    const V3 o = v3(eye), d = spatial::normalize(v3(dir));
-    double best = reach;
+namespace {
+// One ray against what was gathered for it (and maybe for others with it):
+// the solids, the land, and the land's element.
+RayHit ray_through(const std::vector<Solid>& solids, const Grounds& land, Key land_id, const RayAsk& ask) {
+    RayHit out;
+    const V3 o = v3(ask.eye), d = spatial::normalize(v3(ask.dir));
+    double best = ask.reach;
     V3 bn;
     Key id;
-    for (const Solid& s : solids_of(space, eye, reach)) {
+    for (const Solid& s : solids) {
         double t;
         V3 n;
         if (ray_solid(s, o, d, t, n) && t < best) best = t, bn = n, id = s.id;
     }
     // The land: marched until under it, then halved down to where it is met.
-    const Grounds land(space);
     double gh;
     if (land.any() && land.under(o.x, o.z, gh) && o.y > gh) {
         const double step = 0.25;
@@ -222,21 +226,59 @@ bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, V
                 const V3 q = o + d * b;
                 double hx0, hx1, hz0, hz1;
                 land.under(q.x - 0.05, q.z, hx0), land.under(q.x + 0.05, q.z, hx1), land.under(q.x, q.z - 0.05, hz0), land.under(q.x, q.z + 0.05, hz1);
-                best = b, bn = spatial::normalize(V3{-(hx1 - hx0) / 0.1, 1.0, -(hz1 - hz0) / 0.1}), id = Key{};
-                for (const Element& e : space.elements())
-                    if (e.alive && e.kind == Key{"terrain"}) {
-                        id = e.id;
-                        break;
-                    }
+                best = b, bn = spatial::normalize(V3{-(hx1 - hx0) / 0.1, 1.0, -(hz1 - hz0) / 0.1}), id = land_id;
                 break;
             }
             was = t;
         }
     }
-    if (best >= reach) return false;
-    hit = vd(o + d * best), normal = vd(bn);
-    if (dist) *dist = best;
-    if (what) *what = id;
+    if (best >= ask.reach) return out;
+    out.hit = true, out.at = vd(o + d * best), out.normal = vd(bn), out.dist = best, out.what = id;
+    return out;
+}
+}  // namespace
+
+std::vector<RayHit> rays(const State& space, const std::vector<RayAsk>& asks) {
+    std::vector<RayHit> out(asks.size());
+    if (asks.empty()) return out;
+    // What stops them gathered once, round all of them: a ball holding
+    // every one from its eye to its reach.
+    V3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+    for (const RayAsk& a : asks)
+        for (const V3 p : {v3(a.eye), v3(a.eye) + spatial::normalize(v3(a.dir)) * a.reach})
+            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)}, hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    const V3 mid = (lo + hi) * 0.5;
+    const std::vector<Solid> solids = solids_of(space, vd(mid), spatial::length(hi - lo) * 0.5);
+    const Grounds land(space);
+    Key land_id;
+    for (const Element& e : space.elements())
+        if (e.alive && e.kind == Key{"terrain"}) {
+            land_id = e.id;
+            break;
+        }
+    // Each ray on its own, its answer where it was asked: a wide batch
+    // across the cores, the same answers whatever ran them.
+    const std::size_t n = asks.size();
+    const unsigned lanes = n < 256 ? 1u : std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    if (lanes == 1) {
+        for (std::size_t i = 0; i < n; ++i) out[i] = ray_through(solids, land, land_id, asks[i]);
+        return out;
+    }
+    std::vector<std::thread> pool;
+    for (unsigned w = 0; w < lanes; ++w)
+        pool.emplace_back([&, w] {
+            for (std::size_t i = w; i < n; i += lanes) out[i] = ray_through(solids, land, land_id, asks[i]);
+        });
+    for (std::thread& t : pool) t.join();
+    return out;
+}
+
+bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist, Key* what) {
+    const RayHit r = rays(space, {RayAsk{eye, dir, reach}}).front();
+    if (!r.hit) return false;
+    hit = r.at, normal = r.normal;
+    if (dist) *dist = r.dist;
+    if (what) *what = r.what;
     return true;
 }
 
