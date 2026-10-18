@@ -473,7 +473,11 @@ vec3 history_at(vec2 uv) {
     return max(r / ws, vec3(0.0));
 }
 void main() {
-    vec3 cur = texture(uCurrent, vUV).rgb;
+    // This frame read where its pixel is unmoved by the jitter: the picture
+    // made of the frames before stays where it is, not swaying with the
+    // jitter's last few steps (on its cycle of eight, every edge stepped).
+    vec2 here = vUV + 0.5 * uJitter;
+    vec3 cur = texture(uCurrent, here).rgb;
     if (uFresh > 0.5) {
         FragColor = vec4(cur, 1.0);
         return;
@@ -484,7 +488,7 @@ void main() {
     float near = 1.0;
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x) {
-            vec2 at = vUV + vec2(x, y) * uTexel;
+            vec2 at = here + vec2(x, y) * uTexel;
             vec3 c = ycocg(squash(texture(uCurrent, at).rgb));
             m1 += c;
             m2 += c * c;
@@ -493,7 +497,7 @@ void main() {
         }
     vec3 mean = m1 / 9.0, spread = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
     // Where it was last frame.
-    vec4 was = uReproject * vec4(vUV * 2.0 - 1.0 - uJitter, near * 2.0 - 1.0, 1.0);
+    vec4 was = uReproject * vec4(vUV * 2.0 - 1.0, near * 2.0 - 1.0, 1.0);
     vec2 back = was.xy / was.w * 0.5 + 0.5;
     if (was.w <= 0.0 || any(lessThan(back, vec2(0.0))) || any(greaterThan(back, vec2(1.0)))) {
         FragColor = vec4(cur, 1.0);

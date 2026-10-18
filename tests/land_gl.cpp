@@ -8,6 +8,7 @@
 // function of that time, given again) is drawn as it now is a few frames on,
 // never waiting for it - and as it was until then. The ground round an eye
 // that moves on is sampled at the same points of the world, as high.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -158,28 +159,91 @@ int main() {
     check(soft_middle > 0.85 * sharp_middle && soft_edge < 0.6 * sharp_edge, "a lens keeps what it is on sharp, and softens what is far from it");
 
     // The ground sampled round an eye, and again round it a few metres on:
-    // every point of the second that the first had too is the same point,
-    // with the same height - the far ground does not slide under its samples
-    // as the eye goes (dunes do not wobble); and it is as many points as the
-    // cells asked for, near enough.
+    // the points of the second that the first had too are the same points of
+    // the world, as high - the far ground does not slide under its samples as
+    // the eye goes (dunes do not wobble); it is about as many cells as asked
+    // for. And the ground drawn changes as smoothly as the eye moves: walked
+    // a quarter metre at a time, no place of it rises or falls more than a
+    // little a step - not where its spacing doubles, points coming and going
+    // there (slid onto the coarser lattice first), as it did by a third of a
+    // metre and more.
     {
         const auto dunes = [](double x, double z) { return 20.0 * std::sin(x * 0.04) * std::cos(z * 0.031) + 3.0 * std::sin(x * 0.3 + z * 0.2); };
         const std::vector<float> a = sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 100.0, 40.0);
-        const std::vector<float> b = sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 102.0, 37.0);
+        const std::vector<float> b = sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 104.0, 36.0);
         std::map<std::pair<long long, long long>, float> first;
         for (std::size_t i = 0; i + 8 <= a.size(); i += 8) first[{std::llround(a[i] * 1000.0), std::llround(a[i + 2] * 1000.0)}] = a[i + 1];
-        std::size_t shared = 0, far_shared = 0, moved = 0;
+        std::size_t far_shared = 0, far_moved = 0;
         for (std::size_t i = 0; i + 8 <= b.size(); i += 8) {
             const auto it = first.find({std::llround(b[i] * 1000.0), std::llround(b[i + 2] * 1000.0)});
-            if (it == first.end()) continue;
-            ++shared;
-            if (std::hypot(b[i] - 100.0, b[i + 2] - 40.0) > 500.0) ++far_shared;
-            if (std::fabs(it->second - b[i + 1]) > 1e-4f) ++moved;
+            if (it == first.end() || std::hypot(b[i] - 104.0, b[i + 2] - 36.0) < 500.0) continue;
+            ++far_shared;
+            if (std::fabs(it->second - b[i + 1]) > 1e-3f) ++far_moved;
         }
         const double cells = std::sqrt(static_cast<double>(a.size() / 48));
-        std::printf("the ground round an eye: %.0f cells a side; moved on, %zu corners shared (%zu far), %zu changed\n", cells, shared, far_shared, moved);
-        check(far_shared > 1000 && moved == 0, "the ground round a moving eye: its points stay where they are in the world, as high");
-        check(cells > 250.0 && cells < 500.0, "the ground round an eye: about as many cells as asked");
+        std::printf("the ground round an eye: as many cells as %.0f a side; moved on, %zu far corners shared, %zu of them moved\n", cells, far_shared, far_moved);
+        check(far_shared > 1000 && far_moved < far_shared / 20, "the ground round a moving eye: its points stay where they are in the world, as high");
+        check(cells > 200.0 && cells < 450.0, "the ground round an eye: about as many cells as asked");
+
+        // (The height of the ground as drawn - its triangles as they are - at
+        // a place: the triangles over it found in a grid of 4 m bins.)
+        struct Drawn {
+            std::map<std::pair<int, int>, std::vector<std::size_t>> bins;
+            std::vector<float> v;
+        };
+        const auto drawn = [](std::vector<float> v) {
+            Drawn d;
+            d.v = std::move(v);
+            for (std::size_t t = 0; t + 24 <= d.v.size(); t += 24) {
+                const float* p = &d.v[t];
+                const float x0 = std::min({p[0], p[8], p[16]}), x1 = std::max({p[0], p[8], p[16]});
+                const float z0 = std::min({p[2], p[10], p[18]}), z1 = std::max({p[2], p[10], p[18]});
+                if (std::hypot(0.5 * (x0 + x1) - 100.0, 0.5 * (z0 + z1) - 40.0) > 330.0) continue;
+                for (int bx = static_cast<int>(std::floor(x0 / 4.0)); bx <= static_cast<int>(std::floor(x1 / 4.0)); ++bx)
+                    for (int bz = static_cast<int>(std::floor(z0 / 4.0)); bz <= static_cast<int>(std::floor(z1 / 4.0)); ++bz) d.bins[{bx, bz}].push_back(t);
+            }
+            return d;
+        };
+        const auto height_at = [](const Drawn& d, double x, double z) {
+            const auto it = d.bins.find({static_cast<int>(std::floor(x / 4.0)), static_cast<int>(std::floor(z / 4.0))});
+            if (it == d.bins.end()) return std::nan("");
+            for (std::size_t t : it->second) {
+                const float* p = &d.v[t];
+                const double ax = p[0], az = p[2], bx = p[8], bz = p[10], cx = p[16], cz = p[18];
+                const double det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+                if (std::fabs(det) < 1e-9) continue;  // (folded flat)
+                const double u = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / det, w = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / det;
+                if (u < -1e-9 || w < -1e-9 || u + w > 1.0 + 1e-9) continue;
+                return u * p[1] + w * p[9] + (1.0 - u - w) * p[17];
+            }
+            return std::nan("");
+        };
+        // (Places from 5 to 300 m round the walk, where the spacings double.)
+        std::vector<std::pair<double, double>> places;
+        for (int k = 0; k < 4000; ++k) {
+            const double r = 5.0 + 295.0 * std::fmod(k * 0.618034, 1.0), t = k * 2.39996;
+            places.push_back({100.0 + r * std::cos(t), 40.0 + r * std::sin(t)});
+        }
+        Drawn last = drawn(sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, 100.0, 40.0, 0.25));
+        double worst = 0.0, worst_far = 0.0;
+        int holes = 0;
+        for (int step = 1; step <= 40; ++step) {
+            const double ex = 100.0 + 0.25 * step, ez = 40.0 + 0.1 * step;
+            Drawn now = drawn(sg::render::GLWorldView::sample_ground(dunes, 360, 2200.0, 0.35, ex, ez, 0.25));
+            for (const auto& [x, z] : places) {
+                const double h0 = height_at(last, x, z), h1 = height_at(now, x, z);
+                if (std::isnan(h0) || std::isnan(h1)) {
+                    ++holes;
+                    continue;
+                }
+                if (std::fabs(h1 - h0) > worst) worst = std::fabs(h1 - h0), worst_far = std::hypot(x - ex, z - ez);
+            }
+            last = std::move(now);
+        }
+        std::printf("the ground drawn, walked ten metres a quarter at a time: %.3f m the most any place moved in a step (%.1f m off); %d places not on it\n", worst, worst_far,
+                    holes);
+        check(holes == 0, "the ground round a moving eye: no gap in it");
+        check(worst < 0.03, "the ground round a moving eye changes as smoothly as it moves: no place pops");
     }
 
     std::printf(ok ? "all ok\n" : "FAILED\n");

@@ -642,9 +642,12 @@ slowly across the land - so nothing repeats from far off. It may say where its w
 darker and glossier there, the edge ragged. A land of sand (`surface` 8) may
 ask for wind ripples (`ripple`, metres apart; `ripple_dir`): in its normal,
 shown only as near as a pixel can hold them (docs/materials.md). The ground
-round the eye is sampled on the world's own lattice - each point a multiple
-of its spacing, the spacing doubling outwards - so the eye moving on never
-slides the far ground under its samples. And a land may move with its
+round the eye is squares one round another, each of the world's own lattice
+and twice as coarse as the one inside (`step` in the middle), so the eye
+moving on never slides the far ground under its samples; and towards each
+square's edge its in-between points slide onto the coarser lattice, so the
+ground drawn changes as smoothly as the eye moves (`snap`: how far it goes
+before the ground is taken again, 2 m unless it says). And a land may move with its
 world's time (`drifts` 1: dunes creeping, its ground given again as its time
 goes, `Spatial3D::terrain` again): it is drawn as it was until the ground it
 now is has been sampled in the background, never waited for; any other land

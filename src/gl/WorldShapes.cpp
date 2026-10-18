@@ -110,82 +110,117 @@ void GLWorldView::draw_sky(const Camera& cam, float zfar) {
     sphere_.draw();
 }
 
-// Where the ground is sampled along one of its ways, round `c`: `step`
-// apart near it, further apart the further out (as far apart as a grid of
-// n cells reaching `reach` would have them there, growing evenly) - but
-// every point on the world's own lattice for its spacing, each spacing a
-// doubling of the last and begun only where the coarser lattice lands on
-// the finer. So a point sampled is at the same place in the world wherever
-// the eye stands, and has the same height: the eye moving on only adds
-// points at the edges of each spacing and takes others away there - the
-// far dunes never slide under their samples, never wobble.
-static std::vector<double> ground_lattice(double c, int n, double reach, double step) {
-    const int half = std::max(1, n / 2);
-    const double grow = std::max(0.0, (reach - step * half) / (static_cast<double>(half) * half));
-    // (The spacing the even growth gives at a distance d from the middle.)
-    const auto wanted = [&](double d) { return std::sqrt(step * step + 4.0 * grow * d); };
-    // (Counted in steps, so the lattices are exact.)
-    const long long mid = std::llround(c / step);
-    std::vector<long long> out, back;
-    for (int dir : {1, -1}) {
-        std::vector<long long>& side = dir > 0 ? out : back;
-        long long x = mid, s = 1;
-        while (static_cast<double>(std::llabs(x - mid)) * step < reach) {
-            // Coarser once it is wanted, and once this point is on the
-            // coarser lattice too.
-            while (wanted(static_cast<double>(std::llabs(x - mid)) * step) >= 1.4142 * static_cast<double>(s) * step && s < (1LL << 40) && x % (2 * s) == 0) s *= 2;
-            x += dir * s;
-            side.push_back(x);
+// The ground round the eye: squares one round another, each of the world's
+// own lattice for its spacing - `step` in the middle one, each next twice
+// the last, its middle on the lattice twice as coarse, a square the size of
+// the one inside it cut out of it - as many as reach `reach`, about as many
+// cells in all as an `n` by `n` grid. Every cell square, every point a point
+// of the world: the eye moving on, a square moves a whole cell of the next
+// at a time, its points where they were, as high.
+//
+// And no point comes or goes at once: towards a square's outer edge each
+// point between two of the next coarser lattice (`fold`) slides along the
+// ground onto the one before it, across and along, as far as the eye has
+// left it behind - wholly there a cell short of the edge and the eye's
+// `eye_step` short of that (how far it goes before the ground is taken
+// again), so the edge is the next square's own edge, cut corner to corner as
+// its cells are; it is taken away only so, and comes back so, settling to
+// its own place as the eye nears. The ground drawn changes as smoothly as
+// the eye moves - no pop where a spacing doubles, no crack between squares.
+std::vector<float> GLWorldView::sample_ground(const std::function<double(double, double)>& height, int n, double reach, double step,
+                                              double cx, double cz, double eye_step) {
+    const int m = std::clamp(n / 6, 8, 128) / 2 * 2;  // cells from a square's middle to its edge (even: the square inside a whole number of these)
+    int levels = 1;
+    while (m * step * std::ldexp(1.0, levels - 1) < reach && levels < 24) ++levels;
+    const int side = 2 * m + 1;  // points a side of each square
+    struct Square {
+        double s = 0, x0 = 0, z0 = 0;   // its spacing, its corner
+        int hole_i0 = 0, hole_i1 = 0;   // the cells cut out of it (the square inside), across
+        int hole_j0 = 0, hole_j1 = 0;   // and along; none if equal
+        std::vector<double> h;          // the heights of its points, a row a z
+    };
+    std::vector<Square> sq(static_cast<std::size_t>(levels));
+    for (int L = 0; L < levels; ++L) {
+        Square& q = sq[static_cast<std::size_t>(L)];
+        q.s = step * std::ldexp(1.0, L);
+        const double mx = std::round(cx / (2.0 * q.s)) * 2.0 * q.s, mz = std::round(cz / (2.0 * q.s)) * 2.0 * q.s;
+        q.x0 = mx - m * q.s, q.z0 = mz - m * q.s;
+        if (L > 0) {
+            const Square& in = sq[static_cast<std::size_t>(L - 1)];
+            q.hole_i0 = static_cast<int>(std::lround((in.x0 - q.x0) / q.s)), q.hole_i1 = q.hole_i0 + m;
+            q.hole_j0 = static_cast<int>(std::lround((in.z0 - q.z0) / q.s)), q.hole_j1 = q.hole_j0 + m;
         }
+        q.h.assign(static_cast<std::size_t>(side) * side, 0.0);
     }
-    std::vector<double> at;
-    at.reserve(out.size() + back.size() + 1);
-    for (auto it = back.rbegin(); it != back.rend(); ++it) at.push_back(static_cast<double>(*it) * step);
-    at.push_back(static_cast<double>(mid) * step);
-    for (long long x : out) at.push_back(static_cast<double>(x) * step);
-    return at;
-}
-
-std::vector<float> GLWorldView::sample_ground(const std::function<double(double, double)>& height, int n, double reach, double step, double cx, double cz) {
-    const std::vector<double> xs = ground_lattice(cx, n, reach, step), zs = ground_lattice(cz, n, reach, step);
-    const int nx = static_cast<int>(xs.size()) - 1, nz = static_cast<int>(zs.size()) - 1;
-    const auto at = [nx](int i, int j) { return static_cast<std::size_t>(j) * static_cast<std::size_t>(nx + 1) + static_cast<std::size_t>(i); };
-    std::vector<double> hgt(xs.size() * zs.size());
+    // Every point of every square, on every core at once.
     const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
     std::vector<std::thread> pool;
     for (int w = 0; w < workers; ++w)
         pool.emplace_back([&, w] {
-            for (int j = w; j <= nz; j += workers)
-                for (int i = 0; i <= nx; ++i)
-                    hgt[at(i, j)] = height(xs[static_cast<std::size_t>(i)], zs[static_cast<std::size_t>(j)]);
+            for (int r = w; r < levels * side; r += workers) {
+                Square& q = sq[static_cast<std::size_t>(r / side)];
+                const int j = r % side;
+                for (int i = 0; i < side; ++i) q.h[static_cast<std::size_t>(j) * side + i] = height(q.x0 + i * q.s, q.z0 + j * q.s);
+            }
         });
     for (std::thread& th : pool) th.join();
-    std::vector<gl::Vec3> nrm(hgt.size());
-    for (int j = 0; j <= nz; ++j)
-        for (int i = 0; i <= nx; ++i) {
-            const int i0 = std::max(0, i - 1), i1 = std::min(nx, i + 1);
-            const int j0 = std::max(0, j - 1), j1 = std::min(nz, j + 1);
-            const double dx = (hgt[at(i1, j)] - hgt[at(i0, j)]) / (xs[static_cast<std::size_t>(i1)] - xs[static_cast<std::size_t>(i0)]);
-            const double dz = (hgt[at(i, j1)] - hgt[at(i, j0)]) / (zs[static_cast<std::size_t>(j1)] - zs[static_cast<std::size_t>(j0)]);
-            nrm[at(i, j)] = gl::normalize({static_cast<float>(-dx), 1.0f, static_cast<float>(-dz)});
-        }
+
     std::vector<float> v;
-    v.reserve(static_cast<std::size_t>(nx) * nz * 6 * 8);
-    const auto put = [&](int i, int j) {
-        const std::size_t k = at(i, j);
-        const float x = static_cast<float>(xs[static_cast<std::size_t>(i)]);
-        const float z = static_cast<float>(zs[static_cast<std::size_t>(j)]);
-        v.insert(v.end(), {x, static_cast<float>(hgt[k]), z, nrm[k].x, nrm[k].y, nrm[k].z, x * 0.1f, z * 0.1f});
-    };
-    for (int j = 0; j < nz; ++j)
-        for (int i = 0; i < nx; ++i) {
-            put(i, j);
-            put(i, j + 1);
-            put(i + 1, j + 1);
-            put(i, j);
-            put(i + 1, j + 1);
-            put(i + 1, j);
-        }
+    v.reserve(static_cast<std::size_t>(levels) * 4 * m * m * 6 * 8);
+    for (int L = 0; L < levels; ++L) {
+        const Square& q = sq[static_cast<std::size_t>(L)];
+        const bool last = L + 1 == levels;
+        const auto hgt = [&](int i, int j) { return q.h[static_cast<std::size_t>(std::clamp(j, 0, side - 1)) * side + std::clamp(i, 0, side - 1)]; };
+        // Which way the ground faces at a point, from its neighbours `k`
+        // cells off (1: its own spacing; 2: the next square's).
+        const auto facing = [&](int i, int j, int k) {
+            const double dx = (hgt(i + k, j) - hgt(i - k, j)) / (2.0 * k * q.s), dz = (hgt(i, j + k) - hgt(i, j - k)) / (2.0 * k * q.s);
+            return gl::Vec3{static_cast<float>(-dx), 1.0f, static_cast<float>(-dz)};
+        };
+        // How far a point is folded: from half way out to a cell and the
+        // eye's step short of where this square ends (its inner edge, the
+        // square inside's outer, a cell further in than where it begins).
+        // (The eye's step twice: once for how far it went, once for the
+        // ground taken again in the background meanwhile.)
+        const double lo = 0.5 * m * q.s + (L > 0 ? q.s : 0.0), hi = std::max(m * q.s - 2.0 * q.s - 2.0 * eye_step, lo + q.s);
+        const auto fold_at = [&](int i, int j) {
+            if (last) return 0.0;
+            const double d = std::max(std::fabs(q.x0 + i * q.s - cx), std::fabs(q.z0 + j * q.s - cz));
+            const double t = std::clamp((d - lo) / (hi - lo), 0.0, 1.0);
+            return t * t * (3.0 - 2.0 * t);
+        };
+        // (Odd: between two of the coarser lattice; the corner is on it.)
+        const auto odd = [&](double at0, int i) { return std::llround((at0 + i * q.s) / q.s) % 2 != 0; };
+        const auto put = [&](int i, int j) {
+            const double k = fold_at(i, j);
+            const double fx = odd(q.x0, i) ? k : 0.0, fz = odd(q.z0, j) ? k : 0.0;
+            const int pi = fx > 0.0 ? i - 1 : i, pj = fz > 0.0 ? j - 1 : j;
+            const auto mix = [](double a, double b, double t) { return a + (b - a) * t; };
+            const double x = mix(q.x0 + i * q.s, q.x0 + pi * q.s, fx), z = mix(q.z0 + j * q.s, q.z0 + pj * q.s, fz);
+            const double h = mix(mix(hgt(i, j), hgt(pi, j), fx), mix(hgt(i, pj), hgt(pi, pj), fx), fz);
+            // (Facing as its own spacing says, folded with it - and, as far
+            // as it is folded, as the coarser lattice says where it goes.)
+            const float wx = static_cast<float>(fx), wz = static_cast<float>(fz);
+            const gl::Vec3 a = facing(i, j, 1), b = facing(pi, j, 1), c = facing(i, pj, 1), d = facing(pi, pj, 1);
+            const gl::Vec3 ab = a * (1.0f - wx) + b * wx, cd = c * (1.0f - wx) + d * wx;
+            const gl::Vec3 fine = ab * (1.0f - wz) + cd * wz;
+            const gl::Vec3 coarse = facing(pi, pj, 2);
+            const float kk = static_cast<float>(k);
+            const gl::Vec3 nn = gl::normalize(fine * (1.0f - kk) + coarse * kk);
+            const float xf = static_cast<float>(x), zf = static_cast<float>(z);
+            v.insert(v.end(), {xf, static_cast<float>(h), zf, nn.x, nn.y, nn.z, xf * 0.1f, zf * 0.1f});
+        };
+        for (int j = 0; j < 2 * m; ++j)
+            for (int i = 0; i < 2 * m; ++i) {
+                if (i >= q.hole_i0 && i < q.hole_i1 && j >= q.hole_j0 && j < q.hole_j1) continue;
+                put(i, j);
+                put(i, j + 1);
+                put(i + 1, j + 1);
+                put(i, j);
+                put(i + 1, j + 1);
+                put(i + 1, j);
+            }
+    }
     return v;
 }
 
@@ -225,7 +260,7 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     if (!t.mesh.valid() || (rev != t.rev && !drifts)) {
         // Nothing sensible to draw meanwhile: wait for it.
         if (t.job.valid()) t.job.wait();
-        t.mesh.update(sample_ground(t.height, n, reach, step, cx, cz));
+        t.mesh.update(sample_ground(t.height, n, reach, step, cx, cz, snap));
         t.cx = cx;
         t.cz = cz;
         t.rev = rev;
@@ -235,8 +270,8 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     t.job_cx = cx;
     t.job_cz = cz;
     t.job_rev = rev;
-    t.job = std::async(std::launch::async, [height = t.height, n, reach, step, cx, cz] {
-        return sample_ground(height, n, reach, step, cx, cz);
+    t.job = std::async(std::launch::async, [height = t.height, n, reach, step, cx, cz, snap] {
+        return sample_ground(height, n, reach, step, cx, cz, snap);
     });
 }
 

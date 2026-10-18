@@ -83,14 +83,19 @@ void sun_box_steps() {
         return std::vector<float>(m.m, m.m + 16);
     };
     const auto first = map_at(3.1, 1.7, -2.3);
-    int same = 0, tried = 0;
+    // A millimetre at a time, slantwise, 52 mm in all: a texel is about 2 cm
+    // here, so the map changes only as the eye crosses into another texel
+    // across, up or along it - a few times, wherever it began - not with
+    // every step.
+    int changed = 0;
+    auto last = first;
     for (int i = 1; i <= 40; ++i) {
-        const double s = 0.001 * i;  // a millimetre at a time, slantwise
-        same += map_at(3.1 + s, 1.7 + s * 0.5, -2.3 - s * 0.7) == first;
-        ++tried;
+        const double s = 0.001 * i;
+        const auto now = map_at(3.1 + s, 1.7 + s * 0.5, -2.3 - s * 0.7);
+        changed += now != last;
+        last = now;
     }
-    // A texel is about 2 cm here: of 40 steps of a millimetre, most stay in it.
-    require(same >= tried / 4, "a sun's map stays the same while the eye moves less than a texel");
+    require(changed <= 12, "a sun's map stays the same while the eye moves less than a texel");
     require(map_at(3.1 + 3.0 * texel, 1.7, -2.3 + 3.0 * texel) != first, "and moves when the eye moves texels");
 }
 

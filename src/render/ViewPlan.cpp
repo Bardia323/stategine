@@ -272,14 +272,22 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
     if (l.sun) {
         // A box of shadow round the viewer, a little ahead of them,
         // moved in whole texels so the edges do not crawl. The sun's
-        // way is taken in steps of about a fifth of a degree: it
-        // creeps across the sky, and its map is drawn again when it
-        // has moved that far, not every frame of the day.
+        // way is taken in steps: it creeps across the sky, and its map is
+        // drawn again when it has moved a step, not every frame of the day
+        // - a step no further than moves a shadow's edge a texel. High, a
+        // fifth of a degree; low, a shadow is long (a thing's height over
+        // the square of the sine of the sun's height for each radian it
+        // moves: a tree's tip at two degrees goes twelve metres for that
+        // fifth) and the step is as much finer - at sunset, every frame.
         spatial::projection::Vec3 d = spatial::projection::normalize(l.dir);
-        d = spatial::projection::normalize(
-            {std::round(d.x * 300.0f) / 300.0f, std::round(d.y * 300.0f) / 300.0f, std::round(d.z * 300.0f) / 300.0f});
         const float e = l.extent, reach = e * 4.0f;
         const float texel = 2.0f * e / static_cast<float>(size);
+        {
+            constexpr float kTall = 10.0f;  // (a tall thing's height over what it shadows, metres)
+            const float step = std::min(1.0f / 300.0f, texel * d.y * d.y / kTall);
+            if (step > 1e-5f)
+                d = spatial::projection::normalize({std::round(d.x / step) * step, std::round(d.y / step) * step, std::round(d.z / step) * step});
+        }
         spatial::projection::Vec3 c =
             l.pinned ? l.focus : eye + spatial::projection::normalize({forward.x, 0.0f, forward.z}) * (e * 0.4f);
         const spatial::projection::Vec3 up =

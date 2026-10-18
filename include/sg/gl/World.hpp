@@ -420,12 +420,15 @@ public:
     };
     static std::vector<ProbeBox> grid_of(const Spatial3D& room);
 
-    // The ground round (cx, cz): about `n` cells across, `step` metres apart
-    // at the middle, widening to `reach` - each point on the world's own
-    // lattice for its spacing, so the eye moving on never slides the ground
-    // under its samples. Sampled on every core at once.
+    // The ground round (cx, cz): squares one round another, `step` metres
+    // apart in the middle one, each next twice as far apart, out to `reach`
+    // - about as many cells as an `n` by `n` grid; every point of the world's
+    // own lattice, and the points between two of the next coarser lattice
+    // slid onto it towards each square's edge, so the eye moving on (taken
+    // again each `eye_step` metres) changes it as smoothly as it moves.
+    // Sampled on every core at once.
     static std::vector<float> sample_ground(const std::function<double(double, double)>& height, int n, double reach,
-                                            double step, double cx, double cz);
+                                            double step, double cx, double cz, double eye_step = 2.0);
 
     // One room, standing on its own.
     void render(const Spatial3D& world, int fb_w, int fb_h);
