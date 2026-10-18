@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- What stands between a sound and the ear (`sg::audio::occlusion`) is a fan of nine rays a hand's breadth across, from round the sound to round the ear, each crossing up to four things - a wall by its material (else plaster), a solid thing by its own (else wood), the land as earth - asked a crossing at a time as one batch (`sg::rays`), the nine averaged: a sound half behind a pillar is half muffled (`sg_audio`: 0.34 of the middle band; wholly behind it 0.01) and goes from heard to hidden as it moves behind it, not at once. Before, one ray, walls alone.
+
 - Many rays at once (`sg::rays`, `RayAsk`, `RayHit`): what stops them gathered once for all of them, each answered exactly as `sg::ray` answers it alone, in the order asked; a batch of 256 or more goes across the cores, each ray on its own, the same answers whatever ran them - a ray's procedure as a device would run it. `sg::ray` is a batch of one, and `sg::pace` asks its feet and its four slope rays as one batch: among 3000 elements, a pace's rays 0.058 ms where they were 0.35 (`sg_walk`: 600 rays at once, each the same as alone).
 
 - Ripples on water (`sg::ripple`, `sg/domains/Ripple.hpp`): a ring of crests spreading from where something met the water (a stone, a foot in a stream, a bow), kept by the water as data - where it began, when (its world's time), how strong; the last 16 (`kRipples`) - and drawn by the scene where that time says it has spread to, dying away over 6 s. Nothing moves a ripple on: the water at a world time is the same however it was come to, and a world paused holds its rings. A thing with ripples is drawn on its own, not in a batch (`sg_ripple_gl`).

@@ -43,6 +43,30 @@ int main() {
     using namespace sg;
     using namespace sg::audio;
 
+    // --- what stands between a sound and the ear -----------------------------------------
+    // Nothing between: all of it. A brick wall: little, the top least. A
+    // pillar half across the way: between the two. Moved behind it, less
+    // again. The same answer asked again.
+    {
+        Spatial3D place(Key{"hall"});
+        const Vec3d ear{0, 1.5, 0}, sound{6, 1.5, 0};
+        const Bands open = occlusion(place, sound, ear);
+        place.wall(Key{"wall"}, {3.0, 0.0, 0.0}, 0.3, 3.0, 4.0).params.set("material", std::string("brick"));
+        const Bands walled = occlusion(place, sound, ear);
+        place.remove_element(Key{"wall"});
+        Element& pillar = place.fixture(Key{"pillar"}, 3.0, 0.0, 0.08);
+        pillar.params.set(sg::keys::sx, 0.3).set(sg::keys::sy, 3.0).set(sg::keys::sz, 0.3).set("solid", 1.0).set("material", std::string("stone"));
+        const Bands half = occlusion(place, sound, ear);
+        place.find(Key{"pillar"})->params.set(sg::keys::z, 0.0).set(sg::keys::sz, 0.6);
+        const Bands behind = occlusion(place, sound, ear);
+        const Bands again = occlusion(place, sound, ear);
+        std::printf("  open %.3f, half behind a pillar %.3f, behind it %.3f, through a wall %.3f (mid)\n", open.mid, half.mid, behind.mid, walled.mid);
+        check(open.low == 1.0 && open.mid == 1.0 && open.high == 1.0, "nothing between a sound and the ear: all of it");
+        check(walled.high < walled.low && walled.mid < 0.05, "through a brick wall, little, the top least");
+        check(half.mid < 0.9 && half.mid > behind.mid + 0.1 && behind.mid < 0.3, "half behind a pillar, half muffled; wholly behind it, more");
+        check(again.mid == behind.mid && again.high == behind.high, "the same answer asked again");
+    }
+
     // --- the standard curve is the formula it replaced --------------------------------
     {
         double db = 0, cut = 0, send = 0, spread = 0;

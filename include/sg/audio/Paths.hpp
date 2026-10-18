@@ -124,10 +124,13 @@ private:
     bool found_ = false;  // the ways from the ear found, for ear_place_ and ear_ as they are
 };
 
-// What the walls between `from` and `to` in `place` let through: a ray from
-// one to the other against the place's own solids, each wall it crosses
-// (an element of kind `wall`) letting through what its material does
-// (`material` or `mat`, else a generic wall). At most four.
+// What stands between `from` and `to` in `place` lets through: a fan of nine
+// rays a hand's breadth across, from round the one to round the other,
+// against the place's own solids (sg::rays, all of a crossing at once) -
+// each wall it crosses letting through what its material does (`material`
+// or `mat`, else plaster), each solid thing what its does (else wood), the
+// land as earth; four at most a ray - the nine averaged, so a sound half
+// behind a pillar is half muffled.
 Bands occlusion(const State& place, const Vec3d& from, const Vec3d& to);
 
 }  // namespace sg::audio

@@ -314,30 +314,61 @@ double Paths::fade_between(Key a, Key b) const {
 }
 
 Bands occlusion(const State& place, const Vec3d& from, const Vec3d& to) {
-    Bands out;
     const Vec3d d = to - from;
     const double whole = length(d);
-    if (whole < 0.05) return out;
+    if (whole < 0.05) return Bands{};
     const Vec3d dir = d * (1.0 / whole);
-    Vec3d at = from;
-    double left = whole;
-    for (int i = 0; i < 4 && left > 0.05; ++i) {
-        Vec3d hit, normal;
-        double dist = 0.0;
-        Key what;
-        if (!ray(place, at, dir, left, hit, normal, &dist, &what)) break;
-        if (dist >= left - 0.05) break;
-        const Element* e = place.find(what);
-        if (e && e->kind == Key{"wall"}) {
-            const std::string* m = e->params.text(Key{"material"});
-            if (!m) m = e->params.text(Key{"mat"});
-            out = out * acoustic(m ? *m : std::string("plaster")).transmit;
-        }
-        // On from just inside it: a ray that starts in a solid passes out of it.
-        at = at + dir * (dist + 0.01);
-        left -= dist + 0.01;
+    // A fan of nine ways a hand's breadth across, from round the sound to
+    // round the ear: a sound half behind a pillar is half muffled, and goes
+    // from heard to hidden as it moves behind it, not at once.
+    const Vec3d side = std::fabs(dir.y) > 0.9 ? Vec3d{1, 0, 0} : Vec3d{0, 1, 0};
+    Vec3d u = cross(dir, side);
+    u = u * (1.0 / length(u));
+    const Vec3d v = cross(dir, u);
+    struct Way {
+        Vec3d at;
+        double left;
+        Bands kept;
+    };
+    std::vector<Way> ways;
+    for (int k = 0; k < 9; ++k) {
+        const double a = (k - 1) * 0.78539816339744831;
+        const Vec3d o = k == 0 ? Vec3d{} : (u * std::cos(a) + v * std::sin(a)) * 0.15;
+        ways.push_back({from + o, whole, Bands{}});
     }
-    return out;
+    // Each through what it crosses, four at most: a wall, or a solid thing,
+    // by its material (`material` or `mat`; a wall plaster, a thing wood,
+    // unless it says), the land as earth. All the ways of a crossing asked
+    // at once (sg::rays).
+    for (int pass = 0; pass < 4; ++pass) {
+        std::vector<RayAsk> asks;
+        std::vector<std::size_t> of;
+        for (std::size_t k = 0; k < ways.size(); ++k)
+            if (ways[k].left > 0.05) asks.push_back({ways[k].at, dir, ways[k].left}), of.push_back(k);
+        if (asks.empty()) break;
+        const std::vector<RayHit> met = rays(place, asks);
+        for (std::size_t i = 0; i < met.size(); ++i) {
+            Way& w = ways[of[i]];
+            if (!met[i].hit || met[i].dist >= w.left - 0.05) {
+                w.left = 0.0;
+                continue;
+            }
+            const Element* e = place.find(met[i].what);
+            if (e && (e->kind == Key{"wall"} || e->kind == Key{"mesh"})) {
+                const std::string* m = e->params.text(Key{"material"});
+                if (!m) m = e->params.text(Key{"mat"});
+                w.kept = w.kept * acoustic(m ? *m : std::string(e->kind == Key{"wall"} ? "plaster" : "wood")).transmit;
+            } else if (e && e->kind == Key{"terrain"}) {
+                w.kept = w.kept * acoustic("earth").transmit;
+            }
+            // On from just inside it: a ray that starts in a solid passes out of it.
+            w.at = w.at + dir * (met[i].dist + 0.01);
+            w.left -= met[i].dist + 0.01;
+        }
+    }
+    Bands out{0, 0, 0};
+    for (const Way& w : ways) out.low += w.kept.low, out.mid += w.kept.mid, out.high += w.kept.high;
+    return {out.low / 9.0, out.mid / 9.0, out.high / 9.0};
 }
 
 }  // namespace sg::audio
