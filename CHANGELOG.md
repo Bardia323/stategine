@@ -8,6 +8,8 @@ While the major version is 0, a minor bump may break the API.
 
 ## Unreleased
 
+- Pictures sent by their levels (`GLQuality::stream_textures`, `stream_textures` in render.conf; off unless said): `gl::Texture::create_packed(p, streamed)` sends a packed picture's levels of 256 pixels or less, sampled from the finest of them (`GL_TEXTURE_BASE_LEVEL`), and each finer one as it is drawn with, while the frame may still send it (`gl::Texture::stream_budget`, 4 MB a frame; `finest`). All sent, it is the picture sent whole (`sg_stream_gl`).
+
 - Culling on the card (`GLQuality::gpu_cull`, `gpu_cull` in render.conf; off unless said), where the card does its own work: GL 4.3, or a 3.3 context given `ARB_compute_shader`, `ARB_shader_storage_buffer_object` and `ARB_multi_draw_indirect` (the loader takes `glDispatchCompute`, `glMemoryBarrier`, `glBindBufferBase` and `glMultiDrawArraysIndirect` where they are). Each merged cell keeps where each of its things' corners begin and the ball round it; a compute pass writes a draw for each - its corners, or none, by whether its ball is in the view - and the cell is drawn by them in one call (`gl::Mesh::draw_commands`). The same picture (`sg_instancing_gl`: 72 of 3600 things culled on the card). `FrameTimes::culled_on_card`, read back only while timed.
 
 - Views through doorways the eye cannot see are left out where the eye has a mirror too: a doorway one of the eye's mirrors may show (the eye as that mirror shows it seeing it) is never asked, and every other is (`Asked::mirrored`). Before, an eye with a mirror asked none. `sg_deep_views_gl`: a doorway behind the eye that a mirror shows is in the glass as ever. (Memory Leak's living room, whose mirror shows most of its doorways: its views 2.7 ms of the card, 2.66.)

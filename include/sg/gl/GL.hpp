@@ -116,6 +116,7 @@ constexpr GLenum GL_FRAGMENT_SHADER = 0x8B30;
 constexpr GLenum GL_VERTEX_SHADER = 0x8B31;
 constexpr GLenum GL_COMPILE_STATUS = 0x8B81;
 constexpr GLenum GL_VERSION = 0x1F02;
+constexpr GLenum GL_TEXTURE_BASE_LEVEL = 0x813C, GL_TEXTURE_MAX_LEVEL = 0x813D;
 constexpr GLenum GL_LINK_STATUS = 0x8B82;
 // Questions put to the card (core since 3.3): when it got to a point of the
 // frame, and whether anything drawn passed the depth test.

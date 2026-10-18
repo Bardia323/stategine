@@ -158,7 +158,7 @@ const gl::Texture& GLWorldView::on_card(const std::shared_ptr<render::Packed>& p
     PackedOnCard& on = packed_on_card_[packed.get()];
     if (!on.texture.valid()) {
         on.keep = packed;
-        on.texture.create_packed(*packed);
+        on.texture.create_packed(*packed, q_.stream_textures);
         // Its blocks are the card's now, and never sent again (every
         // surface that shows it shows this texture): not kept twice.
         let_go_.blocks.push_back(std::exchange(on.keep->bytes, {}));

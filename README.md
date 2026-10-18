@@ -1212,6 +1212,15 @@ played; `set_timing` finishes the card between stages instead, which shows
 where a frame stalls but slows every frame it measures. Both are how the
 machine is, not how the world is: neither is written into any state.
 
+**Pictures sent by their levels** (`GLQuality::stream_textures`,
+`stream_textures` in render.conf; off unless said). A picture packed for the
+card is sent with only its levels of 256 pixels or less, sampled from the
+finest of them; each finer one is sent as it is drawn with (`gl::Texture::bind`),
+while the frame may still send that much (`gl::Texture::stream_budget`, 4 MB
+a frame). A world of many photographs is ready sooner, and holds on the card
+the detail of what has been seen near; all sent, the picture is the picture
+sent whole (`sg_stream_gl`).
+
 **Warming ahead.** A game that cannot warm every world at its start (`warm`)
 gives the view the worlds it may go to next - `view.ahead(graph, here, steps)`
 finds those within `steps` doorways or transitions - and `warm_ahead` makes

@@ -80,6 +80,12 @@ struct Quality {
     // processor doing nothing a thing. Off unless said; where the card cannot,
     // nothing changes.
     bool gpu_cull=false;
+    // A picture packed for the card sent by its levels: those of 256 pixels
+    // or less when it is made, each finer one as it is drawn with, a few
+    // megabytes a frame at most (gl::Texture::create_packed's `streamed`) - a
+    // world of many photographs is ready sooner, and holds on the card the
+    // detail of what has been seen near. Off unless said.
+    bool stream_textures=false;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

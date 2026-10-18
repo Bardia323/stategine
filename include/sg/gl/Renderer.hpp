@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <memory>
 #include <vector>
 
 #include "sg/gl/GL.hpp"
@@ -89,7 +90,15 @@ public:
     // Made from a picture packed for the card (sg/render/Pack.hpp): BC7
     // blocks, every level of its mipmaps as packed, filtered as `create`'s
     // with mipmaps. Read as any texture; changed only by being made again.
-    void create_packed(const render::Packed& p);
+    // `streamed`: only its levels of 256 pixels or less sent now, sampled from
+    // the finest of them; each finer one sent as it is drawn with (`bind`),
+    // while the frame may still send that many bytes (`stream_budget`, set
+    // each frame by whoever draws) - so a picture first seen far off costs
+    // what it shows, and gains its detail over the next frames it is seen.
+    void create_packed(const render::Packed& p, bool streamed = false);
+    // The finest level sent yet (0: all of it), and what a frame may send.
+    int finest() const { return sent_from_; }
+    inline static std::size_t stream_budget = 0;
     // Whether this card takes packed pictures (BPTC). Asked of the current
     // context, once.
     static bool packs();
@@ -112,6 +121,10 @@ private:
     bool mipmaps_ = false;
     bool packed_ = false;
     GLuint unpack_ = 0;  // the buffer its picture is given through (mipmapped)
+    // Its finer levels still to send (streamed), and the finest sent.
+    mutable std::shared_ptr<const render::Packed> pending_;
+    mutable int sent_from_ = 0;
+    void send_finer() const;
 };
 
 // Interleaved position(3), normal(3), uv(2).

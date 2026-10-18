@@ -162,7 +162,7 @@ void Texture::upload(const std::vector<unsigned char>& rgba) {
     glGenerateMipmap(GL_TEXTURE_2D);
 }
 
-void Texture::create_packed(const render::Packed& p) {
+void Texture::create_packed(const render::Packed& p, bool streamed) {
     if (id_) glDeleteTextures(1, &id_);
     w_ = p.w;
     h_ = p.h;
@@ -171,7 +171,15 @@ void Texture::create_packed(const render::Packed& p) {
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
     const GLenum format = p.srgb ? GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM : GL_COMPRESSED_RGBA_BPTC_UNORM;
-    for (std::size_t level = 0; level < p.levels.size(); ++level) {
+    // (Streamed: from the first level of 256 pixels or less; the finer kept to send.)
+    std::size_t from = 0;
+    if (streamed)
+        while (from + 1 < p.levels.size() && std::max(p.levels[from].w, p.levels[from].h) > 256) ++from;
+    sent_from_ = static_cast<int>(from);
+    pending_ = from > 0 ? std::make_shared<render::Packed>(p) : nullptr;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, static_cast<GLint>(from));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(p.levels.size()) - 1);
+    for (std::size_t level = from; level < p.levels.size(); ++level) {
         const render::Packed::Level& l = p.levels[level];
         glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), format, l.w, l.h, 0, static_cast<GLsizei>(l.size),
                                p.bytes.data() + l.at);
@@ -210,9 +218,24 @@ bool Texture::packs() {
     return yes;
 }
 
+void Texture::send_finer() const {
+    // Each finer level while the frame may send it: sampled from it at once.
+    const GLenum format = pending_->srgb ? GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM : GL_COMPRESSED_RGBA_BPTC_UNORM;
+    while (sent_from_ > 0) {
+        const render::Packed::Level& l = pending_->levels[static_cast<std::size_t>(sent_from_ - 1)];
+        if (l.size > stream_budget) return;
+        stream_budget -= l.size;
+        --sent_from_;
+        glCompressedTexImage2D(GL_TEXTURE_2D, sent_from_, format, l.w, l.h, 0, static_cast<GLsizei>(l.size), pending_->bytes.data() + l.at);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, sent_from_);
+    }
+    pending_.reset();
+}
+
 void Texture::bind(int unit) const {
     glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
     glBindTexture(GL_TEXTURE_2D, id_);
+    if (pending_) send_finer();
 }
 
 void Texture::repeat() {
