@@ -7,6 +7,7 @@
 #include <set>
 #include <thread>
 
+#include "sg/domains/Ripple.hpp"
 #include "sg/domains/Texture.hpp"
 #include "sg/render/Geometry.hpp"
 #include "sg/render/Pack.hpp"
@@ -263,6 +264,32 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         ~Bend() { if (on) p->set("uBend", 0.0f); }
     } bend{scene_, e.params.num(Key{"bend"}, 0.0) != 0.0};
     if (bend.on) scene_->set("uBend", static_cast<float>(e.params.num(Key{"bend"}, 0.0)));
+    // Ripples spreading on it (sg::ripple) - for this draw alone.
+    struct Ripples {
+        const gl::Program* p;
+        bool on;
+        ~Ripples() { if (on) p->set("uRippleCount", 0); }
+    } ripples{scene_, e.params.has(Key{"ripple_next"})};
+    if (ripples.on) {
+        static const auto names = [] {
+            std::array<std::array<Key, 4>, kRipples> k;
+            std::array<std::string, kRipples> u;
+            for (int i = 0; i < kRipples; ++i) {
+                const std::string at = "ripple" + std::to_string(i);
+                k[i] = {Key{at + "_x"}, Key{at + "_z"}, Key{at + "_t"}, Key{at + "_a"}};
+                u[i] = "uRipple[" + std::to_string(i) + "]";
+            }
+            return std::make_pair(k, u);
+        }();
+        int n = 0;
+        for (int i = 0; i < kRipples; ++i) {
+            const auto& k = names.first[static_cast<std::size_t>(i)];
+            if (!e.params.has(k[2])) continue;
+            scene_->set(names.second[static_cast<std::size_t>(n++)].c_str(), static_cast<float>(e.params.num(k[0])), static_cast<float>(e.params.num(k[1])),
+                        static_cast<float>(e.params.num(k[2])), static_cast<float>(e.params.num(k[3])));
+        }
+        scene_->set("uRippleCount", n);
+    }
     // A land's water, how deep; a road's lines.
     struct Land {
         GLWorldView* view;

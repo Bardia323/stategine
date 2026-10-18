@@ -72,6 +72,13 @@ a floor's planks keep their size however big the floor.
 | 9 | sky: not lit, not fogged | 19 | ground of a land (`sg::terrain`'s layers) |
 | | | 20 | earth: clods, stones |
 
+Water (18) swells as its world's time goes (`calm`, 0 the full swell, 1
+still), and rings spread on it from where something met it: `sg::ripple(water,
+x, z, strength, now)` (`sg/domains/Ripple.hpp`) keeps the last 16 in its
+params, each where it began and when - its world's time - so the water at a
+world time is the same however it was come to; drawn until it dies away
+(6 s), a few crests leaving at a walking pace.
+
 A new kind is an engine change: a branch in the shader's `surface_albedo` or
 `room_material`, keyed on the next free number, a row here, and an
 `sgmat` picture of it in the commit. Never a shader of a game's own.

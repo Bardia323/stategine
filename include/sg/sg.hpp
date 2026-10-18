@@ -25,6 +25,7 @@
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Look.hpp"
 #include "sg/domains/Probe.hpp"
+#include "sg/domains/Ripple.hpp"
 #include "sg/domains/Shapes.hpp"
 #include "sg/domains/Room.hpp"
 #include "sg/domains/Save.hpp"

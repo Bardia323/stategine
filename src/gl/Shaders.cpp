@@ -1452,6 +1452,9 @@ uniform vec3  uWaterDeep;
 uniform float uWaterDeepest;
 uniform float uLines;
 uniform float uCalm;          // water: 0 its full swell, 1 still
+const int MAX_RIPPLES = 16;
+uniform int  uRippleCount;    // water: the rings spreading on it (sg::ripple) -
+uniform vec4 uRipple[MAX_RIPPLES];  // each where it began (x, z of its room), when (its world's time), how strong
 
 // The material this fragment is of: the uniforms, or - drawn as one of many
 // at once - what its instance carries.
@@ -2437,6 +2440,20 @@ void main() {
             slope += dirs[i] * cos(phase) * a * k * fade / k * 1.6;
         }
         slope *= 1.0 - uCalm;
+        // And the rings spreading from where something met it (sg::ripple),
+        // where its world's time says each has spread to: a few crests,
+        // leaving at a walking pace, dying as they spread.
+        for (int i = 0; i < MAX_RIPPLES; ++i) {
+            if (i >= uRippleCount) break;
+            vec4 r = uRipple[i];
+            float age = t - r.z;
+            if (age < 0.0 || age > 6.0) continue;
+            vec2 d = p - r.xy;
+            float dist = length(d), x = dist - (0.15 + 0.8 * age);
+            float crests = exp(-x * x * 6.0) * r.w * exp(-0.6 * age) / sqrt(1.0 + 2.0 * dist);
+            if (crests < 1e-3) continue;
+            slope += d / max(dist, 1e-3) * (0.6 * crests * cos(x * 18.0));
+        }
         n = normalize(n - vec3(slope.x, 0.0, slope.y));
         bent = true;
     }
