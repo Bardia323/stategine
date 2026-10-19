@@ -47,6 +47,11 @@ struct DrawLight {
         // would give each texel the width of a hand.
         bool pinned = false;
         spatial::projection::Vec3 focus{0, 0, 0};
+        // The box whose texel a sun's way is stepped by as it creeps across
+        // the sky (> 0; 0: its own): all of a sun's boxes step it as finely as
+        // its narrowest, so their shadows lie the same way where one gives way
+        // to the next.
+        float stepped_by = 0.0f;
         float floor = -1.0f;   // light left in its own full shadow; < 0: the look's uShadowFloor
         bool indirect = false; // stands in for bounced light: no highlight, and occlusion darkens it
         // Whether it is a stand-in for the light that comes back off the
@@ -95,6 +100,13 @@ struct DrawLight {
 
 DrawLight light_of(const State& room,const Element& element,const Pose& placement = {});
 spatial::projection::Mat4 shadow_projection(const DrawLight& light,const ViewCamera& camera,int size,float& bias);
+// A sun's boxes of shadow round the eye, how far each reaches from its middle,
+// the narrowest first: a close one (`near`, when its own is much wider), its
+// own (`extent`), then each about four times as wide as the last - `most` in
+// all at the most - until the widest holds all the eye sees out to `far`, so
+// nothing in sight ever passes out of the last of them (a shadow faded where
+// a box's edge went by with the eye).
+std::vector<float> sun_boxes(float extent,float near,float far,int most);
 
 // The window that ends a lamp's light at its range: 1 near it, falling
 // smoothly to 0 at the range and nothing past it - (1 - (d/R)^4)^2, clamped,

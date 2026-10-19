@@ -678,7 +678,11 @@ terminal sketch and a texture on a wall at once.
 `sg::render::GLWorldView` draws any `Spatial3D`: portal passes, lights and
 PCF shadows (six own shadow casters plus doorway light; a lamp with no cone,
 `outer` past `kCubeCone`, shadows all round it from six maps, a face of a
-cube each), procedural materials,
+cube each; a sun, boxes round the eye - a close one, its own `extent`, then
+each about four times as wide, the widest holding all the eye sees out to the
+room's `far` (`render::sun_boxes`), so no shadow fades where a box's edge goes
+by - its penumbra as wide as the sun's half-degree disc makes it, sharp at a
+thing's foot and soft at the end of a long shadow), procedural materials,
 fog, air lit by its lamps (optional) and optional ambient occlusion, then
 bloom, a grade, tonemapping and FXAA (see [Air, grade and glow](#air-grade-and-glow)).
 Walls are data - a state with `wall` elements gets them drawn, one without gets a

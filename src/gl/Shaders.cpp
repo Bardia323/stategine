@@ -48,7 +48,7 @@ uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uS
 uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only; 0.6: lit so, but the probes do not stand in for it
 uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
 uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
-uniform float uLightNear[MAX_LIGHTS];     // a sun's second, close-up shadow map: its layer, or < 0 for none
+uniform float uLightNear[MAX_LIGHTS];     // a sun's maps narrower than its own, round the eye: how many (the low three bits), then each one's layer (five bits each), the narrowest first; <= 0 none
 // Light from beyond a doorway, let in only through its opening: its middle
 // and half its width, then which way across it is (x, z), half its height,
 // and whether the light is gated at all.
@@ -89,20 +89,41 @@ bool lamp_in(uvec2 cell, int i) {
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 // The first `uShadowCount` lights each have depth maps, layers of one array
-// (from `uLightLayer`: one, or six for a lamp with no cone): where each sees
-// from (`uShadowVP`), and how much its depth is let slip (`uShadowBias` - a
-// sun's range is far longer than a lamp's).
+// (from `uLightLayer`: one, six for a lamp with no cone, a sun's boxes): where
+// each sees from (`uShadowVP`) - and from that, how wide a texel of it is.
 const int MAX_SHADOWS = 24;
 uniform sampler2DArrayShadow uShadowMaps;
 uniform mat4 uShadowVP[MAX_SHADOWS];
-uniform float uShadowBias[MAX_SHADOWS];
 
 // Which of light `i`'s maps sees `p`: its one, or - a lamp with no cone -
 // the face of its cube the way from the lamp to `p` goes out through (the
 // greatest of the three coordinates of that way: +x, -x, +y, -y, +z, -z).
+// A sun's maps narrower than its own: how many, and the layer of the k-th.
+int closer_maps(int i) { return uLightNear[i] < 0.5 ? 0 : int(uLightNear[i] + 0.5) & 7; }
+int closer_map(int i, int k) { return (int(uLightNear[i] + 0.5) >> (3 + 5 * k)) & 31; }
+// Where `p` is in a map: 0..1 across, up and deep.
+vec3 in_map(int layer, vec3 p) {
+    vec4 s = uShadowVP[layer] * vec4(p, 1.0);
+    return s.xyz / max(s.w, 1e-5) * 0.5 + 0.5;
+}
+// How far into a sun's map's margin `p` is - 0 well within it, 1 where the
+// next wider one has wholly taken over (or past its depth).
+float map_margin(int layer, vec3 p) {
+    vec3 q = in_map(layer, p);
+    if (q.z > 1.0 || q.z < 0.0) return 1.0;
+    return smoothstep(0.55, 0.8, max(abs(q.x * 2.0 - 1.0), abs(q.y * 2.0 - 1.0)));
+}
 int shadow_layer(int i, vec3 p) {
     int first = int(uLightLayer[i] + 0.5);
-    if (uLightCube[i] < 0.5) return first;
+    if (uLightCube[i] < 0.5) {
+        // (A sun's: the narrowest that holds `p`.)
+        int closer = closer_maps(i);
+        for (int k = 0; k < 4; ++k) {
+            if (k >= closer) break;
+            if (map_margin(closer_map(i, k), p) < 1.0) return closer_map(i, k);
+        }
+        return first;
+    }
     vec3 d = p - uLightPos[i], a = abs(d);
     int face = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1) : a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5);
     return first + face;
@@ -2008,16 +2029,26 @@ const vec2 kSpiral[16] = vec2[16](vec2(0.176777, 0.000000), vec2(-0.225772, 0.20
     vec2(0.684642, 0.250030), vec2(-0.712256, 0.294009), vec2(0.343354, -0.733729), vec2(0.253731, 0.808932),
     vec2(-0.764746, -0.443186), vec2(0.897134, -0.197233), vec2(-0.547507, 0.778772), vec2(-0.126487, -0.976090));
 
-float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
+// A sun's maps again, their depths as they are (not compared): how far what
+// stands in its way is from what it shadows. Its half-width as the ground
+// sees it (radians) - how far a shadow's edge spreads for each metre between
+// what casts it and where it falls - and how far off, sunward, anything that
+// casts may stand (a palm's shadow at sunset: hundreds of metres).
+uniform sampler2DArray uShadowDepths;
+const float kSunRadius = 0.00465;
+const float kSunCasts = 400.0;
+
+float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun) {
     float spread = max(uShadowSoft, 0.5);
     // Looked up a little off the surface, along its normal, by about as many
-    // texels as the filter reaches - measured in metres where the point is
-    // (`uShadowBias`: a texel's width at a unit's distance from a lamp, or a
-    // sun's whole), not in depth: so a shadow meets what casts it - a table's
-    // foot, the bottom of a bin - with no gap and no light under it, and a lit
-    // face does not shadow itself.
+    // texels as the filter reaches - measured in metres where the point is (a
+    // texel's width at a unit's distance from a lamp, or a sun's anywhere: two
+    // over how many texels across the map sees a unit of its view's across),
+    // not in depth: so a shadow meets what casts it - a table's foot, the
+    // bottom of a bin - with no gap and no light under it, and a lit face
+    // does not shadow itself.
     vec4 here = uShadowVP[layer] * vec4(vLit, 1.0);
-    float texel = uShadowBias[layer] * max(here.w, 1e-5);
+    float texel = 2.0 * uShadowTexel.x / max(length(vec3(uShadowVP[layer][0][0], uShadowVP[layer][1][0], uShadowVP[layer][2][0])), 1e-9) * max(here.w, 1e-5);
     float ndl = clamp(dot(n, l), 0.0, 1.0);
     float slope = sqrt(max(1.0 - ndl * ndl, 0.0));
     // (Less than it was: each tap now follows the surface's own slope in
@@ -2059,8 +2090,29 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     // the same wherever the eye looked.)
     float turn = fract(ign(gl_FragCoord.xy) + floor(uTime * 24.0) * 0.618034) * 6.2831853;
     float c = cos(turn), s = sin(turn);
-    mat2 spin = mat2(c, s, -s, c) * 2.4 * spread;
     vec2 texel2 = uShadowTexel;
+    float radius = 2.4 * spread;  // how far the filter reaches, in texels
+    // A sun's penumbra as wide as the sun makes it: what stands in its way
+    // found round here in the map, and the shadow's edge spread by how far
+    // off that is - the sun's half-width for each metre: sharp where a thing
+    // stands on the ground, soft at the end of a long shadow at sunset. In
+    // metres, so each of its boxes draws the same shadow where one gives way
+    // to the next (in texels, it was four times as soft in the next); never
+    // finer than the map holds.
+    if (sun) {
+        float metres = 2.0 / max(length(vec3(uShadowVP[layer][0][2], uShadowVP[layer][1][2], uShadowVP[layer][2][2])), 1e-9);  // a whole depth of the map
+        float look = clamp(kSunRadius * kSunCasts / texel, 2.0, 24.0);
+        float found = 0.0, apart = 0.0;
+        for (int i = 0; i < 16; ++i) {
+            vec2 off = mat2(c, s, -s, c) * kSpiral[i] * look * texel2;
+            float z = proj.z + dot(dz_duv, off) - bias;
+            float d = texture(uShadowDepths, vec3(proj.xy + off, float(layer))).r;
+            if (d < z) found += 1.0, apart += z - d;
+        }
+        if (found < 0.5) return 1.0;  // nothing in its way, near or far
+        radius = clamp(apart / found * metres * kSunRadius / texel, 1.5 * spread, 1.5 * look);
+    }
+    mat2 spin = mat2(c, s, -s, c) * radius;
     // Four, across the spiral, first: wholly lit or wholly in shadow there,
     // it is so all through - only an edge between (a penumbra) takes all
     // sixteen.
@@ -2083,20 +2135,25 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_) {
     return mix(mix(floor_, 1.0, k), 1.0, edge);
 }
 
-// A sun's shadow, close up and far: its wide map reaches over the whole of
-// what it lights and has texels the width of a hand, so a second, small one
-// round the viewer takes over where they are looking at something near (a
-// door, the leaf's edge, a chair's legs), the two blended before the near
-// one's own edge begins to fade.
+// A sun's shadow, close up and far: its boxes round the eye, each wider than
+// the last, its own the widest - reaching over all the eye sees - with texels
+// many metres wide; a point takes the narrowest that holds it (close up, a
+// texel a centimetre: a door, a leaf's edge, a chair's legs), blended into
+// the next wider across its margin, before its own edge begins to fade.
 float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
-    float wide = shadow_factor(shadow_layer(i, vLit), n, l, floor_);
-    if (uLightNear[i] < -0.5) return wide;
-    int near = int(uLightNear[i] + 0.5);
-    vec4 light_space = uShadowVP[near] * vec4(vLit, 1.0);
-    vec3 proj = light_space.xyz / max(light_space.w, 1e-5) * 0.5 + 0.5;
-    float edge = smoothstep(0.55, 0.8, max(abs(proj.x * 2.0 - 1.0), abs(proj.y * 2.0 - 1.0)));
-    if (edge >= 1.0 || proj.z > 1.0) return wide;
-    return mix(shadow_factor(near, n, l, floor_), wide, edge);
+    bool sun = uLightSun[i] > 0.5;
+    int closer = uLightCube[i] < 0.5 ? closer_maps(i) : 0;
+    for (int k = 0; k < 4; ++k) {
+        if (k >= closer) break;
+        int layer = closer_map(i, k);
+        float margin = map_margin(layer, vLit);
+        if (margin >= 1.0) continue;
+        float here = shadow_factor(layer, n, l, floor_, sun);
+        if (margin <= 0.0) return here;
+        int wider = k + 1 < closer ? closer_map(i, k + 1) : int(uLightLayer[i] + 0.5);
+        return mix(here, shadow_factor(wider, n, l, floor_, sun), margin);
+    }
+    return shadow_factor(shadow_layer(i, vLit), n, l, floor_, sun);
 }
 
 // How much a surface reflects of light arriving from all round, by angle and

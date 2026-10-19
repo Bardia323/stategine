@@ -260,16 +260,13 @@ const char* GLWorldView::clip_uniform(int i) {
     return names[static_cast<std::size_t>(i)].c_str();
 }
 
-const char* GLWorldView::shadow_uniform(std::size_t i, int field) {
+const char* GLWorldView::shadow_uniform(std::size_t i) {
     static const auto names = [] {
-        std::array<std::array<std::string, 2>, kShadowMaps> n;
-        for (std::size_t l = 0; l < kShadowMaps; ++l) {
-            n[l][0] = "uShadowVP[" + std::to_string(l) + "]";
-            n[l][1] = "uShadowBias[" + std::to_string(l) + "]";
-        }
+        std::array<std::string, kShadowMaps> n;
+        for (std::size_t l = 0; l < kShadowMaps; ++l) n[l] = "uShadowVP[" + std::to_string(l) + "]";
         return n;
     }();
-    return names[i][static_cast<std::size_t>(field)].c_str();
+    return names[i].c_str();
 }
 
 const char* GLWorldView::light_uniform(std::size_t i, int field) {

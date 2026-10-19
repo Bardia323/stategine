@@ -167,7 +167,7 @@ public:
     static constexpr std::size_t kMaxLights = 32;   // matches the scene shader: lamps one draw is lit by
     static constexpr std::size_t kAllLights = 64;   // lamps a frame keeps, over every room it draws
     static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
-    static constexpr std::size_t kShadowLights = 10;  // lights with maps, and suns' close-up maps: a lamp with no cone counts once for its six layers
+    static constexpr std::size_t kShadowLights = 10;  // lights with maps: a lamp with no cone counts once for its six layers, a sun once for its boxes
     static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
@@ -1358,7 +1358,7 @@ private:
     static const char* clip_uniform(int i);
 
     // Shadow uniform names (where each map sees from, its bias), built once.
-    static const char* shadow_uniform(std::size_t i, int field);
+    static const char* shadow_uniform(std::size_t i);
 
     // Light uniform names, built once: they are asked for every frame.
     static const char* light_uniform(std::size_t i, int field);
@@ -1537,6 +1537,13 @@ private:
         void forget();  // every map to be laid again
     };
     ShadowSet lightless_maps_;  // what a view asked only what surfaces are binds: one texel, never laid
+    // The maps' depths as they are, not compared - how far what stands in a
+    // sun's way is from what it shadows, for how wide its penumbra is: the
+    // maps bound again on a unit no other picture takes, read through a
+    // sampler of their own (made once).
+    static constexpr int kShadowDepthsUnit = 16;
+    gl::GLuint shadow_depths_ = 0;
+    void bind_shadow_depths(const ShadowSet& maps);
     // A view's air, lit by its lamps (air_fs): each slice's own light, a
     // metre of it (laid eight to a row), the slices added up from the eye
     // (what the scene reads), and what they were lit by - gathered again only

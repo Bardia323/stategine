@@ -99,6 +99,44 @@ void sun_box_steps() {
     require(map_at(3.1 + 3.0 * texel, 1.7, -2.3 + 3.0 * texel) != first, "and moves when the eye moves texels");
 }
 
+// A sun's boxes round the eye: the narrowest first, each wider than the last,
+// no more than asked for - and the widest holds all a view sees out to its
+// far, ahead and to its sides, with no fade begun: nothing in sight ever
+// passes out of the last of them, so no shadow fades where a box's edge goes
+// by with the eye. Low sun or high, whichever way the eye looks.
+void sun_boxes_hold_the_view() {
+    using sg::render::DrawLight;
+    using sg::render::ViewCamera;
+    const std::vector<float> boxes = sg::render::sun_boxes(70.0f, 6.0f, 4000.0f, 5);
+    require(boxes.size() >= 3 && boxes.size() <= 5 && boxes.front() == 6.0f && boxes[1] == 70.0f, "a close box, the sun's own, wider ones");
+    for (std::size_t k = 1; k < boxes.size(); ++k) require(boxes[k] > boxes[k - 1], "each wider than the last");
+    require(sg::render::sun_boxes(70.0f, 6.0f, 0.0f, 5).size() == 2, "a sun pinned to a place: its own box and the close one");
+    require(sg::render::sun_boxes(10.0f, 6.0f, 0.0f, 5).size() == 1, "and none closer than one not much wider");
+    require(sg::render::sun_boxes(70.0f, 6.0f, 4000.0f, 2).size() == 2, "no more than asked for");
+    for (float up : {0.05f, 0.4f, 0.95f})
+        for (float yaw = 0.0f; yaw < 6.28f; yaw += 0.7f) {
+            DrawLight sun;
+            sun.sun = true;
+            sun.dir = sg::spatial::projection::normalize({-std::sqrt(1.0f - up * up), -up, 0.1f});
+            sun.extent = boxes.back();
+            sun.stepped_by = 70.0f;
+            ViewCamera eye;
+            eye.eye = {120.0, 12.0, -40.0};
+            eye.forward = {std::cos(yaw), -0.1, std::sin(yaw)};
+            float slip = 0.0f;
+            const auto m = sg::render::shadow_projection(sun, eye, 2048, slip);
+            for (float d = 1.0f; d <= 4000.0f; d *= 1.3f)
+                for (float a = -0.6f; a <= 0.6f; a += 0.2f) {
+                    const float x = 120.0f + d * std::cos(yaw + a), y = 0.0f, z = -40.0f + d * std::sin(yaw + a);
+                    const float px = m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12];
+                    const float py = m.m[1] * x + m.m[5] * y + m.m[9] * z + m.m[13];
+                    const float pz = (m.m[2] * x + m.m[6] * y + m.m[10] * z + m.m[14]) * 0.5f + 0.5f;
+                    require(std::fabs(px) < 0.82f && std::fabs(py) < 0.82f && pz > 0.0f && pz < 1.0f,
+                            "the widest box holds all the eye sees out to its far, its fade not begun");
+                }
+        }
+}
+
 // A lamp's range: its light ends there, smoothly, and a lamp left out for
 // reaching nothing lit nothing. The law: a gated lamp kept is one whose sphere
 // meets its gate - some point of the opening is lit by it - and one left out
@@ -215,6 +253,7 @@ int main() {
         require(g.validate().empty() && laws.holds(), "strict laws");
         lamp_ranges();
         sun_box_steps();
+        sun_boxes_hold_the_view();
         std::cout << "reconstruction, graph supremacy and one time ontology pass\n";
         return 0;
     } catch (const std::exception &ex) {

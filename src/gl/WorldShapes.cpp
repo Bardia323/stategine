@@ -234,7 +234,7 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     auto it = terrains_.find(e.id);
     if (it == terrains_.end() || !it->second.height) return;
     TerrainMesh& t = it->second;
-    const int n = std::max(16, std::min(400, static_cast<int>(e.params.num(Key{"cells"}, 160.0)))) / 2 * 2;
+    const int n = std::max(16, std::min(768, static_cast<int>(e.params.num(Key{"cells"}, 160.0)))) / 2 * 2;
     const double reach = e.params.num(Key{"reach"}, 320.0);
     const double step = e.params.num(Key{"step"}, 0.5);
     const double snap = e.params.num(Key{"snap"}, 2.0);

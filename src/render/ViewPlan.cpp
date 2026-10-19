@@ -280,11 +280,15 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         // moves: a tree's tip at two degrees goes twelve metres for that
         // fifth) and the step is as much finer - at sunset, every frame.
         spatial::projection::Vec3 d = spatial::projection::normalize(l.dir);
-        const float e = l.extent, reach = e * 4.0f;
+        // (Deep enough for what stands sunward of the box to cast into it - a
+        // tall thing's shadow at a low sun is long, but not kilometres - and
+        // no deeper: a wide box's depth is a far coarser step for the same bits.)
+        const float e = l.extent, reach = std::min(e * 4.0f, e + 2000.0f);
         const float texel = 2.0f * e / static_cast<float>(size);
         {
             constexpr float kTall = 10.0f;  // (a tall thing's height over what it shadows, metres)
-            const float step = std::min(1.0f / 300.0f, texel * d.y * d.y / kTall);
+            const float by = l.stepped_by > 0.0f ? 2.0f * l.stepped_by / static_cast<float>(size) : texel;
+            const float step = std::min(1.0f / 300.0f, by * d.y * d.y / kTall);
             if (step > 1e-5f)
                 d = spatial::projection::normalize({std::round(d.x / step) * step, std::round(d.y / step) * step, std::round(d.z / step) * step});
         }
@@ -323,6 +327,26 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         bias = std::max(1.0f, std::tan(fov * 0.5f) / std::tan(0.6f)) * 1.5f;
     }
     return result;
+}
+
+std::vector<float> sun_boxes(float extent, float near, float far, int most) {
+    std::vector<float> boxes;
+    if (near > 0.0f && extent > 2.0f * near && most > 1)
+        boxes.push_back(near);
+    boxes.push_back(extent);
+    // The widest: a box stands four tenths of its reach ahead of the eye and
+    // its shadow fades out from four fifths of the way to its edge (the
+    // scene's shadow_factor) - so a little more than `far` holds all a view
+    // out to `far` sees, ahead and to its sides, with no fade in sight.
+    const float widest = 1.1f * far;
+    const int room = most - static_cast<int>(boxes.size());
+    if (room > 0 && widest > 1.25f * extent) {
+        const int more = std::min(room, std::max(1, static_cast<int>(std::ceil(std::log(widest / extent) / std::log(4.0f) - 1e-4f))));
+        const float ratio = std::pow(widest / extent, 1.0f / static_cast<float>(more));
+        for (int k = 1; k <= more; ++k)
+            boxes.push_back(extent * std::pow(ratio, static_cast<float>(k)));
+    }
+    return boxes;
 }
 
 int shadow_faces(const DrawLight &l) {

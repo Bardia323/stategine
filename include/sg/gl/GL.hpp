@@ -101,6 +101,7 @@ constexpr GLenum GL_NUM_EXTENSIONS = 0x821D;
 constexpr GLenum GL_TEXTURE_COMPARE_MODE = 0x884C;
 constexpr GLenum GL_TEXTURE_COMPARE_FUNC = 0x884D;
 constexpr GLenum GL_COMPARE_REF_TO_TEXTURE = 0x884E;
+constexpr GLenum GL_MAX_TEXTURE_IMAGE_UNITS = 0x8872;
 constexpr GLenum GL_TEXTURE0 = 0x84C0;
 constexpr GLenum GL_ARRAY_BUFFER = 0x8892;
 constexpr GLenum GL_STATIC_DRAW = 0x88E4;
@@ -204,6 +205,10 @@ constexpr GLenum GL_UNSIGNED_INT = 0x1405;
     X(void, TexParameterfv, (GLenum, GLenum, const GLfloat*))                                 \
     X(void, TexParameterf, (GLenum, GLenum, GLfloat))                                         \
     X(void, GenerateMipmap, (GLenum))                                                         \
+    X(void, GenSamplers, (GLsizei, GLuint*))                                                  \
+    X(void, DeleteSamplers, (GLsizei, const GLuint*))                                         \
+    X(void, BindSampler, (GLuint, GLuint))                                                    \
+    X(void, SamplerParameteri, (GLuint, GLenum, GLint))                                       \
     X(void, TexImage2D,                                                                       \
       (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*))           \
     X(void, TexImage3D,                                                                       \

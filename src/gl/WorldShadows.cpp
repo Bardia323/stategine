@@ -27,6 +27,27 @@ void GLWorldView::copy_depth(const gl::ShadowArray& from, const gl::ShadowArray&
     gl::glViewport(0, 0, n, n);
 }
 
+// A view's maps bound again where the scene reads their depths as they are
+// (uShadowDepths): through a sampler that compares nothing and blends no
+// texels - a depth between two is no depth anything has.
+void GLWorldView::bind_shadow_depths(const ShadowSet& maps) {
+    if (!shadow_depths_) {
+        gl::GLint units = 0;
+        gl::glGetIntegerv(gl::GL_MAX_TEXTURE_IMAGE_UNITS, &units);
+        if (units <= kShadowDepthsUnit)
+            std::fprintf(stderr, "render: %d texture units; a sun's penumbra wants %d\n", units, kShadowDepthsUnit + 1);
+        gl::glGenSamplers(1, &shadow_depths_);
+        gl::glSamplerParameteri(shadow_depths_, gl::GL_TEXTURE_COMPARE_MODE, static_cast<gl::GLint>(gl::GL_NONE));
+        gl::glSamplerParameteri(shadow_depths_, gl::GL_TEXTURE_MIN_FILTER, static_cast<gl::GLint>(gl::GL_NEAREST));
+        gl::glSamplerParameteri(shadow_depths_, gl::GL_TEXTURE_MAG_FILTER, static_cast<gl::GLint>(gl::GL_NEAREST));
+        gl::glSamplerParameteri(shadow_depths_, gl::GL_TEXTURE_WRAP_S, static_cast<gl::GLint>(gl::GL_CLAMP_TO_EDGE));
+        gl::glSamplerParameteri(shadow_depths_, gl::GL_TEXTURE_WRAP_T, static_cast<gl::GLint>(gl::GL_CLAMP_TO_EDGE));
+    }
+    maps.array.bind_depth(kShadowDepthsUnit);
+    gl::glBindSampler(static_cast<gl::GLuint>(kShadowDepthsUnit), shadow_depths_);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+}
+
 void GLWorldView::ShadowSet::forget() {
     for (std::size_t i = 0; i < kShadowMaps; ++i) {
         sig[i] = ident[i] = still_at[i] = layout[i] = movers[i] = 0, waits[i] = 0, base[i] = false;

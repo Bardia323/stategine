@@ -509,9 +509,19 @@ Detail finer than a pixel is never drawn as detail: a surface's pattern
 how much of the surface a pixel takes, not by how fast a warped pattern
 turns, which shows it in streaks - and finer it becomes the roughness or
 the mean it averages to. Sand at a distance is smooth. And the scene
-shader is at the card's limit of uniforms (1024 registers on some): a new
-one is packed into one a kind of thing already has (a land's `uLand`), or
-it does not build and the built-in look is drawn instead.
+shader is at the card's limit of uniforms (1024 registers on some; a
+sampler takes one, and so does each float of an array): a new one is packed
+into one a kind of thing already has (a land's `uLand`), or worked out from
+what the shader already has (a shadow map's texel from its matrix), or it
+does not build and the built-in look is drawn instead.
+
+Nothing that goes with the eye may show as an edge in the picture: the
+ground's squares, a sun's shadow boxes, any grid round the eye. Whatever
+changes where one gives way to the next is made to agree on both sides
+(the ground faces one way where its squares meet; a shadow is as soft in
+metres in each box), and the widest holds all the eye sees. Before a clip
+goes out, the same frame drawn with each of them moved as the eye would
+move them in a few seconds should differ by no more than a few levels.
 
 ## Joining two projects
 
