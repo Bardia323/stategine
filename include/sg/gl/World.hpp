@@ -973,6 +973,10 @@ private:
     // and the uniforms that read it set (sg::terrain); false if it says none.
     bool bind_land(const State& st, const Element& e);
     void unbind_land();
+    // A land laid with photographed beds (`bed0`..`bed3`, where each lies:
+    // `beds`): their pictures stacked once, bound, and the uniforms that read
+    // them set; false if it has none (or a picture it names is not there).
+    bool bind_beds(const State& st, const Element& e);
 
     // A doorway (a portal bound to another room) has no solid frame in the
     // shadow pass: light should pass between the rooms.
@@ -1502,6 +1506,13 @@ private:
     // ... and as a photograph worn through a model's uv: its colour (sRGB)
     // and its maps (linear) - by the picture and which.
     std::map<std::pair<const Spatial3D::Picture*, bool>, PictureTexture> worn_textures_;
+    // A land's beds stacked: colour with height, normal with roughness - made
+    // again when any picture of theirs is (`made`: each picture's revision).
+    struct BedArrays {
+        gl::PictureArray color, normal;
+        std::vector<uint64_t> made;
+    };
+    std::map<Key, BedArrays> beds_;
     // The view whose pictures every view it made wears (the first).
     GLWorldView& pictures_home();
     // The caster for a thing cut out of its picture (gl::depth_cut_vs/fs).
@@ -1542,6 +1553,9 @@ private:
     // maps bound again on a unit no other picture takes, read through a
     // sampler of their own (made once).
     static constexpr int kShadowDepthsUnit = 16;
+    // A land's beds: their colour and height, and their normal and
+    // roughness (bind_beds) - the two units after it.
+    static constexpr int kBedsUnit = 17;
     gl::GLuint shadow_depths_ = 0;
     void bind_shadow_depths(const ShadowSet& maps);
     // A view's air, lit by its lamps (air_fs): each slice's own light, a

@@ -287,13 +287,14 @@ void GLWorldView::draw_terrain(const State& st, const Element& e) {
     scene_->set("uHighlight", 0.0f);
     scene_->set("uTexMix", 0.0f);
     scene_->set("uGlow", 0.0f);
-    const bool land = bind_land(st, e);
+    const bool beds = bind_beds(st, e);
+    const bool land = !beds && bind_land(st, e);
     // Or a photographed ground (`skin`, its `skin_normal` and `skin_surface`):
     // laid flat over the world every `tile` metres (2 unless it says), its
     // repeats broken by a second, larger laying (`tile_break`, 0..1; 0.6).
     static const Key skin{"skin"}, normal{"skin_normal"}, surface{"skin_surface"};
     bool worn = false, normals = false, surfaced = false;
-    if (!land && e.params.has(skin) && bind_worn(st, e.params.get_or<std::string>(skin, ""), true, 0)) {
+    if (!land && !beds && e.params.has(skin) && bind_worn(st, e.params.get_or<std::string>(skin, ""), true, 0)) {
         worn = true;
         scene_->set("uTexMix", 1.0f);
         scene_->set("uSkin", 2.0f);
@@ -321,7 +322,7 @@ void GLWorldView::draw_terrain(const State& st, const Element& e) {
                 static_cast<float>(e.params.num(ripple, 0.0)), static_cast<float>(e.params.num(ripple_dir, 0.0)));
     it->second.mesh.draw();
     scene_->set("uLand", 0.0f, 0.0f, 0.0f, 0.0f);
-    if (land) unbind_land();
+    if (land || beds) unbind_land();
     if (worn) {
         scene_->set("uTexMix", 0.0f), scene_->set("uSkin", 0.0f), scene_->set("uTileBreak", 0.0f);
         if (normals) scene_->set("uNormalMapOn", 0.0f), scene_->set("uNormalStrength", 1.0f);
@@ -360,6 +361,111 @@ bool GLWorldView::bind_land(const State& st, const Element& e) {
 }
 
 void GLWorldView::unbind_land() { scene_->set("uSplat", 0.0f), scene_->set("uCalm", 0.0f); }
+
+namespace {
+
+// One channel (or the colour) of a picture, read at `size` x `size` over the
+// whole of it - a box of its texels for each, so a larger picture is
+// averaged down, not sampled - into `into` (RGBA8, `size` squared) at the
+// channels from `to` on, `n` of them. A picture not there leaves `fill`.
+void lay(const Spatial3D::Picture* pic, int from, int n, int size, std::vector<unsigned char>& into, std::size_t at, int to,
+         unsigned char fill) {
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            unsigned char* out = &into[at + (static_cast<std::size_t>(y) * size + x) * 4 + to];
+            if (!pic) {
+                for (int c = 0; c < n; ++c) out[c] = fill;
+                continue;
+            }
+            const int x0 = x * pic->w / size, x1 = std::max(x0 + 1, (x + 1) * pic->w / size);
+            const int y0 = y * pic->h / size, y1 = std::max(y0 + 1, (y + 1) * pic->h / size);
+            for (int c = 0; c < n; ++c) {
+                unsigned sum = 0;
+                for (int j = y0; j < y1; ++j)
+                    for (int i = x0; i < x1; ++i) sum += pic->rgba[(static_cast<std::size_t>(j) * pic->w + i) * 4 + from + c];
+                out[c] = static_cast<unsigned char>(sum / static_cast<unsigned>((x1 - x0) * (y1 - y0)));
+            }
+        }
+}
+
+}  // namespace
+
+bool GLWorldView::bind_beds(const State& st, const Element& e) {
+    static const Key beds{"beds"};
+    if (e.kind != terrain_kind() || !e.params.has(beds)) return false;
+    const auto* space = dynamic_cast<const Spatial3D*>(&st);
+    if (!space) return false;
+    // Each bed's colour (`bed<k>`), and beside it its normal map, its surface
+    // map (roughness in green) and its height (grey) if it has them.
+    const Spatial3D::Picture* pics[4][4] = {};
+    int count = 0;
+    for (int k = 0; k < 4; ++k) {
+        const std::string name = "bed" + std::to_string(k);
+        const std::string* color = e.params.text(Key{name});
+        if (!color) break;
+        pics[k][0] = space->picture(Key{*color});
+        if (!pics[k][0] || pics[k][0]->w <= 0) return false;
+        int m = 1;
+        for (const char* map : {"_normal", "_surface", "_height"}) {
+            const std::string* p = e.params.text(Key{name + map});
+            pics[k][m++] = p ? space->picture(Key{*p}) : nullptr;
+        }
+        ++count;
+    }
+    if (count == 0) return false;
+    // Stacked at the largest colour's size (a power of two, 2048 at most),
+    // once - and again only when a picture of theirs is painted again.
+    std::vector<uint64_t> made;
+    int size = 1;
+    for (int k = 0; k < count; ++k) {
+        for (const Spatial3D::Picture* p : pics[k]) made.push_back(p ? p->revision + 1 : 0);
+        while (size * 2 <= std::min(pics[k][0]->w, 2048)) size *= 2;
+    }
+    BedArrays& a = beds_[e.id];
+    if (!a.color.valid() || a.made != made) {
+        const std::size_t layer = static_cast<std::size_t>(size) * size * 4;
+        std::vector<unsigned char> color(layer * count), normal(layer * count);
+        for (int k = 0; k < count; ++k) {
+            lay(pics[k][0], 0, 3, size, color, layer * k, 0, 0);
+            lay(pics[k][3], 0, 1, size, color, layer * k, 3, 128);
+            lay(pics[k][1], 0, 3, size, normal, layer * k, 0, 128);
+            if (!pics[k][1])
+                for (std::size_t i = layer * k; i < layer * (k + 1); i += 4) normal[i + 2] = 255;  // (no map: facing straight out)
+            lay(pics[k][2], 1, 1, size, normal, layer * k, 3, static_cast<unsigned char>(std::lround(255.0 * e.params.num(Key{"roughness"}, 0.85))));
+        }
+        a.color.create(size, count, color, true);
+        a.normal.create(size, count, normal, false);
+        a.made = std::move(made);
+    }
+    // Where each lies: the land's picture of their shares (`beds`, RGBA one
+    // a bed) over its rectangle - as a land's layers' (bind_land).
+    if (!bind_picture(st, e.params.get_or<std::string>(beds, ""), true)) return false;
+    const float w = static_cast<float>(e.params.num(Key{"beds_w"}, 1.0)), d = static_cast<float>(e.params.num(Key{"beds_d"}, 1.0));
+    scene_->set("uSplat", 3.0f);
+    scene_->set("uSplatRect", static_cast<float>(e.params.num(Key{"beds_x"}, 0.0)), static_cast<float>(e.params.num(Key{"beds_z"}, 0.0)),
+                1.0f / std::max(w, 1e-3f), 1.0f / std::max(d, 1e-3f));
+    // (Each bed's metres a picture - in the layers' surfaces' place - and its
+    // tint, in their colours'.)
+    // (And how far each one's patches may be turned - `bed<k>_turn`, radians;
+    // any way unless it says, a pattern with a way to it less.)
+    float tile[4] = {2, 2, 2, 2}, turn[4] = {3.14159265f, 3.14159265f, 3.14159265f, 3.14159265f};
+    for (int k = 0; k < count; ++k) {
+        const std::string name = "bed" + std::to_string(k);
+        tile[k] = static_cast<float>(std::max(e.params.num(Key{name + "_tile"}, 2.0), 0.01));
+        turn[k] = static_cast<float>(std::clamp(e.params.num(Key{name + "_turn"}, 3.14159265), 0.0, 3.14159265));
+        scene_->set(("uLayerColor[" + std::to_string(k) + "]").c_str(),
+                    gl::Vec3{static_cast<float>(e.params.num(Key{name + "_r"}, 1.0)), static_cast<float>(e.params.num(Key{name + "_g"}, 1.0)),
+                             static_cast<float>(e.params.num(Key{name + "_b"}, 1.0))});
+    }
+    // (A bed not laid takes no share: its tile says so, below zero.)
+    for (int k = count; k < 4; ++k) tile[k] = -1.0f;
+    scene_->set("uLayerSurface", tile[0], tile[1], tile[2], tile[3]);
+    scene_->set("uBedTurn", turn[0], turn[1], turn[2], turn[3]);
+    a.color.bind(kBedsUnit);
+    a.normal.bind(kBedsUnit + 1);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    return true;
+}
 
 bool GLWorldView::is_doorway(const State& host,const Element& e) const {
     auto it = worlds_.find(e.id);

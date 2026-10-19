@@ -38,7 +38,10 @@ void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l, c
     p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
     p.set(light_uniform(i, 13), l.open);
     p.set(light_uniform(i, 14), l.scatter);
-    p.set(light_uniform(i, 15), l.frame_w, l.frame_h, l.frame_soft, l.frame_w > 0.0f && l.frame_h > 0.0f ? 1.0f : 0.0f);
+    // (A projector's frame - or, a light with none, how big it is, in the
+    // frame's first place.)
+    const bool framed = l.frame_w > 0.0f && l.frame_h > 0.0f;
+    p.set(light_uniform(i, 15), framed ? l.frame_w : l.size, l.frame_h, l.frame_soft, framed ? 1.0f : 0.0f);
     p.set(light_uniform(i, 16), l.range);
 }
 

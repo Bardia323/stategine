@@ -56,7 +56,9 @@ public:
             glfwShowWindow(win_);
         }
         glfwMakeContextCurrent(win_);
-        glfwSwapInterval(1);
+        // (In step with the screen - but SG_NO_VSYNC set, as fast as it
+        // draws, to see what a frame costs.)
+        glfwSwapInterval(std::getenv("SG_NO_VSYNC") ? 0 : 1);
         load(reinterpret_cast<ProcLoader>(glfwGetProcAddress));
         // Black at once, both buffers, not the white of a window nobody drew.
         for (int i = 0; i < 2; ++i) {

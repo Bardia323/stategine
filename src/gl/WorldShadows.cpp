@@ -370,7 +370,7 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
     rc.extras_key = 1469598103934665603ULL;
     for (const Element* ep : ix.terrains) {
         const Element& e = *ep;
-        if (!e.alive) continue;
+        if (!e.alive || e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
         auto t = terrains_.find(e.id);
         if (t == terrains_.end()) continue;
         Caster c;

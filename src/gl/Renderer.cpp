@@ -650,6 +650,31 @@ void LayerArray::bind_color(int unit) const {
     glBindTexture(target_, tex_);
 }
 
+void PictureArray::create(int size, int layers, const std::vector<unsigned char>& rgba, bool srgb) {
+    release();
+    glGenTextures(1, &tex_);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex_);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), size, size, layers, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 rgba.data());
+    glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameterf(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_ANISOTROPY, 8.0f);
+    glGetError();  // as a worn texture's: without anisotropy, plain trilinear
+}
+
+void PictureArray::bind(int unit) const {
+    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex_);
+}
+
+void PictureArray::release() {
+    if (tex_) glDeleteTextures(1, &tex_);
+    tex_ = 0;
+}
+
 void LayerArray::release() {
     for (GLuint f : fbos_)
         if (f) glDeleteFramebuffers(1, &f);

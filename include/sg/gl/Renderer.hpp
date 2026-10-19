@@ -414,4 +414,25 @@ private:
     bool tiles_ = false;
 };
 
+// Pictures of one size stacked and read through one sampler, each a layer:
+// a land's photographed beds (their colour and height, or their normal and
+// roughness), repeating, mipmapped, filtered as a worn texture is.
+class PictureArray {
+public:
+    PictureArray() = default;
+    PictureArray(const PictureArray&) = delete;
+    PictureArray& operator=(const PictureArray&) = delete;
+    ~PictureArray() { release(); }
+
+    // `layers` pictures `size` x `size`, RGBA8 one after another in `rgba`;
+    // `srgb`: their colour is sRGB (alpha stays linear).
+    void create(int size, int layers, const std::vector<unsigned char>& rgba, bool srgb);
+    void bind(int unit) const;
+    bool valid() const { return tex_ != 0; }
+
+private:
+    void release();
+    GLuint tex_ = 0;
+};
+
 }  // namespace sg::gl

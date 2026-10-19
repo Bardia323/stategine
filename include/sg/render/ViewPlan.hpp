@@ -70,6 +70,12 @@ struct DrawLight {
         // of the way in - what it throws a picture, edge to edge, and nothing
         // past it, in the air as on what it lands on.
         float frame_w = 0.0f, frame_h = 0.0f, frame_soft = 0.08f;
+        // How big the light itself is, which widens and softens its highlight
+        // on what is glossy: a sun's disc, the tangent of its radius as seen
+        // (`size`, degrees across; the sun's own half a degree unless it
+        // says), or a lamp's bulb or globe, its radius in metres (`size`;
+        // 0, a point, unless it says).
+        float size = 0.0f;
         // Light from beyond a doorway comes in only through its opening: the
         // opening's middle, which way across it is, and half its width and
         // height. Such a light casts no shadow of its own.

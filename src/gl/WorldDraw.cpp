@@ -1164,6 +1164,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uSurfaceMapOn", 0.0f);
         p.set("uNormalMap", 10);  // and its normal map (bind_normal_map)
         p.set("uNormalMapOn", 0.0f);
+        p.set("uBeds", kBedsUnit);  // a land's beds (bind_beds)
+        p.set("uBedNormals", kBedsUnit + 1);
         p.set("uEnv", 7);
         p.set("uEnvMix", 0.0f);
         p.set("uCRT", 0.0f);

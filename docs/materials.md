@@ -33,6 +33,7 @@ fraction of the light a surface gives back, not a colour picked on a screen
 | `bevel` | rounded edges of a box, metres | 0 |
 | `depth_layer` | parts of one size that coincide: which shows | 0 |
 | `skin` + `tile` | a picture of its state's tiled over the world, `tile` metres to a picture | - |
+| `bed0`..`bed3` + `beds` | a land's ground photographed, in up to four beds (`sg::terrain` only): each a colour picture with `bed<k>_normal` (OpenGL's way), `bed<k>_surface` (roughness in green) and `bed<k>_height` (grey) beside it if it has them, laid `bed<k>_tile` metres to a picture and tinted `bed<k>_r/g/b`; where each lies, `beds`, a picture of their shares (RGBA, one a bed) over `beds_x`, `beds_z`, `beds_w`, `beds_d`. Laid in hexagons each turned (within `bed<k>_turn` radians; any way unless it says) and moved, so no repeat shows; where two beds meet, the one whose grains stand higher shows; from the side on steep ground; a normal map finer than a pixel becomes roughness. A bed with no normal map is laid flat (a slip face's smooth sand from a rippled bed's colour) | - |
 
 A mesh that says nothing is an orange crate on purpose: always say `surface`
 (0 for plain) and a colour.

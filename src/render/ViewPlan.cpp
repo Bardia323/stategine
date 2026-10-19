@@ -175,6 +175,8 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.frame_h = static_cast<float>(std::max(e.params.num("frame_h", 0), 0.0));
     l.frame_soft = static_cast<float>(std::clamp(e.params.num("frame_soft", 0.08), 0.001, 1.0));
     l.range = l.sun ? 0.0f : static_cast<float>(std::max(e.params.num("range", 0), 0.0));
+    l.size = l.sun ? static_cast<float>(std::tan(std::clamp(e.params.num("size", 0.53), 0.0, 30.0) * 0.5 * 3.14159265358979 / 180.0))
+                   : static_cast<float>(std::max(e.params.num("size", 0), 0.0));
     return l;
 }
 float range_window(float distance, float range) {

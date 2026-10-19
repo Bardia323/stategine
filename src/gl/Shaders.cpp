@@ -1560,12 +1560,20 @@ uniform float uMirror;        // how much of the real sky a surface reflects
 // uSplatRect (its corner, one over its size); each layer a surface of these
 // (uLayerSurface) in its colour (uLayerColor). uSplat 2 - water (surface 18)
 // whose uTex's red is how deep it is under each point of its own uv, as a
-// share of uWaterDeepest metres, deepening to uWaterDeep. uLines: a road's
-// painted lines (asphalt, by its uv: across 0..1, along in metres).
+// share of uWaterDeepest metres, deepening to uWaterDeep. uSplat 3 - ground
+// laid with photographed beds (sg::terrain's `bed0..3`): uTex each bed's
+// share as for 1, uLayerSurface each bed's metres to a picture (below 0: no
+// bed), uLayerColor its tint; uBeds their colours (alpha how high their
+// grains stand), uBedNormals their normals (alpha roughness), a layer a bed.
+// uLines: a road's painted lines (asphalt, by its uv: across 0..1, along in
+// metres).
 uniform float uSplat;
 uniform vec4  uSplatRect;
 uniform vec4  uLayerSurface;
 uniform vec3  uLayerColor[4];
+uniform sampler2DArray uBeds;
+uniform sampler2DArray uBedNormals;
+uniform vec4  uBedTurn;       // how far each bed's patches may be turned (radians): its pattern's way kept to within it
 uniform vec3  uWaterDeep;
 uniform float uWaterDeepest;
 uniform float uLines;
@@ -2309,6 +2317,48 @@ vec3 room_material(out float rough_mod) {
 
 vec3 surface_albedo(out float rough_mod);
 
+// A light with a size - a disc as seen from here, `across` the tangent of
+// its radius - is not lit from its middle, as a point is: each point of it
+// lights the surface, and the highlight is brightest from the one whose
+// half-way vector stands nearest the normal. Of the points round its rim
+// (where the brightest is unless the mirror direction falls inside it, and
+// then it is the brightest there is), start from the one nearest the mirror
+// direction (Karis's) and take one Newton step round the rim from it
+// towards the greatest (n.h)^2 - in the tangent of half the angle round, so
+// that no sine, cosine or root but two is needed (de Carpentier, 2017).
+// Everything from the dot products of the normal, the eye and the light's
+// middle; what it gives is (n.h)^2, for GGX.
+float sized_ndh2(float across, float ndl, float ndv, float vdl) {
+    float c = inversesqrt(1.0 + across * across);  // the cosine of its radius
+    float rdl = 2.0 * ndl * ndv - vdl;             // the mirror direction on its middle
+    if (rdl >= c) return 1.0;
+    // (The rim's point nearest the mirror direction: the middle turned by
+    // the radius towards it, along t - the mirror direction across the
+    // middle's way, made unit; n.t and v.t, times the radius's sine.)
+    float k = c * across * inversesqrt(max(1.0 - rdl * rdl, 1e-7));
+    float nt = k * (ndv - rdl * ndl), vt = k * (2.0 * ndv * ndv - 1.0 - rdl * vdl);
+    // (And b, the third way, square to both: n.b and v.b from the volume
+    // the three make.)
+    float vol = sqrt(clamp(1.0 - ndl * ndl - ndv * ndv - vdl * vdl + 2.0 * ndl * ndv * vdl, 0.0, 1.0));
+    float nb = k * vol, vb = k * (2.0 * vol * ndv);
+    // (Where it starts: both are points of the rim, so neither is ever more
+    // than the truth - and the step, on a disc as wide as a room's lamp is
+    // seen from under it, can land short of where it began.)
+    float nh0 = ndv + ndl * c + nt, from = nh0 * nh0 / max(2.0 * (vdl * c + vt) + 2.0, 1e-6);
+    // One Newton step from there round the rim, in the tangent of half the
+    // angle turned, towards the greatest (n.h)^2.
+    float nlv = ndl * c + ndv + nt, vlv = vdl * c + 1.0 + vt;
+    float p = nb * vlv, q = nlv * vlv, s = vb * nlv;
+    float num = q * (-0.5 * p + 0.25 * vb * nlv);
+    float den = p * p + s * (s - 2.0 * p) + nlv * ((ndl * c + ndv) * vlv * vlv + q * (-0.5 * (vlv + vdl * c) - 0.5));
+    float twice = 2.0 * num / (den * den + num * num);
+    float sn = twice * den, cs = 1.0 - twice * num;
+    nt = cs * nt + sn * nb, vt = cs * vt + sn * vb;
+    // (n.h)^2 from the light turned to that point.
+    float nh = ndv + ndl * c + nt, hh = 2.0 * (vdl * c + vt) + 2.0;
+    return max(max(nh * nh / max(hh, 1e-6), from), 0.0);
+}
+
 // How a heap of grains scatters a lamp's light, over the smooth surface's
 // (1 for anything but sand, surface 8): each grain a little ball lit on
 // one side, so the heap is lit flatter than a smooth surface would be
@@ -2349,6 +2399,132 @@ vec3 ground_albedo(out float rough_mod) {
     mSurface = kept > 17.5 && kept < 18.5 ? 19.0 : kept;
     mAlbedo = keep;
     rough_mod = rough;
+    return sum;
+}
+
+// One bed where the ground is (uSplat 3), its picture laid along the world's
+// own ways and read from each way the ground faces, as much as it faces it
+// (`facing`, summing to 1): from above, its u along x and v along z; from the
+// side it faces along x, u along z and v up; along z, u along x and v up. Its
+// colour and how high its grains stand (`color`), and how its normal bends
+// the ground's, in the world (`bend`), with how long the normal map's normal
+// is there (`held`: under 1 where the map's mipmaps averaged a pattern finer
+// than they keep - how much of it is not seen).
+// A bed's picture laid over the ground from above without its repeat ever
+// showing: the ground cut into hexagons (Mikkelsen's hex-tiling), each
+// reading the picture from a place of its own, turned by an angle of its
+// own (within uBedTurn: ripples keep across their wind) and a little larger
+// or smaller - and where three meet, each counting as much as it is near and
+// as high as its grains stand there, so the picture whose grains are on top
+// shows, not a blur of three. Its colour and height (`c`), its normal turned
+// with its patch (`t`, unnormalised: how long it is says what its mipmaps
+// averaged away) and its roughness (`rough`).
+void bed_hex(int k, vec2 uv, out vec4 c, out vec3 t, out float rough) {
+    float layer = float(k);
+    vec2 dx = dFdx(uv), dy = dFdy(uv);
+    // (Which three hexagons' middles this point lies between, and how near
+    // each: a triangle of the grid skewed to equal sides.)
+    vec2 st = uv * 3.4641016;  // two hexagons to a picture across
+    vec2 skew = vec2(st.x, -0.57735027 * st.x + 1.15470054 * st.y);
+    vec2 base = floor(skew);
+    vec3 f = vec3(fract(skew), 0.0);
+    f.z = 1.0 - f.x - f.y;
+    float s = step(0.0, -f.z), s2 = 2.0 * s - 1.0;
+    vec3 w = vec3(-f.z * s2, s - f.y * s2, s - f.x * s2);
+    vec2 at[3] = vec2[](base + vec2(s, s), base + vec2(s, 1.0 - s), base + vec2(1.0 - s, s));
+    vec4 cs[3], ms[3];
+    vec3 ts[3];
+    float most = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        vec2 r = tile_hash(at[i] + float(k) * 7.31);
+        float a = (r.x * 2.0 - 1.0) * uBedTurn[k], scale = 0.85 + 0.3 * fract(r.y * 13.7);
+        mat2 turn = mat2(cos(a), sin(a), -sin(a), cos(a));
+        vec2 q = turn * uv * scale + r * 7.0;
+        cs[i] = textureGrad(uBeds, vec3(q, layer), turn * dx * scale, turn * dy * scale);
+        ms[i] = textureGrad(uBedNormals, vec3(q, layer), turn * dx * scale, turn * dy * scale);
+        vec3 n = ms[i].xyz * 2.0 - 1.0;
+        // (Its normal turned back as its picture was turned onto the ground.)
+        ts[i] = vec3(transpose(turn) * n.xy, n.z);
+        w[i] = pow(w[i], 3.0) * (0.2 + cs[i].a);
+    }
+    w /= max(w.x + w.y + w.z, 1e-5);
+    c = cs[0] * w.x + cs[1] * w.y + cs[2] * w.z;
+    t = ts[0] * w.x + ts[1] * w.y + ts[2] * w.z;
+    rough = ms[0].a * w.x + ms[1].a * w.y + ms[2].a * w.z;
+}
+
+void bed_at(int k, vec3 facing, vec3 g, out vec4 color, out vec3 bend, out float held, out float rough) {
+    vec3 p = vRoom / uLayerSurface[k];
+    color = vec4(0.0), bend = vec3(0.0), held = 0.0, rough = 0.0;
+    float layer = float(k);
+    if (facing.y > 0.0) {
+        vec4 c;
+        vec3 t;
+        float r;
+        bed_hex(k, p.xz, c, t, r);
+        color += c * facing.y, bend += vec3(t.x, 0.0, t.y) * facing.y, held += length(t) * facing.y, rough += r * facing.y;
+    }
+    if (facing.x > 0.0) {
+        vec4 c = texture(uBeds, vec3(p.zy, layer)), m = texture(uBedNormals, vec3(p.zy, layer));
+        vec3 t = m.xyz * 2.0 - 1.0;
+        color += c * facing.x, bend += vec3(0.0, t.y, t.x) * facing.x, held += length(t) * facing.x, rough += m.a * facing.x;
+    }
+    if (facing.z > 0.0) {
+        vec4 c = texture(uBeds, vec3(p.xy, layer)), m = texture(uBedNormals, vec3(p.xy, layer));
+        vec3 t = m.xyz * 2.0 - 1.0;
+        color += c * facing.z, bend += vec3(t.x, t.y, 0.0) * facing.z, held += length(t) * facing.z, rough += m.a * facing.z;
+    }
+    color.rgb *= uLayerColor[k];
+}
+
+// A land laid with photographed beds: each where its share says, and where
+// two meet, the one whose grains stand higher there showing through the
+// other's (a narrow band, as sand fills the hollows of gravel) - not a fade
+// of one picture into another. Over them all, the tone drifting across the
+// land from hundreds of metres down to a few, so no picture's repeat lines
+// up from far off (the finest of it only where a pixel holds it). Its
+// colour; its roughness; its normal (`n`, from the ground's own `g`); and
+// the spread of the slopes its maps average away where they are finer than
+// a pixel (`unseen`, given to the roughness as the sand's ripples' are).
+vec3 beds_albedo(vec3 g, out float rough, out vec3 n, out float unseen) {
+    vec2 p = vRoom.xz;
+    vec4 share = texture(uTex, (p - uSplatRect.xy) * uSplatRect.zw);
+    // (From above where it is level, from the sides where it is steep: each
+    // way's share sharpened so that only a slope reads from two.)
+    vec3 facing = pow(abs(g), vec3(4.0));
+    facing /= facing.x + facing.y + facing.z;
+    facing = max(facing - 0.02, 0.0);
+    facing /= facing.x + facing.y + facing.z;
+    vec4 color[4];
+    vec3 bend[4];
+    float held[4], rr[4], stands[4];
+    float top = -1e9;
+    for (int k = 0; k < 4; ++k) {
+        stands[k] = -1e9;
+        if (uLayerSurface[k] <= 0.0 || share[k] < 0.004) continue;
+        bed_at(k, facing, g, color[k], bend[k], held[k], rr[k]);
+        stands[k] = share[k] + 0.6 * color[k].a;
+        top = max(top, stands[k]);
+    }
+    vec3 sum = vec3(0.0), b = vec3(0.0);
+    float total = 0.0, h = 0.0, r = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        float w = max(stands[k] - top + 0.15, 0.0);
+        if (w <= 0.0) continue;
+        sum += color[k].rgb * w, b += bend[k] * w, h += held[k] * w, r += rr[k] * w, total += w;
+    }
+    total = max(total, 1e-4);
+    sum /= total, b /= total, h /= total, r /= total;
+    // (The drift: four octaves, the finest faded out as a pixel takes more
+    // than an eighth of its wave.)
+    float foot = max(length(dFdx(p)), length(dFdy(p)));
+    float drift = noise(p * 0.0017 + 1.7) * 0.42 + noise(p * 0.0071 + 5.3) * 0.28 + noise(p * 0.031 + 9.1) * 0.18;
+    float fine = 1.0 - smoothstep(0.06, 0.12, foot * 0.13);
+    drift += mix(0.5, noise(p * 0.13 + 2.9), fine) * 0.12;
+    sum *= 0.88 + 0.24 * drift;
+    rough = r;
+    n = normalize(g + b);
+    unseen = clamp(2.0 * (1.0 - h) / max(h, 0.1), 0.0, 0.5);
     return sum;
 }
 
@@ -2459,6 +2635,11 @@ void main() {
     }
     float rough_mod;
     vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
+    // A land laid with beds: their colour, roughness and normal in place of
+    // its own (its surface's light - sand's grains - and its damp kept).
+    float bed_rough = -1.0, bed_unseen = 0.0;
+    vec3 bed_n = vec3(0.0, 1.0, 0.0);
+    if (uSplat > 2.5 && uSplat < 3.5) albedo = beds_albedo(normalize(vNormal), bed_rough, bed_n, bed_unseen);
     float relief_h = -1.0;  // how high a skin's paint stands here, if it says
     vec4 surface_at = vec4(-1.0);  // a worn texture's surface map here (occlusion, roughness, metal), if it has one
     bool mapped = false;           // its normal map says how the surface is bent here
@@ -2560,6 +2741,7 @@ void main() {
         roughness = clamp(surface_at.g, 0.05, 1.0);
         metal = clamp(surface_at.b, 0.0, 1.0);
     }
+    if (bed_rough >= 0.0) roughness = clamp(bed_rough, 0.05, 1.0);
     // `grime`: how lived-in a surface is - what no tile repeats: paint gone
     // patchy and a little yellow over years, larger than any tile and never
     // the same twice across a room (noise in the room's own frame, on the
@@ -2609,6 +2791,7 @@ void main() {
     if (uTwoSided > 0.5 && dot(n, uViewPos - vWorld) < 0.0) n = -n;
     vec3 face_n = n;  // the surface's own, before any map bends it
     bool bent = false;  // whether relief or waves turned the normal from the surface's own
+    if (bed_rough >= 0.0) n = bed_n, bent = true;
     if (uv_mapped) {
         // Its own normal map, laid along which way its corners' u and v run
         // (as it was baked: MikkTSpace's ways, per corner) - or, a mesh that
@@ -2716,7 +2899,7 @@ void main() {
         sand_unseen = 2.0 * tall * tall * (1.0 / stoss + 1.0 / (1.0 - stoss)) * lies * (1.0 - held);
     }
     float ndv = clamp(dot(n, v), 1e-3, 1.0);
-    float a2 = roughness * roughness * roughness * roughness + sand_unseen;
+    float a2 = roughness * roughness * roughness * roughness + sand_unseen + bed_unseen;
     // Specular antialiasing (Kaplanyan & Hill): where the normal turns fast
     // across a pixel - a rounded edge thinner than a pixel - the highlight is
     // widened by as much, or it flickers from pixel to pixel and steps.
@@ -2785,6 +2968,15 @@ void main() {
             float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
             shadow = shadow_cascade(i, n, l, fl);
         }
+        // (A land's beds bend their normals towards the light even where the
+        // ground faces away from it - a ripple's far side on a dune in its
+        // own shade - and a normal map casts no shadow: at a light this low
+        // over the ground its faces turned to it would take many times what
+        // the ground does, the rest nothing, the ground brighter than it is.
+        // What they take is held to what the ground itself faces, below a
+        // quarter of the way up: its ripples still lit and dark, the ground
+        // as bright as it is.)
+        if (bed_rough >= 0.0) shadow *= clamp(dot(face_n, l) * 4.0, 0.0, 1.0);
 
         // Cook-Torrance: GGX for the spread of the highlight, Smith's
         // height-correlated masking (Hammon's fit), and Schlick's Fresnel -
@@ -2793,8 +2985,18 @@ void main() {
         // (The diffuse carries pi folded into the light, so the highlight does.)
         float ndh = max(dot(n, h), 0.0);
         float vdh = clamp(dot(v, h), 0.0, 1.0);
-        float denom = ndh * ndh * (a2 - 1.0) + 1.0;
-        float d = a2 / (denom * denom + 1e-7);
+        // A light with a size (the sun's disc, a bulb) is lit from the point
+        // of it whose highlight is brightest here (sized_ndh2), its highlight
+        // as much wider as it is, and no brighter for being so.
+        float ndh2 = ndh * ndh, energy = 1.0;
+        if (uLightFrame[i].w < 0.5 && uLightFrame[i].x > 0.0) {
+            float across = uLightSun[i] > 0.5 ? uLightFrame[i].x : uLightFrame[i].x / max(length(uLightPos[i] - vLit), 1e-3);
+            ndh2 = sized_ndh2(across, ndl, ndv, dot(v, l));
+            float sin2 = across * across / (1.0 + across * across);
+            energy = a2 / clamp(a2 + sin2 / (vdh * 3.6 + 0.4), 1e-6, 1.0);
+        }
+        float denom = ndh2 * (a2 - 1.0) + 1.0;
+        float d = a2 / (denom * denom + 1e-7) * energy;
         float vis = 0.5 / mix(2.0 * ndl * ndv, ndl + ndv, sqrt(a2));
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) * grains(n, l, v, ndl, ndv) + d * vis * f * spec_k;
