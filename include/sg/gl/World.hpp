@@ -143,6 +143,10 @@
 #include "sg/render/Defaults.hpp"
 #include "sg/render/Graphics.hpp"
 
+namespace sg {
+class Texture;
+}
+
 namespace sg::render {
 
 namespace trace {
@@ -500,8 +504,8 @@ private:
         std::shared_ptr<render::Packed> packed_normal;
         bool normal_shared = false;
         // Its texture's dirt and damp (Texture::wear_raster), and which each is.
-        gl::Texture dirt_map, damp_map;
-        uint64_t dirt_revision = ~uint64_t{0}, damp_revision = ~uint64_t{0};
+        gl::Texture dirt_map, damp_map, moss_map;
+        uint64_t dirt_revision = ~uint64_t{0}, damp_revision = ~uint64_t{0}, moss_revision = ~uint64_t{0};
     };
     // The card's one copy of a packed picture, made the first time it is asked for.
     const gl::Texture& on_card(const std::shared_ptr<render::Packed>& packed);
@@ -1273,6 +1277,12 @@ private:
     bool bind_skin(const State& st, const Element& e);
     // The ways along a thing's faces its normal map is laid by.
     static std::vector<float> tangents_of(const State& st, const Element& e);
+    // Whether a texture asks its wearers' shapes of their wear (edge, dirt in
+    // hollows and creases, moss); and, if it does, the mesh `e` is drawn with
+    // given it (render::wear), once - a model wearing it whose wear was not
+    // made before the first frame.
+    static bool reads_shape(const ::sg::Texture& tex);
+    static void wear_shape(const State& st, const Element& e, const gl::Mesh& mesh, const ::sg::Texture& tex);
     // A thing cut out of its picture (`cutout` > 0, with a `skin`), drawn
     // after the rest with the program that may cut (cutout_of), as a sprite is.
     static bool cuts_out(const Element& e);
@@ -1599,7 +1609,7 @@ private:
     // roughness (bind_beds) - the two units after it.
     static constexpr int kBedsUnit = 17;
     // A worn texture's dirt (Texture::dirt_raster): past the traced pictures' units.
-    static constexpr int kDirtUnit = 24, kDampUnit = 25, kWearFieldUnit = 26;
+    static constexpr int kDirtUnit = 24, kDampUnit = 25, kWearFieldUnit = 26, kMossUnit = 27;
     float wear_age_ = 1.0f;  // the age of the room being drawn (sg/domains/Wear.hpp), for what wears a texture in it
     int wear_leaks_ = 0;     // ... and how many of its leaks the scene shader was given
     gl::GLuint shadow_depths_ = 0;

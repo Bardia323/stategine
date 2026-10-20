@@ -1178,7 +1178,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         mirror_uniforms(p, !mirroring_);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
-        p.set("uSurfaceOnly", surface_only_);
+        // (SG_SHOW_WEAR=1: what each mesh's shape says of its wear, for
+        // looking - convex red, concave green, shut blue; grey where none.)
+        static const bool show_wear = std::getenv("SG_SHOW_WEAR") != nullptr;
+        p.set("uSurfaceOnly", surface_only_ == 0 && show_wear ? 6 : surface_only_);
         // Light traced for the eye's own view (src/gl/trace); none in any other.
         if (trace_ && depth == 0 && eye_view() && !mirroring_) trace_to(p);
         else p.set("uTrace", 0.0f, 0.0f, 0.0f, 0.0f);
@@ -1203,7 +1206,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uDirt", kDirtUnit);  // and its dirt and damp (set_skin_maps)
         p.set("uDamp", kDampUnit);
         p.set("uWearMap", kWearFieldUnit);
+        p.set("uMoss", kMossUnit);
         p.set("uWear", 0.0f, 0.0f, 1.0f, 0.0f);
+        p.set("uMossSet", 0.0f, 1.0f, 0.9f, 0.0f);
+        p.set("uEdge", 0.0f, 1.0f, 0.5f, 0.0f);
+        p.set("uMeshDirt", 0.0f, 0.0f, 0.0f, 0.0f);
+        p.set("uVary", 0.0f, 0.0f, 0.0f, 0.0f);
         p.set("uSkinScatter", 0.0f, 0.0f);
         p.set("uBeds", kBedsUnit);  // a land's beds (bind_beds)
         p.set("uBedNormals", kBedsUnit + 1);

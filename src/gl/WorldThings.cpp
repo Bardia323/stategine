@@ -68,6 +68,19 @@ bool GLWorldView::bind_worn(const State& st, const std::string& name, bool srgb,
 
 // Its corners' ways, for the mesh as it is (a model's: any other shape's are
 // found on the screen).
+bool GLWorldView::reads_shape(const ::sg::Texture& tex) {
+    const Params& m = tex.map().params;
+    return m.num("edge", 0.0) > 0.0 || m.num("dirt_shut", 0.0) > 0.0 || m.num("dirt_crease", 0.0) > 0.0 || tex.has_wear("moss");
+}
+
+void GLWorldView::wear_shape(const State& st, const Element& e, const gl::Mesh& mesh, const ::sg::Texture& tex) {
+    if (mesh.wear_made() || !e.params.is(Key{"shape"}, "model") || !reads_shape(tex)) return;
+    const auto* space = dynamic_cast<const Spatial3D*>(&st);
+    const std::vector<float>* corners = space ? space->model(Key{e.params.get_or<std::string>(Key{"model"}, "")}) : nullptr;
+    const float size[3] = {static_cast<float>(e.params.num(keys::sx, 1.0)), static_cast<float>(e.params.num(keys::sy, 1.0)), static_cast<float>(e.params.num(keys::sz, 1.0))};
+    if (corners) mesh.set_wear(render::wear(*corners, 32, 0.1, size));
+}
+
 std::vector<float> GLWorldView::tangents_of(const State& st, const Element& e) {
     const auto* space = dynamic_cast<const Spatial3D*>(&st);
     const std::vector<float>* corners =
@@ -384,6 +397,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             scene_->set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
             set_skin_maps(*scene_, &bound);
+            wear_shape(st, e, shape_seen(st, e), *tex);
         }
         shape_seen(st, e).draw();
         if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinScatter", 0.0f, 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);

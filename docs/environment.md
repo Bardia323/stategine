@@ -47,7 +47,38 @@ stands on the ground by the lowest of the ground under its footprint
 (`sg::ground_under`), a little into it: no edge over a hollow, its shadow
 meeting it. Procedurally grown things (the modeller's `use trees`) are for
 the stylised, the far off and the silhouetted; close to a photographic eye,
-a scanned asset.
+a scanned asset - unless the place is to be made with none.
+
+**Made with none.** A place can be made with no photograph and no scan and
+still stand beside one (the memory-leak showcase's `wild`: its `valley`
+made): the ground's beds from `sg::grounds` (a meadow, a lichened rock,
+gravel, mud - strewn by laws, laid out as a photographed set's maps); its
+stones the modeller's weathered fields (`remesh rough= facets=`) wearing
+`lichen_rock`; its plants grown - a tussock as ninety fine blades from one
+foot and the dead of last year round it, a fern as fronds of paired
+leaflets, a shrub as nine stems branching, small leaves thick on its twigs;
+what people left built from the modeller's shapes. What decides it is what
+decides a photograph: real densities (thousands of blades a square metre,
+stones packed against each other), real sizes, real albedos, the hollows
+dark, and matte leaves (a smooth one throws a low sun's glint back).
+
+**Photographed, made, or both: what each was like.** The memory-leak
+showcase has a place each way (`valley` photographed and scanned, `wild`
+made, `ruin` both), and what working on each was like, as found:
+
+| | Photographed (`valley`) | Made (`wild`) | Both (`ruin`) |
+| --- | --- | --- | --- |
+| Where the realism comes from | the photographs and scans | each material's physics, coded: densities, sizes, albedos, how things lie | the photographs' surfaces; the engine's relationships between them (wear from each shape, spreading, falling, light) |
+| First frame that held up | quickly | after about eight rounds - each material wrong until a real fact went in (blades by the thousand a square metre, stones packed) | after about three |
+| A change | a `.mat` line or a law's number, a re-render (a minute) | code for a new material; its maps made again (minutes, then cached) | a `.mat` line, a re-render |
+| What limited it | what the libraries have (no lichen on ambientCG); choosing the right set mattered more than any setting | plants close up (flat leaf cards; a low sun's glint off them) | the photographs' own character (a regular block wall reads as a pattern; an irregular one did not) |
+| What carries to the next place | the sets fetched | the materials and weathering made; each new material is new work | the sets, and the wear from shape, which works on any model wearing a texture that asks for it |
+| Licensing, fetching | per asset | none | per asset |
+
+Seen from the work on them: photographs gave detail at every scale for
+nothing; making gave control, variety without repeats and no assets, at
+the cost of coding each material's physics; with both, the work went into
+the relationships between surfaces rather than the surfaces.
 
 ## Spreading things: `sg::Distribution`
 

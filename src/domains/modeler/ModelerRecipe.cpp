@@ -396,7 +396,7 @@ private:
     // by `blend`), and that field meshed - at `res`, or at whatever cell gives
     // about `faces` faces. One mesh, even and closed, however many and however
     // tangled the pieces were.
-    Solid remeshed(const Solid& s, double faces, double res, double blend, double crease);
+    Solid remeshed(const Solid& s, double faces, double res, double blend, double crease, const kernel::Weather* weather = nullptr);
     void call(const std::string& name, Args& a, Mode mode, double k);
     void collect(const std::vector<std::string>& lines, std::size_t& i, std::vector<std::string>& body);
 };
@@ -630,7 +630,7 @@ bool Interp::make(const std::string& head, Args& a, const Defaults& d, Made& m) 
     return true;
 }
 
-Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, double crease) {
+Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, double crease, const kernel::Weather* weather) {
     if (s.pieces.empty() || (faces <= 0 && res <= 0)) return s;
     std::vector<SdfP> fields;
     for (const Piece& p : s.pieces) fields.push_back(p.field);
@@ -638,6 +638,7 @@ Solid Interp::remeshed(const Solid& s, double faces, double res, double blend, d
     if (blend > 0)
         for (std::size_t i = 1; i < fields.size(); ++i) u = sdf_blend(u, fields[i], blend);
     else u = sdf_union(fields);
+    if (weather) u = sdf_weathered(u, *weather);
     const V3 e = u->bb.hi - u->bb.lo;
     const double extent = std::max({e.x, e.y, e.z, 1e-3});
     if (res <= 0) {
@@ -1026,7 +1027,15 @@ void Interp::exec(const std::vector<std::string>& lines, std::size_t floor, int 
             s.holes.push_back(hole);
             kernel::join(st_.back().acc, s, Mode::Add, 0, Mesher{o_.cell, o_.max_grid, &errors});
         } else if (head == "remesh") {
-            st_.back().acc = remeshed(st_.back().acc, opt_num(a, "faces", 0), opt_num(a, "res", 0), opt_num(a, "blend", 0), opt_num(a, "crease", 35));
+            // (Weathered first where it says how: rough= grain= oct= ridge=
+            // facets= cut= soften= seed=.)
+            kernel::Weather w;
+            w.rough = opt_num(a, "rough", 0), w.grain = opt_num(a, "grain", 0.2), w.octaves = int(opt_num(a, "oct", 4));
+            w.ridge = std::clamp(opt_num(a, "ridge", 0), 0.0, 1.0), w.facets = int(opt_num(a, "facets", 0));
+            w.cut = opt_num(a, "cut", 0.15), w.soften = opt_num(a, "soften", 0), w.seed = std::uint64_t(std::max(0.0, opt_num(a, "seed", 1)));
+            const bool weathered = w.rough > 0 || w.facets > 0;
+            st_.back().acc = remeshed(st_.back().acc, opt_num(a, "faces", 0), opt_num(a, "res", 0), opt_num(a, "blend", 0), opt_num(a, "crease", 35),
+                                      weathered ? &w : nullptr);
         } else if (macros_.count(head)) {
             call(head, a, mode, k);
         } else {

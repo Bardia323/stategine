@@ -75,6 +75,9 @@ stategine_code_digest(stategine SG_BEING_CLIP_CODE ${CMAKE_CURRENT_SOURCE_DIR}/s
 # And a texture's pictures, by its settings, its files and the code that paints them.
 stategine_code_digest(stategine SG_TEXTURE_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Texture.cpp
                       ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/domains/Texture.hpp)
+# And a ground's maps, by its material, its params and the code that makes them.
+stategine_code_digest(stategine SG_GROUNDS_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Grounds.cpp
+                      ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Distribution.cpp)
 
 # Derived networking machinery above core. The network is an ordinary State;
 # no transport or reconciliation capability is added to the engine.
@@ -616,6 +619,12 @@ if(SG_BUILD_TESTS)
   add_executable(sg_distribution tests/test_distribution.cpp)
   target_link_libraries(sg_distribution PRIVATE stategine_dev)
   add_test(NAME sg_distribution COMMAND sg_distribution)
+  add_executable(sg_grounds tests/test_grounds.cpp)
+  target_link_libraries(sg_grounds PRIVATE stategine_dev)
+  add_test(NAME sg_grounds COMMAND sg_grounds)
+  add_executable(sg_mesh_wear tests/test_mesh_wear.cpp)
+  target_link_libraries(sg_mesh_wear PRIVATE stategine_dev)
+  add_test(NAME sg_mesh_wear COMMAND sg_mesh_wear)
   add_executable(sg_spatial tests/test_spatial.cpp)
   target_link_libraries(sg_spatial PRIVATE stategine_dev)
   add_test(NAME sg_spatial COMMAND sg_spatial)

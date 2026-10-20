@@ -374,6 +374,96 @@ SdfP with_material(SdfP f, int material) {
     return m;
 }
 
+// --- weathered --------------------------------------------------------------------
+
+namespace {
+std::uint64_t mix64(std::uint64_t h) {
+    h ^= h >> 33, h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33, h *= 0xc4ceb9fe1a85ec53ULL;
+    return h ^ (h >> 33);
+}
+double unit01(std::uint64_t h) { return double(mix64(h) >> 11) * (1.0 / 9007199254740992.0); }
+// Perlin's gradient noise of space: about -1..1, smooth, never repeating.
+double gradient_noise(V3 p, std::uint64_t seed) {
+    const double fx = std::floor(p.x), fy = std::floor(p.y), fz = std::floor(p.z);
+    const double x = p.x - fx, y = p.y - fy, z = p.z - fz;
+    const auto fade = [](double t) { return t * t * t * (t * (t * 6 - 15) + 10); };
+    const auto corner = [&](int i, int j, int k) {
+        const std::uint64_t h = mix64(seed ^ (std::uint64_t(std::int64_t(fx) + i) * 0x9e3779b97f4a7c15ULL) ^
+                                      (std::uint64_t(std::int64_t(fy) + j) * 0xc2b2ae3d27d4eb4fULL) ^ (std::uint64_t(std::int64_t(fz) + k) * 0x165667b19e3779f9ULL));
+        // (Twelve ways, the edges of a cube, as Perlin's improved noise.)
+        static const double g[12][3] = {{1, 1, 0}, {-1, 1, 0}, {1, -1, 0}, {-1, -1, 0}, {1, 0, 1}, {-1, 0, 1}, {1, 0, -1}, {-1, 0, -1}, {0, 1, 1}, {0, -1, 1}, {0, 1, -1}, {0, -1, -1}};
+        const double* v = g[h % 12];
+        return v[0] * (x - i) + v[1] * (y - j) + v[2] * (z - k);
+    };
+    const double u = fade(x), v = fade(y), w = fade(z);
+    const auto lerp = [](double a, double b, double t) { return a + (b - a) * t; };
+    return lerp(lerp(lerp(corner(0, 0, 0), corner(1, 0, 0), u), lerp(corner(0, 1, 0), corner(1, 1, 0), u), v),
+                lerp(lerp(corner(0, 0, 1), corner(1, 0, 1), u), lerp(corner(0, 1, 1), corner(1, 1, 1), u), v), w);
+}
+
+struct Weathered : Sdf {
+    SdfP s;
+    Weather w;
+    std::vector<V3> n;
+    std::vector<double> at;
+    V3 mid;
+    double lipschitz = 1;
+    double d(V3 p) const override {
+        double v = s->d(p);
+        // The faces it broke along: each plane a smooth max with what is left.
+        const V3 q = p - mid;
+        for (std::size_t i = 0; i < n.size(); ++i) {
+            const double c = dot(q, n[i]) - at[i];
+            if (w.soften > 0) {
+                const double h = std::max(w.soften - std::abs(v - c), 0.0) / w.soften;
+                v = std::max(v, c) + h * h * w.soften * 0.25;
+            } else {
+                v = std::max(v, c);
+            }
+        }
+        if (w.rough > 0) {
+            double sum = 0, amp = 1, f = 1 / w.grain;
+            for (int o = 0; o < w.octaves; ++o) {
+                const double g = gradient_noise(p * f, w.seed + std::uint64_t(o) * 7919);
+                sum += amp * ((1 - w.ridge) * g + w.ridge * (0.5 - std::abs(g)) * 2);
+                amp *= 0.5, f *= 2;
+            }
+            v += w.rough * sum;
+        }
+        return v / lipschitz;
+    }
+    int pick(V3 p) const override { return s->pick(p); }
+};
+}  // namespace
+
+SdfP sdf_weathered(SdfP f, const Weather& w) {
+    auto s = std::make_shared<Weathered>();
+    s->w = w;
+    s->w.grain = std::max(w.grain, 1e-4);
+    s->w.octaves = std::clamp(w.octaves, 1, 8);
+    s->material = f->material;
+    s->mid = (f->bb.lo + f->bb.hi) * 0.5;
+    const V3 half = (f->bb.hi - f->bb.lo) * 0.5;
+    for (int i = 0; i < w.facets; ++i) {
+        // A way at random over the sphere (Marsaglia's), a plane across it as
+        // far out as the box's ellipsoid reaches that way, less a share at random.
+        const std::uint64_t k = w.seed * 0x2545f4914f6cdd1dULL + std::uint64_t(i) * 2;
+        const double z = 2 * unit01(k) - 1, a = 2 * 3.14159265358979 * unit01(k + 1), r = std::sqrt(std::max(0.0, 1 - z * z));
+        const V3 dir{r * std::cos(a), z, r * std::sin(a)};
+        const double reach = std::sqrt(half.x * half.x * dir.x * dir.x + half.y * half.y * dir.y * dir.y + half.z * half.z * dir.z * dir.z);
+        s->n.push_back(dir);
+        s->at.push_back(reach * (1 - w.cut * (0.4 + 0.6 * unit01(k + 977))));
+    }
+    // (A gradient noise's slope is under about 2.2 a cell: so many octaves,
+    // each as steep over its own cell, make the field so much steeper.)
+    s->lipschitz = 1 + (w.rough > 0 ? 2.2 * w.rough / s->w.grain * s->w.octaves : 0);
+    s->bb = f->bb;
+    s->bb.lo = s->bb.lo - V3{w.rough, w.rough, w.rough}, s->bb.hi = s->bb.hi + V3{w.rough, w.rough, w.rough};
+    s->s = std::move(f);
+    return s;
+}
+
 // --- the surface of a field: dual contouring -----------------------------------------
 
 namespace {

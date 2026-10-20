@@ -37,7 +37,9 @@ Your rules, in the order of work:
 6. **Real assets at real size:** CC0 scans (Poly Haven, ambientCG); check every
    model's bounds; pick one part out of a kit; stand each by
    `sg::ground_under`; tiled materials say `texture.scatter` unless they have
-   a grain or grid.
+   a grain or grid. Asked for a place made with no assets: grounds from
+   `sg::grounds`, stones from `remesh rough= facets=`, plants grown at real
+   densities (docs/environment.md, *Made with none*).
 7. **Light is the lights:** set each source as the thing it is, the exposure
    as a camera's (one for every way a frame is compared); never tune the
    light from all round by hand - it is the probes', from the lights.

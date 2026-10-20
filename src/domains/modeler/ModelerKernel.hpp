@@ -97,6 +97,20 @@ SdfP sdf_sub(SdfP a, SdfP b, double k);
 SdfP sdf_and(SdfP a, SdfP b);
 SdfP sdf_blend(SdfP a, SdfP b, double k);
 SdfP with_material(SdfP s, int material);  // the same field, as this material
+// A field weathered as stone weathers (`remesh rough= facets=`): cut back by
+// `facets` planes at random turns - the faces it broke along, each a share
+// `cut` of the way in from its box's ellipsoid, their edges rounded over
+// `soften` metres - then roughened by `octaves` of gradient noise `rough`
+// metres deep at `grain` metres across, each next one twice as fine and half
+// as deep; `ridge` (0..1) of it ridged, the creases between its lumps sharp
+// (cracks). The same seed, the same stone. Kept a field to mesh: its
+// distance never more than the true one.
+struct Weather {
+    double rough = 0, grain = 0.2, cut = 0.15, soften = 0, ridge = 0;
+    int octaves = 4, facets = 0;
+    std::uint64_t seed = 1;
+};
+SdfP sdf_weathered(SdfP s, const Weather& w);
 Mat basis(V3 origin, V3 x, V3 y, V3 z);    // the move that takes the axes to these
 V3 perpendicular(V3 d);                    // some unit vector across d
 

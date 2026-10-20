@@ -23,6 +23,19 @@ Indexed indexed(const std::vector<float>& corners);
 // gives none; a corner with none is given a way square to its normal. Pure.
 std::vector<float> tangents(const std::vector<float>& corners);
 
+// What a mesh's own shape asks of its wear, 4 floats a corner: how convex it
+// is there (0..1: an edge, worn first), how concave (0..1: a crease, where
+// dirt keeps), how shut it is from the sky round it by the mesh itself (0
+// open .. 1: a hollow, under a lip), and 0 (made; a mesh given none reads 1
+// there). Its corners welded where they stand, so a crease's two corners
+// are one point. The bend is the turn of the surface along each edge times
+// the edge's length (a box's edge an edge however finely it is made); the
+// shut, `rays` rays over each point's hemisphere, as light comes, each that
+// meets the mesh again within a third of its size shut. Pure.
+// `size`: the mesh's corners are a unit box's (a model fitted, as a world
+// keeps them), drawn this big - its wear made at the size it is seen.
+std::vector<float> wear(const std::vector<float>& corners, int rays = 32, double spread = 0.1, const float* size = nullptr);
+
 std::vector<float> cube_vertices();
 // The same cube, each face cut into `n` x `n` (its uv the same, 0..1 across
 // each face): for a thing that bends (`bend`), whose faces must curve.

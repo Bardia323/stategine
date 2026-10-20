@@ -1478,6 +1478,7 @@ in vec3 vObjNormal;
 in vec3 vRoomNormal;
 in vec3 vTexScale;
 in vec4 vTangent;
+in vec4 vMeshWear;
 
 // Whether this point is seen is known before it is shaded: what stands in
 // front is never lit for nothing. (Not where a picture is cut out of its
@@ -1540,6 +1541,20 @@ uniform vec4 uLeak[4];
 // added to what its causes gather there.
 uniform sampler2D uWearMap;
 uniform vec4 uWearField;
+// What its own shape asks (vMeshWear, a mesh's wear made from it): dirt kept
+// in its hollows (x) and creases (y); its edges worn - how much (uEdge.x),
+// how much paler (y, times its colour), how rough (z); and moss, a
+// photograph of it (Texture::wear_raster `moss`): how much (uMossSet.x),
+// metres to a picture (y), how rough (z), w 1 worn - gathered where it faces
+// up (uMossWhere.x), where it faces its shaded way (y; the way, w radians
+// from +x towards +z), where it is shut in (z). uVary: its colour (x) and
+// roughness (y) varying over the world, in patches z metres across.
+uniform vec4 uMeshDirt;
+uniform vec4 uEdge;
+uniform sampler2D uMoss;
+uniform vec4 uMossSet;
+uniform vec4 uMossWhere;
+uniform vec4 uVary;
 vec2 wear_field() {
     if (uWearField.z <= 0.0) return vec2(0.0);
     vec2 uv = (vRoom.xz - uWearField.xy) * uWearField.zw;
@@ -2162,6 +2177,32 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 void around_at(vec3 p, out vec3 sky, out vec3 ground) {
     sky = uSky * uAmbient;
     ground = uGround * uAmbient;
+    // Under a planet's sky (`atmosphere`), the light from all round is the
+    // light that sky gives, not the look's colours: its radiance over the
+    // upper half, as a face turned up takes it (the zenith and four ways at
+    // 35 degrees, cosine-weighed) - as bright as the sun that lights the
+    // surfaces (its colour times its power), not as the sky is drawn (times
+    // `atmosphere.sun`); and from below, the ground's: what it gives back
+    // (`atmosphere.ground`) of the sun through the air and that sky.
+    if (uAtmo > 0.0) {
+        float power = 0.0;
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            if (i >= uLightCount) break;
+            if (uLightA[i].w > 0.5) {
+                power = uLightA[i].x;
+                break;
+            }
+        }
+        float k = power / max(uAtmoSun, 1e-4);
+        const float c = 0.8192, s = 0.5736;
+        vec3 l = atmo_sky(vec3(0.0, 1.0, 0.0)) * 0.36 +
+                 (atmo_sky(vec3(c, s, 0.0)) + atmo_sky(vec3(-c, s, 0.0)) + atmo_sky(vec3(0.0, s, c)) + atmo_sky(vec3(0.0, s, -c))) * 0.16;
+        l *= k;
+        vec3 sun = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
+        vec3 g = uAtmoGround * (uSunColor * power * light_through(atmo_eye(), sun.y) * max(sun.y, 0.0) / kPi + l);
+        sky = mix(sky, l, uAtmo);
+        ground = mix(ground, g, uAtmo);
+    }
     for (int i = 0; i < MAX_DOORS; ++i) {
         if (i >= uDoorCount) break;
         if (uDoorIn[i].z > 0.5) continue;  // shut: only its leaf is in both rooms
@@ -3021,6 +3062,34 @@ void main() {
         albedo = mix(albedo, albedo * vec3(0.92, 0.85, 0.7), mGrime * blotch * 0.8) * shade;
         roughness = clamp(roughness + mGrime * 0.18 * (blotch - 0.4), 0.05, 1.0);
     }
+    // What its own shape says, where a mesh's wear was made from it (its w
+    // 0): its hollows shut to the light from all round as they are to the
+    // sky; and the world's variation over every worn thing - a block paler
+    // than the next, a stretch of wall greyer - in patches no two things share.
+    bool shaped = vMeshWear.w < 0.5;
+    // (The photograph's own joints and pits - its occlusion map - before the
+    // shape's: where moss and soil take first, at the finest size.)
+    float cavity = 1.0 - occlusion;
+    if (shaped) occlusion *= 1.0 - 0.55 * vMeshWear.z;
+    if (uVary.z > 0.0) {
+        vec2 vp = vRoom.xz / uVary.z + vec2(vRoom.y * 0.37 / uVary.z);
+        float v = noise(vp) * 0.6 + noise(vp * 2.9 + 4.1) * 0.4 - 0.5;
+        float warm = noise(vp * 0.7 + 11.3) - 0.5;
+        albedo *= 1.0 + uVary.x * 2.0 * v;
+        albedo *= vec3(1.0 + uVary.x * warm, 1.0, 1.0 - uVary.x * warm);
+        roughness = clamp(roughness + uVary.y * 2.0 * v, 0.05, 1.0);
+    }
+    // Its edges worn: knocked, rubbed, weathered first where it stands out -
+    // paler, smoother - their line ragged as the surface's own grain makes it.
+    if (shaped && uEdge.x > 0.0) {
+        vec3 an = abs(normalize(vRoomNormal));
+        vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+        float grain = noise(gp * 23.0) * 0.55 + noise(gp * 71.0) * 0.3 + noise(gp * 5.0) * 0.15;
+        float worn = smoothstep(0.12, 0.7, vMeshWear.x) * uEdge.x;
+        float m = smoothstep(1.0 - worn - 0.05, 1.0 - worn + 0.05, grain) * step(0.001, worn);
+        albedo = mix(albedo, min(albedo * uEdge.y, vec3(0.9)), m);
+        roughness = mix(roughness, uEdge.z, m);
+    }
     // Dirt where dirt gathers - a photograph of it, not a pattern made up:
     // along the floor (what a mop leaves, what is kicked up), under the
     // ceiling (soot, damp), into the corners where two walls meet and along
@@ -3047,11 +3116,37 @@ void main() {
             float corner = an.y > 0.7 ? min(cx, cz) : (an.x > an.z ? cz : cx);
             gather = max(gather, 1.0 - smoothstep(0.0, uDirtSet.y, max(corner, 0.0)));
         }
+        // (And in its own hollows and creases, where its shape keeps it.)
+        if (shaped) gather = max(gather, (smoothstep(0.15, 0.8, vMeshWear.z) * uMeshDirt.x + smoothstep(0.1, 0.6, vMeshWear.y) * uMeshDirt.y) * (0.6 + 1.2 * cavity));
         gather = min(gather + wear_field().r, 1.0);
         gather *= uDirtSet.x * uWear.z;
         float m = smoothstep(1.0 - gather - 0.06, 1.0 - gather + 0.06, grains) * step(0.001, gather);
         albedo = mix(albedo, d1.rgb * mix(1.0, d2.rgb.g * 1.6, 0.3), m);
         roughness = mix(roughness, uDirtSet.w, m);
+    }
+    // Moss where moss takes: on what faces up and holds water, on the side
+    // the sun reaches least, in what is shut in and stays damp - a
+    // photograph of it, its edge the photograph's own, as dirt's is.
+    if (uMossSet.w > 0.5) {
+        vec3 rn = normalize(vRoomNormal), an = abs(rn);
+        vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+        vec4 m1 = texture(uMoss, gp / uMossSet.y);
+        vec4 m2 = texture(uMoss, gp / (uMossSet.y * 2.37) + vec2(0.29, 0.83));
+        float grains = 0.6 * m1.a + 0.4 * m2.a;
+        // (Low and shut in, it stays damp longest: more of it there.)
+        float low = shaped ? smoothstep(0.2, 0.9, vMeshWear.z) : 0.0;
+        float take = uMossWhere.x * smoothstep(0.35, 0.9, rn.y);
+        float shade = smoothstep(0.0, 0.8, dot(rn.xz, vec2(cos(uMossWhere.w), sin(uMossWhere.w)))) * (1.0 - smoothstep(0.3, 0.9, -rn.y));
+        take = max(take, uMossWhere.y * shade * (0.35 + 0.65 * low));
+        take = max(take, uMossWhere.z * low);
+        // (Into the stone's own joints and pits first.)
+        take *= 0.35 + 1.6 * cavity;
+        // (In patches: where it took, not everywhere it could.)
+        take *= 0.55 + 0.9 * (noise(gp * 0.8 + 5.7) - 0.5) + 0.45;
+        take = clamp(take * uMossSet.x * uWear.z, 0.0, 1.0);
+        float m = smoothstep(1.0 - take - 0.06, 1.0 - take + 0.06, grains) * step(0.001, take);
+        albedo = mix(albedo, m1.rgb * mix(1.0, m2.rgb.g * 1.6, 0.3), m);
+        roughness = mix(roughness, uMossSet.z, m);
     }
     // Damp where water has been: down a wall below a leak, in streaks that
     // widen as they fall and thin out; a blot on the ceiling round it; a
@@ -3104,6 +3199,7 @@ void main() {
         if (uSurfaceOnly == 1) FragColor = vec4(vLit, 1.0);
         else if (uSurfaceOnly == 2) FragColor = vec4(normalize(vNormal), 1.0);
         else if (uSurfaceOnly == 3) FragColor = vec4(diffuse, 1.0);
+        else if (uSurfaceOnly == 6) FragColor = vec4(vMeshWear.w > 0.5 ? vec3(0.2) : vMeshWear.xyz, 1.0);
         else FragColor = vec4(length(vWorld - uViewPos), 0.0, 0.0, 1.0);
         return;
     }

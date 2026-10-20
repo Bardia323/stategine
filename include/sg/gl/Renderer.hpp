@@ -190,6 +190,12 @@ public:
     // until it is changed: tangents_made says it was given them, whatever they were.)
     void set_tangents(const std::vector<float>& tangents) const;
     bool tangents_made() const { return tangents_for_ == made_; }
+    // What its own shape asks of its wear (4 floats a corner, render::wear:
+    // convex, concave, shut, 0), at attribute 13 - made as its ways are, once,
+    // for a mesh whose thing wears what reads it. Without it attribute 13
+    // reads (0, 0, 0, 1): none.
+    void set_wear(const std::vector<float>& wear) const;
+    bool wear_made() const { return wear_for_ == made_; }
 
 private:
     GLuint vao_ = 0;
@@ -201,6 +207,8 @@ private:
     uint64_t made_ = 0;
     mutable GLuint tangents_ = 0;
     mutable uint64_t tangents_for_ = ~uint64_t{0};
+    mutable GLuint wear_ = 0;
+    mutable uint64_t wear_for_ = ~uint64_t{0};
     // The vertex array whose instance attributes step once an instance
     // (their divisors are its own state, set once, kept while it stands).
     mutable GLuint divided_ = 0;

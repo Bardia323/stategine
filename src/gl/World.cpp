@@ -1,5 +1,7 @@
 #include "sg/domains/Wear.hpp"
 #include "sg/gl/World.hpp"
+#include "sg/render/Geometry.hpp"
+#include "sg/domains/Texture.hpp"
 #include <set>
 #include <chrono>
 #include <cstring>
@@ -331,6 +333,42 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
         for (std::thread& t : hands) t.join();
     }
     for (Ways& x : ways) x.mesh->set_tangents(x.made);
+    // And the wear its own shape asks for (render::wear: its edges, its
+    // creases, its hollows), for a model whose thing wears a texture that
+    // reads it - edge wear, dirt in its hollows, moss (`edge`, `dirt_shut`,
+    // `dirt_crease`, `moss_layer`): rays from each point, on every core.
+    {
+        std::vector<Ways> shapes;
+        for (Spatial3D* w : worlds)
+            if (w)
+                for (const Element& e : w->elements()) {
+                    if (!e.alive || e.kind != kinds::mesh || !e.params.is(Key{"shape"}, "model")) continue;
+                    const Element* holder = skin_holder(*w, e);
+                    const auto b = holder ? bound_surfaces().find(holder->id) : bound_surfaces().end();
+                    const auto* tex = b != bound_surfaces().end() ? dynamic_cast<const Texture*>(b->second.surface) : nullptr;
+                    if (!tex) continue;
+                    if (!reads_shape(*tex)) continue;
+                    const gl::Mesh& mesh = shape_of(*w, e);
+                    if (!mesh.wear_made() && std::none_of(shapes.begin(), shapes.end(), [&](const Ways& x) { return x.mesh == &mesh; }))
+                        shapes.push_back(Ways{&mesh, w, &e, {}});
+                }
+        std::atomic<std::size_t> next{0};
+        const auto hand = [&] {
+            for (std::size_t k; (k = next.fetch_add(1)) < shapes.size();) {
+                const std::vector<float>* corners = shapes[k].world->model(Key{shapes[k].e->params.get_or<std::string>(Key{"model"}, "")});
+                const Element& e = *shapes[k].e;
+                const float size[3] = {static_cast<float>(e.params.num(keys::sx, 1.0)), static_cast<float>(e.params.num(keys::sy, 1.0)),
+                                       static_cast<float>(e.params.num(keys::sz, 1.0))};
+                if (corners) shapes[k].made = render::wear(*corners, 32, 0.1, size);
+            }
+        };
+        std::vector<std::thread> hands;
+        const std::size_t n = std::min<std::size_t>(std::max(1u, std::thread::hardware_concurrency()), shapes.size());
+        for (std::size_t t = 1; t < n; ++t) hands.emplace_back(hand);
+        hand();
+        for (std::thread& t : hands) t.join();
+        for (Ways& x : shapes) x.mesh->set_wear(x.made);
+    }
     // And the fewer faces each model is drawn with from further off
     // (Quality::lod), for each model first seen as it is (one made again
     // since is drawn whole: its corners are not these): made by a hand of

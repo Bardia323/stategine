@@ -275,6 +275,24 @@ void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
         }
     }
     p.set("uWear", dirt ? 1.0f : 0.0f, damp ? 1.0f : 0.0f, wear_age_, static_cast<float>(wear_leaks_));
+    // What its own shape asks (a mesh's wear, made where it reads it: World's
+    // warm-up): its edges worn, dirt in its hollows, moss where it takes; and
+    // its colour varying over the world.
+    const bool moss = bound && worn("moss", bound->moss_map, bound->moss_revision, kMossUnit);
+    if (tex) {
+        const Params& m = tex->map().params;
+        p.set("uEdge", static_cast<float>(m.num("edge", 0.0)), static_cast<float>(m.num("edge_light", 1.25)), static_cast<float>(m.num("edge_rough", 0.6)), 0.0f);
+        p.set("uMeshDirt", static_cast<float>(m.num("dirt_shut", 0.0)), static_cast<float>(m.num("dirt_crease", 0.0)), 0.0f, 0.0f);
+        p.set("uMossSet", static_cast<float>(m.num("moss", 1.0)), static_cast<float>(m.num("moss_tile", 1.0)), static_cast<float>(m.num("moss_rough", 0.9)), moss ? 1.0f : 0.0f);
+        p.set("uMossWhere", static_cast<float>(m.num("moss_up", 1.0)), static_cast<float>(m.num("moss_side", 0.5)), static_cast<float>(m.num("moss_shut", 0.5)),
+              static_cast<float>(m.num("moss_way", -1.5707963)));
+        p.set("uVary", static_cast<float>(m.num("vary", 0.0)), static_cast<float>(m.num("vary_rough", 0.0)), static_cast<float>(m.num("vary_size", 3.0)), 0.0f);
+    } else {
+        p.set("uEdge", 0.0f, 1.0f, 0.5f, 0.0f);
+        p.set("uMeshDirt", 0.0f, 0.0f, 0.0f, 0.0f);
+        p.set("uMossSet", 0.0f, 1.0f, 0.9f, 0.0f);
+        p.set("uVary", 0.0f, 0.0f, 0.0f, 0.0f);
+    }
     // One tile for every way of the thing (Texture::one_tile), or six cells.
     p.set("uSkinOne", tex && tex->cols() == 1 && tex->rows() == 1 ? 1.0f : 0.0f);
     p.set("uSurfaceMapOn", tex && bind_surface_map(*bound) ? 1.0f : 0.0f);
@@ -442,7 +460,9 @@ bool GLWorldView::batch_skinned(const State& st, const Element& e) {
     const auto it = bound_surfaces().find(e.id);
     if (it == bound_surfaces().end() || !dynamic_cast<const Texture*>(it->second.surface)) return false;
     upload_skin(it->second);
-    append_record(st, e, batch_for(shape_of(st, e), &it->second));
+    const gl::Mesh& mesh = shape_of(st, e);
+    wear_shape(st, e, mesh, *static_cast<const Texture*>(it->second.surface));
+    append_record(st, e, batch_for(mesh, &it->second));
     return true;
 }
 

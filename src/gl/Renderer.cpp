@@ -343,10 +343,11 @@ void Mesh::update(const std::vector<float>& verts) {
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                  verts.data(), GL_DYNAMIC_DRAW);
-    // (Its ways were the old corners': none until given again.)
-    if (tangents_) {
+    // (Its ways and its wear were the old corners': none until given again.)
+    if (tangents_ || wear_) {
         glBindVertexArray(vao_);
-        glDisableVertexAttribArray(10);
+        if (tangents_) glDisableVertexAttribArray(10);
+        if (wear_) glDisableVertexAttribArray(13);
         glBindVertexArray(0);
     }
 }
@@ -361,6 +362,19 @@ void Mesh::set_tangents(const std::vector<float>& tangents) const {
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(tangents.size() * sizeof(float)), tangents.data(), GL_STATIC_DRAW);
     glVertexAttribPointer(10, 4, GL_FLOAT, 0, 4 * sizeof(float), reinterpret_cast<void*>(0));
     glEnableVertexAttribArray(10);
+    glBindVertexArray(0);
+}
+
+void Mesh::set_wear(const std::vector<float>& wear) const {
+    if (!valid()) return;
+    wear_for_ = made_;
+    if (wear.size() != static_cast<std::size_t>(count_) * 4) return;
+    if (!wear_) glGenBuffers(1, &wear_);
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, wear_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(wear.size() * sizeof(float)), wear.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(13, 4, GL_FLOAT, 0, 4 * sizeof(float), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(13);
     glBindVertexArray(0);
 }
 

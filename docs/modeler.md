@@ -140,7 +140,26 @@ fewer, flat spans first, down to the budget. So `faces=N` is at most N
 faces, fewer where the surface is plain. A field missed nearly everywhere (a
 figure all folds) has nowhere to spend more than anywhere else, and gets the
 budget's cell. With `res=` it is meshed at that cell and made fewer where
-flat. `faces=` on any shape does it to that shape alone. Thin things
+flat.
+
+**Weathered** (`remesh ... rough= facets=`): the field is first worn as stone
+wears - cut back by `facets` planes at random turns (the faces it broke
+along; `cut` how far in each goes, a share of the way from its box's
+ellipsoid, 0.15; `soften` metres their edges are rounded over), then
+roughened by `oct` octaves of gradient noise `rough` metres deep at `grain`
+metres across (0.2), each next twice as fine and half as deep, `ridge`
+(0..1) of it ridged so the creases between its lumps are sharp. `seed`
+which stone. A boulder: a rounded block, a lump blended on, weathered -
+
+```
+box 1.5 0.9 1.1 round=0.25
+blend=0.25 sphere 0.45 at=0.5,0.3,0.3
+remesh faces=12000 rough=0.05 grain=0.7 oct=5 ridge=0.5 facets=14 cut=0.35 soften=0.04 seed=5
+```
+
+The same on dead wood (`rough=0.03 grain=0.12 ridge=0.7`: a stump's split
+grain), on a sheet over a car (`rough=0.03 grain=0.4`: its folds), on
+cast concrete (`rough=0.004 grain=0.05`: its chips). `faces=` on any shape does it to that shape alone. Thin things
 narrower than a cell close up: give the budget they need.
 
 ### Openings: holes asked of the walls

@@ -143,6 +143,25 @@ Its one element, `map`:
 | `damp_layer` (`damp_height_layer`) | a photograph of its damp: laid where water has been - down a wall below its world's leaks, in streaks widening as they fall; a blot on a ceiling round one; a tide mark on the floor under it; rising from the floor (`Wear`) |
 | `damp`, `damp_rise`, `damp_tile`, `damp_rough` | how much (1); metres it rises up a wall from the floor (0); metres its photograph covers (2); how rough it leaves the surface (0.35) |
 
+**Wear from its own shape.** A model that wears a texture saying any of
+the keys below has its wear made from its shape (`render::wear`, once, on
+every core, before its first frame: each corner how convex it is - an
+edge - how concave - a crease - and how shut from the sky by the thing
+itself and the ground it stands on, by rays), and the texture answers it:
+
+| Param | What it is |
+| --- | --- |
+| `edge`, `edge_light`, `edge_rough` | its edges worn - knocked, rubbed, weathered first where it stands out: how much (0..1), its colour times this there (1.25: paler; under 1, darker - rust's), how rough |
+| `dirt_shut`, `dirt_crease` | its dirt photograph (`dirt_layer`) kept in its hollows and creases, more in the photograph's own pits (its occlusion map) |
+| `moss_layer` (`moss_height_layer`) | a photograph of moss, laid where it takes: |
+| `moss`, `moss_tile`, `moss_rough` | how much (1), metres its photograph covers (1), how rough it leaves the surface (0.9) |
+| `moss_up`, `moss_side`, `moss_shut`, `moss_way` | where: what faces up (1), what faces `moss_way` (radians from +x towards +z: the side the sun reaches least; 0.5 of it, more low down), what is shut in and stays damp (0.5) - into its own joints first |
+| `vary`, `vary_rough`, `vary_size` | its colour (and roughness) varying over the world in patches `vary_size` metres across: block by block, stretch by stretch, no two things alike |
+
+`SG_SHOW_WEAR=1` draws what the shapes say (convex red, concave green, shut
+blue; grey where none was made). A thing whose texture says none of them
+pays nothing.
+
 A world's `age` (0 new .. 1 long neglected; 1) is how far all of it has gone,
 and its `wear_field` (a picture of its own, red dirt and green damp, over
 `wear_x`, `wear_z`, `wear_w`, `wear_d`: `sg::field_picture`) adds what a
@@ -222,6 +241,32 @@ painted, the paint flaked to bright metal round patches of rust. Its params:
 (the paint, as picked by eye), `seed`. It shows the pattern every material
 follows: masks from tiling noise (where it is rusted, where bare), and each
 channel blended between the kinds of surface by those masks.
+
+### Natural grounds, made (`sg::grounds`)
+
+`sg/domains/Grounds.hpp`: materials of what lies on the ground, made from
+laws rather than photographed - `meadow` (soil; pebbles; moss cushions
+where the moss took; grass blades living and dead, combed one way; twigs),
+`lichen_rock` (stone, its grains and cracks; lichen rosettes of a power law
+of sizes; moss in its cracks), `gravel` (stones packed by a power law of
+size on fines; grass come through), `mud` (silt; a film of water over its
+low; what washed up). Each is layers of things, each layer a point process
+(Poisson's, thinned by a field where its things gather - a Cox process)
+whose things' sizes and turns are a Distribution's value laws (`sg::draw`:
+power for stones and lichen, lognormal for cushions and blades, von Mises
+for how blades lie), superimposed by height. Their params: `tile` (metres a
+tile), `depth` (metres from lowest to highest), `seed`, and each one's own
+(`moss` `dry` `grass` `twigs` `comb`; `lichen` `moss` `tone`; `grass`
+`stones`; `wet`).
+
+`sg::grounds::define()` registers them as Texture materials (a stone wears
+`lichen_rock` as any thing wears a texture); `sg::grounds::tile_maps(name,
+params, px)` lays one out as the four maps a ground's bed is - albedo,
+normal, surface, height - with its hollows shut to the sky from its height
+(a centimetre and four round) and a little of that in its colour, as a
+photographed set has it: a land takes them as `bed0..3` as it takes
+photographs. Kept in the cache (`grounds`) by material, params, size and
+code: made once, a minute or two at 1536 px.
 
 ## 4. The look of the state
 

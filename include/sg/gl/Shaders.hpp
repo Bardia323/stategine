@@ -38,6 +38,10 @@ out vec4 vTangent;
 // how much each does - none, not a skin's - each joint's move three rows of
 // a 3 x 4 matrix in uJoints (Mesh::pose), the last texel how its normal is
 // sized back (Spatial3D::skin_model).
+// What its own shape asks of its wear (gl::Mesh::set_wear, render::wear):
+// convex, concave, shut from the sky by itself, and 1 where none was made.
+layout(location=13) in vec4 aWear;
+out vec4 vMeshWear;
 layout(location=11) in vec4 aJoints;
 layout(location=12) in vec4 aWeights;
 uniform samplerBuffer uJoints;
@@ -158,6 +162,7 @@ void main() {
     vRoomNormal = mat3(texModel) * (metric ? nrm / max(texScale, vec3(1e-8)) : nrm / max(texScale * texScale, vec3(1e-8)));
     vNormal = normalize(mat3(model) * (metric ? nrm / max(scale, vec3(1e-8)) : nrm));
     vUV = aUV;
+    vMeshWear = aWear;
     // (Turned over - a model mirrored - its v runs the other side of its u.)
     vTangent = vec4(mat3(model) * aTangent.xyz, aTangent.w * (determinant(mat3(model)) < 0.0 ? -1.0 : 1.0));
     for (int i = 0; i < MAX_BOUNDS; ++i)
