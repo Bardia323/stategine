@@ -1,3 +1,4 @@
+#include "sg/domains/Wear.hpp"
 #include "sg/gl/World.hpp"
 #include <set>
 #include <chrono>
@@ -1205,7 +1206,12 @@ void main() {
         gl::glClear(gl::GL_COLOR_BUFFER_BIT);
         cut_ = own_seen_;
     }
+    // Light traced along rays, where the eye's look asks (src/gl/trace): what
+    // each pixel's surface is, drawn first, then the rays - which the scene
+    // drawn next reads.
+    if (!in_part && tracing()) trace_frame(rooms, drawn_cam, aspect);
     draw_world(rooms, drawn_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
+    if (trace_beside_) trace_after(rooms);
     if (in_part) cut_ = Rect{-1, -1, 1, 1};
     card_stamp(kCardScene);
     times_.scene_cpu = since(t0);
@@ -1424,7 +1430,7 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
     KindIndex& ix = kind_index_[&s];
     if (ix.structure == s.structure()) return ix;
     ix.structure = s.structure();
-    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear(), ix.fogs.clear(), ix.strewn.clear();
+    ix.lights.clear(), ix.portals.clear(), ix.terrains.clear(), ix.probes.clear(), ix.fogs.clear(), ix.strewn.clear(), ix.leaks.clear();
     for (const Element& e : s.elements()) {
         if (e.kind == kinds::light) ix.lights.push_back(&e);
         else if (e.kind == kinds::portal) ix.portals.push_back(&e);
@@ -1432,6 +1438,7 @@ auto GLWorldView::index_of(const State& s) const -> const KindIndex& {
         else if (e.kind == kinds::probe) ix.probes.push_back(&e);
         else if (e.kind == kinds::fog) ix.fogs.push_back(&e);
         else if (e.kind == kinds::strewn) ix.strewn.push_back(&e);
+        else if (e.kind == kinds::leak) ix.leaks.push_back(&e);
     }
     return ix;
 }

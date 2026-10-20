@@ -45,6 +45,7 @@ const Setting kSettings[] = {
     {"gpu_cull", nullptr, nullptr, &Quality::gpu_cull, "merged cells' things culled by the card itself, where it can (GL 4.3) (true/false)"},
     {"proxies", nullptr, nullptr, &Quality::proxies, "still things of a room's cells drawn together, each cell in a call or two (true/false)"},
     {"lod", nullptr, nullptr, &Quality::lod, "a model far off drawn with fewer faces, where no pixel would show the difference (true/false)"},
+    {"trace", nullptr, nullptr, &Quality::trace, "light traced along rays where a look asks for it (`trace`, `path`); false: never (true/false)"},
 };
 std::string trimmed(const std::string& s) {
     std::size_t a = 0, b = s.size();

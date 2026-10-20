@@ -91,6 +91,12 @@ struct Quality {
     // world of many photographs is ready sooner, and holds on the card the
     // detail of what has been seen near. Off unless said.
     bool stream_textures=false;
+    // Light traced along rays through the world where a look asks for it
+    // (its scene pass's `trace` and `path`: docs/trace.md) - the sun's
+    // shadows, the light from all round and what glossy things mirror. Off
+    // here, no look's asking traces anything, and every view is drawn as
+    // ever: for a card too slow for it.
+    bool trace=true;
 };
 void standard_look(LookState& look,const Quality& quality={});
 

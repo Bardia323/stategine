@@ -63,6 +63,15 @@ GL's own ways are kept where the card's differ:
   what it writes is seen by whatever is asked after it, so `glMemoryBarrier`
   has nothing to do. A compute program reads pictures through samplers as
   a draw does (no texel buffers).
+- **Buffers GL changes.** What GL rewrites (`GL_DYNAMIC_DRAW`, a buffer
+  written through a map) is laid in the frame's uploads as it changes, read
+  from there. A big one (a megabyte and more) that is not rewritten three
+  frames running - a land's mesh, laid again as the eye moves on - is
+  copied onto the card when it changes and read from that copy: read from
+  the uploads, every draw of it went over the bus (a sun's map of the land,
+  forty times slower). Each frame's uploads are a ring of chunks; a draw that
+  finds its chunk full goes on to the next with room, and only a frame that
+  has filled them all waits for the card.
 
 ## Timing
 

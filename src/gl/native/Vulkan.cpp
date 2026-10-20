@@ -1166,7 +1166,11 @@ void VulkanDevice::draw(const Draw& d) {
     {
         // (Room for what it uploads, made before it is recorded.)
         Frame& f = frame();
-        const bool room = f.chunk_now < f.chunks.size() && f.chunks[f.chunk_now].used + (std::size_t{96} << 10) <= f.chunks[f.chunk_now].buffer->size;
+        // (Room in this frame's uploads: the first chunk on from the one in use
+        // with its 96 KB to spare - not only the one in use, or a frame with a
+        // near-full chunk and a dozen empty ones after it would wait on the card.)
+        while (f.chunk_now < f.chunks.size() && f.chunks[f.chunk_now].used + (std::size_t{96} << 10) > f.chunks[f.chunk_now].buffer->size) ++f.chunk_now;
+        const bool room = f.chunk_now < f.chunks.size();
         // (Never while a question is open: it would end before what it asks of.)
         if (!room && f.chunks.size() >= kChunks && asking_ < 0) recycle();
     }
@@ -1335,7 +1339,11 @@ void VulkanDevice::dispatch(const Dispatch& d) {
     end_rendering();
     {
         Frame& f = frame();
-        const bool room = f.chunk_now < f.chunks.size() && f.chunks[f.chunk_now].used + (std::size_t{64} << 10) <= f.chunks[f.chunk_now].buffer->size;
+        // (Room in this frame's uploads: the first chunk on from the one in use
+        // with its 64 KB to spare - not only the one in use, or a frame with a
+        // near-full chunk and a dozen empty ones after it would wait on the card.)
+        while (f.chunk_now < f.chunks.size() && f.chunks[f.chunk_now].used + (std::size_t{64} << 10) > f.chunks[f.chunk_now].buffer->size) ++f.chunk_now;
+        const bool room = f.chunk_now < f.chunks.size();
         if (!room && f.chunks.size() >= kChunks && asking_ < 0) recycle();
     }
     // (What it reads written before it; what it writes read after it, as

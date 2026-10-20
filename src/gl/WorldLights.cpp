@@ -26,23 +26,16 @@ void GLWorldView::lamp_to(const gl::Program& p, std::size_t i, const Light& l, c
     // (A sun under a planet's sky: as much of its light as gets through the
     // air to the ground - red low down, as an evening's is.)
     p.set(light_uniform(i, 2), l.sun ? gl::Vec3{l.color.x * sun_air.x, l.color.y * sun_air.y, l.color.z * sun_air.z} : l.color);
-    p.set(light_uniform(i, 3), l.power);
-    p.set(light_uniform(i, 4), std::cos(l.inner));
-    p.set(light_uniform(i, 5), std::cos(l.outer));
-    p.set(light_uniform(i, 6), l.sun ? 1.0f : 0.0f);
-    p.set(light_uniform(i, 7), l.floor);
+    p.set(light_uniform(i, 3), l.power, std::cos(l.inner), std::cos(l.outer), l.sun ? 1.0f : 0.0f);
     // (1: lit as bounce and standing in for it; 0.6: lit as bounce only.)
-    p.set(light_uniform(i, 8), l.indirect ? (l.bounce ? 1.0f : 0.6f) : 0.0f);
-    p.set(light_uniform(i, 9), l.falloff);
-    p.set(light_uniform(i, 10), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
-    p.set(light_uniform(i, 11), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
-    p.set(light_uniform(i, 13), l.open);
-    p.set(light_uniform(i, 14), l.scatter);
+    p.set(light_uniform(i, 4), l.floor, l.indirect ? (l.bounce ? 1.0f : 0.6f) : 0.0f, l.falloff, l.open);
+    p.set(light_uniform(i, 5), l.scatter, l.range, 0.0f, 0.0f);
+    p.set(light_uniform(i, 7), l.gate_at.x, l.gate_at.y, l.gate_at.z, l.gate_w);
+    p.set(light_uniform(i, 8), l.gate_across.x, l.gate_across.z, l.gate_h, l.gated ? (l.hung_only ? 2.0f : 1.0f) : 0.0f);
     // (A projector's frame - or, a light with none, how big it is, in the
     // frame's first place.)
     const bool framed = l.frame_w > 0.0f && l.frame_h > 0.0f;
-    p.set(light_uniform(i, 15), framed ? l.frame_w : l.size, l.frame_h, l.frame_soft, framed ? 1.0f : 0.0f);
-    p.set(light_uniform(i, 16), l.range);
+    p.set(light_uniform(i, 9), framed ? l.frame_w : l.size, l.frame_h, l.frame_soft, framed ? 1.0f : 0.0f);
 }
 
 namespace {

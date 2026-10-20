@@ -38,36 +38,41 @@ const std::string& lights_glsl() {
 const int MAX_LIGHTS = 32;
 uniform int   uLightCount;
 uniform vec3  uLightPos[MAX_LIGHTS];
+// A light's numbers, four to a register (the scene shader's registers are
+// few, and an array of single numbers takes one for each):
+//   uLightA  x its power; y, z the cosines of its cone's inner and outer
+//            edges; w 1 for a sun
+//   uLightB  x the light left in its full shadow (< 0: the look's); y 1 lit
+//            as bounce and standing in for it, 0.6 lit as bounce only; z its
+//            falloff (0 soft, 1 the inverse square); w how much of its
+//            opening is clear
+//   uLightC  x how much of it the air scatters, times the look's `scatter`;
+//            y how far it reaches (0: on for ever)
+//   uLightD  x a sun's narrower maps round the eye (how many, the low three
+//            bits, then each one's layer, five bits each, the narrowest
+//            first; <= 0 none); y its first shadow layer (< 0: none); z 1 a
+//            cube of maps; w its place among the frame's lamps (< 0:
+//            everywhere)
+uniform vec4  uLightA[MAX_LIGHTS];
+uniform vec4  uLightB[MAX_LIGHTS];
+uniform vec4  uLightC[MAX_LIGHTS];
+uniform vec4  uLightD[MAX_LIGHTS];
 uniform vec3  uLightDir[MAX_LIGHTS];   // pointing away from the lamp
 uniform vec3  uLightColor[MAX_LIGHTS];
-uniform float uLightPower[MAX_LIGHTS];
-uniform float uCosInner[MAX_LIGHTS];
-uniform float uCosOuter[MAX_LIGHTS];
-uniform float uLightSun[MAX_LIGHTS];   // 1: parallel light, no cone, no falloff
-uniform float uLightFloor[MAX_LIGHTS]; // light left in its full shadow; < 0: uShadowFloor
-uniform float uLightIndirect[MAX_LIGHTS]; // 1: stands in for bounced light - diffuse only; 0.6: lit so, but the probes do not stand in for it
-uniform float uLightFalloff[MAX_LIGHTS];  // 0: soft falloff, 1: inverse square
 uniform float uStraddle;                  // 1: a door's leaf, half in each room, lit by each as far as it is in it
-uniform float uLightNear[MAX_LIGHTS];     // a sun's maps narrower than its own, round the eye: how many (the low three bits), then each one's layer (five bits each), the narrowest first; <= 0 none
 // Light from beyond a doorway, let in only through its opening: its middle
 // and half its width, then which way across it is (x, z), half its height,
 // and whether the light is gated at all.
 uniform vec4  uLightGate[MAX_LIGHTS];
 uniform vec4  uLightGateAxis[MAX_LIGHTS];
-uniform float uLightOpen[MAX_LIGHTS];     // and how much of the opening is clear, for a light with no map to say
-uniform float uLightScatter[MAX_LIGHTS];  // how much of it the air scatters, times the look's `scatter` (air_fs)
 uniform vec4  uLightFrame[MAX_LIGHTS];    // a projector's: the tangents of its half-angles across and up, how soft its edge; 1 if framed
-uniform float uLightRange[MAX_LIGHTS];    // how far a lamp's light goes, ending smoothly there (range_window); 0: for ever
 
-uniform float uLightLayer[MAX_LIGHTS];    // the first layer of its shadow maps, or < 0 for none
-uniform float uLightCube[MAX_LIGHTS];     // 1: a lamp with no cone, its maps six, a face of a cube round it each
 
 // Which lamps reach which part of the view (GLWorldView::lamp_cells): the
 // view cut into cells across and up, and shells out from the eye, each
 // saying - two words of bits, a bit a lamp of the frame's - which of them
 // can light anything in it. A lamp whose light ends (its `range`) is left out
 // where its range does not reach: it gives nothing there.
-uniform int   uLightIn[MAX_LIGHTS];       // lamp i's place among the frame's lamps (< 0: everywhere)
 uniform usampler2D uLampCells;
 uniform vec4  uLampCellGrid;              // cells across, up, shells; 1 when there are cells (0: every lamp everywhere)
 uniform vec2  uLampShells;                // where the shells begin and end, from the eye
@@ -81,7 +86,7 @@ uvec2 lamp_cell(vec2 uv, float d) {
     return texelFetch(uLampCells, ivec2(at.x, at.y + s * cells.y), 0).xy;
 }
 bool lamp_in(uvec2 cell, int i) {
-    int k = uLightIn[i];
+    int k = int(floor(uLightD[i].w + 0.5));
     if (k < 0) return true;
     uint word = k < 32 ? cell.x : cell.y;
     return ((word >> uint(k & 31)) & 1u) != 0u;
@@ -89,7 +94,7 @@ bool lamp_in(uvec2 cell, int i) {
 
 uniform int   uShadowCount;           // how many lights, from the first, have a shadow map
 // The first `uShadowCount` lights each have depth maps, layers of one array
-// (from `uLightLayer`: one, six for a lamp with no cone, a sun's boxes): where
+// (from `uLightD`'s y: one, six for a lamp with no cone, a sun's boxes): where
 // each sees from (`uShadowVP`) - and from that, how wide a texel of it is.
 const int MAX_SHADOWS = 24;
 uniform sampler2DArrayShadow uShadowMaps;
@@ -99,8 +104,8 @@ uniform mat4 uShadowVP[MAX_SHADOWS];
 // the face of its cube the way from the lamp to `p` goes out through (the
 // greatest of the three coordinates of that way: +x, -x, +y, -y, +z, -z).
 // A sun's maps narrower than its own: how many, and the layer of the k-th.
-int closer_maps(int i) { return uLightNear[i] < 0.5 ? 0 : int(uLightNear[i] + 0.5) & 7; }
-int closer_map(int i, int k) { return (int(uLightNear[i] + 0.5) >> (3 + 5 * k)) & 31; }
+int closer_maps(int i) { return uLightD[i].x < 0.5 ? 0 : int(uLightD[i].x + 0.5) & 7; }
+int closer_map(int i, int k) { return (int(uLightD[i].x + 0.5) >> (3 + 5 * k)) & 31; }
 // Where `p` is in a map: 0..1 across, up and deep.
 vec3 in_map(int layer, vec3 p) {
     vec4 s = uShadowVP[layer] * vec4(p, 1.0);
@@ -114,8 +119,8 @@ float map_margin(int layer, vec3 p) {
     return smoothstep(0.55, 0.8, max(abs(q.x * 2.0 - 1.0), abs(q.y * 2.0 - 1.0)));
 }
 int shadow_layer(int i, vec3 p) {
-    int first = int(uLightLayer[i] + 0.5);
-    if (uLightCube[i] < 0.5) {
+    int first = int(uLightD[i].y + 0.5);
+    if (uLightD[i].z < 0.5) {
         // (A sun's: the narrowest that holds `p`.)
         int closer = closer_maps(i);
         for (int k = 0; k < 4; ++k) {
@@ -154,7 +159,7 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
     vec3 q = lamp_side ? p : p + way * t;
     float soft = 0.06 + 0.12 * max(t * length(way), 0.0);
     float u = abs(dot(q - at.xyz, a)), v = abs(q.y - at.y);
-    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v)) * uLightOpen[i];
+    float opening = (1.0 - smoothstep(at.w - soft, at.w + soft, u)) * (1.0 - smoothstep(g.z - soft, g.z + soft, v)) * uLightB[i].w;
     if (!lamp_side) return opening;
     return opening * (1.0 - smoothstep(0.0, 0.3, abs(dot(p - at.xyz, n))));
 }
@@ -192,11 +197,11 @@ float horizon_shadow(vec3 p, vec3 l) {
 // How much of light `i` reaches `p` - its power, as it falls off with the
 // distance, its cone and its doorway - and which way it is (`l`, towards it).
 float light_reach(int i, vec3 p, out vec3 l) {
-    if (uLightSun[i] > 0.5) {
+    if (uLightA[i].w > 0.5) {
         l = normalize(-uLightDir[i]);
         // (Under the clouds, as much as gets through them; and the land
         // toward it, as much as it leaves.)
-        return uLightPower[i] * through_gate(i, p, l, true) * cloud_shadow(p, l) * horizon_shadow(p, l);
+        return uLightA[i].x * through_gate(i, p, l, true) * cloud_shadow(p, l) * horizon_shadow(p, l);
     }
     vec3 toLight = uLightPos[i] - p;
     float dist = length(toLight);
@@ -217,7 +222,7 @@ float light_reach(int i, vec3 p, out vec3 l) {
     } else {
         // Spot cone, smooth at the rim.
         float theta = dot(-l, normalize(uLightDir[i]));
-        cone = clamp((theta - uCosOuter[i]) / max(uCosInner[i] - uCosOuter[i], 1e-4), 0.0, 1.0);
+        cone = clamp((theta - uLightA[i].z) / max(uLightA[i].y - uLightA[i].z, 1e-4), 0.0, 1.0);
     }
     if (cone <= 0.0) return 0.0;
     // Softly, or as real light does: the inverse square, kept finite at the
@@ -229,14 +234,14 @@ float light_reach(int i, vec3 p, out vec3 l) {
     // goes lights nothing past it, and can be left out where it reaches
     // nothing (render::range_window, the same).
     float window = 1.0;
-    if (uLightRange[i] > 0.0) {
-        float q = dist / uLightRange[i];
+    if (uLightC[i].y > 0.0) {
+        float q = dist / uLightC[i].y;
         q *= q;
         window = clamp(1.0 - q * q, 0.0, 1.0);
         window *= window;
         if (window <= 0.0) return 0.0;
     }
-    return uLightPower[i] * mix(soft, square, uLightFalloff[i]) * window * through_gate(i, p, toLight, false) * (cone * cone);
+    return uLightA[i].x * mix(soft, square, uLightB[i].z) * window * through_gate(i, p, toLight, false) * (cone * cone);
 }
 )";
     return source;
@@ -333,15 +338,15 @@ vec3 slice_light(vec3 dir, vec2 uv, float k, float down) {
         if (i >= uLightCount) break;
         // Light standing in for what bounces about lights no air of its own;
         // and a lamp whose light ends before this part of the view, none.
-        if (uLightIndirect[i] > 0.5 || uLightScatter[i] <= 0.0 || !lamp_in(cell, i)) continue;
+        if (uLightB[i].y > 0.5 || uLightC[i].x <= 0.0 || !lamp_in(cell, i)) continue;
         vec3 l;
         float reach = light_reach(i, p, l);
         if (reach <= 1e-5) continue;
-        if (i < uShadowCount && uLightLayer[i] > -0.5) reach *= air_shadow(shadow_layer(i, p), p);
+        if (i < uShadowCount && uLightD[i].y > -0.5) reach *= air_shadow(shadow_layer(i, p), p);
         // Mostly on ahead, some back: two lobes, as haze has.
         float c = dot(dir, l);
         float phase = mix(schlick(c, ahead), schlick(c, -0.3), 0.25);
-        lit += uLightColor[i] * (reach * uLightScatter[i] * phase) * pooled;
+        lit += uLightColor[i] * (reach * uLightC[i].x * phase) * pooled;
     }
     }
     lit /= float(max(lit_points, 1));
@@ -914,31 +919,51 @@ uniform vec2  uCloudLean;       // how far their tops lean along the wind, metre
 // What a metre of cloud as dense as 1 takes out of the light - all of it
 // scattered: a cloud keeps none.
 const float kCloudTakes = 0.04;
+// How much of their finest fraying is drawn (1 near; less far off, where
+// it is finer than what draws it and would only glitter).
+float cloud_fine = 1.0;
 
 // How dense the cloud is at `p` (world metres), `h` over the ground: none
-// past where its cover says; rounded at its base and its top, the top the
-// higher the thicker the cover; billowed by the noise; frayed at its edges
-// (wispy near its base) unless `rough` - which is all a ray towards the sun
-// far from the point needs.
+// past where its cover says. Where it says some, a heap: flat at its base
+// (where the rising air condenses, one height for all of them) and domed
+// over it, solid within - a heap of cloud is about as tall as it is wide,
+// so its top over a spot rises with how far in from its edge the spot is,
+// to a third of the noise's size at its middle (a cumulus a kilometre or
+// two across, a kilometre or less tall), no higher than the layer. The
+// noise only eats into it from outside, at two sizes (its billows and the
+// billows on them), so its outline is heaped and its inside whole - not
+// the noise cut at a level everywhere, which breaks a heap into bubbles
+// stacked one over another. Frayed at its edges (wispy near its base)
+// unless `rough` - which is all a ray towards the sun far from the point
+// needs.
 float cloud_at(vec3 p, float h, bool rough) {
-    float hf = (h - uCloudLayer.x) / (uCloudLayer.y - uCloudLayer.x);
+    float thick = uCloudLayer.y - uCloudLayer.x, hf = (h - uCloudLayer.x) / thick;
     if (hf < 0.0 || hf > 1.0) return 0.0;
     vec3 q = (vec3(p.x, h, p.z) + uCloudDrift + vec3(uCloudLean.x, 0.0, uCloudLean.y) * hf) / uCloudShape.x;
     float cover = texture(uCloudNoise, vec3(q.xz * 0.23, 0.13)).r * 0.6 + texture(uCloudNoise, vec3(q.xz * 0.61 + 0.37, 0.71)).g * 0.4;
     // (The noise spread over 0..1 first: most of it lies between a third and two thirds.)
     cover = clamp((cover - 0.3) / 0.45, 0.0, 1.0);
-    cover = smoothstep(1.0 - uCloudLayer.z, 1.0 - uCloudLayer.z + 0.3, cover) * min(uCloudLayer.z * 4.0, 1.0);
+    // (Rising slowly from its edge in, not at once: the dome's slope.)
+    cover = smoothstep(1.0 - uCloudLayer.z, 1.0 - uCloudLayer.z + 0.5, cover) * min(uCloudLayer.z * 4.0, 1.0);
     if (cover <= 0.0) return 0.0;
-    // Its billows, as high as the cover is thick and thinning as they rise,
-    // kept where they stand above what the cover leaves of them - and even
-    // under a full cover only the stronger of them: a cloud, not a column.
-    float tall = mix(0.3, 1.0, cover);
-    float profile = smoothstep(0.0, 0.08, hf) * (1.0 - smoothstep(tall * 0.3, tall, hf));
-    float keep = 0.7 * cover;
-    float d = clamp((texture(uCloudNoise, q).r * profile - (1.0 - keep)) / max(keep, 1e-3), 0.0, 1.0) * cover;
+    float tall = min(uCloudShape.x * 0.33 * sqrt(cover) / thick, 1.0), up = hf / max(tall, 1e-3);
+    if (up >= 1.0) return 0.0;
+    float dome = cover * (1.0 - up * up * up) * smoothstep(0.0, min(40.0 / thick, 0.05), hf);
+    // (Its billows read turned from the cover and at a size no whole
+    // multiple of it, and the billows on them turned again: heaps far off
+    // are not the same heaps over again in rows.)
+    vec3 qs = vec3(0.8 * q.x - 0.6 * q.z, q.y, 0.6 * q.x + 0.8 * q.z) * 1.13 + vec3(0.41, 0.0, 0.77);
+    float shape = texture(uCloudNoise, qs).r;
+    if (!rough) shape = shape * 0.6 + texture(uCloudNoise, vec3(0.8 * qs.x + 0.6 * qs.z, qs.y, -0.6 * qs.x + 0.8 * qs.z) * 2.71 + vec3(0.31, 0.17, 0.53)).r * 0.4;
+    // (The noise spread over 0..1 first, as the cover's is.)
+    shape = clamp((shape - 0.35) / 0.35, 0.0, 1.0);
+    float d = clamp((dome - (1.0 - shape) * 0.7) / 0.15, 0.0, 1.0);
     if (d <= 0.0 || rough) return d * uCloudLayer.w;
-    float fray = dot(texture(uCloudNoise, q * 5.3 + vec3(0.0, uCloudDrift.y / uCloudShape.x, 0.0)).gba, vec3(0.625, 0.25, 0.125));
-    fray = mix(1.0 - fray, fray, smoothstep(0.05, 0.4, hf)) * uCloudShape.y;
+    // Its edge heaped again, finer: cut in between the cells, kept over
+    // them - billows on billows, a cauliflower's - least at its base, where
+    // the air condenses evenly.
+    float fray = dot(texture(uCloudNoise, qs * 5.3 + vec3(0.0, uCloudDrift.y / uCloudShape.x, 0.0)).gba, vec3(0.625, 0.25, 0.125));
+    fray = clamp((0.85 - mix(0.62, fray, cloud_fine)) / 0.45, 0.0, 1.0) * uCloudShape.y * mix(0.35, 1.0, smoothstep(0.0, 0.3, up));
     return clamp((d - fray) / max(1.0 - fray, 1e-3), 0.0, 1.0) * uCloudLayer.w;
 }
 
@@ -1108,14 +1133,21 @@ vec4 clouds_along(vec3 dir, float jitter) {
         above = mix(above, sky_above, uAtmo);
         below = mix(below, sky_above * 0.15 + sunlight * max(sun.y, 0.0) * uAtmoGround / kPi * 0.5, uAtmo);
     }
-    float dt = (t1 - t0) / float(uCloudSteps), through = 1.0, weight = 0.0, far_sum = 0.0;
+    // Steps as long as the layer is thick over `uCloudSteps`, longer as they
+    // go out (a hundredth of the way, past where that is longer) - not the
+    // way through it over `uCloudSteps`, which near the horizon is many
+    // kilometres and steps over whole clouds.
+    float near_dt = (uCloudLayer.y - uCloudLayer.x) / float(uCloudSteps), through = 1.0, weight = 0.0, far_sum = 0.0;
+    float t = t0 + jitter * max(near_dt, t0 * 0.01);
     vec3 light = vec3(0.0);
     for (int k = 0; k < 256; ++k) {
-        if (k >= uCloudSteps || through < 0.01) break;
-        float t = t0 + (float(k) + jitter) * dt;
-        vec3 at = vec3(dir.x * t, r + dir.y * t, dir.z * t);
+        if (t >= t1 || through < 0.01) break;
+        float ts = t, dt = max(near_dt, ts * 0.01);
+        t += dt;
+        cloud_fine = 1.0 - smoothstep(1500.0, 8000.0, ts);
+        vec3 at = vec3(dir.x * ts, r + dir.y * ts, dir.z * ts);
         float h = length(at) - uPlanet;
-        vec3 p = uEye + dir * t;
+        vec3 p = uEye + dir * ts;
         float d = cloud_at(p, h, false);
         if (d <= 0.0) continue;
         // How much cloud is between it and the sun: six steps, each twice the last.
@@ -1126,22 +1158,35 @@ vec4 clouds_along(vec3 dir, float jitter) {
             depth += cloud_at(q, length(qa) - uPlanet, j > 2) * len;
             s += len, len *= 2.0;
         }
-        // Scattered once and more: each octave taking less of the light,
-        // spreading it wider, giving less of it - most on ahead, some back.
-        float sunlit = 0.0, takes = kCloudTakes * depth, a = 1.0, b = 1.0, g = 1.0;
-        for (int o = 0; o < 3; ++o) {
-            sunlit += b * mix(lobe(0.8 * g, c), lobe(-0.25 * g, c), 0.25) * exp(-takes * a);
-            a *= 0.5, b *= 0.5, g *= 0.5;
-        }
+        // Scattered once - most on ahead, some back - as much as comes the
+        // whole way from the sun; and scattered many times, the light
+        // diffused through the cloud, wider: deep in a thick cloud that falls
+        // off as 1 / (1 + 0.75 depth (1 - g)) (a thick cloud's diffuse
+        // transmission), not as the light that comes straight - so a cloud
+        // with the sun behind it is grey through, not black within a rim of
+        // light.
+        // (Diffused, the deeper the more it has lost the way it came: a
+        // little cloud on the way still sends it on ahead, a deep one all
+        // round alike - so a heap with the sun behind it is dark in its
+        // body, with a bright edge, as it is seen.)
+        float takes = kCloudTakes * depth, g = 0.4 * exp(-0.15 * takes);
+        float sunlit = mix(lobe(0.6, c), lobe(-0.25, c), 0.25) * exp(-takes);
+        sunlit += 0.75 * mix(lobe(g, c), lobe(-0.3 * g, c), 0.25) / (1.0 + 0.75 * takes * (1.0 - 0.85));
         // Dark at a thin edge seen from the sun's side: light that gets in
         // must first be scattered by a little cloud (the powder look).
         sunlit *= mix(1.0, 1.0 - exp(-d * kCloudTakes * 100.0), 0.5 * (1.0 - c));
-        float hf = (h - uCloudLayer.x) / (uCloudLayer.y - uCloudLayer.x);
-        // (The light from all round darker low in it, under the cloud above.)
-        vec3 here = (sunlight * sunlit + mix(below, above, hf * hf) * 0.7) * uCloudShape.z;
+        // The light from all round: the sky's from above, as much as the
+        // cloud over the point lets through, diffused (three steps up, each
+        // longer); the ground's from below, as much as the cloud under it
+        // lets - so a heap is bright on its top, dark in its folds and grey
+        // at its base, as a volume is, not lit alike all through.
+        float up = (cloud_at(p, h + 60.0, true) * 100.0 + cloud_at(p, h + 260.0, true) * 300.0 + cloud_at(p, h + 700.0, true) * 600.0) * kCloudTakes;
+        float down = (cloud_at(p, h - 60.0, true) * 100.0 + cloud_at(p, h - 260.0, true) * 300.0) * kCloudTakes;
+        vec3 around = above / (1.0 + 0.75 * up * (1.0 - 0.85)) + below / (1.0 + 0.75 * down * (1.0 - 0.85));
+        vec3 here = (sunlight * sunlit + around * 0.6) * uCloudShape.z;
         float step_through = exp(-d * kCloudTakes * dt);
         light += through * here * (1.0 - step_through);
-        weight += through * (1.0 - step_through), far_sum += t * through * (1.0 - step_through);
+        weight += through * (1.0 - step_through), far_sum += ts * through * (1.0 - step_through);
         through *= step_through;
     }
     // Seen through the planet's air: as much of their light as gets through
@@ -1441,7 +1486,17 @@ in vec4 vTangent;
 #if !defined(SG_CUTOUT) && defined(GL_ARB_shader_image_load_store)
 layout(early_fragment_tests) in;
 #endif
-out vec4 FragColor;
+layout(location = 0) out vec4 FragColor;
+// What a ray needs of this surface (src/gl/trace), into a second picture
+// where the eye's view asks for one (gl::RenderTarget::second) - as
+// uSurfaceOnly 5 writes it; nothing where nothing of a surface is. All that
+// is traced is in the program made for a view traced (SG_TRACED:
+// GLWorldView::traced_of): one that is not has none of it, and pays nothing.
+#ifdef SG_TRACED
+layout(location = 1) out vec4 TraceSurf;
+#else
+vec4 TraceSurf;
+#endif
 
 uniform vec3  uAlbedo;
 uniform float uRoughness;     // 0 mirror-ish, 1 chalk
@@ -1461,6 +1516,40 @@ uniform vec4  uLand;          // a land's own: where its water stands (y, its ro
 uniform float uSkinTile;      // with uSkin 1: metres of the thing a cell covers, its pattern going on round it; 0: a face the whole cell
 uniform vec3  uSkinSize;      // with uSkinTile: the thing's size
 uniform float uSkinBlend;     // with uSkin 1: 0 a face its own cell; 1 a curve soft between the cells of the ways it faces
+// A worn texture's dirt (Texture::dirt_raster: colour, and its grains'
+// height in a): how much (x), how far from a corner or an edge it gathers
+// (y, metres), metres to a picture (z), how rough (w); how high up from the
+// floor (uDirtBand.x) and down from the ceiling (y) it reaches, and how much
+// lies everywhere besides (z). uRoomBox: the room's own box (0: none).
+uniform sampler2D uDirt;
+uniform vec4 uDirtSet;
+uniform vec4 uDirtBand;       // w: how much settles on what faces up (dust, by gravity)
+uniform vec3 uRoomBox;
+// (Packed, as the shader's registers are few: x dirt worn, y damp worn, z
+// the room's age, w how many of its leaks are given.)
+uniform vec4 uWear;
+// Its damp (Texture::wear_raster `damp`): where water has been - under its
+// room's leaks, rising from the floor (y, metres) - how much (x), metres to a
+// picture (z), how rough it leaves the surface (w). The room's causes (Wear):
+// its age (0 new .. 1 long neglected), its leaks (xyz in its frame, reach).
+uniform sampler2D uDamp;
+uniform vec4 uDampSet;
+uniform vec4 uLeak[4];
+// Its room's wear fields (sg::field_picture): dirt in r, damp in g, over a
+// rectangle of its floor (x0, z0, 1/w, 1/d; w 0: none) - each point's share
+// added to what its causes gather there.
+uniform sampler2D uWearMap;
+uniform vec4 uWearField;
+vec2 wear_field() {
+    if (uWearField.z <= 0.0) return vec2(0.0);
+    vec2 uv = (vRoom.xz - uWearField.xy) * uWearField.zw;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec2(0.0);
+    return texture(uWearMap, uv).rg;
+}
+// A tiled skin's repeat never shown (Texture `scatter`, 0..1: x): each
+// hexagon of it read from a place of its own, turned within y radians
+// (`scatter_turn`; 0: as laid - a grain, a grid of tiles).
+uniform vec2 uSkinScatter;
 uniform float uSkinOne;       // with uSkin 1: the texture is one tile, the same for every way (Texture::one_tile), not six cells
 uniform float uSkinFramed;    // 1: projected in the frame of what wears it (uSkinFrame) - the thing, all its parts as one
 uniform mat4  uSkinFrame;     // the room's frame to that thing's unit box
@@ -1548,10 +1637,39 @@ uniform float uAmbient;
 // harmonics.
 const int MAX_PROBES = 8;
 uniform int  uProbeCount;
+// 1: they are an open land's, round the eye - they saw what the ground gives
+// back, and where they hold the look's stand-in for it (uGround) gives way.
+uniform float uProbeOpen;
 // What a surface is, not how it is lit (relight_probes): 1 where it is, 2
 // which way it faces, 3 what of the light it scatters, 4 how far it is
-// from the eye. 0: lit, as ever.
+// from the eye; 5 all a ray needs of it (src/gl/trace): which way it faces
+// (an octahedron's face), how far, how rough. 0: lit, as ever.
 uniform int  uSurfaceOnly;
+// Light traced along rays through the world, where the eye's look asks
+// (src/gl/trace, docs/trace.md) - each a picture of the eye's view, read at
+// this pixel where it is of this surface (uTraceSurf: how far each pixel's
+// was): x, the sun's light through what stands between (its shadow); z,
+// what is mirrored, by surfaces no rougher than it (y, w: 0). All 0: none
+// of it, lit as ever. The light from all round is the engine's as ever. (Only in the program for a view traced: SG_TRACED.)
+#ifdef SG_TRACED
+uniform vec4 uTrace;
+uniform vec3 uTraceSunDir;      // the sun it traced to
+uniform mat4 uTraceVP;          // the view it was traced for, and from where
+uniform vec3 uTraceEye;
+uniform sampler2D uTraceSurf;
+uniform sampler2D uTraceSun;
+uniform sampler2D uTraceMirror;
+// y: how many lamps' shadows were traced (uTraceLamps r, g, b), each of the
+// lamp standing at uTraceLamp[k].
+uniform vec3 uTraceLamp[3];
+uniform sampler2D uTraceLamps;
+// Which of the traced lamps lamp i is (-1: none of them).
+int traced_lamp(int i) {
+    for (int k = 0; k < 3; ++k)
+        if (float(k) < uTrace.y && distance(uLightPos[i], uTraceLamp[k]) < 0.01) return k;
+    return -1;
+}
+#endif
 uniform vec4 uProbeAt[MAX_PROBES];
 uniform vec3 uProbeHalf[MAX_PROBES];
 uniform vec3 uProbeSoftLo[MAX_PROBES];
@@ -1808,7 +1926,7 @@ vec2 skin_at(float cell, vec3 p, vec3 size) {
 // no smoothing between (0: as it is).
 uniform float uTexels;
 vec2 texel_snap(vec2 f, float n) { return n > 0.0 ? (floor(f * n) + 0.5) / n : f; }
-vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
+vec4 skin_cell(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     vec2 f = clamp(uSkinTile > 0.0 ? fract(uv) : uv, 0.002, 0.998);
     f = texel_snap(f, uTexels);
     // One tile, every way's (Texture::one_tile): the whole picture is the cell.
@@ -1817,6 +1935,41 @@ vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) {
     vec2 k = vec2(1.0 / 3.0, -0.5);
     return textureGrad(t, vec2((col + f.x) / 3.0, (row + 1.0 - f.y) / 2.0), dx * k, dy * k);
 }
+// A tiled skin read without its repeat ever showing (uSkinScatter): the
+// face cut into hexagons, two to a tile across (Mikkelsen's hex-tiling, as
+// a land's beds are laid), each reading the picture from a place of its own,
+// turned within uSkinScatter.y and a little larger or smaller, the three a point
+// lies between weighed as near as it is to each - the same weights for every
+// map of it, so its colour, its bumps and its roughness stay together. A
+// normal map's way is turned back as its picture was turned (`normal`).
+// Untiled, or not scattered: the picture as laid.
+vec4 skin_sample_as(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy, bool normal) {
+    if (uSkinScatter.x <= 0.0 || uSkinTile <= 0.0) return skin_cell(t, cell, uv, dx, dy);
+    vec2 st = uv * 3.4641016;
+    vec2 skew = vec2(st.x, -0.57735027 * st.x + 1.15470054 * st.y);
+    vec2 base = floor(skew);
+    vec3 f = vec3(fract(skew), 0.0);
+    f.z = 1.0 - f.x - f.y;
+    float s = step(0.0, -f.z), s2 = 2.0 * s - 1.0;
+    vec3 w = vec3(-f.z * s2, s - f.y * s2, s - f.x * s2);
+    vec2 at[3] = vec2[](base + vec2(s, s), base + vec2(s, 1.0 - s), base + vec2(1.0 - s, s));
+    // (Narrower blends the more it scatters: each hexagon its own the more.)
+    float sharp = mix(2.0, 5.0, clamp(uSkinScatter.x, 0.0, 1.0));
+    vec4 sum = vec4(0.0);
+    float wsum = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        vec2 q = at[i] + cell * 3.17;
+        vec2 r = fract(sin(vec2(dot(q, vec2(127.1, 311.7)), dot(q, vec2(269.5, 183.3)))) * 43758.5453);
+        float a = (r.x * 2.0 - 1.0) * uSkinScatter.y, scale = 1.0 + 0.15 * uSkinScatter.x * (fract(r.y * 13.7) * 2.0 - 1.0);
+        mat2 turn = mat2(cos(a), sin(a), -sin(a), cos(a));
+        vec4 c = skin_cell(t, cell, turn * uv * scale + r * 7.0, turn * dx * scale, turn * dy * scale);
+        if (normal) c.xy = transpose(turn) * (c.xy * 2.0 - 1.0) * 0.5 + 0.5;
+        float wi = pow(w[i], sharp);
+        sum += c * wi, wsum += wi;
+    }
+    return sum / max(wsum, 1e-5);
+}
+vec4 skin_sample(sampler2D t, float cell, vec2 uv, vec2 dx, vec2 dy) { return skin_sample_as(t, cell, uv, dx, dy, false); }
 
 // Where a point of a thing wearing a skin is on it: the thing's size, the
 // cells of the three ways it faces (x, y, z) and how much each counts, the
@@ -1873,7 +2026,7 @@ vec2 skin_height_steps() {
     vec2 steps = vec2(0.0);
     for (int i = 0; i < 3; ++i) {
         if (s.w[i] <= 0.001) continue;
-        vec3 t = skin_sample(uNormalMap, s.cell[i], s.u[i], s.dx[i], s.dy[i]).xyz * 2.0 - 1.0;
+        vec3 t = skin_sample_as(uNormalMap, s.cell[i], s.u[i], s.dx[i], s.dy[i], true).xyz * 2.0 - 1.0;
         vec2 per_uv = -t.xy / max(t.z, 0.1) * cell_metres(s.cell[i], s.size) * uNormalStrength;
         steps += s.w[i] * vec2(dot(per_uv, s.dx[i]), dot(per_uv, s.dy[i]));
     }
@@ -2083,7 +2236,12 @@ uniform sampler2DArray uShadowDepths;
 const float kSunRadius = 0.00465;
 const float kSunCasts = 400.0;
 
-float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun) {
+// `size`: how big the light is - a sun's disc (the tangent of its radius;
+// 0: the sun's own) or a lamp's bulb (its radius, metres; 0: a point) - and
+// a lamp's place (`at`): its shadow as soft as that makes it, sharp where a
+// thing meets what it stands on, wide where what stands in the way is near
+// the light (a cage round a bulb: a blur, not a net), as the traced light is.
+float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun, float size, vec3 at) {
     float spread = max(uShadowSoft, 0.5);
     // Looked up a little off the surface, along its normal, by about as many
     // texels as the filter reaches - measured in metres where the point is (a
@@ -2145,8 +2303,9 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun) {
     // to the next (in texels, it was four times as soft in the next); never
     // finer than the map holds.
     if (sun) {
+        float sun_r = size > 0.0 ? size : kSunRadius;
         float metres = 2.0 / max(length(vec3(uShadowVP[layer][0][2], uShadowVP[layer][1][2], uShadowVP[layer][2][2])), 1e-9);  // a whole depth of the map
-        float look = clamp(kSunRadius * kSunCasts / texel, 2.0, 24.0);
+        float look = clamp(sun_r * kSunCasts / texel, 2.0, 24.0);
         float found = 0.0, apart = 0.0;
         for (int i = 0; i < 16; ++i) {
             vec2 off = mat2(c, s, -s, c) * kSpiral[i] * look * texel2;
@@ -2155,7 +2314,35 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun) {
             if (d < z) found += 1.0, apart += z - d;
         }
         if (found < 0.5) return 1.0;  // nothing in its way, near or far
-        radius = clamp(apart / found * metres * kSunRadius / texel, 1.5 * spread, 1.5 * look);
+        radius = clamp(apart / found * metres * sun_r / texel, 1.5 * spread, 1.5 * look);
+    } else if (size > 0.0) {
+        // A lamp with a bulb: what stands in its way found round here in its
+        // map, and how far it is from the lamp - a depth of a perspective map
+        // taken back to metres along the way from the lamp (its depth row and
+        // its w row: w is the distance along the lamp's axis, z/w = a/(t b3)
+        // + b2/b3 for a point t along the way) - the penumbra as wide as the
+        // bulb times how much further the surface is than what shades it.
+        mat4 m = uShadowVP[layer];
+        vec4 r2 = vec4(m[0][2], m[1][2], m[2][2], m[3][2]), r3 = vec4(m[0][3], m[1][3], m[2][3], m[3][3]);
+        vec3 way = vLit - at;
+        float far_ = length(way);
+        way /= max(far_, 1e-4);
+        float a = dot(r2, vec4(at, 1.0)), b2 = dot(r2.xyz, way), b3 = dot(r3.xyz, way);
+        float look = clamp(size / max(texel, 1e-6), 2.0, 24.0);
+        float found = 0.0, near_ = 0.0;
+        for (int i = 0; i < 16; ++i) {
+            vec2 off = mat2(c, s, -s, c) * kSpiral[i] * look * texel2;
+            float z = proj.z + dot(dz_duv, off) - bias;
+            float d = texture(uShadowDepths, vec3(proj.xy + off, float(layer))).r;
+            if (d < z) {
+                float t = a / (b3 * (d * 2.0 - 1.0) - b2);
+                if (t > 0.0 && t < far_) found += 1.0, near_ += t;
+            }
+        }
+        if (found < 0.5) return 1.0;
+        near_ /= found;
+        float wide = size * max(far_ - near_, 0.0) / max(near_, 1e-3);  // metres of penumbra here
+        radius = clamp(wide / max(texel, 1e-6), 1.5 * spread, 1.5 * look);
     }
     mat2 spin = mat2(c, s, -s, c) * radius;
     // Four, across the spiral, first: wholly lit or wholly in shadow there,
@@ -2186,19 +2373,22 @@ float shadow_factor(int layer, vec3 n, vec3 l, float floor_, bool sun) {
 // texel a centimetre: a door, a leaf's edge, a chair's legs), blended into
 // the next wider across its margin, before its own edge begins to fade.
 float shadow_cascade(int i, vec3 n, vec3 l, float floor_) {
-    bool sun = uLightSun[i] > 0.5;
-    int closer = uLightCube[i] < 0.5 ? closer_maps(i) : 0;
+    // (Its size: a sun's disc or a lamp's bulb, unless it throws a framed picture.)
+    float size = uLightFrame[i].w < 0.5 ? uLightFrame[i].x : 0.0;
+    vec3 at = uLightPos[i];
+    bool sun = uLightA[i].w > 0.5;
+    int closer = uLightD[i].z < 0.5 ? closer_maps(i) : 0;
     for (int k = 0; k < 4; ++k) {
         if (k >= closer) break;
         int layer = closer_map(i, k);
         float margin = map_margin(layer, vLit);
         if (margin >= 1.0) continue;
-        float here = shadow_factor(layer, n, l, floor_, sun);
+        float here = shadow_factor(layer, n, l, floor_, sun, size, at);
         if (margin <= 0.0) return here;
-        int wider = k + 1 < closer ? closer_map(i, k + 1) : int(uLightLayer[i] + 0.5);
-        return mix(here, shadow_factor(wider, n, l, floor_, sun), margin);
+        int wider = k + 1 < closer ? closer_map(i, k + 1) : int(uLightD[i].y + 0.5);
+        return mix(here, shadow_factor(wider, n, l, floor_, sun, size, at), margin);
     }
-    return shadow_factor(shadow_layer(i, vLit), n, l, floor_, sun);
+    return shadow_factor(shadow_layer(i, vLit), n, l, floor_, sun, size, at);
 }
 
 // How much a surface reflects of light arriving from all round, by angle and
@@ -2650,6 +2840,7 @@ vec3 surface_albedo(out float rough_mod) {
 }
 
 void main() {
+    TraceSurf = vec4(0.0);
     vLit = vWorld + uLatticeShift;
     vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
     if (vInstanced > 0.5) {
@@ -2660,6 +2851,12 @@ void main() {
         mSurface = uSurface, mEmissive = uEmissive, mHighlight = uHighlight, mMirror = uMirror, mMetal = uMetal, mGrime = uGrime;
     }
     if (mSurface > 8.5 && mSurface < 9.5) {
+#ifdef SG_TRACED
+        if (uSurfaceOnly == 5) {
+            FragColor = vec4(0.0);
+            return;
+        }
+#endif
         // The sky is not lit and not fogged: it is what the fog fades into.
         // (The lamps' light in the air before it is: air_light.) But where
         // the air takes all (uFogFull), the furthest ground is the air's own
@@ -2670,6 +2867,21 @@ void main() {
         FragColor = vec4((s + air_light(1e9)) * (1.0 - max(uDim, uDimNear)), 0.0);
         return;
     }
+#if defined(SG_TRACED) && !defined(SG_CUTOUT)
+    // What a ray needs of a surface, asked at once (src/gl/trace): which way
+    // it faces as drawn - its relief, its ripples, are the scene's to shade
+    // - how far, how rough. (Water, and what is cut out of its picture, go
+    // on: a wave's slope is what it mirrors by, and a cut-out's holes are
+    // where nothing is.)
+    if (uSurfaceOnly == 5 && !(mSurface > 17.5 && mSurface < 18.5)) {
+        vec3 fn = normalize(vNormal);
+        if (uTwoSided > 0.5 && dot(fn, uViewPos - vWorld) < 0.0) fn = -fn;
+        vec3 o = fn / (abs(fn.x) + abs(fn.y) + abs(fn.z));
+        vec2 e = o.z >= 0.0 ? o.xy : (1.0 - abs(o.yx)) * vec2(o.x >= 0.0 ? 1.0 : -1.0, o.y >= 0.0 ? 1.0 : -1.0);
+        FragColor = vec4(e, length(vWorld - uViewPos), clamp(mRoughness, 0.05, 1.0));
+        return;
+    }
+#endif
     float rough_mod;
     vec3 albedo = mSurface > 18.5 && mSurface < 19.5 && uSplat > 0.5 && uSplat < 1.5 ? ground_albedo(rough_mod) : surface_albedo(rough_mod);
     // A land laid with beds: their colour, roughness and normal in place of
@@ -2736,6 +2948,12 @@ void main() {
     // by that room's own light and air: it is shown as it is, not lit or
     // fogged a second time by the room it is seen from.
     if (uScreenUV > 0.5 && uTexMix > 0.99) {
+#ifdef SG_TRACED
+        if (uSurfaceOnly == 5) {
+            FragColor = vec4(0.0);
+            return;
+        }
+#endif
         vec3 seen = albedo;
         // Glass: what is round it, mirrored in it - little where it faces
         // the eye, all but everything at its rim - over what is seen through.
@@ -2803,6 +3021,74 @@ void main() {
         albedo = mix(albedo, albedo * vec3(0.92, 0.85, 0.7), mGrime * blotch * 0.8) * shade;
         roughness = clamp(roughness + mGrime * 0.18 * (blotch - 0.4), 0.05, 1.0);
     }
+    // Dirt where dirt gathers - a photograph of it, not a pattern made up:
+    // along the floor (what a mop leaves, what is kicked up), under the
+    // ceiling (soot, damp), into the corners where two walls meet and along
+    // the floor's edges; how much each point gathers says how high the
+    // photograph's grains must stand there to show, so its edge is the
+    // photograph's own (a stain's rim, a crust), never a line or a blur. Laid
+    // on the plane the surface lies in, in the room's frame, at two sizes
+    // crossed, so it repeats nowhere a wall is long.
+    if (uWear.x > 0.5 && uDirtSet.x > 0.0) {
+        vec3 an = abs(normalize(vRoomNormal));
+        vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+        vec4 d1 = texture(uDirt, gp / uDirtSet.z);
+        vec4 d2 = texture(uDirt, gp / (uDirtSet.z * 2.71) + vec2(0.37, 0.61));
+        float grains = 0.65 * d1.a + 0.35 * d2.a;
+        float gather = uDirtBand.z;
+        float up = vRoom.y;
+        // (Settled on whatever faces up: a sill, a cabinet's top, the floor.)
+        gather = max(gather, uDirtBand.w * smoothstep(0.7, 0.95, normalize(vRoomNormal).y));
+        if (an.y < 0.7) gather = max(gather, 1.0 - smoothstep(0.0, uDirtBand.x, up));
+        if (uRoomBox.y > 0.0) {
+            if (an.y < 0.7) gather = max(gather, 1.0 - smoothstep(0.0, uDirtBand.y, uRoomBox.y - up));
+            float cx = min(vRoom.x, uRoomBox.x - vRoom.x), cz = min(vRoom.z, uRoomBox.z - vRoom.z);
+            // (Where two walls meet; on the floor and the ceiling, along the walls.)
+            float corner = an.y > 0.7 ? min(cx, cz) : (an.x > an.z ? cz : cx);
+            gather = max(gather, 1.0 - smoothstep(0.0, uDirtSet.y, max(corner, 0.0)));
+        }
+        gather = min(gather + wear_field().r, 1.0);
+        gather *= uDirtSet.x * uWear.z;
+        float m = smoothstep(1.0 - gather - 0.06, 1.0 - gather + 0.06, grains) * step(0.001, gather);
+        albedo = mix(albedo, d1.rgb * mix(1.0, d2.rgb.g * 1.6, 0.3), m);
+        roughness = mix(roughness, uDirtSet.w, m);
+    }
+    // Damp where water has been: down a wall below a leak, in streaks that
+    // widen as they fall and thin out; a blot on the ceiling round it; a
+    // tide mark on the floor where it lands; and rising from the floor up a
+    // wall. Its edge, as dirt's, the photograph's own.
+    if (uWear.y > 0.5 && uDampSet.x > 0.0) {
+        vec3 rn = normalize(vRoomNormal), an = abs(rn);
+        vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+        vec4 d1 = texture(uDamp, gp / uDampSet.z);
+        vec4 d2 = texture(uDamp, gp / (uDampSet.z * 2.43) + vec2(0.71, 0.19));
+        float grains = 0.6 * d1.a + 0.4 * d2.a;
+        float wet = 0.0;
+        if (an.y < 0.7) wet = max(wet, 1.0 - smoothstep(0.0, uDampSet.y, vRoom.y));
+        for (int i = 0; i < 4; ++i) {
+            if (float(i) >= uWear.w) break;
+            vec3 d = vRoom - uLeak[i].xyz;
+            float reach = max(uLeak[i].w, 0.05);
+            if (an.y < 0.7) {
+                // (Down the wall: how far below the leak, how far along the wall from under it.)
+                float below = -d.y, along = an.x > an.z ? d.z : d.x, off = an.x > an.z ? d.x : d.z;
+                float wide = 0.12 + 0.3 * max(below, 0.0) / reach;
+                float streak = exp(-(along * along) / (wide * wide)) * smoothstep(-0.15, 0.1, below) * exp(-max(below, 0.0) / (3.0 * reach));
+                streak *= exp(-(off * off) / (reach * reach));
+                // (In streaks: the water runs in rivulets, not a sheet.)
+                streak *= 0.6 + 0.4 * texture(uDamp, vec2(along * 1.7, 0.31)).a;
+                wet = max(wet, streak);
+            } else {
+                float r = length(d.xz) / reach;
+                wet = max(wet, rn.y < 0.0 ? exp(-r * r * 1.5) : exp(-r * r * 3.0) * (1.0 - smoothstep(0.0, 0.5, vRoom.y)));
+            }
+        }
+        wet = min(wet + wear_field().g, 1.0);
+        wet *= uDampSet.x * uWear.z;
+        float m = smoothstep(1.0 - wet - 0.07, 1.0 - wet + 0.07, grains) * step(0.001, wet);
+        albedo = mix(albedo, albedo * d1.rgb * 1.6, m);
+        roughness = mix(roughness, uDampSet.w, m * 0.7);
+    }
     // Damp by its water (a land that says where its water stands): darker
     // and glossier the nearer the waterline, as wet sand is - its edge
     // ragged, as the water left it.
@@ -2814,7 +3100,7 @@ void main() {
     }
     vec3 f0 = mix(vec3(0.04), albedo, metal);
     vec3 diffuse = albedo * (1.0 - metal);
-    if (uSurfaceOnly > 0) {
+    if (uSurfaceOnly > 0 && uSurfaceOnly != 5) {
         if (uSurfaceOnly == 1) FragColor = vec4(vLit, 1.0);
         else if (uSurfaceOnly == 2) FragColor = vec4(normalize(vNormal), 1.0);
         else if (uSurfaceOnly == 3) FragColor = vec4(diffuse, 1.0);
@@ -2860,6 +3146,15 @@ void main() {
         vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
         n = normalize(abs(det) * n - grad);
         bent = true;
+    }
+    // Water over land that says how deep it is: no line where it meets the
+    // shore - in its last fifth of a metre it thins out, the ground under it
+    // showing through more the shallower it is (a share of its pixels left
+    // out, a new share each frame, which the frames' blend makes a fade).
+    if (mSurface > 17.5 && mSurface < 18.5 && uSplat > 1.5) {
+        float deep = texture(uTex, vUV).r * uWaterDeepest;
+        float shown = smoothstep(0.0, 0.2, deep);
+        if (shown < 0.999 && shown <= fract(ign(gl_FragCoord.xy) + fract(uTime * 24.0) * 0.618034)) discard;
     }
     if (mSurface > 17.5 && mSurface < 18.5 && n.y > 0.5) {
         // Waves: the slope of a few long swells and shorter chop, each a
@@ -2943,6 +3238,32 @@ void main() {
     vec3 dndx = dFdx(n), dndy = dFdy(n);
     float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
     a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
+#ifdef SG_TRACED
+    {
+        vec3 o = n / (abs(n.x) + abs(n.y) + abs(n.z));
+        vec2 e = o.z >= 0.0 ? o.xy : (1.0 - abs(o.yx)) * vec2(o.x >= 0.0 ? 1.0 : -1.0, o.y >= 0.0 ? 1.0 : -1.0);
+        TraceSurf = vec4(e, length(vWorld - uViewPos), roughness);
+        if (uSurfaceOnly == 5) {
+            FragColor = TraceSurf;
+            return;
+        }
+    }
+    // Where this point was in the picture traced (the last frame's, unless it
+    // was traced for this one: uTraceVP, uTraceEye) - if what was traced
+    // there is this surface, as far from where it was seen.
+    ivec2 trace_px = ivec2(0);
+    bool traced = false;
+    if (uTrace != vec4(0.0) && uGlass <= 0.0 && uAdd < 0.5) {
+        vec4 c = uTraceVP * vec4(vWorld, 1.0);
+        vec2 uv = c.xy / max(c.w, 1e-6) * 0.5 + 0.5;
+        ivec2 size = textureSize(uTraceSurf, 0);
+        trace_px = ivec2(uv * vec2(size));
+        if (c.w > 0.0 && all(greaterThanEqual(trace_px, ivec2(0))) && all(lessThan(trace_px, size))) {
+            float there = length(vWorld - uTraceEye);
+            traced = abs(texelFetch(uTraceSurf, trace_px, 0).z - there) < 0.01 * there + 0.03;
+        }
+    }
+#endif
 
     // How much a surface reflects of light from all round, by angle and
     // roughness (env_brdf) - wanted before the lamps as well as after: one
@@ -2979,7 +3300,7 @@ void main() {
         // room's light from all round, which the leaf has itself (below):
         // it is not lit by it twice.
         bool let_in = uStraddle > 0.5 && uLightGateAxis[i].w > 0.5;
-        if (let_in && uLightIndirect[i] > 0.5) continue;
+        if (let_in && uLightB[i].y > 0.5) continue;
         vec3 l;
         float reach = light_reach(i, vLit, l);
         // A lamp that gives this point nothing - behind it, outside its cone,
@@ -2989,9 +3310,16 @@ void main() {
             // A leaf lit from behind: as much of it as comes through, scattered
             // - shadowed as its far side is.
             float through = -dot(n, l) * uTranslucent;
-            if (i < uShadowCount && uLightLayer[i] > -0.5 && !let_in)
-                through *= shadow_cascade(i, -n, l, uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i]);
-            if (uLightIndirect[i] > 0.5) bounced += diffuse * through * uLightColor[i] * reach;
+#ifdef SG_TRACED
+            if (traced && uTrace.x > 0.0 && uLightA[i].w > 0.5 && dot(l, uTraceSunDir) > 0.9999)
+                through *= texelFetch(uTraceSun, trace_px, 0).r;
+            else if (traced && uTrace.y > 0.5 && uLightA[i].w < 0.5 && i < uShadowCount && uLightD[i].y > -0.5 && !let_in && traced_lamp(i) >= 0)
+                through *= texelFetch(uTraceLamps, trace_px, 0)[traced_lamp(i)];
+            else
+#endif
+            if (i < uShadowCount && uLightD[i].y > -0.5 && !let_in)
+                through *= shadow_cascade(i, -n, l, uLightB[i].x < 0.0 ? uShadowFloor : uLightB[i].x);
+            if (uLightB[i].y > 0.5) bounced += diffuse * through * uLightColor[i] * reach;
             else direct += diffuse * through * uLightColor[i] * reach;
             continue;
         }
@@ -3000,9 +3328,17 @@ void main() {
         float ndl = max(dot(n, l), 0.0);
         float shadow = 1.0;
         // (Only where the lamp reaches: outside its cone it adds nothing,
-        // and its shadow there is nothing.)
-        if (ndl > 0.0 && i < uShadowCount && uLightLayer[i] > -0.5 && !let_in) {
-            float fl = uLightFloor[i] < 0.0 ? uShadowFloor : uLightFloor[i];
+        // and its shadow there is nothing. The sun traced: what the rays found.)
+#ifdef SG_TRACED
+        if (traced && uTrace.x > 0.0 && uLightA[i].w > 0.5 && dot(l, uTraceSunDir) > 0.9999) {
+            shadow = texelFetch(uTraceSun, trace_px, 0).r;
+        } else if (traced && uTrace.y > 0.5 && uLightA[i].w < 0.5 && ndl > 0.0 && i < uShadowCount && uLightD[i].y > -0.5 && !let_in && traced_lamp(i) >= 0) {
+            // (A lamp traced: to its bulb, as soft as the bulb is wide.)
+            shadow = texelFetch(uTraceLamps, trace_px, 0)[traced_lamp(i)];
+        } else
+#endif
+        if (ndl > 0.0 && i < uShadowCount && uLightD[i].y > -0.5 && !let_in) {
+            float fl = uLightB[i].x < 0.0 ? uShadowFloor : uLightB[i].x;
             shadow = shadow_cascade(i, n, l, fl);
         }
         // (A land's beds bend their normals towards the light even where the
@@ -3033,7 +3369,7 @@ void main() {
         // as much wider as it is, and no brighter for being so.
         float ndh2 = ndh * ndh, energy = 1.0;
         if (uLightFrame[i].w < 0.5 && uLightFrame[i].x > 0.0) {
-            float across = uLightSun[i] > 0.5 ? uLightFrame[i].x : uLightFrame[i].x / max(length(uLightPos[i] - vLit), 1e-3);
+            float across = uLightA[i].w > 0.5 ? uLightFrame[i].x : uLightFrame[i].x / max(length(uLightPos[i] - vLit), 1e-3);
             ndh2 = sized_ndh2(across, ndl, ndv, dot(v, l));
             float sin2 = across * across / (1.0 + across * across);
             energy = a2 / clamp(a2 + sin2 / (vdh * 3.6 + 0.4), 1e-6, 1.0);
@@ -3046,8 +3382,8 @@ void main() {
 
         // (Light standing in for bounce is the probes' where they hold: their
         // bake saw the bounce itself, and it would count twice.)
-        if (uLightIndirect[i] > 0.5)
-            bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightIndirect[i] > 0.8 ? probe_cover : 0.0));
+        if (uLightB[i].y > 0.5)
+            bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightB[i].y > 0.8 ? probe_cover : 0.0));
         else direct += lobe * ndl * uLightColor[i] * reach * shadow;
     }
 
@@ -3077,6 +3413,7 @@ void main() {
             ground_here = mix(uDoorGround[k], ground_here, here);
         }
     }
+    ground_here *= 1.0 - probe_cover * uProbeOpen;
     vec3 around = mix(ground_here, sky_here, n.y * 0.5 + 0.5);
     vec3 mirrored = mix(ground_here, sky_here, smoothstep(-0.35, 0.35, up));
     if (probe_cover > 0.0) {
@@ -3119,6 +3456,16 @@ void main() {
         // as bare Fresnel gives - and less as it roughens.
         reflected = max(reflected, vec3(uMirrorUse[k].x * (1.0 - roughness)));
     }
+    // Traced: what a glossy surface mirrors, as it is that way.
+#ifdef SG_TRACED
+    // (Traced only while its lobe is narrow enough that one ray a pixel is
+    // nearly the answer; faded out towards uTrace.z, past which the probes'
+    // and the sky's reflection - smooth, with no noise to smooth away - is
+    // all. A rough reflection traced is a ray's noise smoothed into blotches
+    // that crawl as the history turns over.)
+    if (traced && uTrace.z > 0.0 && roughness <= uTrace.z)
+        mirrored = mix(mirrored, texelFetch(uTraceMirror, trace_px, 0).rgb, 1.0 - smoothstep(0.5 * uTrace.z, uTrace.z, roughness));
+#endif
     vec3 ambient = (diffuse * around * (1.0 - reflected) + mirrored * reflected * horizon + bounced) * (1.0 - uFillCut);
     // What its own hollows shut out of the light from all round and back off
     // the room (a surface map's occlusion): the lamps' direct light still

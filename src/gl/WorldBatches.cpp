@@ -240,6 +240,41 @@ bool GLWorldView::bind_normal_map(BoundSurface& bound) { return bind_map(bound, 
 
 void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
     const auto* tex = bound ? dynamic_cast<const Texture*>(bound->surface) : nullptr;
+    // Its wear, where it has photographs of it: its dirt gathered, its damp
+    // where water has been, as its map says and its room's causes make them.
+    const auto worn = [&](const char* name, gl::Texture& map, uint64_t& made, int unit) {
+        if (!tex || !tex->has_wear(name)) return false;
+        auto* t = static_cast<Texture*>(bound->surface);
+        int w = 0, h = 0;
+        const std::vector<unsigned char>& px = t->wear_raster(name, w, h);
+        if (px.empty() || w <= 0 || h <= 0) return false;
+        if (made != t->wear_revision(name) || !map.valid()) {
+            map.create(w, h, /*mipmaps=*/true, /*srgb=*/true);
+            map.upload(px);
+            made = t->wear_revision(name);
+        }
+        map.bind(unit);
+        return true;
+    };
+    const bool damp = bound && worn("damp", bound->damp_map, bound->damp_revision, kDampUnit);
+    if (damp) {
+        const Element& m = tex->map();
+        p.set("uDampSet", static_cast<float>(m.params.num("damp", 1.0)), static_cast<float>(m.params.num("damp_rise", 0.0)),
+              static_cast<float>(m.params.num("damp_tile", 2.0)), static_cast<float>(m.params.num("damp_rough", 0.35)));
+    }
+    // (Whether each is worn: uWear's x and y; its room's age, z, is the room's.)
+    bool dirt = false;
+    if (bound && worn("dirt", bound->dirt_map, bound->dirt_revision, kDirtUnit)) {
+        {
+            const Element& m = tex->map();
+            p.set("uDirtSet", static_cast<float>(m.params.num("dirt", 1.0)), static_cast<float>(m.params.num("dirt_reach", 0.5)),
+                  static_cast<float>(m.params.num("dirt_tile", 1.5)), static_cast<float>(m.params.num("dirt_rough", 0.85)));
+            p.set("uDirtBand", static_cast<float>(m.params.num("dirt_floor", 0.35)), static_cast<float>(m.params.num("dirt_top", 0.45)),
+                  static_cast<float>(m.params.num("dirt_all", 0.0)), static_cast<float>(m.params.num("dirt_up", 0.0)));
+            dirt = true;
+        }
+    }
+    p.set("uWear", dirt ? 1.0f : 0.0f, damp ? 1.0f : 0.0f, wear_age_, static_cast<float>(wear_leaks_));
     // One tile for every way of the thing (Texture::one_tile), or six cells.
     p.set("uSkinOne", tex && tex->cols() == 1 && tex->rows() == 1 ? 1.0f : 0.0f);
     p.set("uSurfaceMapOn", tex && bind_surface_map(*bound) ? 1.0f : 0.0f);
@@ -493,13 +528,14 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             b.skin->texture.bind(0);
             p.set("uTexMix", 1.0f), p.set("uSkin", 1.0f), p.set("uSkinFramed", 1.0f), p.set("uSkinOwn", 1.0f);
             p.set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
+            p.set("uSkinScatter", static_cast<float>(m.params.num("scatter", 0.0)), static_cast<float>(m.params.num("scatter_turn", 3.14159265)));
             p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
             set_skin_maps(p, b.skin);
         }
         b.mesh->draw_instanced(stream, n, first);
         first += static_cast<std::size_t>(n);
-        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
+        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinScatter", 0.0f, 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
         b.ordered = false;

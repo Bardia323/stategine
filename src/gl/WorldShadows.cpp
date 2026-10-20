@@ -371,14 +371,14 @@ void GLWorldView::refresh_casters(RoomCasters& rc, const PlacedRoom& placed) {
     for (const Element* ep : ix.terrains) {
         const Element& e = *ep;
         if (!e.alive || e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
-        auto t = terrains_.find(e.id);
-        if (t == terrains_.end()) continue;
+        const TerrainMesh* t = ground_of(e.id);
+        if (!t) continue;
         Caster c;
         c.room = rc.room, c.element = &e;
         uint64_t w = 1469598103934665603ULL;
-        w = mix_bits(w, static_cast<float>(t->second.cx));
-        w = mix_bits(w, static_cast<float>(t->second.cz));
-        w = mix_bits(w, static_cast<float>(t->second.rev));
+        w = mix_bits(w, static_cast<float>(t->cx));
+        w = mix_bits(w, static_cast<float>(t->cz));
+        w = mix_bits(w, static_cast<float>(t->rev));
         c.where = w;
         rc.extras_key = fnv(fnv(rc.extras_key, reinterpret_cast<std::uintptr_t>(c.element)), c.where);
         rc.extras.push_back(c);

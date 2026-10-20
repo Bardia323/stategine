@@ -5,6 +5,8 @@
 #include <cstdlib>
 // The GL view drawing a room: its shadow maps, its air, and its scene
 // (GLWorldView::draw_world).
+#include "sg/domains/Texture.hpp"
+#include "sg/domains/Wear.hpp"
 #include "sg/gl/World.hpp"
 
 #include "WorldHash.hpp"
@@ -195,6 +197,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (placed.room)
             for (const auto& e : placed.room->elements())
                 if (e.alive && e.kind == terrain_kind()) {
+                    // (Drawn as another view has it: nothing of its own.)
+                    if (home_ && ground_of(e.id) != nullptr && ground_of(e.id) != &terrains_[e.id]) continue;
                     // The state's own ground, unless the program bound one -
                     // taken again when the element says it is another (`rev`).
                     TerrainMesh& t = terrains_[e.id];
@@ -234,14 +238,24 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     std::vector<std::array<int, kSunMaps - 1>> closer_of(lights.size());
     std::vector<int> closer_count(lights.size(), 0);
     std::size_t layers = 0;
+    // The eye's sun traced (src/gl/trace): its shadow is the rays', not its
+    // maps' - only its widest box laid, for the lit air to be shadowed by, and
+    // none at all where the air is not lit.
+    const bool sun_traced = trace_ && depth == 0 && eye_view() && !mirroring_ && trace_sun_ready();
+    const bool sun_in_air = sun_traced && weather(rooms.front().room, mix(rooms.front().room->id(), look_of(*rooms.front().room)), "scatter", 0.0) > 0.0;
+    bool sun_left = false;
     {
         const ViewCamera eye{{cam.eye.x,cam.eye.y,cam.eye.z},{cam.forward.x,cam.forward.y,cam.forward.z},{cam.up.x,cam.up.y,cam.up.z}};
         for (std::size_t i = 0; i < shadowed && layers < kShadowMaps; ++i) {
             const Light& l = lights[i];
+            const bool traced_sun = sun_traced && !sun_left && l.sun && !l.indirect && !l.gated;
+            if (traced_sun) sun_left = true;
+            if (traced_sun && !sun_in_air) continue;
             const int faces = shadow_faces(l);
             first_layer[i] = static_cast<float>(layers);
             cube_of[i] = faces > 1 ? 1.0f : 0.0f;
             if (l.sun && !l.indirect) boxes_of[i] = sun_boxes(l.extent, kNearReach, l.pinned ? 0.0f : zfar, kSunMaps);
+            if (traced_sun && !boxes_of[i].empty()) boxes_of[i].erase(boxes_of[i].begin(), boxes_of[i].end() - 1);
             for (int f = 0; f < faces && layers < kShadowMaps; ++f, ++layers) {
                 layer_light[layers] = i;
                 layer_face[layers] = faces > 1 ? f : -1;
@@ -318,7 +332,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     if (timing_) gl::glFinish();
     const auto shadow_start = std::chrono::steady_clock::now();
     // (The card's clock: the eye's own maps, not a mirror's or a view's.)
-    const bool eye_maps = depth == 0 && !mirroring_;
+    // (Not what a ray needs of the eye's surfaces, drawn before its view: src/gl/trace.)
+    const bool traced_surfaces = surface_only_ == kTraceSurface;
+    const bool eye_maps = depth == 0 && !mirroring_ && !traced_surfaces;
     if (eye_maps) card_stamp(kCardShadowsFrom);
     // --- shadow depth, one pass per shadowed lamp ------------------------
     // Each world seen (the room, and whatever a portal shows) keeps its own
@@ -521,10 +537,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 caster.set("uModel", frame_matrix_ * box_matrix(room, e).m);
                 shape_of(room, e).draw();
             } else if (e.kind == terrain_kind()) {
-                auto t = terrains_.find(e.id);
-                if (t == terrains_.end() || !t->second.mesh.valid()) continue;
+                const TerrainMesh* t = ground_of(e.id);
+                if (!t) continue;
                 caster.set("uModel", frame_matrix_);
-                t->second.mesh.draw();
+                t->mesh.draw();
             } else if (e.kind == kinds::portal) {
                 caster.set("uModel", frame_matrix_ * portal_frame_model(room, e).m);
                 cube_.draw();
@@ -848,17 +864,18 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         for (std::size_t k = 0; k < n; ++k) {
             const std::size_t i = only ? (*only)[k] : k;
             lamp_to(p, k, lights[i], sun_air_);
-            p.set(light_uniform(k, 12), unshadowed ? -1.0f : closer_packed(i));
-            p.set(light_uniform(k, 17), unshadowed || i >= shadowed ? -1.0f : first_layer[i]);
-            p.set(light_uniform(k, 18), cube_of[i]);
-            p.set(light_uniform(k, 19), i < kAllLights ? static_cast<int>(i) : -1);
+            p.set(light_uniform(k, 6), unshadowed ? -1.0f : closer_packed(i), unshadowed || i >= shadowed ? -1.0f : first_layer[i], cube_of[i],
+                  i < kAllLights ? static_cast<float>(i) : -1.0f);
         }
         p.set("uShadowMaps", 1);
         lamp_cells_to(p);
     };
     // The land toward the sun, as much of it as hides it (horizon_for):
     // made by the eye's own view, read as made by every other.
-    const TerrainMesh* horizon = sun_color.x + sun_color.y + sun_color.z > 0.0f ? horizon_for(rooms, cam.eye, sun_dir, depth == 0 && !mirroring_) : nullptr;
+    // (What a ray needs of the surfaces is not lit: no horizon, no sky - and
+    // the sky's pictures, made for the frame's own view, are not made again
+    // for it.)
+    const TerrainMesh* horizon = sun_color.x + sun_color.y + sun_color.z > 0.0f && !traced_surfaces ? horizon_for(rooms, cam.eye, sun_dir, depth == 0 && !mirroring_) : nullptr;
     // The sky as a planet's, and its clouds as a volume, where the look
     // says (`atmosphere`, `clouds.cover`): their pictures made for this sun,
     // this eye and this world's time, as they must be -
@@ -875,14 +892,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         sun_air_ = gl::Vec3{1.0f, 1.0f, 1.0f} + (t - gl::Vec3{1.0f, 1.0f, 1.0f}) * atmosphere.weight;
     }
     const double sky_time = semantic_time(graph_ ? graph_ : (root_ ? root_->graph_ : nullptr), *rooms.front().room);
-    const Sky* sky = sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
+    const Sky* sky = traced_surfaces ? nullptr : sky_for(rooms.front().room, atmosphere, clouds, sun_dir, sun_color, cam.eye, sky_time, first);
+    // The eye's sun, lamps and sky, for the rays the next frame traces.
+    if (trace_ && depth == 0 && eye_view() && !mirroring_) remember_for_trace(lights, sun_dir, sun_color, atmosphere, rooms.front().room);
     // The air of this view, lit by its lamps (air_fs) - when its look says
     // its air scatters: in the eye's own view and in every view through a
     // doorway, however deep (each gathered at its own pixels, so a small one
     // costs little, and kept while nothing it is made from moves) - a room's
     // haze is what is seen of it from any way. (A mirror's picture has none.)
     const Air* air = nullptr;
-    const float scatter = baking_ || mirroring_ ? 0.0f : static_cast<float>(weather(rooms.front().room, first, "scatter", 0.0));
+    const float scatter = baking_ || mirroring_ || traced_surfaces ? 0.0f : static_cast<float>(weather(rooms.front().room, first, "scatter", 0.0));
     if (scatter > 0.0f) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
@@ -1048,10 +1067,12 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             p.set("uAirSpin", static_cast<float>(spin % 4096u));
             // Which of a cell's points (`steps` through its depth) this
             // gathering lights: all of them, still; moving, every kAirCarry-th
-            // of them, from a different one each frame.
-            const int part = moved ? kAirCarry : 1;
+            // of them, from a different one each frame - never more apart
+            // than there are points (one point, every frame: a gathering that
+            // lit none would be dark, and the air moving darker than at rest).
+            const int part = moved ? std::min(kAirCarry, steps) : 1;
             p.set("uAirSteps", steps);
-            p.set("uAirPoints", static_cast<float>(moved ? static_cast<int>(spin % static_cast<uint32_t>(kAirCarry)) : 0), static_cast<float>(part));
+            p.set("uAirPoints", static_cast<float>(moved ? static_cast<int>(spin % static_cast<uint32_t>(part)) : 0), static_cast<float>(part));
             // What was gathered, as much of it kept as the gatherings in it
             // stand for; where it was gathered from, to find each cell in it.
             p.set("uAirKeep", a.gathered > 0 ? static_cast<float>(a.gathered) / static_cast<float>(a.gathered + 1) : 0.0f);
@@ -1125,6 +1146,18 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         gl::glClearDepth(0.0);
     }
     gl::glClear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    // What a ray needs of each surface, drawn beside the scene for the rays
+    // traced after it (src/gl/trace): the eye's own view, its opaque things
+    // only - cleared to nothing, where nothing is drawn.
+    const bool traced_beside = trace_beside_ && depth == 0 && eye_view() && !mirroring_;
+    if (traced_beside) {
+        if (!target.has_second()) target.add_second(gl::GL_RGBA32F);
+        const gl::GLenum second = gl::GL_COLOR_ATTACHMENT0 + 1;
+        gl::glDrawBuffers(1, &second);
+        gl::glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+        target.second(false);
+    }
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
     gl::glEnable(gl::GL_MULTISAMPLE);
@@ -1146,6 +1179,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
         p.set("uSurfaceOnly", surface_only_);
+        // Light traced for the eye's own view (src/gl/trace); none in any other.
+        if (trace_ && depth == 0 && eye_view() && !mirroring_) trace_to(p);
+        else p.set("uTrace", 0.0f, 0.0f, 0.0f, 0.0f);
         light_uniforms(p);
         p.set("uSunDir", sun_dir);
         p.set("uSunColor", sun_color);
@@ -1164,6 +1200,11 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uSurfaceMapOn", 0.0f);
         p.set("uNormalMap", 10);  // and its normal map (bind_normal_map)
         p.set("uNormalMapOn", 0.0f);
+        p.set("uDirt", kDirtUnit);  // and its dirt and damp (set_skin_maps)
+        p.set("uDamp", kDampUnit);
+        p.set("uWearMap", kWearFieldUnit);
+        p.set("uWear", 0.0f, 0.0f, 1.0f, 0.0f);
+        p.set("uSkinScatter", 0.0f, 0.0f);
         p.set("uBeds", kBedsUnit);  // a land's beds (bind_beds)
         p.set("uBedNormals", kBedsUnit + 1);
         p.set("uEnv", 7);
@@ -1246,6 +1287,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const PlacedRoom* last = nullptr;
     for (const PlacedRoom& placed : rooms) {
         if (!placed.room) continue;
+        if (traced_beside) target.second(true);
         // A copy of a space that wraps, out of sight: its cell, not in view.
         if (placed.image) {
             const Vec3d cell = period_of(*placed.room);
@@ -1272,12 +1314,48 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // keeps its own fog, whichever side you stand on.
         const Mix look = mix(room.id(), look_of(room));
         const gl::Program* program = program_for(look.shown(), passes::scene);
+        // (A view traced: its twin that knows what is traced.)
+        if (program && (traced_beside || traced_surfaces))
+            if (const gl::Program* t = traced_of(*program)) program = t;
         if (program != scene_) {
             scene_ = program;
             scene_->use();
             frame_uniforms(*scene_);
         }
         bounds = prepare(look, shift, placed, room);
+        }
+        // (Its box, for dirt to gather in its corners: none for a world under the sky.)
+        {
+            const auto& rp = room.params();
+            const bool boxed = rp.num(Key{"sky"}, 0.0) < 0.5 && rp.has(Key{"room_w"});
+            scene_->set("uRoomBox", gl::Vec3{boxed ? static_cast<float>(rp.num(Key{"room_w"})) : 0.0f, boxed ? static_cast<float>(rp.num(Key{"room_h"}, 3.0)) : 0.0f,
+                                             boxed ? static_cast<float>(rp.num(Key{"room_d"})) : 0.0f});
+            // Its wear's causes (sg/domains/Wear.hpp): how old it is, and its
+            // leaks - the eight nearest the eye - in its own frame.
+            wear_age_ = static_cast<float>(std::clamp(rp.num(Key{"age"}, 1.0), 0.0, 1.0));
+            // And its wear's fields (sg::field_picture: dirt in red, damp in
+            // green), over its own rectangle - laid by the same laws as what
+            // is strewn on it, so the two agree.
+            const std::string* field = rp.text(Key{"wear_field"});
+            if (field && bind_worn(room, *field, false, kWearFieldUnit))
+                scene_->set("uWearField", static_cast<float>(rp.num(Key{"wear_x"}, 0.0)), static_cast<float>(rp.num(Key{"wear_z"}, 0.0)),
+                            1.0f / std::max(static_cast<float>(rp.num(Key{"wear_w"}, 1.0)), 1e-3f), 1.0f / std::max(static_cast<float>(rp.num(Key{"wear_d"}, 1.0)), 1e-3f));
+            else
+                scene_->set("uWearField", 0.0f, 0.0f, 0.0f, 0.0f);
+            const auto& leaks = index_of(room).leaks;
+            std::vector<std::pair<double, const Element*>> near;
+            for (const Element* l : leaks) {
+                const Vec3d at = position_of(*l);
+                near.push_back({std::hypot(at.x - cam.eye.x, at.z - cam.eye.z), l});
+            }
+            std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            const int n = static_cast<int>(std::min<std::size_t>(near.size(), 4));
+            wear_leaks_ = n;
+            for (int k = 0; k < n; ++k) {
+                const Vec3d at = position_of(*near[static_cast<std::size_t>(k)].second);
+                scene_->set(("uLeak[" + std::to_string(k) + "]").c_str(), static_cast<float>(at.x), static_cast<float>(at.y), static_cast<float>(at.z),
+                            static_cast<float>(near[static_cast<std::size_t>(k)].second->params.num(Key{"reach"}, 1.0)));
+            }
         }
 
         lap(2, part_at);
@@ -1385,7 +1463,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
-                if (q_.instancing && e.id != highlight_)
+                // (A wall that wears a texture - a room's laid shell in its
+                // photographed plaster - drawn as anything wearing one is: its
+                // picture, its maps, its dirt. Not a plain colour.)
+                const auto worn = bound_surfaces().find(e.id);
+                if (worn != bound_surfaces().end() && dynamic_cast<const Texture*>(worn->second.surface)) {
+                    if (!batch_skinned(room, e)) draw_crate(room, e);
+                } else if (q_.instancing && e.id != highlight_)
                     batch(cube_, box_matrix(room, e).m, color_of(e, {0.52f, 0.50f, 0.48f}), 0.9f,
                           static_cast<float>(e.params.num(surface_key, 2.0)), 0, 0, 0);
                 else
@@ -1467,6 +1551,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (room.params().num(Key{"sky"}, 0.0) <= 0.5 && !(placed.sheafed && !room.params().has(Key{"room_w"}))) draw_room(room);
         // (Asked what surfaces are, glass is none: it is seen through.)
         if (surface_only_) glass.clear(), added.clear();
+        // (What is seen through, or added over what is behind, is not a surface rays meet.)
+        if (traced_beside) target.second(false);
         if (!glass.empty()) {
             const Vec3d eye{cam.eye.x, cam.eye.y, cam.eye.z};
             const auto far = [&](const Element* e) { return distance(world_position(room, *e), eye); };
@@ -1515,9 +1601,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         lap(5, part_at);
     }
+    if (traced_beside) target.second(false);
     if (eye_maps) card_doors(drawn_proj, reversed);
     else card_doorways_.clear();
-    if (depth == 0) lay_deep_views();
+    if (depth == 0 && !traced_surfaces) lay_deep_views();
     for (int i = 0; i < kMaxBounds; ++i)
         gl::glDisable(gl::GL_CLIP_DISTANCE0 + static_cast<gl::GLenum>(i));
     if (part || cut) gl::glDisable(gl::GL_SCISSOR_TEST);

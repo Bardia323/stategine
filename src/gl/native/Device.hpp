@@ -37,6 +37,7 @@ enum class Format : std::uint8_t {
 inline bool is_depth(Format f) { return f == Format::d24 || f == Format::d32f; }
 inline bool is_packed(Format f) { return f == Format::bc7 || f == Format::bc7_srgb; }
 // Bytes a texel (a 4x4 block, packed).
+// inline: every picture written or read asks it, row by row.
 inline int texel_bytes(Format f) {
     switch (f) {
         case Format::rgba16f: case Format::rg32f: return 8;
@@ -70,11 +71,13 @@ struct SamplerInfo {
     std::uint8_t compare_op = 3;  // as DepthTest's ops
     bool border_white = false;    // otherwise transparent black
     std::uint8_t anisotropy = 1;
+    // inline: every picture bound for every draw is looked up by it.
     std::uint64_t key() const {
         return std::uint64_t(min) | std::uint64_t(mag) << 1 | std::uint64_t(mip) << 2 | std::uint64_t(wrap[0]) << 4 |
                std::uint64_t(wrap[1]) << 6 | std::uint64_t(wrap[2]) << 8 | std::uint64_t(compare) << 10 |
                std::uint64_t(compare_op) << 11 | std::uint64_t(border_white) << 14 | std::uint64_t(anisotropy) << 16;
     }
+    // inline: and a sampler made from it the first time, beside key, its inverse.
     static SamplerInfo from_key(std::uint64_t k) {
         SamplerInfo s;
         s.min = static_cast<Filter>(k & 1), s.mag = static_cast<Filter>(k >> 1 & 1), s.mip = static_cast<Mip>(k >> 2 & 3);
@@ -110,6 +113,7 @@ struct Target {
     Attachment color[kColors];
     Attachment depth;
     int w = 0, h = 0;
+    // inline: every draw asks whether it draws into what the last one did.
     bool operator==(const Target& o) const {
         for (int i = 0; i < kColors; ++i)
             if (color[i] != o.color[i]) return false;

@@ -276,9 +276,18 @@ void GLWorldView::ensure_terrain(const Element& e, const Camera& cam) {
     });
 }
 
+auto GLWorldView::ground_of(Key terrain_element) const -> const TerrainMesh* {
+    const auto& from = home_ ? home_->terrains_ : terrains_;
+    const auto it = from.find(terrain_element);
+    if (it != from.end() && it->second.mesh.valid()) return &it->second;
+    if (!home_) return nullptr;
+    const auto own = terrains_.find(terrain_element);
+    return own != terrains_.end() && own->second.mesh.valid() ? &own->second : nullptr;
+}
+
 void GLWorldView::draw_terrain(const State& st, const Element& e) {
-    auto it = terrains_.find(e.id);
-    if (it == terrains_.end() || !it->second.mesh.valid()) return;
+    const TerrainMesh* ground = ground_of(e.id);
+    if (!ground) return;
     set_model(room_local(gl::Mat4::identity()));
     scene_->set("uAlbedo", color_of(e, {0.80f, 0.62f, 0.42f}));
     scene_->set("uRoughness", static_cast<float>(e.params.num(Key{"roughness"}, 0.85)));
@@ -320,7 +329,7 @@ void GLWorldView::draw_terrain(const State& st, const Element& e) {
     static const Key ripple{"ripple"}, ripple_dir{"ripple_dir"};
     scene_->set("uLand", static_cast<float>(e.params.num(Key{"wet_level"}, 0.0)), static_cast<float>(std::max(wet_band, 0.0)),
                 static_cast<float>(e.params.num(ripple, 0.0)), static_cast<float>(e.params.num(ripple_dir, 0.0)));
-    it->second.mesh.draw();
+    ground->mesh.draw();
     scene_->set("uLand", 0.0f, 0.0f, 0.0f, 0.0f);
     if (land || beds) unbind_land();
     if (worn) {
@@ -421,7 +430,7 @@ bool GLWorldView::bind_beds(const State& st, const Element& e) {
         for (const Spatial3D::Picture* p : pics[k]) made.push_back(p ? p->revision + 1 : 0);
         while (size * 2 <= std::min(pics[k][0]->w, 2048)) size *= 2;
     }
-    BedArrays& a = beds_[e.id];
+    BedArrays& a = (home_ ? home_->beds_ : beds_)[e.id];
     if (!a.color.valid() || a.made != made) {
         const std::size_t layer = static_cast<std::size_t>(size) * size * 4;
         std::vector<unsigned char> color(layer * count), normal(layer * count);
@@ -616,7 +625,7 @@ const gl::Mesh& GLWorldView::find_shape(const State& st, const Element& e) const
         m.revision = made;
         if (!m.shared && !m.own.valid()) {
             // First seen: the mesh of all that are the same, sent once.
-            std::unique_ptr<gl::Mesh>& same = meshes_made_[corners_key(*corners)];
+            std::unique_ptr<gl::Mesh>& same = (home_ ? home_->meshes_made_ : meshes_made_)[corners_key(*corners)];
             if (!same) {
                 same = std::make_unique<gl::Mesh>();
                 making_ahead_ ? ++times_.warmed_ahead : ++times_.made_late;

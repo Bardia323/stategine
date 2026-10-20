@@ -197,6 +197,9 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
 | `Seam::wraps`, `nests`, `period_x/y/z` | a space glued to itself (torus, portal pair, genus two); worlds inside worlds by a ball; a space that wraps in an axis | rings excused by hand; planets in one coordinate frame; tiled copies placed by hand |
 | `sheafable`, `sheafify`, a doorway's `sheaf` (`domains/Atlas.hpp`) | rooms made one space where their doorways say `sheaf` and they agree - each room a presheaf, the space their section - drawn there, their doorways openings, and one physics over them (README *One space, sheafified*) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space, one physics per room where they are one |
+| `Distribution` (`domains/Distribution.hpp`) | laws of chance as data, a state of its own: value laws (power, lognormal, normal, beta, von Mises, choice), point laws (poisson, blue-noise `disk`, `thomas` / `matern` clusters), fields (`bump`, `sum`: intensities add - superposition), each sampled by a process chosen for it (`sample`: as drawn, poisson, disk, halton), drawn deterministically by seed and index, carried onto what spreads by them (`law_to`); a field as a picture (`field_picture`) for a material to wear by | `hash2`, `rand()`, a noise standing in for where things are; one noise for everything; sizes or spacings picked by hand for each thing |
+| `Wear` (`domains/Wear.hpp`) | what time has done to a place, as its causes: its `age`, its leaks (`add_leak`) - which every surface wearing a photographed `dirt_layer` / `damp_layer` answers in the renderer (gathered into corners and junctions, settled on what faces up, run down below a leak, rising from the floor), with a room's `wear_field` from a Distribution | stains, streaks and grime placed by hand thing by thing; procedural noise for dirt |
+| `ground_under` (`domains/Spatial.hpp`) | the lowest ground under a thing's turned footprint: where a thing set down stands so no edge of it floats | a thing stood at its middle's ground height |
 | `Room` (`domains/Room.hpp`) | a room: a floor plan of any shape (`sg::plan`), openings as data on its walls, walls laid round them by one rule (shell, face, skirting, filler), and what hangs on an opening going with it | walls, openings or floor plans of your own; cutting walls round doors by hand |
 | `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
 | `Texture` (`domains/Texture.hpp`) | a picture things wear, a state of its own: six cells, the thing seen from each way of each axis (no unwrap); generated (`define`), photographed or painted over (`layer`, followed); worn by being embedded in a mesh or a thing of parts; `projection_guide` is the map to paint over | UVs, a texture path or colour in a mesh's params, a picture per part, an unwrap |
@@ -218,6 +221,7 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `net::Cellular`, `net::Reconcile` (`net/Cellular.hpp`, `Reconcile.hpp`) | stalks, overlaps, restrictions and CPU/CUDA reconciliation derived from an ordinary state's data | network entities, a second world, private reconciliation ticks or GPU-owned reality |
 | `ripple` (`domains/Ripple.hpp`) | rings spreading on water from where something met it, kept by the water as where and when (its world's time) they began; drawn where that time says | a ripple decal or particle of a game's own, rings moved by a renderer's clock |
 | `add_fog`, `fogs_of` (`domains/Fog.hpp`; `gl::fog_volumes_glsl`, `GLWorldView::pooled_fog`) | fog that pools where a world says: a box of thicker air, soft-edged, thinning as it rises, its own colour or its look's, its wisps moved by its world's time; thickening the scene's fog where the eye's way crosses it and the lit air's glow; its laws in a Spatial3D's `faults` | a fog card or particle cloud of a game's own, a height fog tuned per room in a shader, wisps moved by a renderer's clock |
+| traced light (a look's `trace`; `docs/trace.md`, `src/gl/trace/`) | the sun's shadow by rays to its disc in place of its maps, and what is mirrored, by rays through the world - things under trees of boxes made once a shape, the ground as its heights round the eye; a frame behind the scene, carried to where each pixel is; a thing's `trace` 0 not met. The light from all round stays the probes' | a ray tracer or SSR pass of a game's own; a shadow map tuned by hand for a twig; a second light from all round beside the probes |
 | `Probe`, `Sh9` (`domains/Probe.hpp`; `GLWorldView::bake_probes`) | light from all round at a place in a room: what its lamps give it after lighting the room, as spherical harmonics, a set a lamp - summed with each lamp's light now, so no bake for a switch; baked by the renderer and handed back for an edit to write; its laws in a Spatial3D's `faults` | an ambient colour tuned by hand per room, a fake bounce lamp, a lightmap or GI pass of a game's own |
 | materials (`docs/materials.md`; `sgmat`) | what a surface is made of: a thing's params (`r g b roughness metal emissive glass reflects mirror`), its `surface` kind (0..20, procedural), a `Texture` it wears - its colour and height, a surface map of occlusion, roughness and metal and a normal map, point by point (`Texture::define_material`, `surface_layer`, `normals`, `normal_layer`) - and its state's look: the only four ways a material reaches the renderer; `sgmat` draws one on a fixed stage beside grey, chrome and colour references and measures it | a shader, uniform or colour space of a game's own; a texture path in a mesh's params; a material tuned only inside a graded look; a colour judged without looking |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; a colour temperature (`kelvin`); extruded and lathed models | lighting maths or mesh code inside a game, a lamp colour picked by eye for a bulb of known kelvin |
@@ -511,11 +515,13 @@ Detail finer than a pixel is never drawn as detail: a surface's pattern
 how much of the surface a pixel takes, not by how fast a warped pattern
 turns, which shows it in streaks - and finer it becomes the roughness or
 the mean it averages to. Sand at a distance is smooth. And the scene
-shader is at the card's limit of uniforms (1024 registers on some; a
-sampler takes one, and so does each float of an array): a new one is packed
-into one a kind of thing already has (a land's `uLand`), or worked out from
-what the shader already has (a shadow map's texel from its matrix), or it
-does not build and the built-in look is drawn instead.
+shader lives under the card's limit of uniforms (1024 registers on some; a
+sampler takes one, and so does each element of an array - a float as much
+as a vec4): a new number is packed four to a register with others of its
+kind (a light's: `uLightA`..`uLightD`; a worn texture's wear: `uWear`), or
+worked out from what the shader already has (a shadow map's texel from its
+matrix) - never an array of single floats. Over the limit, the look does
+not build and the built-in is drawn instead (and its traced twin says so).
 
 Nothing that goes with the eye may show as an edge in the picture: the
 ground's squares, a sun's shadow boxes, any grid round the eye. Whatever
@@ -536,6 +542,19 @@ namespace (check names first), globals that only the host sets
 join held to the overlap law (portals by their middle, one eye height),
 what the guest's loop did and the host's loop must now do, presence, and
 the host's checks.
+
+## Building an environment
+
+A place - a room, a land, a street - is built by [docs/environment.md](docs/environment.md):
+references first (gathered if the brief has none), real assets at real
+size, things spread by laws chosen for what put them there
+(`sg::Distribution`: the measured shape where one is known, the place's
+own numbers; plausibility where none is; a person's story where the place is
+theirs), wear said as causes (`Wear`) and answered by photographed dirt and
+damp, detail by frequency, empty space on purpose - and checked against the
+references. Photographic realism is one look among many: none of it is
+pressed on a brief that asks for another. The agent
+`.claude/agents/environment-designer.md` works this way.
 
 ## Adding a state, a room, an interface - checklist
 

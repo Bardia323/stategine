@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include "sg/domains/Fog.hpp"
+#include "sg/domains/Wear.hpp"
 #include "sg/domains/Probe.hpp"
 #include "sg/domains/Walk.hpp"
 
@@ -237,8 +238,9 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
 }
 
 std::vector<std::string> Spatial3D::faults() const {
-    std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this);
+    std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this), wear = wear_faults(*this);
     out.insert(out.end(), fogs.begin(), fogs.end());
+    out.insert(out.end(), wear.begin(), wear.end());
     return out;
 }
 
@@ -359,6 +361,21 @@ Element& Spatial3D::terrain(Key id, Height height) {
     // Drawn again from its new function (the renderer's resample).
     e.params.set("rev", e.params.num("rev", 0.0) + 1.0);
     return e;
+}
+
+double ground_under(const Spatial3D& world, double x, double z, double half_x, double half_z, double yaw) {
+    const Spatial3D::Height* h = nullptr;
+    for (const Element& e : world.elements())
+        if (e.alive && (h = world.ground(e.id))) break;
+    if (!h) return std::nan("");
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    double lowest = (*h)(x, z);
+    for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j) {
+            const double a = i * half_x, b = j * half_z;
+            lowest = std::min(lowest, (*h)(x + a * c - b * s, z + a * s + b * c));
+        }
+    return lowest;
 }
 
 auto Spatial3D::ground(Key id) const -> const Height* {

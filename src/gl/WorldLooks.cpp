@@ -1,5 +1,7 @@
 // The GL view's looks: their air, their numbers faded and set on a
 // program, their programs built and checked, and the uniforms' names.
+#include <cstdio>
+
 #include "sg/gl/World.hpp"
 
 namespace sg::render {
@@ -194,6 +196,22 @@ const gl::Program* GLWorldView::cutout_of(const gl::Program& p) {
     return cutout_[&p] = twin;
 }
 
+const gl::Program* GLWorldView::traced_of(const gl::Program& p) {
+    if (auto it = traced_.find(&p); it != traced_.end()) return it->second;
+    const auto src = sources_of_.find(&p);
+    const gl::Program* twin = nullptr;
+    if (src != sources_of_.end()) {
+        std::string fs = src->second.second;
+        const std::size_t line = fs.find('\n');
+        fs.insert(line == std::string::npos ? 0 : line + 1, "#define SG_TRACED\n");
+        std::string error;
+        twin = shared_program(src->second.first, fs, "traced", error);
+        // (Said, once: a twin that does not build leaves the view untraced.)
+        if (!twin) std::fprintf(stderr, "render: the traced scene shader does not build - drawn untraced: %s\n", error.c_str());
+    }
+    return traced_[&p] = twin;
+}
+
 void GLWorldView::check_look(const LookState& look, std::vector<std::string>& out) {
     static const std::unordered_map<Key, std::vector<const char*>> required{
         {passes::shadow, {"uModel", "uLightViewProj"}},
@@ -271,14 +289,12 @@ const char* GLWorldView::shadow_uniform(std::size_t i) {
 
 const char* GLWorldView::light_uniform(std::size_t i, int field) {
     static const auto names = [] {
-        static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightPower",
-                                       "uCosInner", "uCosOuter", "uLightSun", "uLightFloor",
-                                       "uLightIndirect", "uLightFalloff", "uLightGate", "uLightGateAxis",
-                                       "uLightNear", "uLightOpen", "uLightScatter", "uLightFrame", "uLightRange",
-                                       "uLightLayer", "uLightCube", "uLightIn"};
-        std::array<std::array<std::string, 20>, kMaxLights> n;
+        // (Its numbers four to a register: uLightA..D, as the scene shader says.)
+        static const char* fields[] = {"uLightPos", "uLightDir", "uLightColor", "uLightA", "uLightB", "uLightC", "uLightD",
+                                       "uLightGate", "uLightGateAxis", "uLightFrame"};
+        std::array<std::array<std::string, 10>, kMaxLights> n;
         for (std::size_t l = 0; l < kMaxLights; ++l)
-            for (int f = 0; f < 20; ++f)
+            for (int f = 0; f < 10; ++f)
                 n[l][static_cast<std::size_t>(f)] =
                     std::string(fields[f]) + "[" + std::to_string(l) + "]";
         return n;

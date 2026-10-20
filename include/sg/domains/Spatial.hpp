@@ -254,6 +254,14 @@ Pose pose_between(const Vec3d& from, const Vec3d& to);
 // look; the ground under it has turned.
 Pose standing(const Element& camera);
 void set_standing(Element& camera, const Pose& ground);
+
+// --- set down on the ground ------------------------------------------------
+// Where a thing set down on `world`'s ground at (x, z) stands: the lowest of
+// the ground under its footprint - `half_x` by `half_z` either side of its
+// middle, turned `yaw` (its middle, its corners and the middles of its
+// edges) - so no edge of it hangs over a hollow and its shadow meets it where
+// it touches. (The first of its terrains; NaN where it has none.)
+double ground_under(const Spatial3D& world, double x, double z, double half_x, double half_z, double yaw);
 // Its whole turn, as the eye sees: the ground's, then the look's.
 Pose eye_pose(const Element& camera);
 Vec3d up_of(const Element& camera);

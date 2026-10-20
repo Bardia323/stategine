@@ -76,10 +76,14 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
     // Relit live (light_rooms): the room's own boxes, or its declared
     // probes that hold no bake - each box's sets times its lamps' light now.
     if (const RoomLight* rl = placed.room && !baking_ ? live_light(*placed.room) : nullptr) {
-        for (std::size_t i = 0; i < rl->boxes.size() && count < kMaxProbes; ++i) {
-            const ProbeBox& b = rl->boxes[i];
-            Sh9 sh = i < rl->sets.size() ? probe_light(*placed.room, rl->sets[i]) : Sh9{};
-            if (i < rl->let_in.size()) sh.add(rl->let_in[i], Rgb{1.0, 1.0, 1.0});
+        // (An open land's: as it last was whole.)
+        const auto& boxes = rl->open ? rl->shown_boxes : rl->boxes;
+        const auto& sets = rl->open ? rl->shown_sets : rl->sets;
+        const auto& let_in = rl->open ? rl->shown_let_in : rl->let_in;
+        for (std::size_t i = 0; i < boxes.size() && count < kMaxProbes; ++i) {
+            const ProbeBox& b = boxes[i];
+            Sh9 sh = i < sets.size() ? probe_light(*placed.room, sets[i]) : Sh9{};
+            if (i < let_in.size()) sh.add(let_in[i], Rgb{1.0, 1.0, 1.0});
             const Pose p = compose_pose(placed.pose, Pose{b.mid, b.yaw, 0.0, 0.0});
             scene_->set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
@@ -92,6 +96,7 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
             ++count;
         }
         scene_->set("uProbeCount", count);
+        scene_->set("uProbeOpen", rl->open ? 1.0f : 0.0f);
         return;
     }
     // (A bake's first bounce sees the room lit by its lamp alone: no probe.)
@@ -122,6 +127,7 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
         }
     }
     scene_->set("uProbeCount", count);
+    scene_->set("uProbeOpen", 0.0f);
 }
 
 Sh9 GLWorldView::capture(const Spatial3D& room, const Vec3d& at, int size) {
@@ -331,14 +337,28 @@ auto GLWorldView::declared_boxes(const Spatial3D& room) const -> std::vector<Pro
     return out;
 }
 
+namespace {
+// Walls of its own laid round it (sg::Room::lay_walls: `laid` shell) - a
+// room closed round as much as one whose shell the renderer draws. (Laid
+// first, as a room is made: found at once.)
+bool walled(const Spatial3D& room) {
+    static const Key laid_key{"laid"};
+    for (const Element& e : room.elements())
+        if (e.alive && e.kind == kinds::wall)
+            if (const std::string* laid = e.params.text(laid_key); laid && *laid == "shell") return true;
+    return false;
+}
+}  // namespace
+
 auto GLWorldView::grid_of(const Spatial3D& room) -> std::vector<ProbeBox> {
-    // A room that says how big it is and is closed round, unless it says
-    // `gi` 0: boxes about two and a half metres across - fewer if that is
+    // A room that says how big it is and is closed round - by the shell the
+    // renderer draws, or by walls of its own laid round it (a realm's) -
+    // unless it says `gi` 0: boxes about two and a half metres across - fewer if that is
     // more than the scene shader takes - from wall to wall and floor to
     // ceiling, each fading into the next and out past the walls.
     std::vector<ProbeBox> out;
     const auto& p = room.params();
-    if (p.num(Key{"gi"}, 1.0) < 0.5 || p.num(Key{"enclosed"}, 1.0) < 0.5 || p.num(Key{"sky"}, 0.0) > 0.5 || !p.has(Key{"room_w"}) ||
+    if (p.num(Key{"gi"}, 1.0) < 0.5 || (p.num(Key{"enclosed"}, 1.0) < 0.5 && !walled(room)) || p.num(Key{"sky"}, 0.0) > 0.5 || !p.has(Key{"room_w"}) ||
         !p.has(Key{"room_d"}) || !p.has(Key{"room_h"}))
         return out;
     const double w = p.num(Key{"room_w"}), d = p.num(Key{"room_d"}), h = p.num(Key{"room_h"});
@@ -369,6 +389,40 @@ auto GLWorldView::grid_of(const Spatial3D& room) -> std::vector<ProbeBox> {
     return out;
 }
 
+auto GLWorldView::open_grid_of(const Spatial3D& room, const Vec3d& eye) const -> std::vector<ProbeBox> {
+    // Two by two boxes kCell across, on the cells' lines nearest the eye
+    // (so it stands in the middle two, give or take half a cell), each from
+    // a little under the ground at its middle to well over it, fading far
+    // into the next and out beyond.
+    std::vector<ProbeBox> out;
+    const auto& p = room.params();
+    if (p.num(Key{"gi"}, 1.0) < 0.5 || p.has(Key{"room_w"}) || (p.num(Key{"sky"}, 0.0) < 0.5 && p.num(Key{"enclosed"}, 1.0) > 0.5))
+        return out;
+    const TerrainMesh* land = nullptr;
+    for (const Element* e : index_of(room).terrains) {
+        const auto it = e->alive ? terrains_.find(e->id) : terrains_.end();
+        if (it != terrains_.end() && it->second.height) land = &it->second;
+    }
+    if (!land) return out;
+    constexpr double kCell = 32.0, kBelow = 4.0, kAbove = 20.0;
+    static const Key names[4] = {Key{"gi.open.0"}, Key{"gi.open.1"}, Key{"gi.open.2"}, Key{"gi.open.3"}};
+    const double x0 = (std::round(eye.x / kCell) - 1.0) * kCell, z0 = (std::round(eye.z / kCell) - 1.0) * kCell;
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j) {
+            ProbeBox b;
+            b.id = names[i * 2 + j];
+            const double x = x0 + kCell * (i + 0.5), z = z0 + kCell * (j + 0.5);
+            // (Its ground to the decimetre: a box a hair from where it was is
+            // the same box, not the land seen again.)
+            const double y = std::round(land->height(x, z) * 10.0) / 10.0;
+            b.mid = {x, y + 0.5 * (kAbove - kBelow), z};
+            b.half = {0.5 * kCell, 0.5 * (kAbove + kBelow), 0.5 * kCell};
+            b.soft_lo = b.soft_hi = {0.5 * kCell, 0.5 * kAbove, 0.5 * kCell};
+            out.push_back(b);
+        }
+    return out;
+}
+
 auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox>& boxes, int size, int bounces, bool all_now)
     -> RoomLight& {
     RoomLight& rl = room_light_[&room];
@@ -394,7 +448,9 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     // Everything at once the first time (a room is seen whole from its first
     // frame), or when asked; else a frame's share.
     const bool first_sight = std::all_of(rl.drawn.begin(), rl.drawn.end(), [](const Digest& d) { return d == Digest{}; });
-    if (first_sight) all_now = true;
+    // (An open land's boxes the eye has gone on to are drawn a face a frame:
+    // those it left are shown till then.)
+    if (first_sight && (!rl.open || rl.shown_boxes.empty())) all_now = true;
 
     // What moves: a thing whose params moved is out of what the probes see
     // until it has stood still kSettle relights - and so is all that hangs
@@ -547,6 +603,7 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
             v->solo_ = Key{};  // no lamp: only what the surfaces are is drawn
             v->probe_override_ = nullptr;
             v->hidden_ = &rl.hidden;
+            v->home_ = root_ ? root_ : this;
             v->lights_memo_.clear();
         }
     };
@@ -702,14 +759,29 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         double sun_t = 1.0;
         const int far_size = L.sun ? kSunSize : kLampSize;
         if (L.sun) {
-            const Vec3d focus = L.pinned ? Vec3d{L.focus.x, L.focus.y, L.focus.z}
-                                         : Vec3d{room.params().num(Key{"room_w"}, 4.0) * 0.5, room.params().num(Key{"room_h"}, 3.0) * 0.5,
-                                                 room.params().num(Key{"room_d"}, 4.0) * 0.5};
+            Vec3d focus = L.pinned ? Vec3d{L.focus.x, L.focus.y, L.focus.z}
+                                   : Vec3d{room.params().num(Key{"room_w"}, 4.0) * 0.5, room.params().num(Key{"room_h"}, 3.0) * 0.5,
+                                           room.params().num(Key{"room_d"}, 4.0) * 0.5};
+            double reach = std::max<double>(L.extent, 1.0), away = kSunAway;
+            if (rl.open) {
+                // (An open land's: over its boxes and what fades beyond them,
+                // not wherever its shadow is pinned - from far enough up its
+                // way to see over all of it.)
+                Vec3d lo = boxes.front().mid, hi = lo;
+                for (const ProbeBox& b : boxes) {
+                    const Vec3d a = b.mid - b.half - b.soft_lo, c = b.mid + b.half + b.soft_hi;
+                    lo = {std::min(lo.x, a.x), std::min(lo.y, a.y), std::min(lo.z, a.z)};
+                    hi = {std::max(hi.x, c.x), std::max(hi.y, c.y), std::max(hi.z, c.z)};
+                }
+                focus = (lo + hi) * 0.5;
+                reach = length(hi - lo) * 0.5;
+                away = std::max(kSunAway, reach * 2.0);
+            }
             sun_f = unit(Vec3d{L.dir.x, L.dir.y, L.dir.z});
-            from = focus - sun_f * kSunAway;
+            from = focus - sun_f * away;
             sun_r = unit(cross(sun_f, std::fabs(sun_f.y) > 0.99 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0}));
             sun_u = cross(sun_r, sun_f);
-            sun_t = std::max<double>(L.extent, 1.0) * 1.2 / kSunAway;
+            sun_t = reach * 1.2 / away;
         }
         const int far_w = L.sun ? far_size : 6 * far_size;
         if (!ll.far.t.valid() || ll.far.t.width() != far_w || ll.far.t.height() != far_size) {
@@ -804,7 +876,8 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     published = published || from_kept;
     const bool current = drawn_all && jobs > 0 &&
                          std::none_of(rl.lamps.begin(), rl.lamps.end(), [](const auto& l) { return l.second.pending || l.second.sets.empty(); });
-    if (current && rl.kept != rl.shell && !rl.lamps.empty()) {
+    // (Not an open land's: its boxes move on with the eye, a shell a cell.)
+    if (current && rl.kept != rl.shell && !rl.lamps.empty() && !rl.open) {
         std::ostringstream out;
         out.precision(9);
         for (const auto& [name, ll] : rl.lamps) {
@@ -839,6 +912,14 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
                 }
         ++rl.revision;
     }
+    // An open land's, shown once whole: every face of every box drawn, every
+    // light's sets worked out for them.
+    if (rl.open && drawn_all && !rl.lamps.empty() && (published || !same_boxes(rl.shown_boxes, rl.boxes)) &&
+        std::none_of(rl.lamps.begin(), rl.lamps.end(), [&](const auto& l) { return l.second.pending || l.second.sets.size() != boxes.size(); })) {
+        rl.shown_boxes = rl.boxes;
+        rl.shown_sets = rl.sets;
+        rl.shown_let_in = rl.let_in;
+    }
     return rl;
 }
 
@@ -867,10 +948,17 @@ void GLWorldView::light_rooms(const std::vector<PlacedRoom>& rooms) {
         const Spatial3D& room = *at;
         std::vector<ProbeBox> boxes;
         const auto& declared = index_of(room).probes;
+        bool open = false;
         if (room.params().num(Key{"gi"}, 1.0) < 0.5) {
             // (It says not.)
         } else if (declared.empty()) {
             boxes = grid_of(room);
+            // (The eye's own world, if it is an open land: boxes round the eye.)
+            if (boxes.empty() && at == rooms.front().room) {
+                const gl::Vec3 eye = camera_of(room).eye;
+                boxes = open_grid_of(room, Vec3d{eye.x, eye.y, eye.z});
+                open = !boxes.empty();
+            }
         } else if (std::none_of(declared.begin(), declared.end(), [&](const Element* e) { return !sets_of(*e).empty(); })) {
             boxes = declared_boxes(room);
         }
@@ -878,6 +966,7 @@ void GLWorldView::light_rooms(const std::vector<PlacedRoom>& rooms) {
             room_light_.erase(&room);
             continue;
         }
+        room_light_[&room].open = open;
         relight_room(room, boxes, 32, 2, false);
     }
 }

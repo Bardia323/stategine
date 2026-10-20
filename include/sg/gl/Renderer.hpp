@@ -291,12 +291,22 @@ public:
 
     void destroy();
 
+    // A second picture drawn into beside the first (attachment 1), as many
+    // samples as it - a scene's surfaces, for rays (src/gl/trace) - drawn
+    // into only while `second(true)` says; made again with the target, gone
+    // with it. `second_to` copies it (resolved) into another's first.
+    void add_second(GLenum internal_format);
+    bool has_second() const { return second_tex_ != 0 || second_rb_ != 0; }
+    void second(bool drawn) const;
+    void second_to(const RenderTarget& dst) const;
+
     int width() const { return w_; }
     int height() const { return h_; }
     bool valid() const { return fbo_ != 0; }
 
 private:
     GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0, depth_tex_ = 0;
+    GLuint second_tex_ = 0, second_rb_ = 0;
     int w_ = 0, h_ = 0, samples_ = 0;
     bool mipmapped_ = false;
 };

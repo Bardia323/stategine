@@ -216,6 +216,52 @@ const std::vector<unsigned char>& Texture::surface_raster() {
     return surface_px_;
 }
 
+bool Texture::has_wear(const std::string& name) const { return !map().params.get_or<std::string>(name + "_layer", "").empty(); }
+
+uint64_t Texture::wear_revision(const std::string& name) const {
+    const auto it = worn_.find(name);
+    return it == worn_.end() ? 0 : it->second.revision;
+}
+
+const std::vector<unsigned char>& Texture::wear_raster(const std::string& name, int& w, int& h) {
+    const Element& m = map();
+    const std::string colour = m.params.get_or<std::string>(name + "_layer", ""), height = m.params.get_or<std::string>(name + "_height_layer", "");
+    const std::string of = colour + "|" + height;
+    Worn& wn = worn_[name];
+    if (of != wn.of) {
+        wn.of = of;
+        std::vector<unsigned char>{}.swap(wn.px);
+        wn.w = wn.h = 0;
+        int cw = 0, ch = 0, hw = 0, hh = 0;
+        std::vector<unsigned char> c, hgt;
+        if (!colour.empty() && reader() && reader()(colour, cw, ch, c) && cw > 0 && ch > 0) {
+            if (height.empty() || !reader()(height, hw, hh, hgt) || hw <= 0 || hh <= 0) hgt.clear();
+            // (At most a thousand pixels a side: each the mean of those under it.)
+            int step = 1;
+            while (cw / step > 1024 || ch / step > 1024) step *= 2;
+            wn.w = cw / step, wn.h = ch / step;
+            wn.px.assign(static_cast<std::size_t>(wn.w) * wn.h * 4, 255);
+            for (int y = 0; y < wn.h; ++y)
+                for (int x = 0; x < wn.w; ++x) {
+                    unsigned sum[4] = {0, 0, 0, 0};
+                    for (int j = 0; j < step; ++j)
+                        for (int i = 0; i < step; ++i) {
+                            const int sx = x * step + i, sy = y * step + j;
+                            const unsigned char* p = &c[(static_cast<std::size_t>(sy) * cw + sx) * 4];
+                            for (int k = 0; k < 3; ++k) sum[k] += p[k];
+                            // (Its height where it has one - read where the colour is - else how dark it is.)
+                            if (!hgt.empty()) sum[3] += hgt[(static_cast<std::size_t>(sy * hh / ch) * hw + sx * hw / cw) * 4];
+                            else sum[3] += 255u - (p[0] + p[1] + p[2]) / 3u;
+                        }
+                    for (int k = 0; k < 4; ++k) wn.px[(static_cast<std::size_t>(y) * wn.w + x) * 4 + k] = static_cast<unsigned char>(sum[k] / static_cast<unsigned>(step * step));
+                }
+        }
+        ++wn.revision;
+    }
+    w = wn.w, h = wn.h;
+    return wn.px;
+}
+
 bool Texture::has_normals() const {
     const Element& m = map();
     return m.params.num("normals", 0.0) > 0.5 || !m.params.get_or<std::string>("normal_layer", "").empty();

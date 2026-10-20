@@ -145,6 +145,10 @@
 
 namespace sg::render {
 
+namespace trace {
+class Tracer;
+}
+
 // A model matrix in a room's own coordinates, before that room is placed.
 //
 // The distinction is load-bearing. Where a room sits depends on which room the
@@ -419,6 +423,12 @@ public:
         double yaw = 0;
     };
     static std::vector<ProbeBox> grid_of(const Spatial3D& room);
+    // An open land's - the eye's world, under the sky with no walls, its
+    // ground a terrain, and not `gi` 0: boxes on the ground round the eye,
+    // moving on with it a cell at a time, relit as a room's are - so what
+    // the land gives back (the sun's light off the sand into the shade) is
+    // the land's as it lies, in place of the look's stand-in for it.
+    std::vector<ProbeBox> open_grid_of(const Spatial3D& room, const Vec3d& eye) const;
 
     // The ground round (cx, cz): squares one round another, `step` metres
     // apart in the middle one, each next twice as far apart, out to `reach`
@@ -489,6 +499,9 @@ private:
         uint64_t normal_revision = ~uint64_t{0};
         std::shared_ptr<render::Packed> packed_normal;
         bool normal_shared = false;
+        // Its texture's dirt and damp (Texture::wear_raster), and which each is.
+        gl::Texture dirt_map, damp_map;
+        uint64_t dirt_revision = ~uint64_t{0}, damp_revision = ~uint64_t{0};
     };
     // The card's one copy of a packed picture, made the first time it is asked for.
     const gl::Texture& on_card(const std::shared_ptr<render::Packed>& packed);
@@ -763,8 +776,20 @@ private:
     Sh9 capture(const Spatial3D& room, const Vec3d& at, int size);
 
     // Relighting (relight_probes). What the scene shader writes instead of
-    // light (uSurfaceOnly): 1 where, 2 facing, 3 scattering, 4 distance.
+    // light (uSurfaceOnly): 1 where, 2 facing, 3 scattering, 4 distance;
+    // kTraceSurface, what a ray needs (src/gl/trace).
     int surface_only_ = 0;
+    static constexpr int kTraceSurface = 5;
+    // Light traced along rays through the world, for the eye's view, where
+    // its look asks (src/gl/trace, docs/trace.md): made the first time one
+    // does, and nothing at all before.
+    friend class trace::Tracer;
+    struct TracerGone {
+        void operator()(trace::Tracer* t) const;
+    };
+    std::unique_ptr<trace::Tracer, TracerGone> trace_;
+    bool trace_beside_ = false;  // the eye's view this frame draws its surfaces beside it, for rays traced after
+    bool tracing();
     // The lamp a view is drawn from (its cube of distances): its own
     // fitting is not drawn.
     Key own_lamp_;
@@ -820,6 +845,12 @@ private:
         bool shell_known = false;
         int size = 0, bounces = 0;
         std::vector<ProbeBox> boxes;
+        bool open = false;  // an open land's boxes round the eye (open_grid_of), not a room's
+        // An open land's as it last was whole - shown while the boxes of the
+        // cells the eye has gone on to are drawn, a face a frame.
+        std::vector<ProbeBox> shown_boxes;
+        std::vector<std::map<std::string, Sh9>> shown_sets;
+        std::vector<Sh9> shown_let_in;
         // What each box sees, on the card, a box a row of six faces: where
         // each surface is, which way it faces, what of the light it
         // scatters; that lit by one light (`light`), and in harmonics (`sh`).
@@ -842,6 +873,11 @@ private:
     static void lamp_to(const gl::Program& p, std::size_t i, const Light& l, const gl::Vec3& sun_air = gl::Vec3{1.0f, 1.0f, 1.0f});
     // What the views that relight do not draw (relight_room: what moves).
     const std::unordered_set<Key>* hidden_ = nullptr;
+    // The view the views that relight draw for (relight_room): its ground as
+    // it has it round its eye, its meshes and its pictures on the card are
+    // theirs - not each sampling, sending and keeping its own of a land
+    // kilometres wide and all that stands on it, again as the boxes move on.
+    GLWorldView* home_ = nullptr;
     // A room relit: its boxes' surroundings drawn for the shell as it is,
     // and each lamp's light on them worked out where it moved - all of it
     // now (`all_now`, or the first time), else a frame's share: one box
@@ -969,6 +1005,8 @@ private:
     void ensure_terrain(const Element& e, const Camera& cam);
 
     void draw_terrain(const State& st, const Element& e);
+    // A land's ground as this view draws it: its own, or ground_from_'s.
+    const TerrainMesh* ground_of(Key terrain_element) const;
     // A land's ground or water says what its picture is (`splat`): bound,
     // and the uniforms that read it set (sg::terrain); false if it says none.
     bool bind_land(const State& st, const Element& e);
@@ -1405,6 +1443,10 @@ private:
     // cards (SG_CUTOUT): the same program, shading after the depth test.
     std::unordered_map<const gl::Program*, std::pair<std::string, std::string>> sources_of_;
     std::unordered_map<const gl::Program*, const gl::Program*> cutout_;
+    // A scene program's twin for a view traced (SG_TRACED: src/gl/trace) -
+    // the program a view not traced draws with has none of it.
+    std::unordered_map<const gl::Program*, const gl::Program*> traced_;
+    const gl::Program* traced_of(const gl::Program& p);
     const gl::Program* cutout_of(const gl::Program& p);
     std::unordered_map<Key, std::unordered_map<Key, PassProgram>> resolved_;
     LookFader fader_{standard_};
@@ -1556,6 +1598,10 @@ private:
     // A land's beds: their colour and height, and their normal and
     // roughness (bind_beds) - the two units after it.
     static constexpr int kBedsUnit = 17;
+    // A worn texture's dirt (Texture::dirt_raster): past the traced pictures' units.
+    static constexpr int kDirtUnit = 24, kDampUnit = 25, kWearFieldUnit = 26;
+    float wear_age_ = 1.0f;  // the age of the room being drawn (sg/domains/Wear.hpp), for what wears a texture in it
+    int wear_leaks_ = 0;     // ... and how many of its leaks the scene shader was given
     gl::GLuint shadow_depths_ = 0;
     void bind_shadow_depths(const ShadowSet& maps);
     // A view's air, lit by its lamps (air_fs): each slice's own light, a
@@ -1609,6 +1655,16 @@ private:
     // light is times.
     static gl::Vec3 through_air(const Atmosphere& a, float up);
     gl::Vec3 sun_air_{1.0f, 1.0f, 1.0f};
+    // The tracer's part (src/gl/trace/Tracer.cpp): whether the eye's look
+    // asks it this frame; its frame (the surfaces, then the rays); what the
+    // scene is told of it; and the eye's sun, lamps and sky as the scene
+    // drew them, for the rays the next frame traces.
+    void trace_frame(const std::vector<PlacedRoom>& rooms, const Camera& cam, float aspect);
+    void trace_after(const std::vector<PlacedRoom>& rooms);
+    void trace_to(const gl::Program& p) const;
+    bool trace_sun_ready() const;  // the eye's sun traced this frame: its maps need not be laid
+    void remember_for_trace(const std::vector<Light>& lights, const gl::Vec3& sun_dir, const gl::Vec3& sun_color, const Atmosphere& a,
+                            const Spatial3D* world);
     // And its clouds as a volume (`clouds.cover` and the rest; cloud_dome_fs):
     // heights in metres over the ground, the wind in metres a second and the
     // way it blows (radians), the dome's texels each way.
@@ -1790,7 +1846,7 @@ private:
     // (lamps, doorways, terrain), found again only when its structure moves.
     struct KindIndex {
         uint64_t structure = ~uint64_t{0};
-        std::vector<const Element*> lights, portals, terrains, probes, fogs, strewn;
+        std::vector<const Element*> lights, portals, terrains, probes, fogs, strewn, leaks;
     };
     mutable std::unordered_map<const State*, KindIndex> kind_index_;
     const KindIndex& index_of(const State& s) const;

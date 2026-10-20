@@ -23,7 +23,7 @@ bool GLWorldView::is_sprite(const Element& e) {
 // a view makes (through doorways, in mirrors, on screens) wear its.
 GLWorldView& GLWorldView::pictures_home() {
     GLWorldView* v = this;
-    while (v->root_) v = v->root_;
+    while (v->root_ || v->home_) v = v->root_ ? v->root_ : v->home_;
     return *v;
 }
 
@@ -380,12 +380,13 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             scene_->set("uSkinFrame", f.to_unit);
             scene_->set("uSkinSize", f.size);
             scene_->set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
+            scene_->set("uSkinScatter", static_cast<float>(m.params.num("scatter", 0.0)), static_cast<float>(m.params.num("scatter_turn", 3.14159265)));
             scene_->set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             scene_->set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
             set_skin_maps(*scene_, &bound);
         }
         shape_seen(st, e).draw();
-        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
+        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinScatter", 0.0f, 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

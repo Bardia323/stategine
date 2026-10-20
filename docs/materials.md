@@ -131,6 +131,23 @@ Its one element, `map`:
 | `tile` | metres of the thing one cell covers, its pattern going on round it from face to face; 0, each face the whole cell |
 | `blend` | 0 each face its own cell; 1 curves shade softly between the cells of the ways they face |
 | `relief` | metres its paint stands at full height: the map's alpha is height, and the surface is bent by it so raised paint catches the light |
+| `scatter` | 0..1: a tiled picture's repeat never shown - each hexagon of it (two to a tile) read from a place of its own, a little larger or smaller, its maps alike; 0 (unless said) as laid |
+| `scatter_turn` | radians each hexagon turns within (pi unless said; 0 for what has a grain or a grid: tiles, planks, courses) |
+| `dirt_layer` (`dirt_height_layer`) | a photograph of its dirt (and its grains' height beside it; else how dark it is): laid over it where dirt gathers - its edge where the grains stand higher than the gathering asks, the photograph's own (`sg/domains/Wear.hpp`) |
+| `dirt` | how much it gathers (1) |
+| `dirt_reach` | metres from a corner or an edge where two surfaces meet that it gathers (0.5) |
+| `dirt_floor`, `dirt_top` | metres up a wall from the floor, and down from the ceiling (0.35, 0.45) |
+| `dirt_up` | how much settles on what faces up (0) |
+| `dirt_all` | how much lies everywhere besides (0) |
+| `dirt_tile`, `dirt_rough` | metres its photograph covers (1.5); how rough the dirt leaves it (0.85) |
+| `damp_layer` (`damp_height_layer`) | a photograph of its damp: laid where water has been - down a wall below its world's leaks, in streaks widening as they fall; a blot on a ceiling round one; a tide mark on the floor under it; rising from the floor (`Wear`) |
+| `damp`, `damp_rise`, `damp_tile`, `damp_rough` | how much (1); metres it rises up a wall from the floor (0); metres its photograph covers (2); how rough it leaves the surface (0.35) |
+
+A world's `age` (0 new .. 1 long neglected; 1) is how far all of it has gone,
+and its `wear_field` (a picture of its own, red dirt and green damp, over
+`wear_x`, `wear_z`, `wear_w`, `wear_d`: `sg::field_picture`) adds what a
+Distribution spread to what the causes gather. A room's laid walls wear a
+texture as any thing does.
 
 **Colour spaces.** A texture's colours are as seen on a screen (sRGB), as a
 photograph's or anything picked by eye are: the renderer decodes them

@@ -946,10 +946,13 @@ as one saying nothing of it (`sg_sky_gl`).
 
 **Clouds as a volume** (scene pass settings). A layer of cloud between two
 heights over the ground: where there is cloud is said by a cover that drifts
-with the wind, each cloud's base rounded and its top the higher the thicker
-the cover, billowed by a noise and frayed at its edges, leaning as it rises.
-Lit by the sun through the cloud between - mostly on ahead, some back, and
-scattered more than once - and by the sky above and the ground below: under
+with the wind, each cloud a heap - flat at its base, domed over it, about as
+tall as it is wide (its middle a third of `clouds.size` high, no higher than
+the layer), solid within, the noise eating into it only from outside (billows
+on billows) and frayed at its edges, leaning as it rises. Lit by the sun
+through the cloud between - mostly on ahead, some back, and scattered more
+than once, the deeper the more alike all round - and by the sky above and the
+ground below, each as much as the cloud over or under it lets through: under
 a planet's sky (`atmosphere`) by its sun as it reaches them and its sky's
 light, and seen through its air; else by the sun light and the look's own
 sky colours. The sun's light on everything under them is shadowed by them
@@ -966,7 +969,7 @@ sky colours. The sun's light on everything under them is shadowed by them
 | `clouds.wind`, `clouds.wind_dir` | how fast the wind carries them (metres a second of world time) and which way (radians) | 8, 0.6 |
 | `clouds.lean` | how far their tops lean along the wind, metres | 600 |
 | `clouds.far` | how far out they are drawn, metres | 40000 |
-| `clouds.steps` | steps of each march through them (8..256) | 48 |
+| `clouds.steps` | steps through the layer's thickness (8..256): each march's steps that long near, longer far off | 48 |
 | `clouds.dome` | texels each way of the picture they are marched into | 1024 |
 | `clouds.cirrus` | high, thin cloud of ice drawn out by the wind, a layer of its own above the rest, 0..1 | 0: none |
 | `clouds.cirrus_height`, `.cirrus_size`, `.cirrus_wind`, `.cirrus_dir` | its height, its streaks' size (metres), its own wind and the way it blows | 9000, 4000, 30, 0.9 |
@@ -1093,6 +1096,42 @@ is another): what the eye made of the frames before is let go (its
 smoothing over frames), and it takes the new shot's light at once rather
 than easing to it (`sg_exposure_gl`).
 
+### Light traced along rays
+
+A look may ask for its light to be traced (`trace`): the sun's shadow by rays
+to its disc - as soft as the sun makes it, every twig its own - in place of
+its maps; what water and glossy things mirror, by rays the way their facets
+turn them. The light from all round stays the engine's own (its probes).
+Things are met under trees of boxes made once a shape, the ground as its
+heights round the eye; it runs wherever the renderer's GL does (OpenGL,
+Vulkan, D3D12), with no card's ray tracing asked for. A look that does not
+say it draws as before and pays nothing; a thing that says `trace` 0 is not
+met. See [trace.md](docs/trace.md) (`sg_trace_gl`).
+
+### Laws of chance, and wear
+
+Where things are, how big each is, which way it turns: laws of chance kept as
+data in a state of their own (`sg::Distribution`, `sg/domains/Distribution.hpp`)
+- value laws (power, lognormal, normal, beta, von Mises, choice), point laws
+(poisson, blue-noise `disk`, `thomas` and `matern` clusters), and fields
+(`bump` round a cause, `sum` of others: intensities add, so points drawn from
+several at once are points of their sum). Each is sampled by a process
+chosen for it (`sg::sample`: as drawn, poisson by thinning, blue noise
+thinned, a low-discrepancy sequence), drawn deterministically by its seed and
+the index asked, and carried onto what spreads by it by a kept functor
+(`sg::law_to`). A field as a picture (`sg::field_picture`) is what a place
+wears by: what is strewn on its floor and what stains its walls agree.
+
+What time has done to a place is said as its causes (`sg/domains/Wear.hpp`):
+its `age`, its leaks (`sg::add_leak`) - and each surface's material answers
+them with photographs of its dirt and its damp (`dirt_layer`, `damp_layer`,
+docs/materials.md): dirt gathered into corners and junctions and settled on
+what faces up; damp run down a wall in streaks under a leak, a blot on the
+ceiling round it, a tide mark on the floor below, rising from the floor. A
+room's `wear_field` adds what a Distribution spread. How a whole place is
+built with these: [docs/environment.md](docs/environment.md).
+`sg_distribution`.
+
 ### Fog where it pools
 
 A look's fog is alike all through its room. A fog (`sg/domains/Fog.hpp`, an
@@ -1177,6 +1216,21 @@ lamp that stands in for bounce (`bounce`, unless it says, what `indirect`
 says) gives way to the boxes where they hold; one lit as bounce but not
 standing in for it (an uplight washing a ceiling, a screen's spill) says
 `bounce` 0, and the boxes take its light on the room as any lamp's.
+
+A room counts as closed round by the shell the renderer draws or by walls of
+its own laid round it (`sg::Room::lay_walls`, a realm's) - either gets its
+boxes.
+
+An open land - the eye's world under the sky, no walls, its ground a terrain,
+not `gi` 0 - has boxes too (`GLWorldView::open_grid_of`): two by two, 32 m
+across, on the ground round the eye, relit the same way by its sun, its view
+down its way laid over them. They move on with the eye a cell at a time,
+drawn a face a frame while those it left are still shown. What they hold is
+what the land gives back - the sun off the sand into a palm's shade - so
+where they hold the look's stand-in for it (`uGround`) gives way to them;
+beyond them it is the look's again. The views that relight draw with the
+eye's own view's ground, meshes and pictures (`home_`), not each sending its
+own.
 
 The laws (`probe_faults`, a Spatial3D's `faults`): a probe's box lies in its
 room, its sets are 27 numbers each, every lamp it holds a set for is there,

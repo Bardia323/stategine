@@ -503,7 +503,47 @@ void RenderTarget::bind_color(int unit) const {
     glBindTexture(GL_TEXTURE_2D, color_tex_);
 }
 
+void RenderTarget::add_second(GLenum internal_format) {
+    if (!fbo_ || has_second()) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    if (samples_ > 0) {
+        glGenRenderbuffers(1, &second_rb_);
+        glBindRenderbuffer(GL_RENDERBUFFER, second_rb_);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples_, internal_format, w_, h_);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_RENDERBUFFER, second_rb_);
+    } else {
+        glGenTextures(1, &second_tex_);
+        glBindTexture(GL_TEXTURE_2D, second_tex_);
+        glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal_format), w_, h_, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_TEXTURE_2D, second_tex_, 0);
+    }
+    // (Drawn into only when said: until then, as the target was.)
+    const GLenum first = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &first);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void RenderTarget::second(bool drawn) const {
+    const GLenum both[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT0 + 1};
+    glDrawBuffers(drawn && has_second() ? 2 : 1, both);
+}
+
+void RenderTarget::second_to(const RenderTarget& dst) const {
+    if (!has_second()) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+    glReadBuffer(GL_COLOR_ATTACHMENT0 + 1);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 void RenderTarget::destroy() {
+    if (second_tex_) glDeleteTextures(1, &second_tex_);
+    if (second_rb_) glDeleteRenderbuffers(1, &second_rb_);
+    second_tex_ = second_rb_ = 0;
     if (fbo_) glDeleteFramebuffers(1, &fbo_);
     if (color_tex_) glDeleteTextures(1, &color_tex_);
     if (color_rb_) glDeleteRenderbuffers(1, &color_rb_);

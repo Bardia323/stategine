@@ -61,6 +61,8 @@
 // in other textures.
 #pragma once
 
+#include <map>
+
 #include <chrono>
 #include <array>
 #include <functional>
@@ -136,6 +138,21 @@ public:
     const std::vector<unsigned char>& surface_raster();
     // Which surface map `surface_raster` last made: it moves when it changes.
     uint64_t surface_revision() const { return surface_revision_; }
+    // Its dirt: a photograph of dirt of its own (`dirt_layer`, its height
+    // `dirt_height_layer` beside it) laid over it where dirt gathers - into
+    // the corners, along the floor, under the ceiling - its edge where the
+    // photograph's own grains stand higher than the gathering says (the
+    // renderer's, docs/materials.md). Colour in rgb, height in a, at most a
+    // thousand pixels a side.
+    bool has_dirt() const { return has_wear("dirt"); }
+    const std::vector<unsigned char>& dirt_raster(int& w, int& h) { return wear_raster("dirt", w, h); }
+    uint64_t dirt_revision() const { return wear_revision("dirt"); }
+    // Any photograph of its wear by name - `dirt`, `damp` - (`<name>_layer`,
+    // its height `<name>_height_layer`): colour in rgb, height in a (where
+    // it has none, how dark it is), at most a thousand pixels a side.
+    bool has_wear(const std::string& name) const;
+    const std::vector<unsigned char>& wear_raster(const std::string& name, int& w, int& h);
+    uint64_t wear_revision(const std::string& name) const;
 
     // Whether it has a normal map: it says `normals`, or a `normal_layer`.
     bool has_normals() const;
@@ -169,6 +186,13 @@ private:
     bool keyed_ = false;
     std::vector<unsigned char> surface_px_;
     uint64_t surface_made_ = ~uint64_t{0}, surface_revision_ = 0;
+    struct Worn {
+        std::vector<unsigned char> px;
+        int w = 0, h = 0;
+        std::string of;
+        uint64_t revision = 0;
+    };
+    std::map<std::string, Worn> worn_;
     std::vector<unsigned char> normal_px_;
     uint64_t normal_made_ = ~uint64_t{0}, normal_revision_ = 0;
 };

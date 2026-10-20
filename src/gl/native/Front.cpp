@@ -278,6 +278,18 @@ struct BufferObj {
     bool dynamic = true;               // its bytes kept here, and laid in a frame's slice as drawn
     std::vector<std::uint8_t> shadow;  // a dynamic buffer's bytes
     Slice slice;                       // where they lie this frame
+    // A big dynamic buffer that is drawn as it was (a land's ground, given
+    // again only as the eye moves on): on the card, as GL's drivers keep it,
+    // laid again only when its bytes change - never copied into the frame's
+    // host slices and read across the bus by every draw, every frame.
+    Buffer* card = nullptr;
+    bool card_fresh = false;           // the card's copy is its bytes as they are
+    std::uint64_t changed = 0;         // the frame its bytes last changed
+    int streak = 0;                    // frames in a row they have changed in (3 and more: it streams)
+    void change(std::uint64_t frame) {
+        if (frame != changed) streak = frame == changed + 1 ? streak + 1 : 1;
+        changed = frame, card_fresh = false;
+    }
     Buffer* gpu = nullptr;             // a static or read-back buffer's own
     // Pixels read into it (a read-back buffer): what they were, and what
     // they are to be handed back as.
@@ -496,9 +508,23 @@ Slice slice(std::size_t bytes) {
 }
 
 // Where a buffer's bytes are for the card now: laid again this frame if they
-// were last laid in another.
+// were last laid in another - or, a big one (a megabyte and more) that does
+// not stream (its bytes not changed three frames running), its copy on the
+// card, made again when they change (a new buffer each time: the old one let
+// go once the frames in flight are done with it, so no draw before reads
+// what is written after). What streams is a frame's slice, as before.
 std::pair<Buffer*, std::size_t> place(BufferObj& b) {
     if (!b.dynamic) return {b.gpu, 0};
+    constexpr std::size_t kBig = std::size_t{1} << 20;
+    if (b.size >= kBig && b.streak < 3) {
+        if (!b.card_fresh || !b.card) {
+            if (b.card) g->dev->destroy(b.card);
+            b.card = g->dev->create_buffer(b.size, Memory::card);
+            g->dev->upload(b.card, 0, b.shadow.data(), b.size);
+            b.card_fresh = true;
+        }
+        return {b.card, 0};
+    }
     if (b.slice.frame != g->frame) {
         b.slice = slice(std::max<std::size_t>(b.size, 4));
         if (b.size) std::memcpy(b.slice.host, b.shadow.data(), b.size);
@@ -528,6 +554,8 @@ BufferObj* bound_buffer(GLenum target) {
 Buffer* on_card(BufferObj& b) {
     if (!b.dynamic && b.gpu) return b.gpu;
     if (b.gpu) g->dev->destroy(b.gpu);
+    if (b.card) g->dev->destroy(b.card);
+    b.card = nullptr, b.card_fresh = false;
     b.gpu = g->dev->create_buffer(std::max<std::size_t>(b.size, 4), Memory::card);
     if (b.dynamic && b.size) g->dev->upload(b.gpu, 0, b.shadow.data(), b.size);
     b.dynamic = false;
@@ -1270,7 +1298,8 @@ void GenBuffers(GLsizei n, GLuint* out) {
 void BindBuffer(GLenum target, GLuint n) { *binding_for(target) = n; }
 void release(BufferObj& b) {
     if (b.gpu) g->dev->destroy(b.gpu);
-    b.gpu = nullptr;
+    if (b.card) g->dev->destroy(b.card);
+    b.gpu = nullptr, b.card = nullptr, b.card_fresh = false;
 }
 void BufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
     BufferObj* b = bound_buffer(target);
@@ -1297,6 +1326,7 @@ void BufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) 
         b->dynamic = true;
         b->shadow.resize(bytes);
         if (data && bytes) std::memcpy(b->shadow.data(), data, bytes);
+        b->change(g->frame);
     }
 }
 void BufferSubData(GLenum target, GLintptr at, GLsizeiptr size, const void* data) {
@@ -1305,6 +1335,7 @@ void BufferSubData(GLenum target, GLintptr at, GLsizeiptr size, const void* data
     if (b->dynamic) {
         std::memcpy(b->shadow.data() + at, data, static_cast<std::size_t>(size));
         b->slice = {};  // (laid again as drawn: what was drawn before keeps its bytes)
+        b->change(g->frame);
     } else {
         g->dev->upload(b->gpu, static_cast<std::size_t>(at), data, static_cast<std::size_t>(size));
     }
@@ -1347,6 +1378,7 @@ void* MapBufferRange(GLenum target, GLintptr at, GLsizeiptr size, GLbitfield) {
         return nullptr;
     }
     b->slice = {};
+    b->change(g->frame);  // (written through the map)
     return b->shadow.data() + at;
 }
 GLboolean UnmapBuffer(GLenum) { return 1; }
