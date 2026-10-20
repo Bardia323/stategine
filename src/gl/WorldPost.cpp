@@ -73,9 +73,12 @@ void GLWorldView::run_mosh(float amount) {
 void GLWorldView::run_taa() {
     if (!taa_prog_) taa_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::taa_fs(), "taa");
     const int w = scene_src_->width(), h = scene_src_->height();
+    // (Drawn at fewer pixels than the screen's: what it makes is the screen's.)
+    const bool up = drawn_scale() < 1.0f && out_w_ > w;
+    const int ow = up ? out_w_ : w, oh = up ? out_h_ : h;
     bool fresh = !taa_held_;
     for (gl::RenderTarget& t : taa_history_)
-        if (!t.valid() || t.width() != w || t.height() != h) t.create(w, h, gl::GL_RGBA16F, 0, false), fresh = true;
+        if (!t.valid() || t.width() != ow || t.height() != oh) t.create(ow, oh, gl::GL_RGBA16F, 0, false), fresh = true;
     // How the view moved since the last frame (reprojection).
     gl::Mat4 reproject;
     // (Not drawn with the last, or jumped: what was seen cannot be put where
@@ -85,7 +88,7 @@ void GLWorldView::run_taa() {
     gl::glDisable(gl::GL_DEPTH_TEST);
     gl::glDisable(gl::GL_BLEND);
     out.bind();
-    gl::glViewport(0, 0, w, h);
+    gl::glViewport(0, 0, ow, oh);
     const gl::Program& p = *taa_prog_;
     p.use();
     p.set("uCurrent", 0);
@@ -97,6 +100,8 @@ void GLWorldView::run_taa() {
     p.set("uReproject", reproject);
     p.set("uJitter", 2.0f * jitter_x_ / static_cast<float>(w), 2.0f * jitter_y_ / static_cast<float>(h));
     p.set("uTexel", 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    p.set("uOutTexel", 1.0f / static_cast<float>(ow), 1.0f / static_cast<float>(oh));
+    p.set("uUp", up ? 1.0f : 0.0f);
     p.set("uFresh", fresh ? 1.0f : 0.0f);
     p.set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
     screen_.draw();

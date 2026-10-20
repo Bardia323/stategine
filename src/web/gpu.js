@@ -129,11 +129,11 @@ globalThis.sgGPU={create(selector){
       }}finally{pending--;}return true;
     },
     render(rooms,w,h){if(!device||!scenePipeline||pending)return false;canvas.width=w;canvas.height=h;const enc=device.createCommandEncoder(),transient=[];
-      for(let i=0;i<rooms.length;i++)target(rooms[i].key,i?rooms[i].width:w,i?rooms[i].height:h);
+      const dw=rooms[0].width||w,dh=rooms[0].height||h;for(let i=0;i<rooms.length;i++)target(rooms[i].key,i?rooms[i].width:dw,i?rooms[i].height:dh);
       for(const room of rooms)for(const batch of room.batches){if(batch.mesh.vertices)mesh(batch.mesh);if(batch.picture?.bytes)picture(batch.picture);}
       for(const t of targets.values()){const previous=t.previous;t.previous=t.out;t.out=previous;}
       for(let i=1;i<rooms.length;i++)renderRoom(enc,rooms[i],rooms[i].width,rooms[i].height,null,transient);
-      renderRoom(enc,rooms[0],w,h,context.getCurrentTexture().createView(),transient);
+      renderRoom(enc,rooms[0],dw,dh,context.getCurrentTexture().createView(),transient);
       device.queue.submit([enc.finish()]);
       const usedMeshes=new Set(),usedTextures=new Set(),usedTargets=new Set();
       for(const room of rooms){usedTargets.add(room.key);for(const batch of room.batches){usedMeshes.add(batch.mesh.key);if(batch.picture)usedTextures.add(batch.picture.key);if(batch.target)usedTargets.add(batch.target);}}

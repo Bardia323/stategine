@@ -466,6 +466,10 @@ uniform sampler2D uDepth;
 uniform mat4 uReproject;
 uniform vec2 uJitter;
 uniform vec2 uTexel;
+// What is made: the screen's pixels - the same as this frame's, or more
+// (uUp 1: drawn at fewer, Quality::render_scale).
+uniform vec2 uOutTexel;
+uniform float uUp;
 uniform float uFresh;
 uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
 // Blended in a curve that keeps a bright pixel from outweighing its
@@ -477,7 +481,7 @@ vec3 rgb(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
 // What was, read between its pixels sharply (Catmull-Rom, in five taps):
 // read bilinearly, the history would soften a little every frame.
 vec3 history_at(vec2 uv) {
-    vec2 size = 1.0 / uTexel;
+    vec2 size = 1.0 / uOutTexel;
     vec2 pos = uv * size;
     vec2 c = floor(pos - 0.5) + 0.5;
     vec2 f = pos - c;
@@ -486,7 +490,7 @@ vec3 history_at(vec2 uv) {
     vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
     vec2 w3 = f * f * (-0.5 + 0.5 * f);
     vec2 w12 = w1 + w2;
-    vec2 t0 = (c - 1.0) * uTexel, t3 = (c + 2.0) * uTexel, t12 = (c + w2 / w12) * uTexel;
+    vec2 t0 = (c - 1.0) * uOutTexel, t3 = (c + 2.0) * uOutTexel, t12 = (c + w2 / w12) * uOutTexel;
     vec3 r = texture(uHistory, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y) + texture(uHistory, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y) +
              texture(uHistory, t12).rgb * (w12.x * w12.y) + texture(uHistory, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y) +
              texture(uHistory, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y);
@@ -499,6 +503,16 @@ void main() {
     // jitter's last few steps (on its cycle of eight, every edge stepped).
     vec2 here = vUV + 0.5 * uJitter;
     vec3 cur = texture(uCurrent, here).rgb;
+    // Drawn at fewer pixels: the one of them nearest this pixel of the
+    // screen, and how near it fell - near, it says much of this pixel, as it
+    // is; further, less, and the frames before say the rest.
+    float fell_near = 1.0;
+    if (uUp > 0.5) {
+        vec2 t = (floor(here / uTexel) + 0.5) * uTexel;
+        vec2 fell = (t - 0.5 * uJitter - vUV) / uOutTexel;
+        fell_near = exp(-1.5 * dot(fell, fell));
+        cur = mix(cur, texture(uCurrent, t).rgb, fell_near);
+    }
     if (uFresh > 0.5) {
         FragColor = vec4(cur, 1.0);
         return;
@@ -534,7 +548,7 @@ void main() {
     float most = max(out_.x, max(out_.y, out_.z));
     if (most > 1.0) h = mid + off / most;
     vec3 now = squash(cur);
-    FragColor = vec4(unsquash(mix(rgb(h), now, 0.1)), 1.0);
+    FragColor = vec4(unsquash(mix(rgb(h), now, uUp > 0.5 ? 0.03 + 0.2 * fell_near : 0.1)), 1.0);
 }
 )";
 }
@@ -1485,6 +1499,29 @@ float air_past(float d, float start) {
     float x = d - start;
     if (w <= 0.0) return max(x, 0.0);
     return x >= w ? x : (x <= -w ? 0.0 : (x + w) * (x + w) / (4.0 * w));
+}
+// Air thinner the higher it is (0: the same everywhere): from `uFogFloor`
+// up it thins by e for every 1 / `uFogFalloff` metres, below it is as thick
+// as `uFogDensity` says. How much of the way from `a` to `b` it is, against
+// air as thick everywhere: its thickness along the way, integrated.
+uniform float uFogFalloff;
+uniform float uFogFloor;
+float air_height(vec3 a, vec3 b) {
+    if (uFogFalloff <= 0.0) return 1.0;
+    float ya = max(a.y - uFogFloor, 0.0), yb = max(b.y - uFogFloor, 0.0);
+    float k = uFogFalloff, dy = (yb - ya) * k;
+    float at = exp(-min(ya * k, 80.0));
+    // (Level ways: the thickness where they are; else exp's mean between.)
+    return abs(dy) < 1e-3 ? at * (1.0 - 0.5 * dy) : at * (1.0 - exp(-dy)) / dy;
+}
+// Sunlight the air scatters towards the eye: by Henyey and Greenstein's
+// phase, `uFogSunG` how much of it goes on forward (0: the old glow
+// round the sun), `uFogSunAmount` how much.
+uniform float uFogSunG;
+uniform float uFogSunAmount;
+float sun_phase(float c) {
+    float g = uFogSunG, d = 1.0 + g * g - 2.0 * g * c;
+    return (1.0 - g * g) / (d * sqrt(d));
 }
 uniform vec4  uHostFog;       // seen through a doorway from another world: its air (density, start, full, and 1)
 uniform vec3  uHostFogColor;
@@ -3105,12 +3142,18 @@ void main() {
     }
     // (This side's air from the doorway on, eased in where it begins.)
     float air_depth = uFogDensity * max(air_past(len, uFogStart) - air_past(t, uFogStart), 0.0);
+    // (Thinner up high, where the look says so: along the way it fogs.)
+    if (uFogFalloff > 0.0 && air_depth > 0.0) {
+        float from = max(t, min(uFogStart, len));
+        air_depth *= air_height(uViewPos + to_frag * (from / max(len, 1e-5)), vWorld);
+    }
     // And where the way crosses fog pooled in this world (fog_volumes_glsl),
     // that too - of its own colour where it has one, else of this air's.
     vec4 own;
     float pooled = fog_volume_depth(uViewPos + to_frag * (t / max(len, 1e-5)), vWorld, own);
     float fog = 1.0 - exp(-air_depth - pooled);
-    float toward = pow(max(dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0))), 0.0), 6.0);
+    float sun_cos = dot(normalize(to_frag), normalize(uSunDir + vec3(0.0, 1e-4, 0.0)));
+    float toward = uFogSunG > 0.0 ? uFogSunAmount * sun_phase(sun_cos) * 4.0 : pow(max(sun_cos, 0.0), 6.0);
     // Air that takes all at last is the background too: as far as it goes,
     // what is seen is what is beyond the last thing drawn.
     vec3 fog_color = (uFogColor * (air_depth + pooled - own.w) + own.rgb) / max(air_depth + pooled, 1e-6);

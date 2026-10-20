@@ -1864,6 +1864,11 @@ private:
     // a picture is made of the frames before for.
     bool eye_view() const { return !root_ && !output_ && !baking_ && surface_only_ == 0; }
     bool taa_on() const { return q_.taa && eye_view(); }
+    // Drawn at a part of the screen's pixels each way, the TAA making the
+    // screen's whole of them over frames (Quality::render_scale): how much
+    // (1: the screen's own); and the screen's size it makes.
+    float drawn_scale() const { return taa_on() && q_.render_scale < 0.999f ? std::max(q_.render_scale, 0.5f) : 1.0f; }
+    int out_w_ = 0, out_h_ = 0;
     void run_taa();
     // How a pixel of this frame's view is found in a last one (its view, its
     // world, where its rooms stood, its eye): clip space to clip space. False

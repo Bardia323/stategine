@@ -40,7 +40,10 @@ void GLWorldView::view_through(const Spatial3D& world, const Element& eye, float
     // come into): two portals facing, a room glued to itself.
     const LookState& look = look_of(world);
     const double density = value(look, passes::scene, Key{"uFogDensity"}, 0.0);
-    const double reach = value(look, passes::scene, Key{"uFogFull"}, 0.0) > 0.5 && density > 0.0
+    // (Air thinner up high takes all further off than `density` says: no
+    // reach is known for it.)
+    const bool level_air = value(look, passes::scene, Key{"uFogFalloff"}, 0.0) <= 0.0;
+    const double reach = value(look, passes::scene, Key{"uFogFull"}, 0.0) > 0.5 && density > 0.0 && level_air
                              ? value(look, passes::scene, Key{"uFogStart"}, 0.0) + 4.6 / density
                              : 1e30;
     const int deep = static_cast<int>(world.params().num(Key{"views_deep"}, 1.0));

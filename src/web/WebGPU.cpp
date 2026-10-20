@@ -3,7 +3,9 @@
 #include "sg/render/Defaults.hpp"
 #include "sg/render/Geometry.hpp"
 #include "sg/render/Pack.hpp"
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <emscripten/val.h>
 #include <functional>
@@ -33,6 +35,7 @@ struct WebGPUView::Impl {
     std::map<Key, Surface2D *> surfaces;
     val shaders = val::array();
     bool configured = false, refused = false;
+    float render_scale = 1.0f;
     unsigned resource_generation = 0;
     std::map<Key, std::vector<Key>> uniform_keys;
     std::map<Key, const LookState *> borrowed_looks;
@@ -190,6 +193,11 @@ struct WebGPUView::Impl {
         frame[26] = value(passes::scene, "uFogColor.z", .09);
         frame[27] = value(passes::scene, "uAmbient", .55);
         frame[28] = flat ? 0 : value(passes::scene, "uFogDensity", .018);
+        // (Air thinner up high, and the sun scattered by its phase: as the GL scene says.)
+        frame[29] = value(passes::scene, "uFogFalloff", 0);
+        frame[30] = value(passes::scene, "uFogFloor", 0);
+        frame[45] = value(passes::scene, "uFogSunG", 0);
+        frame[46] = value(passes::scene, "uFogSunAmount", 0);
         frame[31] = value(passes::scene, "uShadowFloor", 0);
         frame[32] = value(passes::bright, "uThreshold", 1.05);
         frame[33] = value(passes::composite, "uBloomStrength", .55);
@@ -708,7 +716,10 @@ void WebGPUView::render(const StateGraph &g, const State &root, int w, int h, do
     impl_->used_meshes.clear(), impl_->used_pictures.clear();
     auto rooms = val::array();
     rooms.set(0, val::null());
-    auto first = impl_->room(g, root, w, h, nullptr, {}, 0, rooms, root.id().str());
+    // (Drawn at a part of the canvas's pixels: the room that size, shown on all of it.)
+    const float s = impl_->render_scale;
+    const int dw = s < 1.0f ? std::max(1, static_cast<int>(std::lround(w * s))) : w, dh = s < 1.0f ? std::max(1, static_cast<int>(std::lround(h * s))) : h;
+    auto first = impl_->room(g, root, dw, dh, nullptr, {}, 0, rooms, root.id().str());
     rooms.set(0, first);
     // Drawn, the browser holds what this frame used - and only that (what
     // a frame does not use it lets go); not drawn, what it holds is as it was.
@@ -717,6 +728,7 @@ void WebGPUView::render(const StateGraph &g, const State &root, int w, int h, do
     impl_->held_pictures.swap(impl_->used_pictures);
 }
 void WebGPUView::bind_surface(Key p, Surface2D *s) { impl_->surfaces[p] = s; }
+void WebGPUView::set_render_scale(float scale) { impl_->render_scale = std::isfinite(scale) ? std::clamp(scale, 0.5f, 1.0f) : 1.0f; }
 void WebGPUView::recreate() {
     impl_->configured = false;
     impl_->handle.call<void>("recreate");

@@ -25,6 +25,11 @@ struct Quality {
     // part of a pixel, and the frames before taken in where they still hold
     // (temporal antialiasing). With it, `msaa` 0 is as smooth, for less.
     bool taa=false;
+    // With `taa`, the eye's view drawn at this part of the screen's pixels
+    // each way and made whole over frames: each frame's few pixels laid
+    // where they fall among the screen's, the frames before filling the rest
+    // (temporal upsampling). 0.75: a little over half the shading; 1: none.
+    float render_scale=1.0f;
     // A plane that says it reflects shows the room in it, drawn again from
     // the mirrored eye at `reflection_scale` of the screen's pixels (0.5: a
     // quarter of them), where the plane is on the screen: two such planes at

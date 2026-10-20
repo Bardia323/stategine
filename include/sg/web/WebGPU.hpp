@@ -13,6 +13,9 @@ public:
     std::vector<std::string> diagnostics() const;
     void render(const StateGraph& graph,const State& root,int width,int height,double frame_delta=0);
     void bind_surface(Key portal,Surface2D* surface);
+    // The eye's room drawn at this part of the canvas's pixels each way
+    // (0.5..1; 1, the canvas's own), laid on the whole of it as it is shown.
+    void set_render_scale(float scale);
     void recreate();
 private:
     struct Impl;

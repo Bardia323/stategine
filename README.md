@@ -22,7 +22,9 @@ WebGPU and adapts DOM input/WebRTC. `stategine::dsl` and native `sgc`
 compile the notation. `stategine::gpu` exposes optional algebra backends.
 `stategine::net` adds sparse matrix-free CPU/CUDA reconciliation, neighboring execution partitions, signed canonical epochs, independent verification, regional quorum finalization and disposable latency prediction over external byte transport.
 The libraries need no window dependency; `sg/gl/Window.hpp` uses your GLFW,
-and OpenGL examples fetch it on demand.
+and OpenGL examples fetch it on demand. Configured with `SG_NATIVE_GPU`, the
+same calls are answered by Vulkan or D3D12 where `SG_GPU` asks
+([docs/native.md](docs/native.md)); OpenGL stays the default.
 
 Building on it, or changing it? [AGENTS.md](AGENTS.md) is the short version of
 how: standalone states, joined only through interfaces the graph declares and
@@ -846,6 +848,12 @@ sg::wear(graph, "hall", "hall.alert");
 sg::set_look(hall, "hall.alert");                  // a parameter write; the renderer fades
 ```
 
+A look's air may thin as it rises: `uFogFalloff` (per metre, from
+`uFogFloor` up; below it as thick as `uFogDensity`), integrated along each
+way it fogs, so a valley holds its haze and a tower stands clear of it.
+`uFogSunG` and `uFogSunAmount` scatter sunlight in it by a phase function
+(how much goes on ahead, and how much). All 0 unless a look says.
+
 Each room is drawn in its own look, so the annex keeps its fog when seen from
 the hall. The post passes follow the room the viewer stands in.
 
@@ -1487,7 +1495,8 @@ include/sg/
     derived networking machinery, built as stategine::net)
   render/    Ascii, Visibility, ViewPlan, Geometry, Defaults
     (uses core, domains, spatial; no GPU or window dependency)
-  gl/        native OpenGL executor (World.hpp; uses render)
+  gl/        native OpenGL executor (World.hpp; uses render); native/, its
+    GL calls answered by Vulkan or D3D12 (SG_NATIVE_GPU, docs/native.md)
   pictures/  a picture file read as pixels (PNG, JPEG, TGA, BMP, PPM) for a
     program to hand the engine (Texture::set_reader); uses nothing of the
     engine, built as stategine::pictures (stb_image in third_party/stb)

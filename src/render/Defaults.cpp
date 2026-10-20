@@ -26,6 +26,8 @@ const Setting kSettings[] = {
     {"msaa", &Quality::msaa, nullptr, nullptr, "samples a pixel, for smooth edges (0: none, 2, 4, 8)"},
     {"taa", nullptr, nullptr, &Quality::taa,
      "smooth edges and shimmer over frames, for less than msaa (true/false; with it, msaa = 0)"},
+    {"render_scale", nullptr, &Quality::render_scale, nullptr,
+     "with taa, the view drawn at this part of the screen's pixels each way and made whole over frames (0.5 to 1; 1: the screen's own)"},
     {"reflections", nullptr, nullptr, &Quality::reflections,
      "planes that say they reflect (reflects, floor_reflects) show the room in them (true/false)"},
     {"reflection_scale", nullptr, &Quality::reflection_scale, nullptr, "how sharp reflections are drawn: the pixels each may take, a part of the screen's (0.1 to 1)"},
@@ -172,6 +174,10 @@ void standard_look(LookState &l, const Quality &q) {
         .uniform(passes::scene, "uFogDensity", 0.018)
         .uniform(passes::scene, "uFogStart", 0.0)
         .uniform(passes::scene, "uFogFull", 0.0)
+        .uniform(passes::scene, "uFogFalloff", 0.0)
+        .uniform(passes::scene, "uFogFloor", 0.0)
+        .uniform(passes::scene, "uFogSunG", 0.0)
+        .uniform(passes::scene, "uFogSunAmount", 0.0)
         .uniform(passes::scene, "uSky", 0.10, 0.13, 0.20)
         .uniform(passes::scene, "uGround", 0.14, 0.10, 0.07)
         .uniform(passes::scene, "uAmbient", 0.55)

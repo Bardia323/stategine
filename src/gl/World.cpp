@@ -895,7 +895,13 @@ void main() {
         timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
     card_stamp(kCardFeeds);
     ensure_resources();
-    ensure_targets(fb_w, fb_h);
+    // (Drawn at a part of the screen's pixels, the TAA making the rest: every
+    // picture up to it that size, and what comes after it the screen's.)
+    out_w_ = fb_w, out_h_ = fb_h;
+    if (const float s = drawn_scale(); s < 1.0f)
+        ensure_targets(std::max(1, static_cast<int>(std::lround(fb_w * s))), std::max(1, static_cast<int>(std::lround(fb_h * s))));
+    else
+        ensure_targets(fb_w, fb_h);
     advance_fades();
 
     const Spatial3D& world = *rooms.front().room;
@@ -942,8 +948,11 @@ void main() {
             for (; i > 0; i /= b) f /= static_cast<float>(b), r += f * static_cast<float>(i % b);
             return r;
         };
-        jitter_x_ = halton(frame_count_ % 8 + 1, 2) - 0.5f;
-        jitter_y_ = halton(frame_count_ % 8 + 1, 3) - 0.5f;
+        // (Drawn at fewer pixels, more steps: each of the screen's is fallen
+        // on by some within the cycle.)
+        const uint64_t cycle = drawn_scale() < 1.0f ? 16 : 8;
+        jitter_x_ = halton(frame_count_ % cycle + 1, 2) - 0.5f;
+        jitter_y_ = halton(frame_count_ % cycle + 1, 3) - 0.5f;
     } else if (!root_) {
         jitter_x_ = jitter_y_ = 0.0f;
     }

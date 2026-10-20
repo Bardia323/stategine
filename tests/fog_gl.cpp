@@ -178,6 +178,21 @@ int main() {
     el("mist").set("density", 0.3);
     look.setting(sg::passes::scene, "scatter", 0.0);
 
+    // The look's own air thinner up high (`uFogFalloff` from `uFogFloor`):
+    // the wall high up less fogged than low down, where as thick everywhere
+    // the two are fogged alike.
+    el("mist").set("density", 0.0);
+    look.uniform(sg::passes::scene, "uFogDensity", 0.06);
+    shot(view);
+    const Rgb level_low = at(0.5, 0.45), level_high = at(0.5, 0.75);
+    look.uniform(sg::passes::scene, "uFogFalloff", 0.5).uniform(sg::passes::scene, "uFogFloor", 0.5);
+    shot(view);
+    const Rgb thin_low = at(0.5, 0.45), thin_high = at(0.5, 0.75);
+    say("the look's air, low", level_low), say("and high", level_high), say("thinning up high, low", thin_low), say("and high", thin_high);
+    check(std::abs(level_low.sum() - level_high.sum()) < 25.0 && thin_high.sum() < thin_low.sum() - 40.0 && thin_low.sum() > in_clear.sum() + 20.0,
+          "the look's air thinning as it rises: the wall high up less fogged than low down");
+    look.uniform(sg::passes::scene, "uFogDensity", 0.0).uniform(sg::passes::scene, "uFogFalloff", 0.0).uniform(sg::passes::scene, "uFogFloor", 0.0);
+
     // A world with no fog draws as it did.
     field.remove_element(sg::Key{"mist"});
     field.remove_element(sg::Key{"lamp"});
