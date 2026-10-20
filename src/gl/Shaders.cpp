@@ -3010,10 +3010,16 @@ void main() {
         // own shade - and a normal map casts no shadow: at a light this low
         // over the ground its faces turned to it would take many times what
         // the ground does, the rest nothing, the ground brighter than it is.
-        // What they take is held to what the ground itself faces, below a
-        // quarter of the way up: its ripples still lit and dark, the ground
-        // as bright as it is.)
-        if (bed_rough >= 0.0) shadow *= clamp(dot(face_n, l) * 4.0, 0.0, 1.0);
+        // What a ripple's face takes is held to twice what the ground there
+        // faces, and none where the ground itself turns from it (eased over
+        // a degree or two): its ripples still lit and dark, the ground as
+        // bright as it is. Ground the light only grazes is lit as much as it
+        // faces it - never darkened for being grazed: a dune's flanks under
+        // a low sun are lit, not shadowed.)
+        if (bed_rough >= 0.0) {
+            float face_ndl = dot(face_n, l);
+            shadow *= smoothstep(0.0, 0.03, face_ndl) * min(1.0, (2.0 * max(face_ndl, 0.0) + 0.02) / max(ndl, 1e-4));
+        }
 
         // Cook-Torrance: GGX for the spread of the highlight, Smith's
         // height-correlated masking (Hammon's fit), and Schlick's Fresnel -
