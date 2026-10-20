@@ -114,6 +114,8 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldThings.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldViews.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Shaders.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/domains/Probe.cpp)
 endif()
+# Vulkan and D3D12 behind the same calls (opt in: SG_NATIVE_GPU).
+include(cmake/native_gpu.cmake)
 
 # Sound (sg/audio): a library of its own on top, as drawing is. A mixer that
 # reads the states - what each thing sounds as, each place's sound look, the
@@ -311,6 +313,22 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_instancing_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_instancing_gl COMMAND sg_instancing_gl)
+
+    # Drawn at fewer pixels and made whole over frames (render_scale): the same picture, for less.
+    add_executable(sg_upscale_gl tests/upscale_gl.cpp)
+    target_link_libraries(sg_upscale_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_upscale_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_upscale_gl COMMAND sg_upscale_gl)
+
+    # Work on the card's own: a compute program's writes read back, and drawn as the draws it says.
+    add_executable(sg_compute_gl tests/compute_gl.cpp)
+    target_link_libraries(sg_compute_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_compute_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_compute_gl COMMAND sg_compute_gl)
 
     # A packed picture, read by a real card exactly as it is decoded here.
     add_executable(sg_pack_gl tests/pack_gl.cpp)
@@ -866,7 +884,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_render_conf sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_lanes sg_director sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_deep_views_gl sg_crossings_gl
-      sg_instancing_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_upscale_gl sg_compute_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape sg_finish_gl)

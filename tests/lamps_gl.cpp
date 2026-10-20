@@ -7,6 +7,7 @@
 // it lights and on its air.
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,13 @@ void check(bool c, const std::string& what) {
 
 int main() {
     const int W = 960, H = 540;
+    // (The card's time compared: never held to the screen's refresh - an
+    // idle card slows its clocks, and what it does takes longer.)
+#ifdef _WIN32
+    _putenv("SG_NO_VSYNC=1");
+#else
+    setenv("SG_NO_VSYNC", "1", 1);
+#endif
     sg::gl::Window window(W, H, "lamps");
     sg::StateGraph g;
     auto& hall = g.add<sg::Spatial3D>("hall");

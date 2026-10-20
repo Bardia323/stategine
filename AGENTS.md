@@ -471,7 +471,9 @@ a connection cannot create a participant; a callback cannot change State;
 a GPU buffer cannot own truth; a browser clock cannot become world time.
 Meaning remains in StateGraph. Browser machinery only computes, moves,
 verifies or draws what its declared interfaces already mean. Keep `sg/render`
-backend-neutral, `sg/gl` native and `sg/web` above them. Cross builds consume
+backend-neutral, `sg/gl` native and `sg/web` above them; `src/gl/native`
+answers `sg/gl`'s GL calls with Vulkan or D3D12 and adds nothing GL does not
+have ([native.md](docs/native.md)). Cross builds consume
 a native `sgc`; Wasm networking keeps the double-precision CPU reference.
 Run the portable Wasm suite and real browser/native integration tests as well
 as native laws and renderer tests. See [browser.md](docs/browser.md).

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -13,6 +14,9 @@
 #include <GLFW/glfw3.h>
 
 #include "sg/gl/GL.hpp"
+#if defined(SG_NATIVE_GPU)
+#include "sg/gl/Native.hpp"
+#endif
 
 namespace sg::gl {
 
@@ -29,22 +33,34 @@ namespace sg::gl {
 // warm and bakes take its events now and then). A program's own long work
 // after the window is open does the same: `pump()` now and then, or open the
 // window after it.
+//
+// Built with SG_NATIVE_GPU, it can be drawn by Vulkan or D3D12 instead of GL
+// (sg/gl/Native.hpp: SG_GPU=vulkan or d3d12); where that cannot start, GL.
 class Window {
 public:
     Window(int w, int h, const std::string& title) {
         if (!glfwInit()) throw std::runtime_error("glfwInit failed");
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_SAMPLES, 4);
         GLFWmonitor* const on = asked_monitor();
-        if (on) {
-            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-            glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
-            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+#if defined(SG_NATIVE_GPU)
+        if (const Api api = asked_api(); api != Api::gl) {
+            hint(on, false);
+            win_ = glfwCreateWindow(w, h, title.c_str(), nullptr, nullptr);
+            glfwDefaultWindowHints();
+            std::string why;
+            if (win_ && start_native(api, win_, why)) {
+                native_ = true;
+            } else {
+                std::fprintf(stderr, "stategine: %s could not start (%s); drawing with OpenGL\n", api_name(api), why.c_str());
+                if (win_) glfwDestroyWindow(win_);
+                win_ = nullptr;
+            }
         }
-        win_ = glfwCreateWindow(w, h, title.c_str(), nullptr, nullptr);
-        glfwDefaultWindowHints();
+#endif
+        if (!native_) {
+            hint(on, true);
+            win_ = glfwCreateWindow(w, h, title.c_str(), nullptr, nullptr);
+            glfwDefaultWindowHints();
+        }
         if (!win_) {
             glfwTerminate();
             throw std::runtime_error("window creation failed (needs OpenGL 3.3)");
@@ -55,16 +71,19 @@ public:
             glfwSetWindowPos(win_, x + std::max(0, (aw - w) / 2), y + std::max(0, (ah - h) / 2));
             glfwShowWindow(win_);
         }
-        glfwMakeContextCurrent(win_);
         // (In step with the screen - but SG_NO_VSYNC set, as fast as it
         // draws, to see what a frame costs.)
-        glfwSwapInterval(std::getenv("SG_NO_VSYNC") ? 0 : 1);
-        load(reinterpret_cast<ProcLoader>(glfwGetProcAddress));
+        vsync_ = !std::getenv("SG_NO_VSYNC");
+        if (!native_) {
+            glfwMakeContextCurrent(win_);
+            glfwSwapInterval(vsync_ ? 1 : 0);
+            load(reinterpret_cast<ProcLoader>(glfwGetProcAddress));
+        }
         // Black at once, both buffers, not the white of a window nobody drew.
         for (int i = 0; i < 2; ++i) {
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
-            glfwSwapBuffers(win_);
+            swap();
         }
         glfwPollEvents();
         answer_hook = [] { glfwPollEvents(); };
@@ -75,6 +94,9 @@ public:
 
     ~Window() {
         answer_hook = nullptr;
+#if defined(SG_NATIVE_GPU)
+        if (native_) stop_native();
+#endif
         if (win_) glfwDestroyWindow(win_);
         glfwTerminate();
     }
@@ -84,7 +106,12 @@ public:
 
     bool should_close() const { return glfwWindowShouldClose(win_); }
     void close() { glfwSetWindowShouldClose(win_, 1); }
-    void swap() { glfwSwapBuffers(win_); }
+    void swap() {
+#if defined(SG_NATIVE_GPU)
+        if (native_) return present_native(vsync_);
+#endif
+        glfwSwapBuffers(win_);
+    }
 
     int width() const {
         int w = 0, h = 0;
@@ -144,6 +171,24 @@ public:
 private:
     static bool valid(int key) { return key >= 0 && key <= GLFW_KEY_LAST; }
 
+    // The window's hints: a GL context, or none (a native backend's), and
+    // shown on `on` without the keyboard.
+    static void hint(GLFWmonitor* on, bool gl) {
+        if (gl) {
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+            glfwWindowHint(GLFW_SAMPLES, 4);
+        } else {
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        }
+        if (on) {
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+        }
+    }
+
     // The monitor `SG_WINDOW_MONITOR` names, or none: unset, or no such one
     // (one monitor only: `other` has nowhere to go, and it opens as ever).
     static GLFWmonitor* asked_monitor() {
@@ -167,6 +212,7 @@ private:
     std::array<bool, GLFW_KEY_LAST + 1> prev_{};
     double mx_ = 0, my_ = 0, dx_ = 0, dy_ = 0;
     bool captured_ = false;
+    bool native_ = false, vsync_ = true;
 };
 
 }  // namespace sg::gl
