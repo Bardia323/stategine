@@ -95,7 +95,7 @@ std::vector<Vec3d> points(const Law& law, const Area& area, const std::function<
 //                                narrowing or fading to its end as `sd_to`
 //                                and `amount_to` say (as at its start unless)
 //   drag   path="x,z x,z ..." width contact (width_to amount amount_to fade
-//          reload drips amount_drip prints amount_print seed)
+//          reload tug wander clots arms drips amount_drip prints amount_print seed)
 //                                a body dragged along a way, what it leaves
 //                                (bloodstain analysis's wipe): a smear
 //                                `width` across, ragged and feathered, its
@@ -108,7 +108,11 @@ std::vector<Vec3d> points(const Law& law, const Area& area, const std::function<
 //                                (`reload`: distances along the way); drops
 //                                beside it (`drips` a metre); whoever
 //                                dragged it, walking backward ahead of it,
-//                                heel first (`prints` steps, each fainter)
+//                                heel first (`prints` steps, each fainter); hauled in pulls (`tug` metres: heavy where
+//                                it stopped, a crescent, thin as it slid),
+//                                the body off the line (`wander` metres),
+//                                clots dragged out (`clots` a metre), an
+//                                arm's fingers trailing at its sides (`arms`)
 //   sum    of="a b c" [w_a=]     the named laws of the distribution, added
 //                                (each times its weight, 1 unless said)
 // The intensity of a named law of `d` at (x, z), per square metre (a
@@ -133,6 +137,20 @@ std::vector<unsigned char> field_picture(const Distribution& d, Key law, const A
 // field fine across it and as long as it is. Kept on disk by what makes it
 // (sg::cache: every law of `d`), so it is worked out once.
 std::vector<unsigned char> field_picture(const Distribution& d, Key law, const Area& area, int pw, int ph, double* most = nullptr);
+
+// A stain photographed - a strip, its way along it top to bottom, its
+// alpha the stain - laid along a way ("x,z x,z ..." as `drag`'s), one after
+// another end to end: each `width` across (as wide as the stain is in its
+// picture), as long as its picture says for that, a little shorter or
+// longer, narrower or wider, mirrored or not, which by chance (`seed`);
+// each `overlap` of its length over the last. A picture over `area` as
+// field_picture's (its alpha, white where the stain is whole), kept on disk.
+struct Strip {
+    int w = 0, h = 0;
+    std::vector<unsigned char> rgba;
+};
+std::vector<unsigned char> strip_picture(const std::string& way, double width, const std::vector<Strip>& strips, const Area& area, int pw, int ph,
+                                         uint64_t seed = 1, double overlap = 0.12);
 
 // A law's numbers carried onto the element that spreads by it (a kept
 // functor's transport: `natives.transport("law_to", sg::law_to)`).

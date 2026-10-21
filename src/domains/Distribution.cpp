@@ -334,16 +334,17 @@ double drag_at(const Law& law, double x, double z) {
     const DragPath& p = drag_path(law.p.get_or<std::string>("path", ""));
     if (p.x.size() < 2) return 0.0;
     // Where along the way, and how far to its side (left -, right +).
-    double best = 1e30, s = 0.0, u = 0.0, dir_x = 0.0, dir_z = 1.0;
+    double best = 1e30, s = 0.0, u = 0.0;
     for (std::size_t i = 0; i + 1 < p.x.size(); ++i) {
         const double ax = p.x[i], az = p.z[i], ux = p.x[i + 1] - ax, uz = p.z[i + 1] - az, len = std::hypot(ux, uz);
         if (len < 1e-9) continue;
         const double t = std::clamp(((x - ax) * ux + (z - az) * uz) / (len * len), 0.0, 1.0);
         const double dx = x - (ax + ux * t), dz = z - (az + uz * t), d2 = dx * dx + dz * dz;
-        if (d2 < best) best = d2, s = p.at[i] + t * len, u = (ux * dz - uz * dx) / len, dir_x = ux / len, dir_z = uz / len;
+        if (d2 < best) best = d2, s = p.at[i] + t * len, u = (ux * dz - uz * dx) / len;
     }
-    const double total = p.at.back(), seed_d = law.p.num(Key{"seed"}, 1.0);
-    const uint64_t seed = static_cast<uint64_t>(seed_d * 1000.0) * 0x2545f4914f6cdd1dULL + 17;
+    const double total = p.at.back();
+    if (std::sqrt(best) > 1.2) return 0.0;
+    const uint64_t seed = static_cast<uint64_t>(law.p.num(Key{"seed"}, 1.0) * 1000.0) * 0x2545f4914f6cdd1dULL + 17;
     const std::string contact = law.p.get_or<std::string>("contact", "clothed");
     const double w0 = law.p.num(Key{"width"}, 0.35), width = w0 + (law.p.num(Key{"width_to"}, w0) - w0) * std::clamp(s / std::max(total, 1e-6), 0.0, 1.0);
     // Its blood as it goes: the last place it was set down, and how far since.
@@ -352,97 +353,149 @@ double drag_at(const Law& law, double x, double z) {
         if (const double at = std::atof(r.c_str()); at <= s) since = std::min(since, s - at);
     const double a0 = law.p.num(Key{"amount"}, 1.0), a1 = law.p.num(Key{"amount_to"}, 0.15), fade = std::max(law.p.num(Key{"fade"}, 4.0), 0.05);
     const double blood = a1 + (a0 - a1) * std::exp2(-since / fade);
+    // Hauled in pulls (`tug` metres, each its own): the body slid, stopped,
+    // was hauled again. Which pull this is, and how far through it.
+    const double tug = std::max(law.p.num(Key{"tug"}, 0.0), 0.0);
+    long k = 0;
+    double f = 0.5;
+    if (tug > 0.0) {
+        // (Pulls of all lengths - a short heave, a long haul - not a beat.)
+        const double warped = s + 1.1 * tug * (noise1(s / tug * 0.45, seed + 41) - 0.5) + 0.5 * tug * (noise1(s / tug * 1.3, seed + 47) - 0.5);
+        k = static_cast<long>(std::floor(warped / tug));
+        f = warped / tug - static_cast<double>(k);
+    }
+    const uint64_t pull = seed + static_cast<uint64_t>(k + 1000) * 0x9e3779b97f4a7c15ULL;
+    // The body not on a line: it slid aside and twisted from pull to pull,
+    // and swayed within each.
+    const double wob = law.p.num(Key{"wander"}, 0.0);
+    const double centre = wob * (2.0 * noise1(s * 0.55, seed + 43) - 1.0 + 0.6 * (hash01(pull) - 0.5) + 0.25 * std::sin(6.283 * f + 6.283 * hash01(pull + 1)));
+    const double uu = u - centre;
     double out = 0.0;
-    // The smear.
+    // (`smear` 0: only what is beside it - its drops, its prints, its
+    // fingers - the smear laid otherwise, a photographed one: strip_picture.)
     const bool along = s > 1e-4 && s < total - 1e-4;
+    const bool smears = law.p.num(Key{"smear"}, 1.0) > 0.5;
     if (along) {
-        const double side = u < 0.0 ? -1.0 : 1.0;
-        // (Its edge ragged along the way, each side its own.)
+        const double side = uu < 0.0 ? -1.0 : 1.0;
+        // Its width this pull - the body rolled a little - and its edges,
+        // each side ragged its own way.
+        const double pw = width * (0.85 + 0.3 * hash01(pull + 2));
         const double rag = contact == "skin" ? 0.25 : contact == "hair" ? 0.35 : 0.3;
-        const double half = 0.5 * width * (1.0 + rag * (noise1(s * 9.0 + side * 31.0, seed) - 0.5) + 0.15 * (noise1(s * 2.3 + side * 7.0, seed + 5) - 0.5));
-        const double a = std::fabs(u) / std::max(half, 1e-4);
-        // (Feathered: blood drawn out past the edge in hair-thin runs.)
-        const double feather = contact == "hair" ? 0.35 : 0.2;
-        double body = 1.0 - smoothstep01((a - (1.0 - feather)) / feather);
-        // Its streaks along the way: what touched the floor, combed through it.
-        const double pitch = contact == "hair" ? 0.004 : contact == "skin" ? 0.014 : 0.028;
-        // (Near straight and side by side, as a wipe's are: wandering a
-        // little as the body turned, each its own spacing.)
-        const double wander = (noise1(s * 0.9, seed + 11) - 0.5) * 0.8 * pitch;
-        const double phase = (u + wander) / pitch + 1.5 * noise1(u / (pitch * 3.0) + 3.0, seed + 13);
-        const double comb = 0.5 + 0.5 * std::cos(6.283185307179586 * phase);
-        const double strength = contact == "hair" ? 0.85 : contact == "skin" ? 0.3 : 0.45;
-        // (Each streak heavier here, fainter there, as the cloth or hair
-        // pressed and let up: a wipe is never a comb's even teeth.)
-        const double press = noise2(u / (pitch * 1.5), s * 2.2, seed + 31);
-        double streak = 1.0 - strength * (0.4 + 0.9 * press) * (1.0 - comb * comb);
-        // (Its blood itself uneven: thicker where it smeared heavy, thin and
-        // dragged out between.)
-        streak *= 0.55 + 0.9 * noise2(u * 7.0, s * 1.2, seed + 29);
-        // (Broad folds of cloth: a few heavier bands, wandering.)
-        if (contact == "clothed") streak *= 0.65 + 0.7 * noise2(u * 18.0, s * 0.8, seed + 17);
-        // (Bare skin: blotchy, the blood pushed out to its edges.)
-        if (contact == "skin") streak *= (0.6 + 0.5 * noise2(u * 25.0, s * 5.0, seed + 19)) * (1.0 + 0.6 * smoothstep01((a - 0.55) / 0.35));
-        // (Cloth lifting off the floor now and then: gaps, short and long.)
-        double touch = 1.0;
-        if (contact == "clothed") touch = 0.25 + 0.75 * (1.0 - smoothstep01((noise1(s * 1.3, seed + 23) - 0.78) / 0.08));
-        // (Where it begins again - set down - its edge is a heavy one; it
-        // leaves off feathering.)
-        const double start = smoothstep01((since + 0.02) / 0.06);
-        const double end_off = 1.0 - smoothstep01((s - (total - 0.25)) / 0.25);
-        out += blood * body * streak * touch * start * std::max(end_off, 0.0);
+        const double half = 0.5 * pw * (1.0 + rag * (noise1(s * 11.0 + side * 31.0, seed) - 0.5) + 0.2 * (noise1(s * 2.7 + side * 7.0, seed + 5) - 0.5));
+        const double a = std::fabs(uu) / std::max(half, 1e-4);
+        const double feather = contact == "hair" ? 0.35 : 0.22;
+        const double body = smears ? 1.0 - smoothstep01((a - (1.0 - feather)) / feather) : 0.0;
+        if (body > 0.0) {
+            // Its streaks: never evenly spaced - noise across the way, its
+            // grain the fabric's, the skin's or the hair's - and drifting a
+            // little along it as the body shifted.
+            const double pitch = contact == "hair" ? 0.004 : contact == "skin" ? 0.012 : 0.02;
+            const double across = uu / pitch + 0.4 * noise1(s * 0.6, seed + 11) / pitch * 0.02;
+            double comb = 0.55 * noise2(across, s * 0.25, seed + 13) + 0.3 * noise2(across * 2.3, s * 0.4, seed + 15) + 0.15 * noise2(across * 5.1, s * 0.9, seed + 17);
+            comb = smoothstep01((comb - 0.3) / 0.45);
+            const double strength = contact == "hair" ? 0.85 : contact == "skin" ? 0.35 : 0.6;
+            double smear = 1.0 - strength * (1.0 - comb);
+            // (Its blood uneven: heavy where it pressed, dragged thin between.)
+            smear *= 0.5 + 1.0 * noise2(uu * 6.0, s * 1.1, seed + 29);
+            if (contact == "skin") smear *= 1.0 + 0.7 * smoothstep01((a - 0.55) / 0.35);
+            // Each pull: heavy where it came to rest - blood welling under the
+            // still body, a crescent bowed the way it went - thinner as it
+            // slid, the contact edge of the next pull ragged and heavy.
+            double cadence = 1.0;
+            if (tug > 0.0) {
+                const double bowed = f + 0.18 * (uu / std::max(half, 1e-3)) * (uu / std::max(half, 1e-3));
+                const double rest = smoothstep01((bowed - 0.8) / 0.12) * (1.0 - smoothstep01((bowed - 1.02) / 0.04));
+                const double set_down = 1.0 - smoothstep01(f / 0.12);
+                // (Each stop its own: some long, the blood welling; most barely a pause.)
+                const double stopped = hash01(pull + 4);
+                cadence = 0.75 + 0.9 * stopped * stopped * rest + 0.35 * hash01(pull + 5) * set_down * (0.6 + 0.8 * noise1(uu * 30.0, pull + 3));
+            }
+            // (Cloth lifting off the floor now and then.)
+            double touch = 1.0;
+            if (contact == "clothed") touch = 0.2 + 0.8 * (1.0 - smoothstep01((noise1(s * 1.1, seed + 23) - 0.8) / 0.07));
+            const double start = smoothstep01((since + 0.02) / 0.06);
+            const double end_off = 1.0 - smoothstep01((s - (total - 0.3)) / 0.3);
+            out += blood * body * smear * cadence * touch * start * std::max(end_off, 0.0);
+            // Clots dragged out: a heavy blob, its tail behind it.
+            if (const double clots = law.p.num(Key{"clots"}, 0.0); clots > 0.0) {
+                const double cell = 1.0 / clots;
+                const long c0 = static_cast<long>(std::floor(s / cell));
+                for (long c = c0 - 1; c <= c0 + 1; ++c) {
+                    const uint64_t h = seed + 977 + static_cast<uint64_t>(c + 100000) * 0xd1b54a32d192ed03ULL;
+                    const double cs = (static_cast<double>(c) + hash01(h)) * cell, cu = (hash01(h + 1) - 0.5) * 0.8 * pw, r = 0.012 + 0.025 * hash01(h + 2);
+                    const double ds = s - cs, du = uu - cu;
+                    // (Ahead of the blob, round; behind it, drawn out the way it was dragged from.)
+                    const double along_d = ds > 0.0 ? ds / r : -ds / (r * (4.0 + 8.0 * hash01(h + 3)));
+                    const double dd = std::hypot(along_d, du / r);
+                    if (dd < 1.4) out += blood * 1.2 * (1.0 - smoothstep01((dd - 0.7) / 0.5));
+                }
+            }
+        }
+        // Its arms: dragged by the ankles, trailed past its head - fingers
+        // drawing thin wandering lines out at its sides, now touching, now not.
+        if (const double arms = law.p.num(Key{"arms"}, 0.0); arms > 0.0)
+            for (const double sgn : {-1.0, 1.0}) {
+                const double reach = 0.5 * width + 0.12 + 0.12 * noise1(s * 0.9 + sgn * 17.0, seed + 51);
+                const double o = std::fabs(uu - sgn * reach);
+                const double on = smoothstep01((noise1(s * 0.75 + sgn * 9.0, seed + 53) - 0.5) / 0.12);
+                if (on <= 0.0 || o > 0.06) continue;
+                // (Three fingers' runs, side by side, each its own.)
+                double fingers = 0.0;
+                for (int q = 0; q < 3; ++q) {
+                    const double fo = std::fabs(uu - sgn * (reach + (q - 1) * 0.016));
+                    fingers = std::max(fingers, (1.0 - smoothstep01((fo - 0.002) / 0.004)) * (0.4 + 0.6 * noise1(s * 3.0 + q * 5.0, seed + 55 + static_cast<uint64_t>(q))));
+                }
+                out += arms * blood * on * fingers;
+            }
     }
     // Drops beside it: each a little round stain with its crown, where the
     // body dripped as it went.
+    const auto at_along = [&](double ds, double& px, double& pz, double& tx, double& tz) {
+        px = p.x[0], pz = p.z[0], tx = 0.0, tz = 1.0;
+        for (std::size_t i = 0; i + 1 < p.x.size(); ++i)
+            if (ds <= p.at[i + 1] || i + 2 == p.x.size()) {
+                const double len = std::max(p.at[i + 1] - p.at[i], 1e-9), t = std::clamp((ds - p.at[i]) / len, 0.0, 1.0);
+                px = p.x[i] + (p.x[i + 1] - p.x[i]) * t, pz = p.z[i] + (p.z[i + 1] - p.z[i]) * t;
+                tx = (p.x[i + 1] - p.x[i]) / len, tz = (p.z[i + 1] - p.z[i]) / len;
+                return;
+            }
+    };
     if (const double rate = law.p.num(Key{"drips"}, 0.0); rate > 0.0) {
-        const double amount = law.p.num(Key{"amount_drip"}, 0.8);
-        const double spacing = 1.0 / rate;
+        const double amount = law.p.num(Key{"amount_drip"}, 0.8), spacing = 1.0 / rate;
         const long k0 = static_cast<long>(std::floor(s / spacing)) - 2;
-        for (long k = k0; k <= k0 + 4; ++k) {
-            if (k < 0) continue;
-            const uint64_t h = seed + static_cast<uint64_t>(k) * 0x9e3779b97f4a7c15ULL;
-            const double ds = (k + hash01(h)) * spacing;
+        for (long q = k0; q <= k0 + 4; ++q) {
+            if (q < 0) continue;
+            const uint64_t h = seed + static_cast<uint64_t>(q) * 0x9e3779b97f4a7c15ULL;
+            const double ds = (q + hash01(h)) * spacing;
             if (ds > total) continue;
-            // (Where that is along the way: the point and its side.)
-            double px = p.x[0], pz = p.z[0], tx = 0.0, tz = 1.0;
-            for (std::size_t i = 0; i + 1 < p.x.size(); ++i)
-                if (ds <= p.at[i + 1] || i + 2 == p.x.size()) {
-                    const double len = std::max(p.at[i + 1] - p.at[i], 1e-9), t = std::clamp((ds - p.at[i]) / len, 0.0, 1.0);
-                    px = p.x[i] + (p.x[i + 1] - p.x[i]) * t, pz = p.z[i] + (p.z[i + 1] - p.z[i]) * t;
-                    tx = (p.x[i + 1] - p.x[i]) / len, tz = (p.z[i + 1] - p.z[i]) / len;
-                    break;
-                }
-            const double off = (hash01(h + 1) < 0.5 ? -1.0 : 1.0) * (0.5 * width + 0.03 + 0.2 * hash01(h + 2));
-            const double cx = px - tz * off, cz = pz + tx * off, r = 0.006 + 0.012 * hash01(h + 3);
+            double px, pz, tx, tz;
+            at_along(ds, px, pz, tx, tz);
+            const double off = (hash01(h + 1) < 0.5 ? -1.0 : 1.0) * (0.5 * width + 0.03 + 0.25 * hash01(h + 2));
+            const double cx = px - tz * off, cz = pz + tx * off, r = 0.005 + 0.014 * hash01(h + 3);
             const double dd = std::hypot(x - cx, z - cz) / r;
-            if (dd < 2.2) out += amount * (1.0 - smoothstep01((dd - 0.8) / 0.25)) + 0.25 * amount * (1.0 - smoothstep01((dd - 1.6) / 0.5)) * noise1(std::atan2(z - cz, x - cx) * 3.0, h);
+            if (dd < 2.4) out += amount * (1.0 - smoothstep01((dd - 0.75) / 0.25)) + 0.3 * amount * (1.0 - smoothstep01((dd - 1.5) / 0.6)) * noise1(std::atan2(z - cz, x - cx) * 3.0, h);
         }
     }
     // Whoever dragged it: walking backward ahead of it, each shoe that stood
-    // in its blood printing heel first - its heel, its sole, their tread -
-    // fainter each step.
+    // in its blood printing heel first - its heel, its sole, their tread,
+    // scuffed - fainter each step.
     if (const double steps = law.p.num(Key{"prints"}, 0.0); steps > 0.0) {
-        const double stride = 0.62, amount = law.p.num(Key{"amount_print"}, 0.9);
-        for (int k = 0; k < static_cast<int>(steps); ++k) {
-            const double ds = 0.35 + k * stride * 0.5;
+        const double amount = law.p.num(Key{"amount_print"}, 0.9);
+        for (int q = 0; q < static_cast<int>(steps); ++q) {
+            const double ds = 0.5 + q * 0.33 + 0.08 * (hash01(seed + 61 + static_cast<uint64_t>(q)) - 0.5);
             if (ds > total) break;
-            double px = p.x[0], pz = p.z[0], tx = 0.0, tz = 1.0;
-            for (std::size_t i = 0; i + 1 < p.x.size(); ++i)
-                if (ds <= p.at[i + 1] || i + 2 == p.x.size()) {
-                    const double len = std::max(p.at[i + 1] - p.at[i], 1e-9), t = std::clamp((ds - p.at[i]) / len, 0.0, 1.0);
-                    px = p.x[i] + (p.x[i + 1] - p.x[i]) * t, pz = p.z[i] + (p.z[i + 1] - p.z[i]) * t;
-                    tx = (p.x[i + 1] - p.x[i]) / len, tz = (p.z[i + 1] - p.z[i]) / len;
-                    break;
-                }
-            const double off = (k % 2 ? 1.0 : -1.0) * (0.5 * width + 0.12);
+            double px, pz, tx, tz;
+            at_along(ds, px, pz, tx, tz);
+            const double off = (q % 2 ? 1.0 : -1.0) * (0.5 * width + 0.1 + 0.05 * hash01(seed + 67 + static_cast<uint64_t>(q)));
+            const double turn = 0.25 * (hash01(seed + 71 + static_cast<uint64_t>(q)) - 0.5);
+            const double ctx = tx * std::cos(turn) - tz * std::sin(turn), ctz = tx * std::sin(turn) + tz * std::cos(turn);
             const double cx = px - tz * off, cz = pz + tx * off;
-            // (In the shoe's frame: `a` along it, toes toward the way back.)
-            const double rx = x - cx, rz = z - cz, a = -(rx * tx + rz * tz), b = rx * -tz + rz * tx;
+            const double rx = x - cx, rz = z - cz, a = -(rx * ctx + rz * ctz), b = rx * -ctz + rz * ctx;
             const double sole = (a > -0.02 && a < 0.17) ? std::hypot(a / 0.095 - 0.8, b / 0.045) : 9.0, heel = std::hypot((a + 0.075) / 0.04, b / 0.035);
             const double shoe = std::max(1.0 - smoothstep01((sole - 0.85) / 0.2), 1.0 - smoothstep01((heel - 0.85) / 0.2));
             if (shoe <= 0.0) continue;
             const double tread = 0.55 + 0.45 * std::cos(6.283185307179586 * a / 0.011);
-            out += amount * std::pow(0.68, k) * shoe * tread * (0.7 + 0.3 * noise2(rx * 60.0, rz * 60.0, seed + static_cast<uint64_t>(k)));
+            out += amount * std::pow(0.7, q) * shoe * tread * (0.5 + 0.6 * noise2(rx * 50.0, rz * 50.0, seed + static_cast<uint64_t>(q)));
         }
     }
     return out;
@@ -614,6 +667,76 @@ std::vector<unsigned char> field_picture(const Distribution& d, Key name, const 
     std::string store(out.begin(), out.end());
     store.append(reinterpret_cast<const char*>(&most), sizeof(double));
     cache::store("field picture", key, store);
+    return out;
+}
+
+std::vector<unsigned char> strip_picture(const std::string& way, double width, const std::vector<Strip>& strips, const Area& area, int pw, int ph,
+                                         uint64_t seed, double overlap) {
+    const std::size_t bytes = static_cast<std::size_t>(pw) * ph * 4;
+    std::vector<unsigned char> out(bytes, 0);
+    const DragPath& path = drag_path(way);
+    if (path.x.size() < 2 || strips.empty() || width <= 0.0) return out;
+    Hasher h;
+    h.text("strip picture 1").text(way).number(width).number(area.x0).number(area.z0).number(area.x1).number(area.z1).integer(pw).integer(ph)
+        .integer(static_cast<int64_t>(seed)).number(overlap);
+    for (const Strip& st : strips) {
+        h.integer(st.w).integer(st.h);
+        for (std::size_t q = 0; q < st.rgba.size(); q += 97) h.integer(st.rgba[q]);
+    }
+    const Digest key = h.digest();
+    std::string kept;
+    if (cache::load("strip picture", key, kept) && kept.size() == bytes) return std::vector<unsigned char>(kept.begin(), kept.end());
+    // The strips laid end to end, each its own: which, how long, how wide, mirrored.
+    struct Laid {
+        std::size_t which;
+        double s0, s1, w;
+        bool flip;
+    };
+    std::vector<Laid> laid;
+    const double total = path.at.back();
+    for (double s0 = 0.0; s0 < total && laid.size() < 4096;) {
+        const uint64_t k = seed * 0x9e3779b97f4a7c15ULL + laid.size() * 0xd1b54a32d192ed03ULL;
+        const std::size_t which = static_cast<std::size_t>(mix64(k) % strips.size());
+        const Strip& st = strips[which];
+        const double w = width * (0.85 + 0.3 * hash01(k + 1));
+        const double len = std::max(w * st.h / std::max(st.w, 1) * (0.85 + 0.3 * hash01(k + 2)), 0.1);
+        laid.push_back({which, s0, s0 + len, w, hash01(k + 3) < 0.5});
+        s0 += len * (1.0 - overlap);
+    }
+    work::bands(ph, [&](int from, int to) {
+        for (int j = from; j < to; ++j)
+            for (int i = 0; i < pw; ++i) {
+                const double x = area.x0 + (area.x1 - area.x0) * (i + 0.5) / pw, z = area.z0 + (area.z1 - area.z0) * (j + 0.5) / ph;
+                // Where along the way, and how far to its side.
+                double best = 1e30, s = 0.0, u = 0.0;
+                for (std::size_t q = 0; q + 1 < path.x.size(); ++q) {
+                    const double ax = path.x[q], az = path.z[q], ux = path.x[q + 1] - ax, uz = path.z[q + 1] - az, len = std::hypot(ux, uz);
+                    if (len < 1e-9) continue;
+                    const double t = std::clamp(((x - ax) * ux + (z - az) * uz) / (len * len), 0.0, 1.0);
+                    const double dx = x - (ax + ux * t), dz = z - (az + uz * t), d2 = dx * dx + dz * dz;
+                    if (d2 < best) best = d2, s = path.at[q] + t * len, u = (ux * dz - uz * dx) / len;
+                }
+                if (best > width * width * 4.0) continue;
+                double a = 0.0;
+                for (const Laid& l : laid) {
+                    if (s < l.s0 || s > l.s1) continue;
+                    const Strip& st = strips[l.which];
+                    const double cu = (l.flip ? -u : u) / l.w + 0.5, cv = (s - l.s0) / (l.s1 - l.s0);
+                    if (cu < 0.0 || cu > 1.0) continue;
+                    // (Read between its pixels.)
+                    const double fx = cu * st.w - 0.5, fy = cv * st.h - 0.5;
+                    const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, st.w - 1), y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, st.h - 1);
+                    const int x1 = std::min(x0 + 1, st.w - 1), y1 = std::min(y0 + 1, st.h - 1);
+                    const double tx = std::clamp(fx - x0, 0.0, 1.0), ty = std::clamp(fy - y0, 0.0, 1.0);
+                    const auto al = [&](int px, int py) { return st.rgba[(static_cast<std::size_t>(py) * st.w + px) * 4 + 3] / 255.0; };
+                    a = std::max(a, (al(x0, y0) * (1 - tx) + al(x1, y0) * tx) * (1 - ty) + (al(x0, y1) * (1 - tx) + al(x1, y1) * tx) * ty);
+                }
+                const unsigned char v = static_cast<unsigned char>(std::lround(255.0 * std::clamp(a, 0.0, 1.0)));
+                unsigned char* o = &out[(static_cast<std::size_t>(j) * pw + i) * 4];
+                o[0] = o[1] = o[2] = o[3] = v;
+            }
+    });
+    cache::store("strip picture", key, std::string(out.begin(), out.end()));
     return out;
 }
 

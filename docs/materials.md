@@ -144,7 +144,7 @@ Its one element, `map`:
 | `dirt_tile`, `dirt_rough` | metres its photograph covers (1.5); how rough the dirt leaves it (0.85) |
 | `damp_layer` (`damp_height_layer`) | a photograph of its damp: laid where water has been - down a wall below its world's leaks, in streaks widening as they fall; a blot on a ceiling round one; a tide mark on the floor under it; rising from the floor (`Wear`) |
 | `damp`, `damp_rise`, `damp_tile`, `damp_rough` | how much (1); metres it rises up a wall from the floor (0); metres its photograph covers (2); how rough it leaves the surface (0.35) |
-| `damp_cover` | 0 (unless said): water - what it soaks darkened by its photograph; 1: what runs is its photograph's own colour laid over the surface (blood, paint), as glossy as `damp_rough` |
+| `damp_cover` | 0 (unless said): water - what it soaks darkened by its photograph; 1: what runs is its photograph's own colour laid over the surface (blood, paint), as glossy as `damp_rough` Covering, it is a film: as opaque as its field is thick - thin, seen through, tinting what is under it; thick, hiding it - the grains only a little in it (a wear field that means a pool gives it an edge). |
 | `damp_runs` | 0 (unless said): it runs down a wall in a sheet, widening as it falls (water); 1: in thin runs two or three centimetres apart, each of its own length, narrowing, a bead where it stopped (blood, paint, rust) |
 
 **Wear from its own shape.** A model that wears a texture saying any of

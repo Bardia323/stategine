@@ -3480,6 +3480,11 @@ void main() {
         wet = min(wet + wear_field().g, 1.0);
         wet *= uDampSet.x * uWear.z;
         float m = smoothstep(1.0 - wet - 0.07, 1.0 - wet + 0.07, grains) * step(0.001, wet);
+        // (What covers - blood, paint - is a film: thin, it is seen through,
+        // tinting what is under it; thick, it hides it. As thick as its
+        // field says, the grains only a little in it - not all or nothing
+        // grain by grain, which makes of a thin smear a dark speckled band.)
+        m = mix(m, clamp(wet * 1.1, 0.0, 1.0) * mix(0.8, 1.0, grains), uDampCover.x);
         // (Water darkens what it soaks; what covers - blood, paint - is its own colour over it.)
         albedo = mix(albedo, mix(albedo * d1.rgb * 1.6, d1.rgb, uDampCover.x), m);
         covered = m * uDampCover.x * smoothstep(0.02, 0.22, wet);
