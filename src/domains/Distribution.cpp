@@ -1,8 +1,11 @@
 #include "sg/domains/Distribution.hpp"
 #include "sg/core/Work.hpp"
+#include <cstring>
+#include "sg/core/Cache.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <set>
 
 namespace sg {
@@ -62,7 +65,7 @@ const std::set<std::string>& point_laws() {
     return all;
 }
 const std::set<std::string>& field_laws() {
-    static const std::set<std::string> all{"bump", "stroke", "sum"};
+    static const std::set<std::string> all{"bump", "stroke", "drag", "sum"};
     return all;
 }
 
@@ -267,6 +270,184 @@ std::vector<std::string> words(const std::string& s) {
     return out;
 }
 
+double smoothstep01(double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+// Smooth value noise, 0..1: along a line, and over the plane.
+double hash01(uint64_t k) { return static_cast<double>(mix64(k) >> 11) * (1.0 / 9007199254740992.0); }
+double noise1(double t, uint64_t seed) {
+    const double i = std::floor(t), f = t - i, u = f * f * (3.0 - 2.0 * f);
+    const uint64_t k = static_cast<uint64_t>(static_cast<int64_t>(i)) * 0x9e3779b97f4a7c15ULL + seed;
+    return hash01(k) * (1.0 - u) + hash01(k + 0x9e3779b97f4a7c15ULL) * u;
+}
+double noise2(double x, double y, uint64_t seed) {
+    const double iy = std::floor(y), fy = y - iy, v = fy * fy * (3.0 - 2.0 * fy);
+    const uint64_t row = static_cast<uint64_t>(static_cast<int64_t>(iy)) * 0xd1b54a32d192ed03ULL + seed;
+    return noise1(x, row) * (1.0 - v) + noise1(x, row + 0xd1b54a32d192ed03ULL) * v;
+}
+
+// A body dragged along `path` ("x,z x,z ..."), what it leaves on the floor
+// (bloodstain analysis's wipe / swipe):
+//   its smear, `width` across (`width_to` at its end) - its edges ragged,
+//     feathering where it leaves off; striated along the way it went by
+//     what touched the floor (`contact`): `clothed` (a coat's folds - a few
+//     broad streaks, the cloth lifting off now and then, gaps), `skin`
+//     (bare: broad, blotchy, the blood pushed to its edges), `hair` (a
+//     head: narrow, fine dense streaks);
+//   its blood running out as it goes (`amount` to `amount_to`, halved each
+//     `fade` metres) and taken up again where it was set down (`reload`:
+//     the distances along the way it lay a while - heavy there again);
+//   drops beside it from the wound (`drips` a metre, `amount_drip`);
+//   and whoever dragged it, walking backward ahead of it (`prints`: so many
+//     steps of shoes that stood in its blood, heel first, each fainter).
+struct DragPath {
+    std::string text;
+    std::vector<double> x, z, at;  // its points, and how far along each is
+};
+const DragPath& drag_path(const std::string& text) {
+    thread_local DragPath kept;
+    if (kept.text == text && !kept.x.empty()) return kept;
+    kept = DragPath{text, {}, {}, {}};
+    for (const std::string& w : [&] {
+             std::vector<std::string> out;
+             std::string cur;
+             for (char c : text) {
+                 if (c == ' ') {
+                     if (!cur.empty()) out.push_back(cur), cur.clear();
+                 } else {
+                     cur += c;
+                 }
+             }
+             if (!cur.empty()) out.push_back(cur);
+             return out;
+         }()) {
+        const std::size_t comma = w.find(',');
+        if (comma == std::string::npos) continue;
+        kept.x.push_back(std::atof(w.substr(0, comma).c_str())), kept.z.push_back(std::atof(w.substr(comma + 1).c_str()));
+        const std::size_t n = kept.x.size();
+        kept.at.push_back(n == 1 ? 0.0 : kept.at[n - 2] + std::hypot(kept.x[n - 1] - kept.x[n - 2], kept.z[n - 1] - kept.z[n - 2]));
+    }
+    return kept;
+}
+double drag_at(const Law& law, double x, double z) {
+    const DragPath& p = drag_path(law.p.get_or<std::string>("path", ""));
+    if (p.x.size() < 2) return 0.0;
+    // Where along the way, and how far to its side (left -, right +).
+    double best = 1e30, s = 0.0, u = 0.0, dir_x = 0.0, dir_z = 1.0;
+    for (std::size_t i = 0; i + 1 < p.x.size(); ++i) {
+        const double ax = p.x[i], az = p.z[i], ux = p.x[i + 1] - ax, uz = p.z[i + 1] - az, len = std::hypot(ux, uz);
+        if (len < 1e-9) continue;
+        const double t = std::clamp(((x - ax) * ux + (z - az) * uz) / (len * len), 0.0, 1.0);
+        const double dx = x - (ax + ux * t), dz = z - (az + uz * t), d2 = dx * dx + dz * dz;
+        if (d2 < best) best = d2, s = p.at[i] + t * len, u = (ux * dz - uz * dx) / len, dir_x = ux / len, dir_z = uz / len;
+    }
+    const double total = p.at.back(), seed_d = law.p.num(Key{"seed"}, 1.0);
+    const uint64_t seed = static_cast<uint64_t>(seed_d * 1000.0) * 0x2545f4914f6cdd1dULL + 17;
+    const std::string contact = law.p.get_or<std::string>("contact", "clothed");
+    const double w0 = law.p.num(Key{"width"}, 0.35), width = w0 + (law.p.num(Key{"width_to"}, w0) - w0) * std::clamp(s / std::max(total, 1e-6), 0.0, 1.0);
+    // Its blood as it goes: the last place it was set down, and how far since.
+    double since = s;
+    for (const std::string& r : words(law.p.get_or<std::string>("reload", "")))
+        if (const double at = std::atof(r.c_str()); at <= s) since = std::min(since, s - at);
+    const double a0 = law.p.num(Key{"amount"}, 1.0), a1 = law.p.num(Key{"amount_to"}, 0.15), fade = std::max(law.p.num(Key{"fade"}, 4.0), 0.05);
+    const double blood = a1 + (a0 - a1) * std::exp2(-since / fade);
+    double out = 0.0;
+    // The smear.
+    const bool along = s > 1e-4 && s < total - 1e-4;
+    if (along) {
+        const double side = u < 0.0 ? -1.0 : 1.0;
+        // (Its edge ragged along the way, each side its own.)
+        const double rag = contact == "skin" ? 0.25 : contact == "hair" ? 0.35 : 0.3;
+        const double half = 0.5 * width * (1.0 + rag * (noise1(s * 9.0 + side * 31.0, seed) - 0.5) + 0.15 * (noise1(s * 2.3 + side * 7.0, seed + 5) - 0.5));
+        const double a = std::fabs(u) / std::max(half, 1e-4);
+        // (Feathered: blood drawn out past the edge in hair-thin runs.)
+        const double feather = contact == "hair" ? 0.35 : 0.2;
+        double body = 1.0 - smoothstep01((a - (1.0 - feather)) / feather);
+        // Its streaks along the way: what touched the floor, combed through it.
+        const double pitch = contact == "hair" ? 0.004 : contact == "skin" ? 0.014 : 0.028;
+        // (Near straight and side by side, as a wipe's are: wandering a
+        // little as the body turned, each its own spacing.)
+        const double wander = (noise1(s * 0.9, seed + 11) - 0.5) * 0.8 * pitch;
+        const double phase = (u + wander) / pitch + 1.5 * noise1(u / (pitch * 3.0) + 3.0, seed + 13);
+        const double comb = 0.5 + 0.5 * std::cos(6.283185307179586 * phase);
+        const double strength = contact == "hair" ? 0.85 : contact == "skin" ? 0.3 : 0.45;
+        // (Each streak heavier here, fainter there, as the cloth or hair
+        // pressed and let up: a wipe is never a comb's even teeth.)
+        const double press = noise2(u / (pitch * 1.5), s * 2.2, seed + 31);
+        double streak = 1.0 - strength * (0.4 + 0.9 * press) * (1.0 - comb * comb);
+        // (Its blood itself uneven: thicker where it smeared heavy, thin and
+        // dragged out between.)
+        streak *= 0.55 + 0.9 * noise2(u * 7.0, s * 1.2, seed + 29);
+        // (Broad folds of cloth: a few heavier bands, wandering.)
+        if (contact == "clothed") streak *= 0.65 + 0.7 * noise2(u * 18.0, s * 0.8, seed + 17);
+        // (Bare skin: blotchy, the blood pushed out to its edges.)
+        if (contact == "skin") streak *= (0.6 + 0.5 * noise2(u * 25.0, s * 5.0, seed + 19)) * (1.0 + 0.6 * smoothstep01((a - 0.55) / 0.35));
+        // (Cloth lifting off the floor now and then: gaps, short and long.)
+        double touch = 1.0;
+        if (contact == "clothed") touch = 0.25 + 0.75 * (1.0 - smoothstep01((noise1(s * 1.3, seed + 23) - 0.78) / 0.08));
+        // (Where it begins again - set down - its edge is a heavy one; it
+        // leaves off feathering.)
+        const double start = smoothstep01((since + 0.02) / 0.06);
+        const double end_off = 1.0 - smoothstep01((s - (total - 0.25)) / 0.25);
+        out += blood * body * streak * touch * start * std::max(end_off, 0.0);
+    }
+    // Drops beside it: each a little round stain with its crown, where the
+    // body dripped as it went.
+    if (const double rate = law.p.num(Key{"drips"}, 0.0); rate > 0.0) {
+        const double amount = law.p.num(Key{"amount_drip"}, 0.8);
+        const double spacing = 1.0 / rate;
+        const long k0 = static_cast<long>(std::floor(s / spacing)) - 2;
+        for (long k = k0; k <= k0 + 4; ++k) {
+            if (k < 0) continue;
+            const uint64_t h = seed + static_cast<uint64_t>(k) * 0x9e3779b97f4a7c15ULL;
+            const double ds = (k + hash01(h)) * spacing;
+            if (ds > total) continue;
+            // (Where that is along the way: the point and its side.)
+            double px = p.x[0], pz = p.z[0], tx = 0.0, tz = 1.0;
+            for (std::size_t i = 0; i + 1 < p.x.size(); ++i)
+                if (ds <= p.at[i + 1] || i + 2 == p.x.size()) {
+                    const double len = std::max(p.at[i + 1] - p.at[i], 1e-9), t = std::clamp((ds - p.at[i]) / len, 0.0, 1.0);
+                    px = p.x[i] + (p.x[i + 1] - p.x[i]) * t, pz = p.z[i] + (p.z[i + 1] - p.z[i]) * t;
+                    tx = (p.x[i + 1] - p.x[i]) / len, tz = (p.z[i + 1] - p.z[i]) / len;
+                    break;
+                }
+            const double off = (hash01(h + 1) < 0.5 ? -1.0 : 1.0) * (0.5 * width + 0.03 + 0.2 * hash01(h + 2));
+            const double cx = px - tz * off, cz = pz + tx * off, r = 0.006 + 0.012 * hash01(h + 3);
+            const double dd = std::hypot(x - cx, z - cz) / r;
+            if (dd < 2.2) out += amount * (1.0 - smoothstep01((dd - 0.8) / 0.25)) + 0.25 * amount * (1.0 - smoothstep01((dd - 1.6) / 0.5)) * noise1(std::atan2(z - cz, x - cx) * 3.0, h);
+        }
+    }
+    // Whoever dragged it: walking backward ahead of it, each shoe that stood
+    // in its blood printing heel first - its heel, its sole, their tread -
+    // fainter each step.
+    if (const double steps = law.p.num(Key{"prints"}, 0.0); steps > 0.0) {
+        const double stride = 0.62, amount = law.p.num(Key{"amount_print"}, 0.9);
+        for (int k = 0; k < static_cast<int>(steps); ++k) {
+            const double ds = 0.35 + k * stride * 0.5;
+            if (ds > total) break;
+            double px = p.x[0], pz = p.z[0], tx = 0.0, tz = 1.0;
+            for (std::size_t i = 0; i + 1 < p.x.size(); ++i)
+                if (ds <= p.at[i + 1] || i + 2 == p.x.size()) {
+                    const double len = std::max(p.at[i + 1] - p.at[i], 1e-9), t = std::clamp((ds - p.at[i]) / len, 0.0, 1.0);
+                    px = p.x[i] + (p.x[i + 1] - p.x[i]) * t, pz = p.z[i] + (p.z[i + 1] - p.z[i]) * t;
+                    tx = (p.x[i + 1] - p.x[i]) / len, tz = (p.z[i + 1] - p.z[i]) / len;
+                    break;
+                }
+            const double off = (k % 2 ? 1.0 : -1.0) * (0.5 * width + 0.12);
+            const double cx = px - tz * off, cz = pz + tx * off;
+            // (In the shoe's frame: `a` along it, toes toward the way back.)
+            const double rx = x - cx, rz = z - cz, a = -(rx * tx + rz * tz), b = rx * -tz + rz * tx;
+            const double sole = (a > -0.02 && a < 0.17) ? std::hypot(a / 0.095 - 0.8, b / 0.045) : 9.0, heel = std::hypot((a + 0.075) / 0.04, b / 0.035);
+            const double shoe = std::max(1.0 - smoothstep01((sole - 0.85) / 0.2), 1.0 - smoothstep01((heel - 0.85) / 0.2));
+            if (shoe <= 0.0) continue;
+            const double tread = 0.55 + 0.45 * std::cos(6.283185307179586 * a / 0.011);
+            out += amount * std::pow(0.68, k) * shoe * tread * (0.7 + 0.3 * noise2(rx * 60.0, rz * 60.0, seed + static_cast<uint64_t>(k)));
+        }
+    }
+    return out;
+}
+
 double intensity_of(const Distribution& d, const Law& law, double x, double z, const Area& area, int depth) {
     if (depth > 8) return 0.0;  // (a sum of itself: no more)
     const std::string& w = law.what;
@@ -290,6 +471,7 @@ double intensity_of(const Distribution& d, const Law& law, double x, double z, c
         const double fade = law.num("amount", 10.0) + (law.num("amount_to", law.num("amount", 10.0)) - law.num("amount", 10.0)) * t;
         return fade * std::exp(-(dx * dx + dz * dz) / (2.0 * sd * sd)) / (std::sqrt(kTau) * sd);
     }
+    if (w == "drag") return drag_at(law, x, z);
     if (w == "thomas" || w == "matern") {
         const double c = law.num("children", 8.0);
         double sum = 0.0;
@@ -386,24 +568,52 @@ std::vector<Vec3d> sample(const Distribution& d, Key name, const Area& area, con
 }
 
 std::vector<unsigned char> field_picture(const Distribution& d, Key name, const Area& area, int px, double* most_out) {
-    std::vector<double> f(static_cast<std::size_t>(px) * px, 0.0);
+    return field_picture(d, name, area, px, px, most_out);
+}
+
+std::vector<unsigned char> field_picture(const Distribution& d, Key name, const Area& area, int pw, int ph, double* most_out) {
+    // (Kept on disk by what makes it - every law of `d` as it is, which
+    // named, where, how many pixels: worked out once, not every start.)
+    Hasher h;
+    h.text("field picture 2").text(name.str()).number(area.x0).number(area.z0).number(area.x1).number(area.z1).integer(pw).integer(ph);
+    for (const Element& e : d.elements()) {
+        h.text(e.id.str());
+        for (const auto& [k, v] : e.params) {
+            h.text(k.str());
+            if (const double* n = std::get_if<double>(&v)) h.number(*n);
+            else if (const std::string* t = std::get_if<std::string>(&v)) h.text(*t);
+        }
+    }
+    const Digest key = h.digest();
+    std::string kept;
+    const std::size_t bytes = static_cast<std::size_t>(pw) * ph * 4;
+    if (cache::load("field picture", key, kept) && kept.size() == bytes + sizeof(double)) {
+        double most = 0.0;
+        std::memcpy(&most, kept.data() + bytes, sizeof(double));
+        if (most_out) *most_out = most;
+        return std::vector<unsigned char>(kept.begin(), kept.begin() + static_cast<std::ptrdiff_t>(bytes));
+    }
+    std::vector<double> f(static_cast<std::size_t>(pw) * ph, 0.0);
     // (Its rows across the machine's hands, each row its own: the laws are
     // only read. The most found after, in one order: the same on any hands.)
-    work::bands(px, [&](int from, int to) {
+    work::bands(ph, [&](int from, int to) {
         for (int j = from; j < to; ++j)
-            for (int i = 0; i < px; ++i) {
-                const double x = area.x0 + (area.x1 - area.x0) * (i + 0.5) / px, z = area.z0 + (area.z1 - area.z0) * (j + 0.5) / px;
-                f[static_cast<std::size_t>(j) * px + i] = intensity(d, name, x, z, area);
+            for (int i = 0; i < pw; ++i) {
+                const double x = area.x0 + (area.x1 - area.x0) * (i + 0.5) / pw, z = area.z0 + (area.z1 - area.z0) * (j + 0.5) / ph;
+                f[static_cast<std::size_t>(j) * pw + i] = intensity(d, name, x, z, area);
             }
     });
     double most = 0.0;
     for (const double v : f) most = std::max(most, v);
     if (most_out) *most_out = most;
-    std::vector<unsigned char> out(static_cast<std::size_t>(px) * px * 4, 255);
+    std::vector<unsigned char> out(bytes, 255);
     for (std::size_t k = 0; k < f.size(); ++k) {
         const unsigned char v = static_cast<unsigned char>(std::lround(255.0 * (most > 0.0 ? f[k] / most : 0.0)));
         out[k * 4 + 0] = out[k * 4 + 1] = out[k * 4 + 2] = out[k * 4 + 3] = v;
     }
+    std::string store(out.begin(), out.end());
+    store.append(reinterpret_cast<const char*>(&most), sizeof(double));
+    cache::store("field picture", key, store);
     return out;
 }
 
@@ -449,6 +659,7 @@ std::vector<std::string> distribution_faults(const State& d) {
             bad(p.num(Key{"sd"}, 0.2) <= 0.0 || p.num(Key{"sd_to"}, p.num(Key{"sd"}, 0.2)) <= 0.0 || p.num(Key{"amount"}, 10.0) < 0.0 ||
                     p.num(Key{"amount_to"}, p.num(Key{"amount"}, 10.0)) < 0.0,
                 "its spread is not more than none, or its amount less");
+        if (what == "drag") bad(drag_path(p.get_or<std::string>("path", "")).x.size() < 2 || p.num(Key{"width"}, 0.35) <= 0.0, "its way is not two points or more, or its width not more than none");
         if (what == "sum")
             for (const std::string& n : words(p.get_or<std::string>("of", "")))
                 if (!d.find(Key{n})) out.push_back(name + "it adds '" + n + "', which is no law of it");

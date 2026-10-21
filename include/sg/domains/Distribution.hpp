@@ -94,6 +94,21 @@ std::vector<Vec3d> points(const Law& law, const Area& area, const std::function<
 //                                a trail, a path worn, something dragged -
 //                                narrowing or fading to its end as `sd_to`
 //                                and `amount_to` say (as at its start unless)
+//   drag   path="x,z x,z ..." width contact (width_to amount amount_to fade
+//          reload drips amount_drip prints amount_print seed)
+//                                a body dragged along a way, what it leaves
+//                                (bloodstain analysis's wipe): a smear
+//                                `width` across, ragged and feathered, its
+//                                streaks by what touched the floor -
+//                                `clothed` (folds; the cloth lifting off in
+//                                gaps), `skin` (broad, blotchy, heavy at its
+//                                edges), `hair` (fine and dense); its blood
+//                                running out (`fade` metres to half) and
+//                                taken up again where it was set down
+//                                (`reload`: distances along the way); drops
+//                                beside it (`drips` a metre); whoever
+//                                dragged it, walking backward ahead of it,
+//                                heel first (`prints` steps, each fainter)
 //   sum    of="a b c" [w_a=]     the named laws of the distribution, added
 //                                (each times its weight, 1 unless said)
 // The intensity of a named law of `d` at (x, z), per square metre (a
@@ -114,6 +129,10 @@ std::vector<Vec3d> sample(const Distribution& d, Key law, const Area& area, cons
 // (sg::Texture's `<name>_mask`), so what is strewn and what is stained by
 // one field agree.
 std::vector<unsigned char> field_picture(const Distribution& d, Key law, const Area& area, int px, double* most = nullptr);
+// The same, `pw` pixels across `area`'s x and `ph` down its z - a long hall's
+// field fine across it and as long as it is. Kept on disk by what makes it
+// (sg::cache: every law of `d`), so it is worked out once.
+std::vector<unsigned char> field_picture(const Distribution& d, Key law, const Area& area, int pw, int ph, double* most = nullptr);
 
 // A law's numbers carried onto the element that spreads by it (a kept
 // functor's transport: `natives.transport("law_to", sg::law_to)`).
