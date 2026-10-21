@@ -97,7 +97,32 @@ struct Quality {
     // here, no look's asking traces anything, and every view is drawn as
     // ever: for a card too slow for it.
     bool trace=true;
+    // Who makes the eye's picture whole over frames: the engine's own
+    // smoothing (`taa`, as `taa` and `render_scale` say), or the card's -
+    // NVIDIA's DLSS (`dlss`: drawn at fewer pixels as `dlss_mode` says, and
+    // made the screen's from them, their depth, how each pixel moved and the
+    // frames before; `dlaa`: at the screen's own pixels, smoothed alone).
+    // DLSS is the Vulkan backend's (SG_GPU=vulkan) on an NVIDIA card with its
+    // file beside the program; asked for where it cannot be, the eye is
+    // smoothed by `taa` instead and the view says why, once. A machine's
+    // choice, as `trace` is: no look or world can ask for it. With DLSS the
+    // scene is drawn with no multisampling, whatever `msaa` says.
+    enum Upscaler { upscale_taa = 0, upscale_dlss = 1, upscale_dlaa = 2 };
+    int upscaler=upscale_taa;
+    // With `dlss`, how few pixels it is drawn at: `quality` (two thirds of
+    // the screen's each way), `balanced` (0.58), `performance` (a half),
+    // `ultra_performance` (a third), `native` (all of them: DLAA).
+    enum DlssMode { dlss_quality = 0, dlss_balanced = 1, dlss_performance = 2, dlss_ultra_performance = 3, dlss_native = 4 };
+    int dlss_mode=dlss_quality;
 };
+// The part of the screen's pixels each way DLSS draws at for a mode
+// (Quality::DlssMode; 1 at `native`).
+float dlss_scale(int mode);
+// What the machine a program runs on says over the quality it was given -
+// `SG_QUALITY`, render.conf's lines parted by `;` ("upscaler = dlss;
+// dlss_mode = performance") - so one program can be drawn another way
+// without changing it. Nothing said: `q` as it is.
+Quality with_machine(Quality q);
 void standard_look(LookState& look,const Quality& quality={});
 
 // A project's quality, as a file it ships with (`render.conf`, beside the

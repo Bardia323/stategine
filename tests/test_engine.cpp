@@ -1998,6 +1998,118 @@ void test_seams_are_seamless() {
     check(says(*room(0.3, false, true), "the ground is"), "a doorway whose far side stands higher off its ground is named: whoever crosses would drop");
     check(says(*room(0.0, true, true), "down is"), "a doorway into a room whose pull is another way is named: whoever crosses would be turned");
     check(says(*room(0.3, true, true, "floor down"), ""), "a seam that says what differs is let be");
+
+    // Two rooms made one space at a doorway (`sheaf`): their walls, laid
+    // `wall_t` outside each floor, meet back to back only if each doorway
+    // stands at the back of its own wall. On the floor's edge, each room's
+    // wall stands in the other and their faces fight - named.
+    const auto joined = [](double out, const std::string& differs = "") {
+        auto g = std::make_unique<sg::StateGraph>();
+        for (const char* n : {"near", "far"}) {
+            auto& r = g->add<sg::Room>(sg::Key{n}, 4.0, 4.0, 3.0);
+            const bool south = std::string(n) == "near";
+            sg::Element* hole = r.add_opening("hole", south ? 2 : 0, 2.0, 1.0, 2.2, 0.0, true);
+            r.opens(hole->id, true);
+            r.lay_walls();
+            r.portal("door", {2.0, 1.1, south ? 4.0 + out : -out}, 1.0, 2.2, south ? -1.5707963267949 : 1.5707963267949)
+                .params.set("walk", 1.0).set("sheaf", 1.0).set("differs", differs);
+        }
+        g->set_initial("near");
+        sg::walkway(*g, "doorway", "near", "door", "far", "door");
+        return g;
+    };
+    check(says(*joined(0.0), "stand one inside the other"), "rooms made one space with their doorways on their floors' edges: their walls in each other, named");
+    check(!says(*joined(0.2), "stand one inside the other"), "each doorway at the back of its wall: the rooms back to back, let be");
+    check(!says(*joined(0.0, "walls"), "stand one inside the other"), "and a seam that says its walls differ is let be");
+}
+
+// A thing stood against a wall by its middle is half in it: named, and
+// stood off it by the room - its back to the wall's face. One in a doorway,
+// or set into the wall on purpose, is let be.
+void test_things_stand_clear_of_walls() {
+    sg::Room r("den", 4.0, 4.0, 3.0);
+    sg::Element* hole = r.add_opening("door", 2, 2.0, 1.0, 2.1, 0.0, true);
+    r.opens(hole->id, true);
+    r.lay_walls();
+    const auto cabinet = [&](const char* id, double x, double z) -> sg::Element& {
+        sg::Element& e = r.fixture(sg::Key{id}, x, 0.0, z);
+        e.params.set(sg::keys::sx, 1.0).set(sg::keys::sy, 1.0).set(sg::keys::sz, 0.4);
+        return e;
+    };
+    cabinet("cabinet", 1.5, 0.0);
+    const auto named = [&](const std::string& what) {
+        const auto said = sg::into_walls(r);
+        return std::any_of(said.begin(), said.end(), [&](const std::string& s) { return s.find(what) != std::string::npos; });
+    };
+    check(named("cabinet stands 0.20 m into the n wall"), "a cabinet stood by its middle on the wall's line is named: half of it is in the wall");
+    const double moved = r.stand_off_walls({sg::Key{"cabinet"}});
+    check(std::fabs(moved - 0.202) < 1e-6 && std::fabs(r.element("cabinet").params.num(sg::keys::z) - 0.202) < 1e-6 && sg::into_walls(r).empty(),
+          "stood off the wall, its back on the wall's face, it is clear");
+    cabinet("door_leaf", 2.0, 4.0);
+    check(sg::into_walls(r).empty(), "a leaf in its doorway, through the wall, is let be");
+    cabinet("safe", 0.5, 4.0).params.set("in_wall", 1.0);
+    check(sg::into_walls(r).empty(), "and so is a thing that says it is set into the wall");
+}
+
+// Lamps that light nothing are said: a room whose every lamp stands in for
+// bounce, and a lamp shut in the shade that holds it, casting.
+void test_lamps_that_light_nothing() {
+    sg::Spatial3D room("lounge");
+    room.params().set("room_w", 6.0).set("room_d", 6.0).set("room_h", 3.0);
+    room.light("fill", {3.0, 2.0, 3.0}).params.set("indirect", 1.0);
+    const auto says = [&](const std::string& what) {
+        const auto f = sg::lamp_faults(room);
+        return std::any_of(f.begin(), f.end(), [&](const std::string& s) { return s.find(what) != std::string::npos; });
+    };
+    check(says("lit by nothing"), "a room whose every lamp is a fill is lit by nothing, and said to be");
+    sg::Element& bulb = room.light("bulb", {1.0, 1.2, 1.0});
+    check(!says("lit by nothing"), "a real lamp in it, and it is lit");
+    sg::Element& shade = room.fixture("shade", 1.0, 1.0, 1.0);
+    shade.params.set(sg::keys::sx, 0.4).set(sg::keys::sy, 0.4).set(sg::keys::sz, 0.4);
+    check(says("bulb stands inside shade, which casts"), "a lamp inside the shade that holds it, the shade casting, is named");
+    shade.params.set("cast", 0.0);
+    bulb.params.set(sg::keys::intensity, 2.0);
+    check(sg::lamp_faults(room).empty(), "the shade letting its light through (`cast` 0), all is well");
+}
+
+// A walker stood far outside its room (a number from another room's frame)
+// is said when the world is checked, not found in play.
+void test_walker_stands_in_its_room() {
+    sg::Spatial3D room("hall");
+    room.params().set("room_w", 3.4).set("room_d", 46.0).set("room_h", 4.0);
+    room.camera().params.set(sg::keys::x, 1.7).set(sg::keys::y, 1.6).set(sg::keys::z, 44.0);
+    const auto outside = [&] {
+        const auto f = room.faults();
+        return std::any_of(f.begin(), f.end(), [](const std::string& s) { return s.find("far outside the room") != std::string::npos; });
+    };
+    check(!outside(), "a walker in its room is let be");
+    room.camera().params.set(sg::keys::x, 317.0);
+    check(outside(), "one stood 317 m off is named");
+}
+
+// Two things of one size with a face each in one plane fight, and the
+// renderer's rule (the smaller seen) cannot part them: named. Of two sizes,
+// or one pressed to a wall's face, they are let be.
+void test_surfaces_that_fight() {
+    sg::Room r("den", 4.0, 4.0, 3.0);
+    r.lay_walls();
+    const auto slab = [&](const char* id, double x, double z, double sx, double sz) -> sg::Element& {
+        sg::Element& e = r.fixture(sg::Key{id}, x, 0.0, z);
+        e.params.set(sg::keys::sx, sx).set(sg::keys::sy, 2.0).set(sg::keys::sz, sz);
+        return e;
+    };
+    // A leaf, and a plug of the same size flush with it.
+    slab("leaf", 2.0, 2.0, 1.0, 0.045);
+    slab("plug", 2.0, 2.0 - 0.0025, 1.0, 0.05).params.set(sg::keys::r, 0.5);
+    const auto fights = [&] { return !sg::coinciding(r).empty(); };
+    check(fights(), "a plug flush with a door's leaf, of one size, is named: which is seen flickers");
+    r.element("plug").params.set(sg::keys::sx, 3.0);
+    check(!fights(), "of two sizes, the smaller is seen - let be");
+
+    r.element("plug").alive = false;
+    // A board pressed to the north wall's face: its back is seen by no one.
+    slab("board", 2.0, 0.009, 1.0, 0.018);
+    check(!fights(), "a board's back pressed to the wall's face is let be");
 }
 
 }  // namespace
@@ -2392,6 +2504,10 @@ int main() {
     test_a_step_crosses_in_its_frame();
     test_seams_glue_like_to_like();
     test_seams_are_seamless();
+    test_things_stand_clear_of_walls();
+    test_lamps_that_light_nothing();
+    test_walker_stands_in_its_room();
+    test_surfaces_that_fight();
     std::printf("\n%s\n", failures == 0 ? "all tests passed" : "FAILURES PRESENT");
     return failures == 0 ? 0 : 1;
 }

@@ -34,11 +34,16 @@ void Engine::fire(Event e) {
     pending_.push_back(std::move(e));
 }
 
-void Engine::send(Key state, Event e) {
+bool Engine::send(Key state, Event e) {
     if (detail::observing() > 0) detail::refused_to_observer(std::string("sent an event to a state: ") + e.name.str() + " to " + state.str());
-    if (!graph_.has_port(state, e.name))
-        throw std::runtime_error("no port " + e.name.str() + " on " + state.str() + " - declare it (StateGraph::port)");
+    if (!graph_.has_port(state, e.name)) {
+        const std::string p = "refused " + e.name.str() + " sent to " + state.str() + ": it has no such port - declare it (StateGraph::port, `port` in the DSL)";
+        if (strict_) throw std::runtime_error("stategine: " + p);
+        report(p);
+        return false;
+    }
     inputs_.push_back({state, std::move(e)});
+    return true;
 }
 
 void Engine::switch_to(Key id, Params args) {
@@ -283,6 +288,7 @@ void Engine::tick(double dt) {
     }
     keep_time(t);
     take_the_rest_early();
+    lived_.swap(stepped_);
     stepped_.clear();
     // What any state said this frame - one the engine stepped, or one a
     // listener-free hand (an edit, the host) sent something to - is
@@ -448,7 +454,7 @@ void Engine::carry_kept() {
         const Functor* f = graph_.functor(name);
         State* src = f ? graph_.find(f->from()) : nullptr;
         State* dst = f ? graph_.find(f->to()) : nullptr;
-        if (src && dst) f->apply(*src, *dst, kept_carries_[name]);
+        if (src && dst && !(f->from_living() && !lived_.count(src))) f->apply(*src, *dst, kept_carries_[name]);
     }
 }
 

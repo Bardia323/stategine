@@ -99,6 +99,18 @@ out vec3 vObject;
 out vec3 vObjNormal;
 out vec3 vRoomNormal;
 out vec3 vTexScale;
+// Where this corner was last frame (the program for a view whose motion is
+// asked for: SG_VELOCITY): this frame's view unmoved by the jitter, the last
+// frame's with its room where it stood then, and where the thing stood in
+// its room then (uWasModel; the scene's fragment stage reads it only where
+// the thing says it, uMoving).
+#ifdef SG_VELOCITY
+uniform mat4 uMotionNow;
+uniform mat4 uMotionWas;
+uniform mat4 uWasModel;
+out vec4 vNowClip;
+out vec4 vWasClip;
+#endif
 
 void main() {
     mat4 model = uInstanced == 1 ? uFrame * iLocal : uModel;
@@ -168,6 +180,10 @@ void main() {
     for (int i = 0; i < MAX_BOUNDS; ++i)
         gl_ClipDistance[i] = i < uClipCount ? dot(uClip[i], vec4(world.xyz, 1.0)) : 1.0;
     gl_Position = uViewProj * world;
+#ifdef SG_VELOCITY
+    vNowClip = uMotionNow * world;
+    vWasClip = uMotionWas * (uWasModel * vec4(pos, 1.0));
+#endif
     // An older machine's: each corner put on a pixel of a picture uSnap lines
     // high (0: where it is) - things wobble a little as the eye moves.
     if (uSnap > 0.0 && gl_Position.w > 1e-4) {
@@ -300,6 +316,12 @@ const char* cloud_dome_fs();
 // the pixel holds - so what moved or came into sight does not trail - and
 // blended, a tenth of this frame to nine of what was. uFresh 1: no history.
 const char* taa_fs();
+// How each pixel of the eye's view moved since the last frame, in its
+// pixels, the jitter left out (GLWorldView::run_motion): what moved itself
+// as the scene said (uMoved), the rest as the view moved past it - found from
+// its depth (uDepth) and how the view moved (uReproject), as taa_fs finds it.
+// For an upscaler of the card's (DLSS), whose motion vectors these are.
+const char* motion_fs();
 // Data moshing (a look's `mosh`, 0..1): a picture whose key frame was lost.
 // What it started as (the frame before the look asked for it: whatever was
 // seen before the cut) is carried on by the motion of what is seen now -
@@ -310,10 +332,57 @@ const char* taa_fs();
 // from beyond the edge is as it is now; the less uAmount, the bigger the
 // changes kept, until the new picture is all there is. uFresh 1: it starts.
 const char* mosh_fs();
+// The eye's lens (GLWorldView::run_lens; README *The lens*): a camera's
+// depth of field, as a thin lens of its focal length and aperture sees it,
+// and its shutter's motion blur. `lens_glsl` is what they share: how far a
+// pixel is (uDepth), how wide its circle of confusion (uLens), and how it
+// moved since the last frame (uReproject, uShutter).
+const char* lens_glsl();
+// The picture at half its pixels each way, and each one's circle of
+// confusion (alpha: its radius in half pixels, less than 0 in front of the focus).
+const char* lens_setup_fs();
+// Squares of the picture (kLensTile pixels): the widest circle of confusion
+// in each (r) and the longest motion (gb); and then the most of each square
+// and its eight neighbours (lens_spread_fs) - how far a pixel must look.
+const char* lens_tiles_fs();
+const char* lens_spread_fs();
+// What of the half picture is out of focus (its light times how much, and
+// how much): mipmapped, what a wide disc reads its far points from.
+const char* lens_fill_fs();
+// The out-of-focus picture, at half its pixels: each point a disc as wide as
+// its circle of confusion, gathered (what is behind spreading only as far as
+// the pixel's own, what is in front over everything), the part of it in
+// front of the focus said apart (alpha).
+const char* lens_bokeh_fs();
+// The sharp picture and the out-of-focus one, laid together pixel by pixel.
+const char* lens_merge_fs();
+// Motion blur: each pixel gathered along the longest motion round it (the
+// squares' most, as McGuire et al. 2012 find it) - what is in front of it
+// for the part of the shutter's time its own streak lies over it, the rest
+// what its own streak passes over.
+const char* lens_motion_fs();
 // Relighting a room's light from all round (GLWorldView::relight_room): what
 // each box sees lit by one light, and that taken to nine harmonics a box.
+// How many light-from-all-round boxes a room hands its shaders (the scene's
+// MAX_PROBES, the relight's uBox arrays, the tracer's): one number, every
+// shader's arrays held to it by sg_shader_counts.
+inline constexpr int kShaderProbes = 24;
 const char* relight_fs();
 const char* relight_sh_fs();
+// Reflection captures (GLWorldView::capture_rooms): GLSL for a way out as a
+// texel of an octahedron's map unfolded, a texel's border round it (the
+// border what lies past the fold) - `capture_way`, `capture_uv`; the six
+// faces of a capture (a camera's view each, in a row) folded into that map;
+// and a size of it blurred as a surface of a roughness blurs what it
+// mirrors (GGX, importance-sampled from the map's own smaller sizes).
+const char* capture_glsl();
+// A picture's next smaller size from the one above it, each of its four
+// texels weighed by 1 / (1 + its brightness) (Karis): a glint one texel
+// wide - a bulb in polished silver - does not flood the size below with its
+// light, as a plain average lets it; what is broad and even is as it was.
+const char* glint_down_fs();
+const char* capture_fold_fs();
+const char* capture_blur_fs();
 
 // The same air as a scene shader reads it: GLSL giving `air_light(d)`, the
 // light gathered up to `d` metres from the eye at this pixel (after
@@ -657,6 +726,8 @@ void main() {
 //                           of the widest gamut (BT.2020) is brought back in.
 //   vec3 film(vec3 c, float grain, float time)
 //                           display light to the screen: encoded, then grain -
+//                           and a video sensor's noise if `uSensor` says (x how
+//                           much, y its colour's share, z its blotches' size) -
 //                           soft, a pixel and a half across, strongest in the
 //                           mid tones and least in the highlights, moving each
 //                           frame - and a last dither, so nothing bands.
@@ -672,6 +743,7 @@ uniform float uGradeSaturation;
 uniform vec3  uGradeShadows;
 uniform vec3  uGradeHighlights;
 uniform float uTonemap;
+uniform vec3  uSensor;  // a video sensor's noise: x how much, y how much of it is colour, z its blotches' size, pixels (0: none)
 vec3 film_aces(vec3 x) {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
 }
@@ -754,6 +826,33 @@ float film_hash(vec2 p) {
 float film_clump(vec2 p) {
     return film_hash(p) * 0.4 + (film_hash(p + vec2(1.0, 0.0)) + film_hash(p - vec2(1.0, 0.0)) +
                                  film_hash(p + vec2(0.0, 1.0)) + film_hash(p - vec2(0.0, 1.0))) * 0.15;
+}
+// Smooth value noise over the pixels (0..1): the sensor's blotches.
+float film_soft(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(film_hash(i), film_hash(i + vec2(1.0, 0.0)), f.x), mix(film_hash(i + vec2(0.0, 1.0)), film_hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+// A video sensor's noise (`uSensor`: x how much, y its colour's share, z
+// the colour's blotches, pixels), added to the picture's light before its
+// curve, as a sensor adds it - not film's grain over the print. Its spread
+// the sensor's own (Poisson-Gaussian: variance = a light + b - its shot
+// noise, the light counted, rising with it; its read noise, there in the
+// blacks too), each photosite's own, its colour a little coarser as the
+// demosaic spreads it; a new frame of it thirty times a second.
+// `light`: the scene's light as exposed (times the exposure).
+vec3 sensor_noise(vec3 light, vec2 px, float time) {
+    if (uSensor.x <= 0.0) return vec3(0.0);
+    vec2 at = px + vec2(film_hash(vec2(floor(time * 30.0), 3.0)), film_hash(vec2(floor(time * 30.0), 29.0))) * 977.0;
+    // (Two uniforms summed: near enough a gaussian for the eye.)
+    float l = film_hash(floor(at)) + film_hash(floor(at) + 71.3) - 1.0;
+    vec3 ch = vec3(film_soft(at / max(uSensor.z, 1.0) + 11.0), film_soft(at / max(uSensor.z, 1.0) + 23.0), film_soft(at / max(uSensor.z, 1.0) + 37.0)) - 0.5;
+    ch -= dot(ch, vec3(0.2126, 0.7152, 0.0722));
+    vec3 x = max(light, vec3(0.0));
+    // (Its read noise kept low in the deepest black: noise cannot go under
+    // black, so there it only greys it.)
+    vec3 sigma = uSensor.x * sqrt(0.5 * x + 0.0012) * smoothstep(0.0, 0.004, x + 0.0008);
+    return sigma * (vec3(l) * (1.0 - 0.5 * uSensor.y) + ch * 2.2 * uSensor.y);
 }
 vec3 film_at(vec3 c, float grain, float time, vec2 px) {
     vec3 e = pow(max(c, vec3(0.0)), vec3(1.0 / 2.2));

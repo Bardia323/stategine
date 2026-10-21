@@ -1,6 +1,9 @@
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Room.hpp"
+#include "sg/core/Work.hpp"
 
+#include <set>
+#include <sstream>
 #include <algorithm>
 
 namespace sg {
@@ -335,8 +338,15 @@ bool sheaf_door(const Element& p, bool every) {
     if (!every && p.params.num(Key{"sheaf"}, 0.0) <= 0.5) return false;
     if (p.params.has(Key{"ball"}) || p.params.num(Key{"feed"}, 0.0) > 0.5 || p.params.num(Key{"crt"}, 0.0) > 0.5) return false;
     if (p.params.num(Key{"own_look"}, 0.0) > 0.5 || p.params.num(Key{"walk"}, 1.0) <= 0.5) return false;
+    // (Walls that stand in each other - `differs walls` - are said, and
+    // are no reason the two are not one space; anything else said to differ is.)
     const std::string* differs = p.params.text(Key{"differs"});
-    return !differs || differs->empty();
+    if (!differs) return true;
+    std::istringstream words(*differs);
+    std::string w;
+    while (words >> w)
+        if (w != "walls") return false;
+    return true;
 }
 
 // Where a room's walls and floor reach, in its own frame (its walls', or
@@ -456,6 +466,245 @@ std::vector<PlacedRoom> grow(const StateGraph& g, const Spatial3D& seed, std::si
 
 }  // namespace
 
+bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::vector<std::string>* problems) {
+    const auto no = [&](const std::string& why) {
+        if (problems) problems->push_back("space " + space.str() + ": " + why);
+        return false;
+    };
+    auto* made = dynamic_cast<Spatial3D*>(g.find(space));
+    if (!made) return no("is not a state of three dimensions");
+    if (rooms.size() < 2) return no("is made of two rooms or more");
+    struct Placed {
+        Spatial3D* room;
+        Pose pose;
+        std::vector<Key> inner;
+    };
+    std::vector<Placed> out;
+    for (Key k : rooms) {
+        if (!dynamic_cast<Spatial3D*>(g.find(k))) return no(k.str() + " is not a room of three dimensions: only spaces of one kind are made one");
+        if (k == space) return no("is made of itself");
+    }
+    // Placed from the first named, through the seams between them, room by
+    // room: each where the seam puts it; reached again another way, it must
+    // stand where it stood (a ring that closes) - or the rooms are not one.
+    out.push_back(Placed{static_cast<Spatial3D*>(g.find(rooms[0])), Pose{}, {}});
+    const auto member = [&](Key k) { return std::find(rooms.begin(), rooms.end(), k) != rooms.end(); };
+    std::vector<Key> seams;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const Spatial3D& here = *out[i].room;
+        for (const Seam& sm : g.seams()) {
+            if (sm.boundary_a.empty() || sm.boundary_b.empty()) continue;
+            const bool forward = sm.a == here.id();
+            if (!forward && sm.b != here.id()) continue;
+            const Key other = forward ? sm.b : sm.a;
+            if (!member(other)) continue;
+            if (sm.wraps || other == here.id()) return no("seam " + sm.name.str() + " wraps " + here.id().str() + " onto itself: a space that wraps is not made one room by room");
+            auto* there = static_cast<Spatial3D*>(g.find(other));
+            const Element* hp = here.find(forward ? sm.boundary_a[0] : sm.boundary_b[0]);
+            const Element* tp = there->find(forward ? sm.boundary_b[0] : sm.boundary_a[0]);
+            Pose across;
+            if (!hp || !tp || !sheafable(here, *hp, *there, *tp, across, true))
+                return no("seam " + sm.name.str() + " does not join " + here.id().str() + " and " + other.str() +
+                          " as one kind of space (a plain walked opening, one scale, both walled or both under a sky, nothing said to differ)");
+            if (std::find(seams.begin(), seams.end(), sm.name) == seams.end()) seams.push_back(sm.name);
+            Pose placed = compose_pose(out[i].pose, across);
+            placed.yaw = std::remainder(placed.yaw, 6.283185307179586);
+            const auto add_inner = [](Placed& p, Key d) {
+                if (std::find(p.inner.begin(), p.inner.end(), d) == p.inner.end()) p.inner.push_back(d);
+            };
+            const auto known = std::find_if(out.begin(), out.end(), [&](const Placed& p) { return p.room == there; });
+            if (known != out.end()) {
+                if (!same_pose(known->pose, placed))
+                    return no(other.str() + " stands in two places - through seam " + sm.name.str() + " and another way: its rooms do not close into one space (a holonomy)");
+                add_inner(out[i], hp->id), add_inner(*known, tp->id);
+                continue;
+            }
+            add_inner(out[i], hp->id);
+            out.push_back(Placed{there, placed, {tp->id}});
+        }
+    }
+    for (Key k : rooms)
+        if (std::none_of(out.begin(), out.end(), [&](const Placed& p) { return p.room->id() == k; }))
+            return no(k.str() + " is not reached from " + rooms[0].str() + " through the seams between them");
+    for (std::size_t i = 0; i < out.size(); ++i)
+        for (std::size_t j = i + 1; j < out.size(); ++j) {
+            const Box a = placed_box(bounds_of(*out[i].room), out[i].pose), b = placed_box(bounds_of(*out[j].room), out[j].pose);
+            if (!a.empty() && !b.empty() && overlap(a, b, 0.6))
+                return no(out[i].room->id().str() + " and " + out[j].room->id().str() + " stand in each other where they are placed");
+        }
+
+    // Made one. Each doorway between them a hole in the walls: what would
+    // fill an opening onto nothing there opens.
+    for (Placed& p : out) {
+        auto* room = dynamic_cast<Room*>(p.room);
+        if (!room) continue;
+        for (Key d : p.inner) {
+            const Element* door = room->find(d);
+            if (!door) continue;
+            const Pose dp = world_pose(*room, *door);
+            for (const plan::Opening& o : room->openings()) {
+                const Element* blank = room->find(Key{o.id.str() + ".blank"});
+                if (!blank) continue;
+                const Vec3d mid = place_in(world_pose(*room, *blank), {0.0, blank->params.num(keys::sy, 1.0) * 0.5, 0.0});
+                const Vec3d l = local_of(dp, mid);
+                if (std::fabs(l.x) < 0.6 && std::fabs(l.z) < door->params.num(keys::w, 1.0) * 0.5 && std::fabs(l.y) < door->params.num(keys::h, 2.0) * 0.5)
+                    room->opens(o.id, true);
+            }
+        }
+    }
+    // Its frame a room's: its floor plan from the origin, as any room's is
+    // (0..room_w across, 0..room_d deep) - the first room where the rest put it.
+    {
+        Box all;
+        for (const Placed& p : out) {
+            const Params& rp = p.room->params();
+            if (!rp.has(Key{"room_w"}) || !rp.has(Key{"room_d"})) continue;
+            Box b;
+            b.add({0, 0, 0});
+            b.add({rp.num(Key{"room_w"}), 0, rp.num(Key{"room_d"})});
+            b = placed_box(b, p.pose);
+            all.add(b.lo), all.add(b.hi);
+        }
+        if (!all.empty())
+            for (Placed& p : out) p.pose.position = p.pose.position - Vec3d{all.lo.x, 0.0, all.lo.z};
+    }
+    // Each room's own floor and ceiling - laid past its floor's edge, under
+    // its walls, so no light finds its way between them - end at its walls'
+    // outer faces: two rooms back to back, the one's would stand in the
+    // other's, one plane, fighting.
+    for (Placed& p : out) {
+        const Params& rp = p.room->params();
+        if (!rp.has(Key{"room_w"}) || !rp.has(Key{"room_d"})) continue;
+        const double w = rp.num(Key{"room_w"}), d = rp.num(Key{"room_d"}), h = rp.num(Key{"room_h"}, 3.0), t = rp.num(Key{"wall_t"}, 0.2);
+        for (Element& e : p.room->elements()) {
+            if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.params.has(keys::parent)) continue;
+            const double sx = e.params.num(keys::sx, 0.0), sy = e.params.num(keys::sy, 0.0), sz = e.params.num(keys::sz, 0.0);
+            if (sy > 0.6 || sx * sz < 0.9 * w * d || std::fabs(std::remainder(e.params.num(keys::yaw, 0.0), 1.5707963267948966)) > 1e-6) continue;
+            const Vec3d at = position_of(e);
+            if (std::fabs(at.y + sy) > 0.02 && std::fabs(at.y - h) > 0.02 && std::fabs(at.y + sy - 0.0) > 0.02) continue;  // a floor's top at 0, a ceiling's foot at its height
+            const bool turned = std::fabs(std::sin(e.params.num(keys::yaw, 0.0))) > 0.5;
+            const double ex = turned ? sz : sx, ez = turned ? sx : sz;
+            const double x0 = std::max(at.x - ex * 0.5, -t), x1 = std::min(at.x + ex * 0.5, w + t), z0 = std::max(at.z - ez * 0.5, -t), z1 = std::min(at.z + ez * 0.5, d + t);
+            if (x1 <= x0 || z1 <= z0) continue;
+            e.params.set(keys::x, (x0 + x1) * 0.5).set(keys::z, (z0 + z1) * 0.5);
+            e.params.set(turned ? keys::sz : keys::sx, x1 - x0).set(turned ? keys::sx : keys::sz, z1 - z0);
+        }
+    }
+    // Everything each is made of, into the one, where it stands in it; the
+    // floor each covered, its own (what the light from all round is laid
+    // over: `regions`); what each wears, worn by the one.
+    Box all;
+    int k = 0;
+    Params& mp = made->params();
+    // (What each room's floor was worn by - its field, its rectangle - read
+    // before it goes: laid again as one, over the one floor.)
+    struct Field {
+        Spatial3D::Picture pic;
+        double x, z, w, d;
+        Pose at;
+    };
+    std::vector<Field> fields;
+    for (const Placed& p : out) {
+        const Params& rp = p.room->params();
+        if (const std::string* f = rp.text(Key{"wear_field"}))
+            if (const Spatial3D::Picture* pic = p.room->picture(Key{*f}); pic && pic->w > 0 && pic->h > 0)
+                fields.push_back({*pic, rp.num(Key{"wear_x"}, 0.0), rp.num(Key{"wear_z"}, 0.0), rp.num(Key{"wear_w"}, 1.0), rp.num(Key{"wear_d"}, 1.0), p.pose});
+    }
+    for (Placed& p : out) {
+        for (const std::string& w : made->absorb(*p.room, p.pose)) no(w);
+        for (Key d : p.inner)
+            if (const Element* door = made->find(d)) {
+                // (Where two rooms were joined: a hole in the walls, no doorway - kept, as a hole.)
+                Params kept = door->params;
+                made->remove_element(d);
+                Element& hole = made->add_element(d, Key{"hole"});
+                hole.params = std::move(kept);
+                hole.params.set("walk", 0.0).set("unseen", 1.0);
+            }
+        const Params& rp = p.room->params();
+        if (rp.has(Key{"room_w"}) && rp.has(Key{"room_d"})) {
+            Box b;
+            b.add({0, 0, 0});
+            b.add({rp.num(Key{"room_w"}), rp.num(Key{"room_h"}, 3.0), rp.num(Key{"room_d"})});
+            b = placed_box(b, p.pose);
+            const std::string r = "region" + std::to_string(k++) + "_";
+            mp.set(Key{r + "x0"}, b.lo.x).set(Key{r + "z0"}, b.lo.z).set(Key{r + "x1"}, b.hi.x).set(Key{r + "z1"}, b.hi.z).set(Key{r + "h"}, b.hi.y);
+            if (rp.has(Key{"probe_cell"})) mp.set(Key{r + "cell"}, rp.num(Key{"probe_cell"}));
+            all.add(b.lo), all.add(b.hi);
+        }
+        std::vector<Embedding> worn;
+        for (std::size_t at : g.embeddings_hosted_by(p.room->id())) worn.push_back(g.embeddings()[at]);
+        for (Embedding e : worn) {
+            g.drop_embedding(e.name);
+            e.host = space;
+            g.embed(std::move(e));
+        }
+    }
+    // What the rooms said of themselves, as rooms - closed by their own
+    // walls (`enclosed` 0: no box of the renderer's round them, which would
+    // stand in their floors and ceilings and fight them), their pull, their
+    // floor's sound, how far is seen - said of the one: the first room's
+    // where they differ, and never what the one says itself already, nor what is the rooms' own shape (their
+    // size, their parts' names, their wear's rectangle: laid again here).
+    static const std::set<std::string> shaped = {"room_w", "room_d", "room_h", "names", "regions", "wear_field", "wear_x", "wear_z", "wear_w", "wear_d", "pieces"};
+    for (const Placed& p : out)
+        for (const auto& [key, value] : p.room->params()) {
+            const std::string& kk = key.str();
+            if (shaped.count(kk) || kk.rfind("region", 0) == 0 || mp.has(key)) continue;
+            mp.set(key, value);
+        }
+    // (Closed by its own walls if any of them was.)
+    for (const Placed& p : out)
+        if (p.room->params().num(Key{"enclosed"}, 1.0) < 0.5) mp.set(Key{"enclosed"}, 0.0);
+    mp.set(Key{"regions"}, static_cast<double>(k));
+    if (!all.empty()) mp.set(Key{"room_w"}, all.hi.x).set(Key{"room_d"}, all.hi.z).set(Key{"room_h"}, all.hi.y);
+    // Its floor's wear (the renderer's `wear_field`): each room's, where it
+    // lay, in one picture over the whole - as fine each way as the finest of
+    // theirs (a hall's runner: fine across, coarse along), read between
+    // their pixels, so no edge of its stains is a pixel's.
+    if (!fields.empty() && !all.empty()) {
+        const double fw = all.hi.x, fd = all.hi.z;
+        double per_x = 16.0, per_z = 16.0;  // pixels a metre, each way
+        for (const Field& f : fields) {
+            const bool turned = std::fabs(std::sin(f.at.yaw)) > 0.5;
+            const double ax = f.pic.w / f.w, az = f.pic.h / f.d;
+            per_x = std::max(per_x, turned ? az : ax), per_z = std::max(per_z, turned ? ax : az);
+        }
+        const int pw = std::clamp(static_cast<int>(fw * per_x), 16, 4096), ph = std::clamp(static_cast<int>(fd * per_z), 16, 4096);
+        std::vector<unsigned char> rgba(static_cast<std::size_t>(pw) * ph * 4, 0);
+        work::bands(ph, [&](int from, int to) {
+        for (int y = from; y < to; ++y)
+            for (int x = 0; x < pw; ++x) {
+                const Vec3d at{(x + 0.5) / pw * fw, 0.0, (y + 0.5) / ph * fd};
+                unsigned char* o = &rgba[(static_cast<std::size_t>(y) * pw + x) * 4];
+                for (const Field& f : fields) {
+                    const Vec3d l = local_of(f.at, at);
+                    const double u = (l.x - f.x) / f.w * f.pic.w - 0.5, v = (l.z - f.z) / f.d * f.pic.h - 0.5;
+                    if (u < -0.5 || u > f.pic.w - 0.5 || v < -0.5 || v > f.pic.h - 0.5) continue;
+                    const int u0 = std::clamp(static_cast<int>(std::floor(u)), 0, f.pic.w - 1), v0 = std::clamp(static_cast<int>(std::floor(v)), 0, f.pic.h - 1);
+                    const int u1 = std::min(u0 + 1, f.pic.w - 1), v1 = std::min(v0 + 1, f.pic.h - 1);
+                    const double a = std::clamp(u - u0, 0.0, 1.0), b = std::clamp(v - v0, 0.0, 1.0);
+                    const auto px = [&](int i, int j, int c) { return static_cast<double>(f.pic.rgba[(static_cast<std::size_t>(j) * f.pic.w + i) * 4 + c]); };
+                    for (int c = 0; c < 4; ++c) {
+                        const double val = (px(u0, v0, c) * (1 - a) + px(u1, v0, c) * a) * (1 - b) + (px(u0, v1, c) * (1 - a) + px(u1, v1, c) * a) * b;
+                        o[c] = std::max(o[c], static_cast<unsigned char>(std::lround(val)));
+                    }
+                }
+            }
+        });
+        const Key name{space.str() + ".wear"};
+        made->picture(name, pw, ph, std::move(rgba));
+        mp.set(Key{"wear_field"}, name.str()).set(Key{"wear_x"}, 0.0).set(Key{"wear_z"}, 0.0).set(Key{"wear_w"}, fw).set(Key{"wear_d"}, fd);
+    }
+    // (Where the world began, if in one of them, it begins in the one.)
+    for (const Placed& p : out)
+        if (g.initial() == p.room->id()) g.set_initial(space);
+    // The rooms were; the one is. (Their seams with each other with them.)
+    for (Key sm : seams) g.remove(g.removal_of_seam(sm));
+    for (const Placed& p : out) g.remove(g.removal(p.room->id()));
+    return true;
+}
+
 std::vector<PlacedRoom> sheafify(const StateGraph& g, Key root, std::size_t most, std::size_t lamps, bool every) {
     // Grown from `root` through the doorways it shares, room by room - what
     // the rooms say of each other, no more (sheafable) - and placed in the
@@ -495,5 +744,6 @@ std::vector<PlacedRoom> place_rooms(StateGraph& g, const Atlas& atlas, Key root,
     }
     return out;
 }
+
 
 }  // namespace sg

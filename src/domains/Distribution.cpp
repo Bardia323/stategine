@@ -1,4 +1,5 @@
 #include "sg/domains/Distribution.hpp"
+#include "sg/core/Work.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -61,7 +62,7 @@ const std::set<std::string>& point_laws() {
     return all;
 }
 const std::set<std::string>& field_laws() {
-    static const std::set<std::string> all{"bump", "sum"};
+    static const std::set<std::string> all{"bump", "stroke", "sum"};
     return all;
 }
 
@@ -278,6 +279,17 @@ double intensity_of(const Distribution& d, const Law& law, double x, double z, c
         const double sd = std::max(law.num("sd", 1.0), 1e-3), dx = x - law.num("at_x", 0.0), dz = z - law.num("at_z", 0.0);
         return law.num("amount", 10.0) * std::exp(-(dx * dx + dz * dz) / (2.0 * sd * sd)) / (kTau * sd * sd);
     }
+    if (w == "stroke") {
+        // (A bump drawn along a segment: its amount per metre of it, the
+        // band as wide as `sd` either side, softening to `sd_to` at its end.)
+        const double ax = law.num("from_x", 0.0), az = law.num("from_z", 0.0), bx = law.num("to_x", 0.0), bz = law.num("to_z", 0.0);
+        const double ux = bx - ax, uz = bz - az, len2 = ux * ux + uz * uz;
+        const double t = len2 > 1e-12 ? std::clamp(((x - ax) * ux + (z - az) * uz) / len2, 0.0, 1.0) : 0.0;
+        const double sd0 = std::max(law.num("sd", 0.2), 1e-3), sd = std::max(sd0 + (law.num("sd_to", sd0) - sd0) * t, 1e-3);
+        const double dx = x - (ax + ux * t), dz = z - (az + uz * t);
+        const double fade = law.num("amount", 10.0) + (law.num("amount_to", law.num("amount", 10.0)) - law.num("amount", 10.0)) * t;
+        return fade * std::exp(-(dx * dx + dz * dz) / (2.0 * sd * sd)) / (std::sqrt(kTau) * sd);
+    }
     if (w == "thomas" || w == "matern") {
         const double c = law.num("children", 8.0);
         double sum = 0.0;
@@ -375,14 +387,17 @@ std::vector<Vec3d> sample(const Distribution& d, Key name, const Area& area, con
 
 std::vector<unsigned char> field_picture(const Distribution& d, Key name, const Area& area, int px, double* most_out) {
     std::vector<double> f(static_cast<std::size_t>(px) * px, 0.0);
+    // (Its rows across the machine's hands, each row its own: the laws are
+    // only read. The most found after, in one order: the same on any hands.)
+    work::bands(px, [&](int from, int to) {
+        for (int j = from; j < to; ++j)
+            for (int i = 0; i < px; ++i) {
+                const double x = area.x0 + (area.x1 - area.x0) * (i + 0.5) / px, z = area.z0 + (area.z1 - area.z0) * (j + 0.5) / px;
+                f[static_cast<std::size_t>(j) * px + i] = intensity(d, name, x, z, area);
+            }
+    });
     double most = 0.0;
-    for (int j = 0; j < px; ++j)
-        for (int i = 0; i < px; ++i) {
-            const double x = area.x0 + (area.x1 - area.x0) * (i + 0.5) / px, z = area.z0 + (area.z1 - area.z0) * (j + 0.5) / px;
-            const double v = intensity(d, name, x, z, area);
-            f[static_cast<std::size_t>(j) * px + i] = v;
-            most = std::max(most, v);
-        }
+    for (const double v : f) most = std::max(most, v);
     if (most_out) *most_out = most;
     std::vector<unsigned char> out(static_cast<std::size_t>(px) * px * 4, 255);
     for (std::size_t k = 0; k < f.size(); ++k) {
@@ -430,6 +445,10 @@ std::vector<std::string> distribution_faults(const State& d) {
         if (what == "poisson") bad(p.num(Key{"density"}, 1.0) < 0.0, "it is less dense than none");
         if (what == "disk") bad(p.num(Key{"spacing"}, 1.0) <= 0.0, "its spacing is not more than none");
         if (what == "bump") bad(p.num(Key{"sd"}, 1.0) <= 0.0 || p.num(Key{"amount"}, 10.0) < 0.0, "its spread is not more than none, or its amount less");
+        if (what == "stroke")
+            bad(p.num(Key{"sd"}, 0.2) <= 0.0 || p.num(Key{"sd_to"}, p.num(Key{"sd"}, 0.2)) <= 0.0 || p.num(Key{"amount"}, 10.0) < 0.0 ||
+                    p.num(Key{"amount_to"}, p.num(Key{"amount"}, 10.0)) < 0.0,
+                "its spread is not more than none, or its amount less");
         if (what == "sum")
             for (const std::string& n : words(p.get_or<std::string>("of", "")))
                 if (!d.find(Key{n})) out.push_back(name + "it adds '" + n + "', which is no law of it");

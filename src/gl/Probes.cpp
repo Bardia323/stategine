@@ -70,7 +70,8 @@ const std::map<std::string, Sh9>& GLWorldView::sets_of(const Element& probe) con
     return s.sets;
 }
 
-void GLWorldView::probes_to_program(const PlacedRoom& placed) {
+void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program* into) {
+    const gl::Program& to = into ? *into : *scene_;
     const ProbeNames& names = probe_names(kMaxProbes);
     int count = 0;
     // Relit live (light_rooms): the room's own boxes, or its declared
@@ -85,18 +86,19 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
             Sh9 sh = i < sets.size() ? probe_light(*placed.room, sets[i]) : Sh9{};
             if (i < let_in.size()) sh.add(let_in[i], Rgb{1.0, 1.0, 1.0});
             const Pose p = compose_pose(placed.pose, Pose{b.mid, b.yaw, 0.0, 0.0});
-            scene_->set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y),
+            to.set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
-            scene_->set(names.half[count].c_str(), gl::Vec3{static_cast<float>(b.half.x), static_cast<float>(b.half.y), static_cast<float>(b.half.z)});
-            scene_->set(names.lo[count].c_str(), gl::Vec3{static_cast<float>(b.soft_lo.x), static_cast<float>(b.soft_lo.y), static_cast<float>(b.soft_lo.z)});
-            scene_->set(names.hi[count].c_str(), gl::Vec3{static_cast<float>(b.soft_hi.x), static_cast<float>(b.soft_hi.y), static_cast<float>(b.soft_hi.z)});
+            to.set(names.half[count].c_str(), gl::Vec3{static_cast<float>(b.half.x), static_cast<float>(b.half.y), static_cast<float>(b.half.z)});
+            to.set(names.lo[count].c_str(), gl::Vec3{static_cast<float>(b.soft_lo.x), static_cast<float>(b.soft_lo.y), static_cast<float>(b.soft_lo.z)});
+            to.set(names.hi[count].c_str(), gl::Vec3{static_cast<float>(b.soft_hi.x), static_cast<float>(b.soft_hi.y), static_cast<float>(b.soft_hi.z)});
             for (std::size_t k = 0; k < 9; ++k)
-                scene_->set(names.sh[static_cast<std::size_t>(count) * 9 + k].c_str(),
+                to.set(names.sh[static_cast<std::size_t>(count) * 9 + k].c_str(),
                             gl::Vec3{static_cast<float>(sh.c[k][0]), static_cast<float>(sh.c[k][1]), static_cast<float>(sh.c[k][2])});
             ++count;
         }
-        scene_->set("uProbeCount", count);
-        scene_->set("uProbeOpen", rl->open ? 1.0f : 0.0f);
+        to.set("uProbeCount", count);
+        to.set("uProbeOpen", rl->open ? 1.0f : 0.0f);
+        if (!into) captures_to(placed, rl, count);
         return;
     }
     // (A bake's first bounce sees the room lit by its lamp alone: no probe.)
@@ -115,19 +117,20 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed) {
             const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
             const double soft = e.params.num(Key{"soft"}, 0.5);
             const auto side = [&](const char* k) { return static_cast<float>(e.params.num(Key{k}, soft)); };
-            scene_->set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y + 0.5 * sy),
+            to.set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y + 0.5 * sy),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
-            scene_->set(names.half[count].c_str(), gl::Vec3{static_cast<float>(0.5 * sx), static_cast<float>(0.5 * sy), static_cast<float>(0.5 * sz)});
-            scene_->set(names.lo[count].c_str(), gl::Vec3{side("soft.nx"), side("soft.ny"), side("soft.nz")});
-            scene_->set(names.hi[count].c_str(), gl::Vec3{side("soft.px"), side("soft.py"), side("soft.pz")});
+            to.set(names.half[count].c_str(), gl::Vec3{static_cast<float>(0.5 * sx), static_cast<float>(0.5 * sy), static_cast<float>(0.5 * sz)});
+            to.set(names.lo[count].c_str(), gl::Vec3{side("soft.nx"), side("soft.ny"), side("soft.nz")});
+            to.set(names.hi[count].c_str(), gl::Vec3{side("soft.px"), side("soft.py"), side("soft.pz")});
             for (std::size_t k = 0; k < 9; ++k)
-                scene_->set(names.sh[static_cast<std::size_t>(count) * 9 + k].c_str(),
+                to.set(names.sh[static_cast<std::size_t>(count) * 9 + k].c_str(),
                             gl::Vec3{static_cast<float>(sh.c[k][0]), static_cast<float>(sh.c[k][1]), static_cast<float>(sh.c[k][2])});
             ++count;
         }
     }
-    scene_->set("uProbeCount", count);
-    scene_->set("uProbeOpen", 0.0f);
+    to.set("uProbeCount", count);
+    to.set("uProbeOpen", 0.0f);
+    if (!into) captures_to(placed, nullptr, 0);
 }
 
 Sh9 GLWorldView::capture(const Spatial3D& room, const Vec3d& at, int size) {
@@ -361,11 +364,50 @@ auto GLWorldView::grid_of(const Spatial3D& room) -> std::vector<ProbeBox> {
     if (p.num(Key{"gi"}, 1.0) < 0.5 || (p.num(Key{"enclosed"}, 1.0) < 0.5 && !walled(room)) || p.num(Key{"sky"}, 0.0) > 0.5 || !p.has(Key{"room_w"}) ||
         !p.has(Key{"room_d"}) || !p.has(Key{"room_h"}))
         return out;
+    // Rooms made one (sg::make_space): the floor each covered (`regions`),
+    // boxes laid over each - shared out by how much floor it is, a box to
+    // each at least - never over what lies outside them all.
+    if (const int regions = static_cast<int>(p.num(Key{"regions"}, 0.0)); regions > 0) {
+        struct Region {
+            double x0, z0, w, d, h, cell;
+        };
+        std::vector<Region> rs;
+        double floor = 0.0;
+        for (int k = 0; k < regions; ++k) {
+            const std::string r = "region" + std::to_string(k) + "_";
+            Region g{p.num(Key{r + "x0"}), p.num(Key{r + "z0"}), p.num(Key{r + "x1"}) - p.num(Key{r + "x0"}), p.num(Key{r + "z1"}) - p.num(Key{r + "z0"}),
+                     p.num(Key{r + "h"}, 3.0), std::clamp(p.num(Key{r + "cell"}, p.num(Key{"probe_cell"}, 2.5)), 0.5, 10.0)};
+            if (g.w <= 0.0 || g.d <= 0.0) continue;
+            rs.push_back(g);
+            floor += g.w * g.d;
+        }
+        int left = kMaxProbes;
+        for (std::size_t k = 0; k < rs.size(); ++k) {
+            const Region& g = rs[k];
+            const int share = k + 1 == rs.size() ? left : std::max(1, std::min(left - static_cast<int>(rs.size() - k - 1), static_cast<int>(kMaxProbes * g.w * g.d / floor)));
+            int nx = std::max(1, static_cast<int>(std::ceil(g.w / g.cell))), nz = std::max(1, static_cast<int>(std::ceil(g.d / g.cell)));
+            while (nx * nz > share && (nx > 1 || nz > 1)) (g.w / nx < g.d / nz && nx > 1 ? nx : nz) -= 1;
+            left -= nx * nz;
+            const double cw = g.w / nx, cd = g.d / nz, soft = std::min({cw, cd, g.h}) * 0.3;
+            for (int i = 0; i < nx; ++i)
+                for (int j = 0; j < nz; ++j) {
+                    ProbeBox b;
+                    b.id = Key{"gi." + std::to_string(k) + "." + std::to_string(i) + "." + std::to_string(j)};
+                    b.mid = {g.x0 + cw * (i + 0.5), 0.5 * g.h, g.z0 + cd * (j + 0.5)};
+                    b.half = {0.5 * cw, 0.5 * g.h, 0.5 * cd};
+                    b.soft_lo = b.soft_hi = {soft, soft, soft};
+                    out.push_back(b);
+                }
+        }
+        return out;
+    }
     const double w = p.num(Key{"room_w"}), d = p.num(Key{"room_d"}), h = p.num(Key{"room_h"});
     if (w <= 0.0 || d <= 0.0 || h <= 0.0) return out;
-    constexpr double kCell = 2.5;
-    int nx = std::clamp(static_cast<int>(std::ceil(w / kCell)), 1, kMaxProbes);
-    int nz = std::clamp(static_cast<int>(std::ceil(d / kCell)), 1, kMaxProbes);
+    // (A room may ask for its boxes smaller, `probe_cell` metres: a small
+    // room lit from one side changes over less than two and a half.)
+    const double cell = std::clamp(p.num(Key{"probe_cell"}, 2.5), 0.5, 10.0);
+    int nx = std::clamp(static_cast<int>(std::ceil(w / cell)), 1, kMaxProbes);
+    int nz = std::clamp(static_cast<int>(std::ceil(d / cell)), 1, kMaxProbes);
     while (nx * nz > kMaxProbes) (w / nx < d / nz ? nx : nz) -= 1;
     const double cw = w / nx, cd = d / nz, soft = std::min({cw, cd, h}) * 0.3;
     // The boxes' names, made once: a room's grid is asked for every frame.
@@ -943,6 +985,7 @@ void GLWorldView::light_rooms(const std::vector<PlacedRoom>& rooms) {
                 }
     }
     std::set<const Spatial3D*> done;
+    relit_.clear();
     for (const Spatial3D* at : seen) {
         if (!done.insert(at).second) continue;
         const Spatial3D& room = *at;
@@ -968,6 +1011,7 @@ void GLWorldView::light_rooms(const std::vector<PlacedRoom>& rooms) {
         }
         room_light_[&room].open = open;
         relight_room(room, boxes, 32, 2, false);
+        relit_.push_back(&room);
     }
 }
 
@@ -997,6 +1041,286 @@ std::vector<ProbeBake> GLWorldView::relight_probes(const Spatial3D& room, int si
         out.push_back(std::move(pb));
     }
     return out;
+}
+
+// --- reflection captures --------------------------------------------------------
+
+namespace {
+// How many relights a lamp must have given nothing before a capture takes it
+// as out: a flicker's dark moment, a stutter, is not out.
+constexpr uint64_t kOutFor = 90;
+// How fast a lamp's standing is let down (as standing_of lets it down): by
+// half in some three thousand relights.
+constexpr float kLetDown = 0.9998f;
+}  // namespace
+
+GLWorldView::OwnedTexture::~OwnedTexture() {
+    if (id) gl::glDeleteTextures(1, &id);
+}
+
+float GLWorldView::steady_power(const Spatial3D& room, const Element& lamp) const {
+    const auto it = room_light_.find(&room);
+    if (it == room_light_.end()) return -1.0f;
+    const auto s = it->second.steady.find(lamp.id.str());
+    if (s == it->second.steady.end()) return -1.0f;
+    return it->second.calls - s->second.lit > kOutFor ? 0.0f : s->second.peak;
+}
+
+void GLWorldView::captures_to(const PlacedRoom& placed, const RoomLight* rl, int count) {
+    // (Not in a capture itself, nor a bake: what is mirrored there is the
+    // probes' - a capture seen in a capture would hold the last one's light.)
+    const bool held = rl && !capturing_ && !baking_ && rl->captures.id != 0 && rl->capture_layers > 0 &&
+                      rl->captured.size() == static_cast<std::size_t>(rl->capture_layers) &&
+                      std::none_of(rl->captured.begin(), rl->captured.end(), [](const Digest& d) { return d == Digest{}; });
+    if (!held) {
+        scene_->set("uCaptureHi", 0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+    gl::glActiveTexture(gl::GL_TEXTURE0 + static_cast<gl::GLenum>(kCaptureUnit));
+    gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, rl->captures.id);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    const Pose& at = placed.pose;
+    scene_->set("uCaptureAt", static_cast<float>(at.position.x), static_cast<float>(at.position.y), static_cast<float>(at.position.z),
+                static_cast<float>(at.yaw));
+    Vec3d lo{0, 0, 0}, hi{0, 0, 0};
+    const auto& p = placed.room->params();
+    if (p.has(Key{"room_w"})) {
+        hi = {p.num(Key{"room_w"}), p.num(Key{"room_h"}, 3.0), p.num(Key{"room_d"})};
+    } else {
+        // (A room that says not how big it is: the boxes', all of them.)
+        lo = rl->boxes.front().mid - rl->boxes.front().half, hi = rl->boxes.front().mid + rl->boxes.front().half;
+        for (const ProbeBox& b : rl->boxes) {
+            const Vec3d a = b.mid - b.half, c = b.mid + b.half;
+            lo = {std::min(lo.x, a.x), std::min(lo.y, a.y), std::min(lo.z, a.z)};
+            hi = {std::max(hi.x, c.x), std::max(hi.y, c.y), std::max(hi.z, c.z)};
+        }
+    }
+    scene_->set("uCaptureLo", to_vec3(lo));
+    scene_->set("uCaptureHi", static_cast<float>(hi.x), static_cast<float>(hi.y), static_cast<float>(hi.z),
+                static_cast<float>(std::min(count, rl->capture_layers)));
+}
+
+void GLWorldView::capture_rooms() {
+    // Each lamp of each room relit, as it stands: the most it has given
+    // lately (let down slowly), and when it last gave any - what a capture
+    // is drawn with, and of.
+    for (const Spatial3D* at : relit_) {
+        const auto it = room_light_.find(at);
+        if (it == room_light_.end()) continue;
+        RoomLight& rl = it->second;
+        Hasher h;
+        h.text("lamps as they stand");
+        for (const Element* le : index_of(*at).lights) {
+            if (!le->alive) continue;
+            const DrawLight L = light_of(*at, *le);
+            RoomLight::Steady& s = rl.steady[le->id.str()];
+            if (s.seen && rl.calls > s.seen) s.peak *= std::pow(kLetDown, static_cast<float>(std::min<uint64_t>(rl.calls - s.seen, 100000)));
+            s.seen = rl.calls;
+            if (L.power > 0.0f) s.peak = std::max(s.peak, L.power), s.lit = rl.calls;
+            const bool out = s.peak <= 0.0f || rl.calls - s.lit > kOutFor;
+            h.text(le->id.str());
+            for (float v : {L.pos.x, L.pos.y, L.pos.z, L.dir.x, L.dir.y, L.dir.z, L.inner, L.outer, L.range, L.color.x, L.color.y, L.color.z})
+                h.number(std::round(v * 1000.0f));
+            // (Its standing in half stops: a lamp turned down for good is
+            // taken again, a lamp's breath is not.)
+            h.integer(out ? -1000 : static_cast<int64_t>(std::lround(2.0 * std::log2(std::max(s.peak, 1e-6f)))));
+        }
+        rl.lamps_stand = h.digest();
+    }
+    // A face of a box a frame - of the room the eye is in first - unless a
+    // room is seen for the first time (or its boxes changed): then all of it
+    // now, as its probes are relit whole the first time.
+    int jobs = 1;
+    for (const Spatial3D* at : relit_) {
+        const auto it = room_light_.find(at);
+        if (it == room_light_.end()) continue;
+        RoomLight& rl = it->second;
+        const Spatial3D& room = *at;
+        const bool asked = !rl.open && !rl.boxes.empty() && setting(mix(room.id(), look_of(room)), passes::scene, "reflect.captures", 0.0) > 0.0;
+        if (!asked) {
+            if (rl.captures.id) gl::glDeleteTextures(1, &rl.captures.id);
+            rl.captures.id = 0, rl.capture_layers = 0, rl.capturing = -1;
+            rl.captured.clear();
+            continue;
+        }
+        // What a box's capture is of: the room's shell and lamps as they
+        // stand, and those of the rooms it is one space with (seen through
+        // its openings) - and where the box is.
+        const std::vector<PlacedRoom> rooms = seen(room);
+        Hasher of;
+        of.text("captured").text(SG_PROBE_CODE).integer(kCaptureFace).integer(kCaptureSize).integer(kCaptureLevels);
+        for (const PlacedRoom& placed : rooms) {
+            const auto other = placed.room ? room_light_.find(placed.room) : room_light_.end();
+            if (other == room_light_.end()) continue;
+            for (const Digest& d : {other->second.shell, other->second.lamps_stand})
+                of.integer(static_cast<int64_t>(d.hi)).integer(static_cast<int64_t>(d.lo));
+            for (double v : {placed.pose.position.x, placed.pose.position.y, placed.pose.position.z, placed.pose.yaw}) of.number(v);
+        }
+        const Digest room_of = of.digest();
+        const auto want = [&](std::size_t i) {
+            const Vec3d m = rl.boxes[i].mid;
+            return Hasher{}.integer(static_cast<int64_t>(room_of.hi)).integer(static_cast<int64_t>(room_of.lo)).number(m.x).number(m.y).number(m.z).digest();
+        };
+        const int layers = static_cast<int>(rl.boxes.size());
+        bool all_now = false;
+        if (!rl.captures.id || rl.capture_layers != layers) {
+            if (!rl.captures.id) gl::glGenTextures(1, &rl.captures.id);
+            gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, rl.captures.id);
+            for (int k = 0; k < kCaptureLevels; ++k)
+                gl::glTexImage3D(gl::GL_TEXTURE_2D_ARRAY, k, static_cast<gl::GLint>(gl::GL_RGBA16F), kCaptureSize >> k, kCaptureSize >> k, layers, 0,
+                                 gl::GL_RGBA, gl::GL_HALF_FLOAT, nullptr);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_MIN_FILTER, gl::GL_LINEAR_MIPMAP_LINEAR);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_MAG_FILTER, gl::GL_LINEAR);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_WRAP_S, gl::GL_CLAMP_TO_EDGE);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_WRAP_T, gl::GL_CLAMP_TO_EDGE);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_BASE_LEVEL, 0);
+            gl::glTexParameteri(gl::GL_TEXTURE_2D_ARRAY, gl::GL_TEXTURE_MAX_LEVEL, kCaptureLevels - 1);
+            gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, 0);
+            rl.capture_layers = layers;
+            rl.captured.assign(rl.boxes.size(), Digest{});
+            rl.capturing = -1;
+            all_now = true;
+        }
+        if (rl.capturing >= layers) rl.capturing = -1;
+        // Taken whole before, of this very room as it stands now - its shell,
+        // its lamps, its boxes: kept on disk (sg::cache), as its probes' light
+        // is, and taken from there in place of drawing every face again.
+        Hasher kh;
+        kh.text("captures").integer(static_cast<int64_t>(room_of.hi)).integer(static_cast<int64_t>(room_of.lo)).integer(layers);
+        for (const ProbeBox& b : rl.boxes) kh.number(b.mid.x).number(b.mid.y).number(b.mid.z);
+        const Digest kept_as = kh.digest();
+        std::size_t kept_bytes = 0;
+        for (int k = 0; k < kCaptureLevels; ++k) kept_bytes += static_cast<std::size_t>(kCaptureSize >> k) * (kCaptureSize >> k) * layers * 4 * 2;
+        const bool fresh = all_now;
+        if (fresh) {
+            std::string bytes;
+            if (cache::load("captures", kept_as, bytes) && bytes.size() == kept_bytes) {
+                gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, rl.captures.id);
+                std::size_t at = 0;
+                for (int k = 0; k < kCaptureLevels; ++k) {
+                    const int n = kCaptureSize >> k;
+                    gl::glTexImage3D(gl::GL_TEXTURE_2D_ARRAY, k, static_cast<gl::GLint>(gl::GL_RGBA16F), n, n, layers, 0, gl::GL_RGBA, gl::GL_HALF_FLOAT, bytes.data() + at);
+                    at += static_cast<std::size_t>(n) * n * layers * 4 * 2;
+                }
+                gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, 0);
+                for (int b = 0; b < layers; ++b) rl.captured[static_cast<std::size_t>(b)] = want(static_cast<std::size_t>(b));
+                continue;
+            }
+        }
+        // A box taken whole - its faces as the frames allow, the one being
+        // taken first - then folded and blurred into its layer.
+        const auto take = [&](int b) {
+            if (rl.capturing != b) rl.capturing = b, rl.capture_faces = 0;
+            for (; rl.capture_faces < 6 && (all_now || jobs > 0); ++rl.capture_faces, --jobs) capture_face(room, rl, b, rl.capture_faces);
+            if (rl.capture_faces < 6) return;
+            fold_capture(rl, b);
+            rl.captured[static_cast<std::size_t>(b)] = want(static_cast<std::size_t>(b));
+            rl.capturing = -1;
+        };
+        if (rl.capturing >= 0) take(rl.capturing);
+        for (int b = 0; b < layers && rl.capturing < 0 && (all_now || jobs > 0); ++b)
+            if (rl.captured[static_cast<std::size_t>(b)] != want(static_cast<std::size_t>(b))) take(b);
+        // (Taken whole now: kept, for the next start - every layer of every
+        // size read back as it is on the card.)
+        bool whole = fresh;
+        for (int b = 0; b < layers && whole; ++b) whole = rl.captured[static_cast<std::size_t>(b)] == want(static_cast<std::size_t>(b));
+        if (whole && !cache::folder().empty()) {
+            std::string bytes(kept_bytes, '\0');
+            if (!capture_fbo_) gl::glGenFramebuffers(1, &capture_fbo_);
+            gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, capture_fbo_);
+            std::size_t at = 0;
+            for (int k = 0; k < kCaptureLevels; ++k) {
+                const int n = kCaptureSize >> k;
+                for (int b = 0; b < layers; ++b) {
+                    gl::glFramebufferTextureLayer(gl::GL_READ_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, rl.captures.id, k, b);
+                    gl::glReadPixels(0, 0, n, n, gl::GL_RGBA, gl::GL_HALF_FLOAT, bytes.data() + at);
+                    at += static_cast<std::size_t>(n) * n * 4 * 2;
+                }
+            }
+            gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, 0);
+            cache::store("captures", kept_as, bytes);
+        }
+    }
+}
+
+void GLWorldView::capture_face(const Spatial3D& room, RoomLight& rl, int box, int face) {
+    // Drawn as a mirror's view is - by this view, as its eye's frame is
+    // drawn (its lamps' maps, its probes, its air), at depth: no smoothing
+    // over frames, nothing traced - from the box's middle, a quarter turn
+    // wide, with what moves left out, as the probes leave it out.
+    if (!capture_seen_.valid()) capture_seen_.create(kCaptureFace, kCaptureFace, gl::GL_RGBA16F, 0, true);
+    if (!capture_faces_.valid()) capture_faces_.create(6 * kCaptureFace, kCaptureFace, gl::GL_RGBA16F, 0, false);
+    Camera cam;
+    cam.eye = to_vec3(rl.boxes[static_cast<std::size_t>(box)].mid);
+    cam.forward = to_vec3(kFace[face]);
+    cam.up = to_vec3(kFaceUp[face]);
+    cam.fov = 1.5707963f;
+    const Rect sub_was = sub_, cut_was = cut_;
+    const std::string path_was = path_;
+    std::vector<spatial::HalfSpace> cull_was;
+    cull_was.swap(cull_);
+    const HostAir air_was = host_air_;
+    const int w_was = target_w_, h_was = target_h_;
+    const std::unordered_set<Key>* hidden_was = hidden_;
+    host_air_.on = false;
+    target_w_ = target_h_ = kCaptureFace;
+    sub_ = cut_ = Rect{-1, -1, 1, 1};
+    path_ = "~c";
+    hidden_ = &rl.hidden;
+    capturing_ = true;
+    draw_world(seen(room), cam, 1.0f, capture_seen_, /*depth=*/2, kNear);
+    capturing_ = false;
+    hidden_ = hidden_was;
+    target_w_ = w_was, target_h_ = h_was;
+    sub_ = sub_was, cut_ = cut_was;
+    path_ = path_was;
+    cull_.swap(cull_was);
+    host_air_ = air_was;
+    gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, capture_seen_.framebuffer());
+    gl::glBindFramebuffer(gl::GL_DRAW_FRAMEBUFFER, capture_faces_.framebuffer());
+    gl::glBlitFramebuffer(0, 0, kCaptureFace, kCaptureFace, face * kCaptureFace, 0, (face + 1) * kCaptureFace, kCaptureFace, gl::GL_COLOR_BUFFER_BIT,
+                          gl::GL_NEAREST);
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+    ++times_.captures;
+}
+
+void GLWorldView::fold_capture(RoomLight& rl, int box) {
+    // The six faces folded into the octahedron's map (and its smaller sizes
+    // made, to be read from as they are blurred); the map as it is the
+    // layer's largest size, and each smaller one blurred for a rougher
+    // surface, as far as all but the roughest.
+    if (!capture_fold_prog_) capture_fold_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::capture_fold_fs(), "capture fold");
+    if (!capture_blur_prog_) capture_blur_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::capture_blur_fs(), "capture blur");
+    if (!capture_source_.valid()) capture_source_.create(kCaptureSize, kCaptureSize, gl::GL_RGBA16F, 0, false);
+    if (!capture_fbo_) gl::glGenFramebuffers(1, &capture_fbo_);
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    capture_source_.bind();
+    capture_fold_prog_->use();
+    capture_faces_.bind_color(0);
+    capture_fold_prog_->set("uFaces", 0);
+    capture_fold_prog_->set("uSize", static_cast<float>(kCaptureSize));
+    screen_.draw();
+    glint_mips(capture_source_);
+    gl::glBindFramebuffer(gl::GL_DRAW_FRAMEBUFFER, capture_fbo_);
+    gl::glFramebufferTextureLayer(gl::GL_DRAW_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, rl.captures.id, 0, box);
+    gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, capture_source_.framebuffer());
+    gl::glBlitFramebuffer(0, 0, kCaptureSize, kCaptureSize, 0, 0, kCaptureSize, kCaptureSize, gl::GL_COLOR_BUFFER_BIT, gl::GL_NEAREST);
+    const gl::Program& B = *capture_blur_prog_;
+    B.use();
+    capture_source_.bind_color(0);
+    B.set("uSource", 0);
+    for (int k = 1; k < kCaptureLevels; ++k) {
+        const int n = kCaptureSize >> k;
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, capture_fbo_);
+        gl::glFramebufferTextureLayer(gl::GL_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, rl.captures.id, k, box);
+        gl::glViewport(0, 0, n, n);
+        B.set("uSize", static_cast<float>(n));
+        B.set("uRough", static_cast<float>(k) / static_cast<float>(kCaptureLevels - 1));
+        screen_.draw();
+    }
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
 }
 
 }  // namespace sg::render

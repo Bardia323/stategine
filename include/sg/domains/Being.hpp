@@ -295,6 +295,17 @@ std::vector<std::pair<Key, Key>> same_joints(const Being& from, const Being& to)
 // clips of its own, given another's.
 Key retarget(StateGraph& g, const Being& from, const Being& to, Key name = {}, bool own = false);
 
+// One body in two places: `to`, a being made as `from` was (the same
+// skeleton, clips, goals and feet - two places' own of one person), kept as
+// `from` is - its pose and how fast each joint turns, what it plays and how
+// far through, what it is steering for, where its feet are set down - by a
+// kept functor (`<from>.as.<to>`) that carries only while `from` lives
+// (`Functor::from_living`): the one stepped carries, the other goes on from
+// there when it is stepped in its turn, as the first left it. What it is
+// made of (its clips, its skins) is its own. Made both ways, whichever
+// lives carries. Returns the functor's name (made once).
+Key carry_body(StateGraph& g, const Being& from, const Being& to, Key name = {});
+
 // Which keys of a track can go: `values` is `width` numbers a key - a turn
 // (4: w x y z, slerped) or a place (3, straight between) - at `times`. A key
 // goes when its neighbours, joined, still put every key between them within

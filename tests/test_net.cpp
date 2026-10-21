@@ -110,8 +110,9 @@ int scenario(const sg::net::Backend* executor) {
     for (int i = 0; i < 24; ++i) engine.tick(0.1);
     check(near(value("game.a"), 6) && near(value("game.b"), 6), "republication and reconciliation approach agreement");
 
+    // (Refused: said, or - as this engine is strict - thrown.)
     bool refused = false;
-    try { engine.send("network", sg::Event{"network.undeclared"}); }
+    try { refused = !engine.send("network", sg::Event{"network.undeclared"}); }
     catch (const std::runtime_error&) { refused = true; }
     check(refused, "remote input cannot bypass a declared port");
     engine.send("network", {"network.receive", sg::Params{}.set("sample", 14.0)});

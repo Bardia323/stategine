@@ -12,7 +12,8 @@
 // their dome whole again; their time is the world's alone - still when it
 // is, moved when it goes on, and at a world time the same as a fresh view's. A look that says `atmosphere` and `clouds.cover` 0
 // draws exactly as one that says nothing of them. The sun's disc is the
-// sun's size: half a degree.
+// sun's size: half a degree. Smooth rails just to one side of it glint
+// steadily as it moves behind them - no frame flashes.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -297,5 +298,37 @@ int main() {
     }
     std::printf("the sun's disc: %d pixels across (22 its own)\n", across);
     check(across >= 12 && across <= 45, "the sun's disc is as wide as the sun is: half a degree");
+
+    // Thin rails standing before the low sun, a little to one side of it:
+    // where their edges are seen, the eye looks almost straight at the light
+    // past a surface turned edge-on to both, thinner than a pixel. Smooth,
+    // they glint there, and as the sun moves a little along behind them the
+    // glint moves with it - never a pixel thousands of times the sun's light
+    // on one frame and gone on the next, its glow flooding the frame
+    // (`sized_ndh2`'s squared cosine held to 1).
+    {
+        const double up = 0.15;
+        for (int i = 0; i < 12; ++i) {
+            const double a = aside + 0.006 + 0.0025 * i;
+            sg::Element& rail = field.fixture(sg::Key{"rail" + std::to_string(i)}, std::cos(a) * 20.0, 1.6 + std::tan(up) * 20.0 - 2.0, std::sin(a) * 20.0);
+            rail.params.set(sg::keys::sx, 0.03).set(sg::keys::sy, 4.0).set(sg::keys::sz, 0.03).set("shape", std::string("cylinder"));
+            rail.params.set("r", 0.09).set("g", 0.075).set("b", 0.07).set("roughness", 0.3);
+        }
+        // (Seen darkly, the sun's own glow not white: what is brighter shows.)
+        earth.uniform(sg::passes::composite, "uExposure", 0.03);
+        std::vector<double> mean;
+        for (int k = 0; k < 24; ++k) {
+            const double a = aside - 0.0002 * k;
+            sun.params.set("dx", -std::cos(a) * std::cos(up)).set("dy", -std::sin(up)).set("dz", -std::sin(a) * std::cos(up));
+            shot(aside, up, 2);
+            double m = 0.0;
+            for (unsigned char c : px) m += c;
+            mean.push_back(m / static_cast<double>(px.size()));
+        }
+        double jump = 0.0;
+        for (std::size_t k = 1; k + 1 < mean.size(); ++k) jump = std::max(jump, std::abs(mean[k] - 0.5 * (mean[k - 1] + mean[k + 1])));
+        std::printf("smooth rails before the moving sun: the picture's brightness off its neighbours' by %.3f levels at most\n", jump);
+        check(jump < 0.05, "smooth rails before the sun glint at their edges, steadily: no frame flashes");
+    }
     return ok ? 0 : 1;
 }

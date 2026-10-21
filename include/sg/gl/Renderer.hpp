@@ -307,6 +307,15 @@ public:
     bool has_second() const { return second_tex_ != 0 || second_rb_ != 0; }
     void second(bool drawn) const;
     void second_to(const RenderTarget& dst) const;
+    // And a third (attachment 2), the same way: how each pixel moved since
+    // the last frame (the scene's motion, for an upscaler of the card's).
+    void add_third(GLenum internal_format);
+    bool has_third() const { return third_tex_ != 0 || third_rb_ != 0; }
+    void third(bool drawn) const;
+    void third_to(const RenderTarget& dst) const;
+    // Its pictures' GL names (0 where it has none as a texture).
+    GLuint color_texture() const { return color_tex_; }
+    GLuint depth_texture() const { return depth_tex_; }
 
     int width() const { return w_; }
     int height() const { return h_; }
@@ -314,7 +323,10 @@ public:
 
 private:
     GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0, depth_tex_ = 0;
-    GLuint second_tex_ = 0, second_rb_ = 0;
+    GLuint second_tex_ = 0, second_rb_ = 0, third_tex_ = 0, third_rb_ = 0;
+    mutable bool second_on_ = false, third_on_ = false;
+    void draw_buffers() const;
+    void add_beside(int at, GLenum internal_format, GLuint& tex, GLuint& rb);
     int w_ = 0, h_ = 0, samples_ = 0;
     bool mipmapped_ = false;
 };

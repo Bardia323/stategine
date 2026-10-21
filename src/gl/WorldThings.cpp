@@ -386,6 +386,13 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         // A texture says how it is worn: tiled round the thing by the metre,
         // and how softly a curve goes from one way's cell to the next.
         const auto* tex = dynamic_cast<const Texture*>(&surf);
+        // A picture (not a texture's six cells) worn by a card - a thing one
+        // way far thinner than the others - is seen whole on each face: a
+        // card's edges are no faces to give five sixths of it to.
+        const double sizes[3] = {holder->params.num(keys::sx, 1.0), holder->params.num(keys::sy, 1.0), holder->params.num(keys::sz, 1.0)};
+        const bool card = !tex && std::min({sizes[0], sizes[1], sizes[2]}) < 0.05 * (sizes[0] + sizes[1] + sizes[2] - std::min({sizes[0], sizes[1], sizes[2]}) -
+                                                                                  std::max({sizes[0], sizes[1], sizes[2]}));
+        scene_->set("uSkinOne", card ? 1.0f : 0.0f);
         if (tex) {
             const Element& m = tex->map();
             const SkinFrame& f = skin_frame(st, *holder);
@@ -401,6 +408,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         }
         shape_seen(st, e).draw();
         if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinScatter", 0.0f, 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
+        if (card) scene_->set("uSkinOne", 0.0f);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

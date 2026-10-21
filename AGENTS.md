@@ -156,7 +156,8 @@ be keyed on what it is (a moving doorway once made new shadow maps every frame).
 Lamps are a budget, not a decoration: the renderer gives shadow maps to the
 strongest lamps of a room (six) out of 24 layers in all, and a lamp with no
 cone takes six of them. Fills, glows and spills say `indirect` = 1 (no
-shadow, sorted last); every lamp says its `range`, so lamps where it reaches
+shadow, sorted last; where a room's probes hold, a fill gives way to them -
+a room whose every lamp is one is lit by nothing, and `prepare` says so); every lamp says its `range`, so lamps where it reaches
 no room drawn do not compete - and each part of the view asks only the lamps
 whose range reaches it (`lamp_cells`): a lamp that says none is asked by
 every pixel, and costs every pixel. A photographed material is one tile kept on
@@ -196,7 +197,8 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `walk`, `fields_of`, `ray`, `rays` (`domains/Walk.hpp`) | a walker standing on whatever ground its space's fields say is down - walls, solid boxes and balls stop it, doorways let it through, a jetpack flies it; a state's `field` elements as sources; a ray against what stops, and many at once (what stops them gathered once, wide batches across the cores, each answered as alone) | a walker, gravity or collision of your own; y-up assumptions |
 | `Pose`, `standing` (`domains/Spatial.hpp`) | a whole turn (yaw, pitch, roll), composed through anchors and doorways; a camera's own ground | headings carried by hand; parts of a turned thing re-posed by hand |
 | `Seam::wraps`, `nests`, `period_x/y/z` | a space glued to itself (torus, portal pair, genus two); worlds inside worlds by a ball; a space that wraps in an axis | rings excused by hand; planets in one coordinate frame; tiled copies placed by hand |
-| `sheafable`, `sheafify`, a doorway's `sheaf` (`domains/Atlas.hpp`) | rooms made one space where their doorways say `sheaf` and they agree - each room a presheaf, the space their section - drawn there, their doorways openings, and one physics over them (README *One space, sheafified*) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space, one physics per room where they are one |
+| the DSL's `space <name> = sheaf <rooms>` (`sg::make_space`, `domains/Atlas.hpp`) | rooms of one kind made one room where the source says so: one frame, eye, walker, physics, look and clock; the doorways between them holes (README *Rooms made one room*) | rooms placed side by side by hand, a "level" built of rooms copied into one state by a program, a doorway view or a crossing where the rooms are one room, one physics or walker per room where they are one |
+| `sheafable`, `sheafify`, a doorway's `sheaf` (`domains/Atlas.hpp`) | rooms made one space where their doorways say `sheaf` and they agree - each room a presheaf, the space their section - drawn there, their doorways openings, and one physics over them (README *One space, sheafified*; superseded by `space`) | rooms placed side by side by hand, a "level" built of rooms copied into one state, a doorway view where the rooms are one space, one physics per room where they are one |
 | `Distribution` (`domains/Distribution.hpp`) | laws of chance as data, a state of its own: value laws (power, lognormal, normal, beta, von Mises, choice), point laws (poisson, blue-noise `disk`, `thomas` / `matern` clusters), fields (`bump`, `sum`: intensities add - superposition), each sampled by a process chosen for it (`sample`: as drawn, poisson, disk, halton), drawn deterministically by seed and index, carried onto what spreads by them (`law_to`); a field as a picture (`field_picture`) for a material to wear by | `hash2`, `rand()`, a noise standing in for where things are; one noise for everything; sizes or spacings picked by hand for each thing |
 | `Wear` (`domains/Wear.hpp`) | what time has done to a place, as its causes: its `age`, its leaks (`add_leak`) - which every surface wearing a photographed `dirt_layer` / `damp_layer` answers in the renderer (gathered into corners and junctions, settled on what faces up, run down below a leak, rising from the floor), with a room's `wear_field` from a Distribution | stains, streaks and grime placed by hand thing by thing; procedural noise for dirt |
 | `ground_under` (`domains/Spatial.hpp`) | the lowest ground under a thing's turned footprint: where a thing set down stands so no edge of it floats | a thing stood at its middle's ground height |
@@ -204,9 +206,9 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `Surface2D` (`domains/Surface.hpp`) | a 2D state that hands over its pixels (`raster()`), repainted only when changed | a private bitmap or texture; anything 2D shown inside another domain |
 | `Texture` (`domains/Texture.hpp`) | a picture things wear, a state of its own: six cells, the thing seen from each way of each axis (no unwrap); generated (`define`), photographed or painted over (`layer`, followed); worn by being embedded in a mesh or a thing of parts; `projection_guide` is the map to paint over | UVs, a texture path or colour in a mesh's params, a picture per part, an unwrap |
 | `LookState` (`domains/Look.hpp`) | how a state is shown: passes and uniforms, worn by `sg::wear`, faded by `fade` | shader params, tint, fog, grade kept in a state's own params |
-| coinciding surfaces | never fight: the scene's vertex stage draws a thing a few depth steps nearer the smaller it is, so where two coincide the smaller is seen, steadily (`sg_coplanar_gl`); things of one size that must still part (a model's parts) say `depth_layer` | offsetting a face by hand to stop flicker, a polygon offset of your own, a depth bias per game |
+| coinciding surfaces | never fight: the scene's vertex stage draws a thing a few depth steps nearer the smaller it is, so where two coincide the smaller is seen, steadily (`sg_coplanar_gl`); things of one size that must still part (a model's parts) say `depth_layer` - two of one size in one plane are named when the world is prepared (`sg::coinciding`) | offsetting a face by hand to stop flicker, a polygon offset of your own, a depth bias per game |
 | glass (`glass` on a thing, 0..1: how clear) | drawn after the rest of its room, furthest first, blended over what is behind it, more of it seen edge on (Fresnel), writing no depth | an opaque pane, a portal or a picture standing in for glass, a transparency pass of your own |
-| a look's air, grade and glow (`gl::air_fs`, `film_glsl`, `fog_bloom_glsl`; README *Air, grade and glow*) | lamps' light scattered by the air (`scatter`, a light's own `scatter`), shadowed, gathered per view only when its lights change and carried as the view moves; a scene-light grade and curve (`uGrade*`, `uTonemap`); glow that spreads in thick air (`uFogBloom`); the eye adjusting to the light it sees (`exposure.auto`, eased, settled on a shot's first frame); a planet's sky and the air out to what is seen (`atmosphere`, `gl::atmosphere_glsl`, its pictures made again only when the sun's or the eye's height moves); clouds as a volume (`clouds.cover`, marched into a dome of the sky a sixteenth a frame, drifting with world time, shadowing the sun under them); land shading itself under a low sun however far off (a terrain's `horizon`, `GLWorldView::horizon_for`, made again only as the sun's bearing turns); a world's own weather over its look's (`weather.*` params); cirrus (`clouds.cirrus`); a photographed ground on a land (`skin` laid over it, `tile_break`), damp by its water (`wet_level`), drifting with its time (`drifts`); the lens (a camera's `focus`) | a fog or god-ray pass of your own, a sky gradient picked by hand for an hour, clouds painted on a sky sphere or moved by a renderer's clock, a grade in a game's composite, a volume texture kept beside a world, an exposure tuned by hand per room or kept in a state |
+| a look's air, grade and glow (`gl::air_fs`, `film_glsl`, `fog_bloom_glsl`; README *Air, grade and glow*) | lamps' light scattered by the air (`scatter`, a light's own `scatter`), shadowed, gathered per view only when its lights change and carried as the view moves; a scene-light grade and curve (`uGrade*`, `uTonemap`); glow that spreads in thick air (`uFogBloom`); the eye adjusting to the light it sees (`exposure.auto`, eased, settled on a shot's first frame); a planet's sky and the air out to what is seen (`atmosphere`, `gl::atmosphere_glsl`, its pictures made again only when the sun's or the eye's height moves); clouds as a volume (`clouds.cover`, marched into a dome of the sky a sixteenth a frame, drifting with world time, shadowing the sun under them); land shading itself under a low sun however far off (a terrain's `horizon`, `GLWorldView::horizon_for`, made again only as the sun's bearing turns); a world's own weather over its look's (`weather.*` params); cirrus (`clouds.cirrus`); a photographed ground on a land (`skin` laid over it, `tile_break`), damp by its water (`wet_level`), drifting with its time (`drifts`); the lens (a camera's `focus`; a thin lens's depth of field, `fstop`; its shutter's motion blur, `shutter`: README *The lens*) | a fog or god-ray pass of your own, a depth of field or motion blur of a game's own, a sky gradient picked by hand for an hour, clouds painted on a sky sphere or moved by a renderer's clock, a grade in a game's composite, a volume texture kept beside a world, an exposure tuned by hand per room or kept in a state |
 | `Director` (`domains/Director.hpp`) | a state that stages others (and its eye where nobody holds a camera: `cover` picks and poses the one watching of cameras hung or carried in a room, `sees`; a room drawn from it by its camera's `seen_from`): a shot list as text (`<t> <mark> key=value ... ease=`, `<t> say <word>`), played to its own line; each mark bound to a thing of another state (`sg::bind`: carried with the word it says when the mark moves, so a thing is its own again once the script is done with it), its cues carried to their events (`sg::cue`), rolled by a world's event (`sg::action`); a camera aimed by `aim_x/y/z` | a cutscene or camera rig of a game's own, a script that writes other states' params from the game loop, a timeline kept beside a state |
 | `Camera` (`domains/Camera.hpp`) | a lens that sees a world by filming it (`sg::film`), its feed shown by a screen | a hand-made eye, a second view matrix, a render-to-texture written by hand |
 | `ConsoleState` (`domains/Console.hpp`) | scrollback, an input line, `submit` and `clear` | your own log buffer or command line |
@@ -221,7 +223,9 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `net::Cellular`, `net::Reconcile` (`net/Cellular.hpp`, `Reconcile.hpp`) | stalks, overlaps, restrictions and CPU/CUDA reconciliation derived from an ordinary state's data | network entities, a second world, private reconciliation ticks or GPU-owned reality |
 | `ripple` (`domains/Ripple.hpp`) | rings spreading on water from where something met it, kept by the water as where and when (its world's time) they began; drawn where that time says | a ripple decal or particle of a game's own, rings moved by a renderer's clock |
 | `add_fog`, `fogs_of` (`domains/Fog.hpp`; `gl::fog_volumes_glsl`, `GLWorldView::pooled_fog`) | fog that pools where a world says: a box of thicker air, soft-edged, thinning as it rises, its own colour or its look's, its wisps moved by its world's time; thickening the scene's fog where the eye's way crosses it and the lit air's glow; its laws in a Spatial3D's `faults` | a fog card or particle cloud of a game's own, a height fog tuned per room in a shader, wisps moved by a renderer's clock |
-| traced light (a look's `trace`; `docs/trace.md`, `src/gl/trace/`) | the sun's shadow by rays to its disc in place of its maps, and what is mirrored, by rays through the world - things under trees of boxes made once a shape, the ground as its heights round the eye; a frame behind the scene, carried to where each pixel is; a thing's `trace` 0 not met. The light from all round stays the probes' | a ray tracer or SSR pass of a game's own; a shadow map tuned by hand for a twig; a second light from all round beside the probes |
+| traced light (a look's `trace`; `docs/trace.md`, `src/gl/trace/`) | the sun's shadow by rays to its disc in place of its maps, and what is mirrored, by rays through the world - things under trees of boxes made once a shape, the ground as its heights round the eye; a frame behind the scene, carried to where each pixel is; a thing's `trace` 0 not met. The light from all round the probes', or traced where the look says `trace.gi` (one bounce, the probes' for the rest; a window's light by its far side's sky) | a ray tracer, SSR or SSGI pass of a game's own; a shadow map tuned by hand for a twig; a second light from all round beside the probes |
+| a world's style (`sg::gl::apply_style`, `sg/gl/Style.hpp`; README *Styles*) | how the picture is made at all, under its look - its curve, its light from all round, its occlusion, its sharpening, its lens, its pixels - as data: the engine's `photoreal`, `psx`, `standard`, or a project's `.style` file; laid when the world is made, taking only what the look and the world leave unsaid | a style mixed into a look's grade by hand each time, a renderer branch per style, a style that says the machine's quality (antialiasing, upscaler, resolution) |
+| the frames' smoothing and the card's upscaler (`Quality::taa`, `render_scale`, `upscaler`, `dlss_mode`; README *The card's upscaler*, docs/native.md *DLSS*) | the eye's picture made whole over frames: the engine's TAA, or NVIDIA's DLSS / DLAA on the Vulkan backend (the TAA in its place, and why said once, where it cannot be); each pixel's motion kept by the renderer while something asks (`GLWorldView::set_motion`); a machine's choice, never a look's or a world's (`SG_QUALITY` over any program's) | an upscaler of a game's own, a TAA or motion vectors of a game's own, a look or a world that asks for DLSS, last frame's poses kept in a state |
 | `Probe`, `Sh9` (`domains/Probe.hpp`; `GLWorldView::bake_probes`) | light from all round at a place in a room: what its lamps give it after lighting the room, as spherical harmonics, a set a lamp - summed with each lamp's light now, so no bake for a switch; baked by the renderer and handed back for an edit to write; its laws in a Spatial3D's `faults` | an ambient colour tuned by hand per room, a fake bounce lamp, a lightmap or GI pass of a game's own |
 | materials (`docs/materials.md`; `sgmat`) | what a surface is made of: a thing's params (`r g b roughness metal emissive glass reflects mirror`), its `surface` kind (0..20, procedural), a `Texture` it wears - its colour and height, a surface map of occlusion, roughness and metal and a normal map, point by point (`Texture::define_material`, `surface_layer`, `normals`, `normal_layer`) - and its state's look: the only four ways a material reaches the renderer; `sgmat` draws one on a fixed stage beside grey, chrome and colour references and measures it | a shader, uniform or colour space of a game's own; a texture path in a mesh's params; a material tuned only inside a graded look; a colour judged without looking |
 | `Daylight`, `Shapes` (`domains/Light.hpp`, `Shapes.hpp`) | the sky at an hour, sun light, spill; a colour temperature (`kelvin`); extruded and lathed models | lighting maths or mesh code inside a game, a lamp colour picked by eye for a bulb of known kelvin |
@@ -277,44 +281,33 @@ The engine steps states on many cores, and states share their own work out
 - **Lanes are execution, not meaning:** not a clock, not an order between
   states, never a way for one state to reach another.
 
-## Spaces made one (sheafified)
+## Rooms made one (`space`)
 
-Rooms meet at seams, and glued so each is its own. Where a world asks
-(both sides of a doorway say `sheaf`) and the rooms agree, they are made one
-space: drawn as one, and one physics over them (README *One space,
-sheafified*). Rules that keep it inside the ontology:
+Rooms meet at seams, and glued so each is its own. Where a world says so in
+its source - `space <name> = sheaf <room> <room> ...` - rooms of one kind
+are made one room (`sg::make_space`, README *Rooms made one room*). Rules
+that keep it inside the ontology:
 
-- **Glued is not one.** A seam glues; sheafifying makes the cover one. It
-  is asked for, doorway by doorway, for consistency where a world wants it
-  - never assumed of every doorway (`every`, `Quality::sheafify`, only to
-  try). Unasked, rooms keep their own frame, look and physics.
-- **Same kind only.** A ball, a screen, a world in its own look, a seam of
-  another scale or one that says it `differs` is never made one - whatever
-  it says. Spaces of different kinds (a hyperbolic room and a Cartesian one)
-  are glued, never sheafified.
-- **A section, not a choice.** A state shared by several rooms (one physics
-  for every sheet of a room) is made one with a neighbour only if every
-  sheet meets the same neighbour, the same way: single-valued from both
-  sides. Where a room's neighbour differs by the way round (a holonomy), its
-  doorway is not `sheaf`: a thing thrown through would have nowhere to be.
-- **Derived, never kept.** The space is worked out from the rooms and the
-  doorways they share, each time it is asked; nothing is written to a state,
-  and no list of "levels" or global placement is kept.
-- **Local, no authority.** Two rooms agree from what they say of their own
-  doorway (`sheafable`, no graph); a space grows from a room through the
-  doorways it shares. Never partition the whole graph to decide it.
-- **Holonomy is shape.** A ring that does not close is never folded: a room
-  that would stand where another stands stays beyond its doorway.
-- **One, in every way.** Made one, it is one for drawing and for physics
-  alike (the lab's `physics::lay_space`: floors, walls and plugs from the
-  rooms where they stand, `shell` 0); a doorway one but not the other is a
-  seam in the world.
-- **Seamless both ways, and cheap.** A crossing of a space made one is held
-  to the same picture as the doorway's view (`sg_crossings_gl`; a game's
-  `crossings`). A room of it costs what is seen of it: drawn whole only
-  where it is seen into, through its doorways; elsewhere only what has moved
-  in it. Lights reach a room as they would through the doorway, never a
-  neighbour's through a wall.
+- **Two local states made one local state.** The result is a room like any
+  other: flat, no authority over anything, embedded in, joined by doorways
+  to other worlds. Nothing stands above the rooms it was made of; they are
+  no more, and neither are their seams with each other.
+- **Said, never assumed.** Only what a `space` line names is made one. Every
+  other doorway is a doorway, every other room its own.
+- **Same kind only.** Of three dimensions both, met by a rigid motion at a
+  plain walked doorway, one scale, both walled or both under a sky, nothing
+  said to `differ`. A hyperbolic room and a Cartesian one are glued, never
+  made one; a ball, a screen, a world in its own look neither.
+- **Holonomy is shape.** A ring of rooms that does not close cannot be one
+  room: `make_space` refuses it, saying where.
+- **One, in every way.** One frame, eye, walker, physics, look and clock;
+  its doorways between its rooms holes in its walls - no view, no crossing;
+  its light from all round, its wear, its walls' dirt laid over the floor
+  each room covered (`regions`).
+
+(The older `sheaf` on doorways - rooms drawn and simulated as one while each
+stays its own state - is superseded where a world can say `space`; Memory
+Leak's house still stands on it.)
 
 ## Networking is derived machinery above core
 
@@ -477,7 +470,8 @@ Meaning remains in StateGraph. Browser machinery only computes, moves,
 verifies or draws what its declared interfaces already mean. Keep `sg/render`
 backend-neutral, `sg/gl` native and `sg/web` above them; `src/gl/native`
 answers `sg/gl`'s GL calls with Vulkan or D3D12 and adds nothing GL does not
-have ([native.md](docs/native.md)). Cross builds consume
+have but the card's own upscaler (`gl::upscale`: DLSS, machinery as a blit
+is, asked only where a quality says) ([native.md](docs/native.md)). Cross builds consume
 a native `sgc`; Wasm networking keeps the double-precision CPU reference.
 Run the portable Wasm suite and real browser/native integration tests as well
 as native laws and renderer tests. See [browser.md](docs/browser.md).
@@ -509,6 +503,17 @@ guessing (`--view ball|cube|slab` for a close look):
    texture as a `Texture` state worn through an embedding - or the `.mat`
    worn as `sgmat` reads it (`sg::mat`), never a reader of a game's own. A new `surface` kind or generator is an engine
    change - a row in docs/materials.md and an `sgmat` picture with it.
+
+**Look from every side before it counts.** A world is walked, not
+photographed: whatever is placed, fitted or changed - a model on a desk, a
+screen on its tube, a lamp on its clamp, a light, a material - is looked at
+from several places before it is called done: straight on, from each side,
+from above and from low down - and at every scale: as close as a hand
+holds it, as near as one stands, from across the room and far off. One shot from
+one place hides a thing sunk in another, standing off it, floating, or
+pushed through a wall; a camera's eye placed for one picture is not the
+player's. Render the set of views at once (one start, several eyes), look
+at each, and only then measure.
 
 Detail finer than a pixel is never drawn as detail: a surface's pattern
 (ripples, weave, fibres) is shown only where a pixel holds it - judged by
@@ -553,7 +558,10 @@ own numbers; plausibility where none is; a person's story where the place is
 theirs), wear said as causes (`Wear`) and answered by photographed dirt and
 damp, detail by frequency, empty space on purpose - and checked against the
 references. Photographic realism is one look among many: none of it is
-pressed on a brief that asks for another. The agent
+pressed on a brief that asks for another. How a photographic interior was
+actually reached - the window as the light, measured against references,
+roughness that varies, dressing by a person's story - is in
+[docs/workflows.md](docs/workflows.md). The agent
 `.claude/agents/environment-designer.md` works this way.
 
 ## Adding a state, a room, an interface - checklist

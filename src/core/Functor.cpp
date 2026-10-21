@@ -82,6 +82,7 @@ auto Functor::operator=(Functor&& o) -> Functor& {
     to_ = o.to_;
     identity_ = o.identity_;
     cleanup_ = o.cleanup_;
+    from_living_ = o.from_living_;
     stamp_ = o.stamp_;
     obj_ = std::move(o.obj_);
     mor_ = std::move(o.mor_);

@@ -96,6 +96,7 @@ public:
         for (const Program& p : progs_) composes_of(p);
         for (const Program& p : progs_) lenses_of(p);
         for (const Program& p : progs_) seams_of(p);  // before what carries their functors
+        for (const Program& p : progs_) spaces_of(p);
         for (const Program& p : progs_) transitions_of(p);
         for (const Program& p : progs_) embeds_of(p);
         for (const Program& p : progs_) wears_of(p);
@@ -127,6 +128,7 @@ private:
     std::map<std::string, FInfo> functors_;
     std::map<std::string, std::string> aliases_;  // transport alias -> native
     std::set<std::string> embed_names_, drive_names_, seam_names_, transition_names_, edit_names_;
+    std::map<std::string, std::string> space_of_room_;
     std::set<std::pair<std::string, std::string>> driven_;  // {state, event}
     struct Timed {
         std::string state, arrow, trigger;
@@ -844,6 +846,28 @@ private:
                 functors_[made.glue_ba.str()] = FInfo{sb, sa, false};
                 glue_steps_.push_back(std::move(g));
             }
+        }
+    }
+
+    // Spaces made one: each a state of its own, of rooms declared, each in one space only.
+    void spaces_of(const Program& p) {
+        for (const SpaceAst& s : p.spaces) {
+            bool ok = state_named(s.name, s.at, "a space made one");
+            plan::Space sp{Key{s.name}, {}};
+            for (const std::string& r : s.rooms) {
+                ok = state_named(r, s.at, "a room of a space") && ok;
+                if (r == s.name) {
+                    err(s.at, "space " + s.name + " is made of itself");
+                    ok = false;
+                }
+                const auto [it, fresh] = space_of_room_.insert({r, s.name});
+                if (!fresh) {
+                    err(s.at, r + " is a room of space " + it->second + " already: a room is in one space");
+                    ok = false;
+                }
+                sp.rooms.push_back(Key{r});
+            }
+            if (ok) glue_steps_.push_back(std::move(sp));
         }
     }
 

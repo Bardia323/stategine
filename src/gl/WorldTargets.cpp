@@ -125,6 +125,8 @@ void GLWorldView::make_targets(int w, int h) {
     gl::GLint most = 0;
     gl::glGetIntegerv(gl::GL_MAX_SAMPLES, &most);
     msaa_ = most > 0 ? std::min(q_.msaa, static_cast<int>(most)) : q_.msaa;
+    // (DLSS takes a picture of one sample a pixel: it smooths the edges itself.)
+    if (q_.upscaler != Quality::upscale_taa && dlss_can_ > 0 && !root_) msaa_ = 0;
     // (Lent one of the size, it makes none of its own.)
     if (lent_scene_ && lent_scene_->width() == w && lent_scene_->height() == h) scene_target_.destroy();
     else scene_target_.create(w, h, gl::GL_RGBA16F, msaa_, true);

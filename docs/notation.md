@@ -35,6 +35,7 @@ Every construct, and the primitive it becomes (`sg/dsl/Plan.hpp`):
 | `transition a -[e]-> b [carry f] [name n] [push] [with k = v] [when <comparison>]` | `graph.connect`; `* ` for any source; `-[e]-> pop`; `with` is `Transition::enter`, constants the entered state is told (data, not a lambda); `when` is `Transition::guard`: comparisons (`== != < <= > >=`, joined by `and`, `or`, `not`, brackets) of `from` (the state left's id), `from.<param>`, `from[<element>].<param>` and `arg.<name>` against numbers and words in quotes - a pure function of the state left and the event, which keeps its text (`sg/dsl/Guard.hpp`) |
 | `embed h.p -> g [in f] [out f] [subject s] [sync live/commit/view] [propagate ...] [focus b] [follows b] [recurses] [name n]` | `graph.embed`; `recurses` is `Embedding::recurses`, a ring of embeddings through it meant (a camera filming the monitor that shows it) |
 | `seam a.p <-> b.q [also x <-> y] [name n]` | `sg::glue_doorway` (the boundaries identified both ways; its `<name>.ab` / `.ba` travel functors are named for `carry`) |
+| `space s = sheaf a b ...` | `sg::make_space` (rooms of one kind, glued by seams among them, made one room `s`: one frame, eye, walker, physics, look and clock; the rooms and those seams no more - README *Rooms made one room*) |
 | `drive clock -> s.event` / `drive clock -> s event e [keeps ...] [additive]` | `sg::drive` on a `Temporal` |
 | `port s.event` / `port s event e` | `graph.port` |
 | `keep f` | `graph.keep` |

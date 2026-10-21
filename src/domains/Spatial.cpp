@@ -1,7 +1,9 @@
+#include <cstdio>
 #include <cmath>
 #include "sg/domains/Spatial.hpp"
 
 #include <algorithm>
+#include <set>
 #include <array>
 #include <atomic>
 
@@ -201,6 +203,41 @@ Element& Spatial3D::mesh(Key id, double x, double y, double z, char glyph) {
     return body(id, {x, y, z}, kinds::mesh, glyph);
 }
 
+namespace {
+uint64_t next_making();
+}  // namespace
+
+std::vector<std::string> Spatial3D::absorb(Spatial3D& from, const Pose& at) {
+    std::vector<std::string> out;
+    for (const Element& e : from.elements()) {
+        if (e.id == camera_id()) continue;
+        if (find(e.id)) {
+            out.push_back(e.id.str() + " of " + from.id().str() + " is named as something already in " + id().str() + ": left out");
+            continue;
+        }
+        Element moved = e;
+        // (What hangs off another is where that is: only what stands on its
+        // own is carried to where its room now stands.)
+        const std::string* parent = e.params.text(keys::parent);
+        if (!parent || parent->empty()) {
+            const Pose p = compose_pose(at, local_pose(e));
+            moved.params.set(keys::x, p.position.x).set(keys::y, p.position.y).set(keys::z, p.position.z);
+            moved.params.set(keys::yaw, p.yaw).set(keys::pitch, p.pitch).set(keys::roll, p.roll);
+        }
+        add_element(std::move(moved));
+    }
+    for (auto& [k, v] : from.grounds_) grounds_.emplace(k, v);
+    for (auto& [k, v] : from.models_) models_.emplace(k, KeptModel{v.corners, next_making()});
+    for (auto& [k, v] : from.skins_) skins_.emplace(k, KeptModel{v.corners, next_making()});
+    for (auto& [k, v] : from.poses_) poses_.emplace(k, KeptModel{v.corners, next_making()});
+    for (auto& [k, v] : from.placings_) placings_.emplace(k, KeptModel{v.corners, next_making()});
+    for (auto& [k, v] : from.pictures_) {
+        v->revision = ++picture_revisions_;
+        pictures_.emplace(k, v);
+    }
+    return out;
+}
+
 Element& Spatial3D::fixture(Key id, double x, double y, double z) {
     Element& e = add_element(id, kinds::mesh);
     set_position(e, {x, y, z});
@@ -241,6 +278,24 @@ std::vector<std::string> Spatial3D::faults() const {
     std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this), wear = wear_faults(*this);
     out.insert(out.end(), fogs.begin(), fogs.end());
     out.insert(out.end(), wear.begin(), wear.end());
+    // Its eye - whoever walks it - stands in it, or near: a room that says
+    // how big it is, walled (no sky), with its eye far outside its box -
+    // farther off it than twice its own size - has it stood by a number
+    // taken from another frame (two things of one name), and starts whoever
+    // walks it in nothing. (An eye carried by a doorway into the next room,
+    // waiting there while the room is not entered, is near.)
+    const Params& p = params();
+    const Element* eye = find(camera_id());
+    if (eye && eye->alive && p.has(Key{"room_w"}) && p.has(Key{"room_d"}) && p.num(Key{"sky"}, 0.0) < 0.5) {
+        const Vec3d at = world_position(*this, *eye);
+        const double w = p.num(Key{"room_w"}), d = p.num(Key{"room_d"}), h = p.num(Key{"room_h"}, 3.0), slack = 1.0 + 2.0 * std::sqrt(w * w + d * d + h * h);
+        if (at.x < -slack || at.x > w + slack || at.z < -slack || at.z > d + slack || at.y < -slack || at.y > h + slack) {
+            char b[200];
+            std::snprintf(b, sizeof b, "its eye stands at (%.2f %.2f %.2f), far outside the room (0..%.2f, 0..%.2f, 0..%.2f): whoever walks it starts in nothing - stood by a number from another room's frame?", at.x, at.y,
+                          at.z, w, h, d);
+            out.push_back(b);
+        }
+    }
     return out;
 }
 
@@ -697,6 +752,33 @@ Params SpatialState::overlap(Key boundary) const {
     Vec3d hit, normal;
     double dist = 0;
     if (ray(*this, foot + up * 0.5, up * -1.0, 1.5, hit, normal, &dist)) out.set(Key{"floor"}, dist - 0.5);
+    // How far this side's walls round the opening stand out past it, into
+    // whatever is beyond (`walls`): rooms made one space at a doorway meet
+    // there back to back only if the two sides' walls, together, reach no
+    // further than the doorway's plane - else each room's wall stands in the
+    // other, and their faces fight (laws::overlaps).
+    if (door->params.num(Key{"sheaf"}, 0.0) > 0.5) {
+        const Vec3d across = across_of(at);
+        const double half = 0.5 * door->params.num(keys::w, 1.0) + 0.5;
+        double reach = -1e30;
+        for (const Element& e : elements()) {
+            if (!e.alive || e.kind != kinds::wall || e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+            const Pose w = world_pose(*this, e);
+            const double hx = 0.5 * e.params.num(keys::sx), hz = 0.5 * e.params.num(keys::sz), sy = e.params.num(keys::sy);
+            double s0 = 1e30, s1 = -1e30, l0 = 1e30, l1 = -1e30, y0 = 1e30, y1 = -1e30;
+            for (double x : {-hx, hx})
+                for (double z : {-hz, hz})
+                    for (double y : {0.0, sy}) {
+                        const Vec3d c = w.position + rotate_xz({x, y, z}, w.yaw) - at.position;
+                        const double s = -dot(c, in), l = dot(c, across), u = dot(c, up);
+                        s0 = std::min(s0, s), s1 = std::max(s1, s), l0 = std::min(l0, l), l1 = std::max(l1, l), y0 = std::min(y0, u), y1 = std::max(y1, u);
+                    }
+            // Beside the opening, about its plane, within its height: its walls.
+            if (l1 < -half || l0 > half || s1 < -1.0 || s0 > 1.0 || y1 < -0.5 * h || y0 > 0.5 * h) continue;
+            reach = std::max(reach, s1);
+        }
+        if (reach > -1e29) out.set(Key{"walls"}, reach);
+    }
     return out;
 }
 
@@ -737,6 +819,125 @@ bool crossed_portal(const Element& portal, const Vec3d& from, const Vec3d& to) {
     // Upright, a walker's eye is above the opening's middle: up to its head.
     if (level) return std::fabs(to.y - p.y) <= half_h + 0.9;
     return std::fabs(dot(hit, up)) <= half_h;
+}
+
+namespace {
+struct Face {
+    const Element* e;
+    Vec3d n;              // which way it faces (world)
+    double off;           // its plane: n . p
+    double u0, u1, v0, v1;  // its extent in the plane (u across, v up or along)
+    double rank;          // the renderer's size rank (Shaders.hpp)
+    double layer;
+};
+}  // namespace
+
+std::vector<std::string> coinciding(const Spatial3D& space) {
+    std::vector<std::string> out;
+    std::vector<Face> faces;
+    for (const Element& e : space.elements()) {
+        if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+        const std::string shape = e.params.get_or<std::string>("shape", "");
+        if (!shape.empty() && shape != "box" && shape != "model") continue;
+        if (std::fabs(e.params.num(keys::pitch)) > 1e-6 || std::fabs(e.params.num(keys::roll)) > 1e-6) continue;
+        const double sx = e.params.num(keys::sx, 0.0), sy = e.params.num(keys::sy, 0.0), sz = e.params.num(keys::sz, 0.0);
+        if (sx <= 0.0 || sy <= 0.0 || sz <= 0.0) continue;
+        const Pose at = world_pose(space, e);
+        if (std::fabs(at.pitch) > 1e-6 || std::fabs(at.roll) > 1e-6) continue;
+        const std::vector<float>* made = shape == "model" ? space.model(Key{e.params.get_or<std::string>("model", "")}) : nullptr;
+        if (shape == "model" && !made) continue;
+        const double rank = 3.0 * (4.0 - std::log2(std::max(std::cbrt(sx * sy * sz), 1e-4)));
+        const Vec3d ax = rotate_xz({1, 0, 0}, at.yaw), az = rotate_xz({0, 0, 1}, at.yaw);
+        const Vec3d c = at.position + Vec3d{0, 0.5 * sy, 0};
+        // Its six faces: +-x, +-y, +-z of its box.
+        // (Its upright faces only: where two of one height overlap, their tops
+        // meet at a corner, a seam of one colour; what fights is a face put
+        // flush against another's - a plug in a door's leaf, two papers on a wall.)
+        for (int f = 0; f < 6; ++f) {
+            const int axis = f / 2;
+            if (axis == 1) continue;
+            const double sign = f % 2 ? -1.0 : 1.0;
+            // (A model's face is a face only where its corners lie on it.)
+            if (made) {
+                int on = 0;
+                for (std::size_t i = 0; i + 8 <= made->size() && on < 3; i += 8)
+                    on += std::fabs((*made)[i + axis] - sign * 0.5) < 1e-3 ? 1 : 0;
+                if (on < 3) continue;
+            }
+            Face fc;
+            fc.e = &e, fc.rank = rank, fc.layer = e.params.num(Key{"depth_layer"}, 0.0);
+            const double half[3] = {0.5 * sx, 0.5 * sy, 0.5 * sz};
+            const Vec3d dir = axis == 0 ? ax : axis == 1 ? Vec3d{0, 1, 0} : az;
+            fc.n = dir * sign;
+            const Vec3d mid = c + fc.n * half[axis];
+            fc.off = dot(fc.n, mid);
+            // Across it: for a side, along the ground and up; for a top, x and z.
+            // (Across a side measured the same way for every face that faces
+            // its way, whichever way round its thing is turned.)
+            const Vec3d u = axis == 1 ? Vec3d{1, 0, 0} : cross(Vec3d{0, 1, 0}, fc.n);
+            const Vec3d v = axis == 1 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0};
+            const Vec3d du = axis == 1 ? ax * half[0] + az * half[2] : (axis == 0 ? az * half[2] : ax * half[0]);
+            double lo_u = 1e30, hi_u = -1e30, lo_v = 1e30, hi_v = -1e30;
+            for (double a : {-1.0, 1.0})
+                for (double b : {-1.0, 1.0}) {
+                    const Vec3d corner = axis == 1 ? mid + ax * (a * half[0]) + az * (b * half[2]) : mid + du * a + Vec3d{0, b * half[1], 0};
+                    lo_u = std::min(lo_u, dot(corner, u)), hi_u = std::max(hi_u, dot(corner, u));
+                    lo_v = std::min(lo_v, dot(corner, v)), hi_v = std::max(hi_v, dot(corner, v));
+                }
+            fc.u0 = lo_u, fc.u1 = hi_u, fc.v0 = lo_v, fc.v1 = hi_v;
+            // (A top's extent as x and z is its box only when it is square to them.)
+            if (axis == 1 && std::fabs(std::remainder(at.yaw, 1.5707963267948966)) > 1e-4) continue;
+            faces.push_back(fc);
+        }
+    }
+    // A face pressed to a wall's face (back to back with it) is seen by no one.
+    {
+        std::vector<Face> walls;
+        for (const Face& f : faces)
+            if (f.e->params.has(Key{"laid"})) walls.push_back(f);
+        faces.erase(std::remove_if(faces.begin(), faces.end(), [&](const Face& f) {
+                        if (f.e->params.has(Key{"laid"})) return false;
+                        return std::any_of(walls.begin(), walls.end(), [&](const Face& w) {
+                            // (Facing the other way, its across runs the other way: -u.)
+                            return dot(f.n, w.n) < -0.9999 && std::fabs(f.off + w.off) < 1e-3 && f.u0 >= -w.u1 - 1e-3 && f.u1 <= -w.u0 + 1e-3 &&
+                                   f.v0 >= w.v0 - 1e-3 && f.v1 <= w.v1 + 1e-3;
+                        });
+                    }),
+                    faces.end());
+    }
+    // Faces by their planes: a millimetre's slack.
+    std::sort(faces.begin(), faces.end(), [](const Face& a, const Face& b) { return a.off < b.off; });
+    std::set<std::pair<Key, Key>> said;
+    for (std::size_t i = 0; i < faces.size(); ++i)
+        for (std::size_t j = i + 1; j < faces.size() && faces[j].off - faces[i].off < 1e-3; ++j) {
+            const Face& a = faces[i];
+            const Face& b = faces[j];
+            if (a.e == b.e || dot(a.n, b.n) < 0.9999) continue;
+            const double over_u = std::min(a.u1, b.u1) - std::max(a.u0, b.u0), over_v = std::min(a.v1, b.v1) - std::max(a.v0, b.v0);
+            // (Overlapping by more than a few centimetres each way: where two
+            // boxes merely meet at a corner, the faces that touch are inside
+            // them. And walls - a room's shell - meet each other at corners,
+            // where no one is.)
+            if (over_u <= 0.05 || over_v <= 0.05) continue;
+            if ((a.e->params.has(Key{"laid"}) || a.e->kind == kinds::wall) && (b.e->params.has(Key{"laid"}) || b.e->kind == kinds::wall)) continue;
+            if (std::fabs(a.rank - b.rank) >= 1.0 || a.layer != b.layer) continue;
+            // (Two that look alike - one colour, one finish, one material - meet
+            // unseen: an arch's head on its sides, a row of one house.)
+            const auto alike = [&] {
+                for (const char* k : {"r", "g", "b", "roughness", "metal", "emissive", "glass"})
+                    if (std::fabs(a.e->params.num(Key{k}, -1.0) - b.e->params.num(Key{k}, -1.0)) > 1e-6) return false;
+                for (const char* k : {"material", "skin", "mat"})
+                    if (a.e->params.get_or<std::string>(Key{k}, "") != b.e->params.get_or<std::string>(Key{k}, "")) return false;
+                return true;
+            };
+            if (alike()) continue;
+            const auto key = a.e->id.str() < b.e->id.str() ? std::pair{a.e->id, b.e->id} : std::pair{b.e->id, a.e->id};
+            if (!said.insert(key).second) continue;
+            if (said.size() > 8) continue;
+            out.push_back(key.first.str() + " and " + key.second.str() + " have a face each in one plane, of much one size: which is seen flickers - stand one back a few millimetres, or leave one unseen (or say `depth_layer`)");
+        }
+    if (said.size() > 8) out.push_back("and " + std::to_string(said.size() - 8) + " more pairs of surfaces in one plane");
+    return out;
 }
 
 }  // namespace sg

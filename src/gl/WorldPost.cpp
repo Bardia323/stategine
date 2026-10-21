@@ -1,6 +1,14 @@
 // The GL view's passes after the scene: ambient occlusion, bloom, the
-// eye's exposure, the composite and the finish.
+// eye's exposure, the composite and the finish; and what makes the eye's
+// picture whole over frames - the TAA, or the card's own upscaler (DLSS).
 #include "sg/gl/World.hpp"
+
+#include <cstdio>
+#include <cstdlib>
+
+#if defined(SG_NATIVE_GPU)
+#include "sg/gl/Native.hpp"
+#endif
 
 namespace sg::render {
 
@@ -70,6 +78,11 @@ void GLWorldView::run_mosh(float amount) {
     mosh_last_eye_ = taa_eye_;
 }
 
+float GLWorldView::drawn_scale() const {
+    if (dlss_on()) return render::dlss_scale(q_.upscaler == Quality::upscale_dlaa ? Quality::dlss_native : q_.dlss_mode);
+    return taa_on() && q_.render_scale < 0.999f ? std::max(q_.render_scale, 0.5f) : 1.0f;
+}
+
 void GLWorldView::run_taa() {
     if (!taa_prog_) taa_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::taa_fs(), "taa");
     const int w = scene_src_->width(), h = scene_src_->height();
@@ -113,6 +126,137 @@ void GLWorldView::run_taa() {
     taa_last_world_ = taa_world_;
     taa_last_rooms_ = taa_rooms_;
     taa_last_eye_ = taa_eye_;
+}
+
+gl::Mat4 GLWorldView::motion_was_of(const void* room, const gl::Mat4& now_frame) const {
+    for (const auto& [r, was] : motion_last_rooms_)
+        if (r == room) return motion_last_vp_ * was;
+    return motion_last_vp_ * now_frame;
+}
+
+void GLWorldView::run_motion() {
+    if (!motion_prog_) motion_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::motion_fs(), "motion");
+    const int w = depth_.width(), h = depth_.height();
+    for (gl::RenderTarget* t : {&motion_seen_, &motion_})
+        if (!t->valid() || t->width() != w || t->height() != h) t->create(w, h, gl::GL_RG16F, 0, false);
+    // What the scene said of each pixel (made one of its samples), or, where
+    // it said nothing this frame, nothing known.
+    if (scene_ms().has_third() && scene_ms().width() == w && scene_ms().height() == h) {
+        scene_ms().third_to(motion_seen_);
+    } else {
+        motion_seen_.bind();
+        gl::glClearColor(1e4f, 1e4f, 0.0f, 0.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+    }
+    gl::Mat4 reproject;
+    const bool held = motion_held_ && reprojection(motion_last_vp_, motion_last_world_, motion_last_rooms_, motion_last_eye_, reproject);
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    motion_.bind();
+    gl::glViewport(0, 0, w, h);
+    const gl::Program& p = *motion_prog_;
+    p.use();
+    p.set("uMoved", 0);
+    p.set("uDepth", 1);
+    motion_seen_.bind_color(0);
+    depth_.bind_depth(1);
+    p.set("uReproject", reproject);
+    p.set("uJitter", 2.0f * jitter_x_ / static_cast<float>(w), 2.0f * jitter_y_ / static_cast<float>(h));
+    p.set("uSize", static_cast<float>(w), static_cast<float>(h));
+    p.set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
+    p.set("uFresh", held ? 0.0f : 1.0f);
+    screen_.draw();
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+}
+
+void GLWorldView::keep_motion() {
+    if (!motion_on()) {
+        motion_held_ = false;
+        moved_last_.clear(), moved_now_.clear();
+        return;
+    }
+    motion_last_vp_ = taa_vp_;
+    motion_last_world_ = taa_world_;
+    motion_last_rooms_ = taa_rooms_;
+    motion_last_eye_ = taa_eye_;
+    moved_last_.swap(moved_now_);
+    moved_now_.clear();
+    motion_held_ = true;
+}
+
+void GLWorldView::ask_dlss() {
+    if (q_.upscaler == Quality::upscale_taa || dlss_can_ != 0 || !eye_view()) return;
+    std::string why;
+#if defined(SG_NATIVE_GPU)
+    const bool can = gl::can_upscale(why);
+#else
+    const bool can = false;
+    why = "the engine was built without its native backends (SG_NATIVE_GPU)";
+#endif
+    dlss_can_ = can ? 1 : -1;
+    if (!can) {
+        // (Said once: the eye is smoothed by the TAA in its place.)
+        dlss_why_ = why;
+        std::fprintf(stderr, "render: DLSS asked for, but %s - smoothed by TAA instead\n", why.c_str());
+        return;
+    }
+    dlss_why_.clear();
+    // (Its picture is of one sample a pixel: targets made again without any.)
+    if (msaa_ > 0 && target_w_ > 0) {
+        parked_.clear();
+        make_targets(target_w_, target_h_);
+    }
+}
+
+void GLWorldView::run_dlss() {
+    run_motion();
+    if (!dlss_out_.valid() || dlss_out_.width() != out_w_ || dlss_out_.height() != out_h_) dlss_out_.create(out_w_, out_h_, gl::GL_RGBA16F, 0, false);
+    gl::Mat4 reproject;
+    const bool held = taa_held_ && motion_held_ && reprojection(motion_last_vp_, motion_last_world_, motion_last_rooms_, motion_last_eye_, reproject);
+    std::string why;
+    bool done = false;
+#if defined(SG_NATIVE_GPU)
+    // (Its jitter as it sees it: the part of a drawn pixel the view was moved
+    // by, its rows as the pictures keep them - GL's, the lowest first, for
+    // the motion and the depth alike. SG_DLSS_JITTER turns either way over,
+    // to try.)
+    static const auto turned = [] {
+        float x = 1.0f, y = 1.0f;
+        if (const char* j = std::getenv("SG_DLSS_JITTER")) std::sscanf(j, "%f,%f", &x, &y);
+        return std::make_pair(x, y);
+    }();
+    static const auto back = [] {
+        float x = -1.0f, y = -1.0f;
+        if (const char* j = std::getenv("SG_DLSS_MOTION")) std::sscanf(j, "%f,%f", &x, &y);
+        return std::make_pair(x, y);
+    }();
+    gl::Upscale u;
+    u.color = scene_src_->color_texture();
+    u.depth = depth_.depth_texture();
+    u.motion = motion_.color_texture();
+    u.output = dlss_out_.color_texture();
+    u.jitter_x = jitter_x_ * turned.first, u.jitter_y = jitter_y_ * turned.second;
+    // (The motion is from where a pixel was to where it is: DLSS asks the way back.)
+    u.motion_x = back.first, u.motion_y = back.second;
+    u.reset = !held;
+    u.reversed = gl::reversed_depth();
+    u.quality = q_.upscaler == Quality::upscale_dlaa ? Quality::dlss_native : q_.dlss_mode;
+    u.frame_ms = static_cast<float>(fixed_step_ * 1000.0);
+    // (The eye's exposure, as the composite will give it: its look's and its own adjustment.)
+    u.exposure = static_cast<float>(setting(post_, passes::composite, "uExposure", 1.0)) * exposure_gain();
+    done = gl::upscale(u, why);
+#else
+    why = "the engine was built without its native backends";
+#endif
+    if (!done) {
+        // (It could not, after all: the TAA from now on, and why said once.)
+        dlss_can_ = -1;
+        dlss_why_ = why;
+        std::fprintf(stderr, "render: DLSS did not run (%s) - smoothed by TAA instead\n", why.c_str());
+        return;
+    }
+    taa_held_ = true;
+    scene_src_ = &dlss_out_;
 }
 
 void GLWorldView::run_ao(float strength, float radius) {
@@ -389,6 +533,13 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         apply_attended(p, passes::composite);
         if (gain != 1.0f) p.set("uExposure", exposure);
         if (film_of_viewer_) p.set("uGrain", 0.0f);
+        // (Nor its lens: the viewer's bows and fringes the whole picture,
+        // this one in it - a lens here too would bow it twice, and reach
+        // past the part of the screen it was drawn in.)
+        if (film_of_viewer_) p.set("uBarrel", 0.0f), p.set("uFringe", 0.0f);
+        // (How fast the eye's view turns across the screen: what a rolling
+        // shutter skews the picture by - none in a picture inside the eye's.)
+        p.set("uTurnRate", film_of_viewer_ ? 0.0f : turn_rate_[0], film_of_viewer_ ? 0.0f : turn_rate_[1]);
         if (viewer_feed_) p.set("uRaw", 1.0f);
         if (rays_on_) {
             p.set("uRayDir", to_vec3(rays_dir_));

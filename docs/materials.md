@@ -27,6 +27,7 @@ fraction of the light a surface gives back, not a colour picked on a screen
 | `surface` | which procedural surface it is (section 2) | **mesh 3 (crate)**, wall 2 (plaster) |
 | `emissive` | light of its own, added to what it reflects | 0 |
 | `glass` | 0..1, how clear: drawn after the rest of its room, blended over what is behind, more reflective edge on | 0 (opaque) |
+| `covers` | 0..1, how much of its box a thing standing in a window or a doorway fills, for the light let in there: a leaf or a board all of it; a frame, a lattice, a blind's slats next to none (their own shadows keep out what they keep out) | 1 |
 | `reflects` | 0..1, how much of the room it mirrors on its broad face (across its thinnest side, facing the eye): a polished floor 0.2, a mirror 1, less as it roughens; `Quality::reflections` | 0 |
 | `mirror` | how much of the real sky it reflects instead of light from all round: still water, glossy stone, under a sky | 0 |
 | `shape` | `box`, `sphere`, `cylinder`, or a `model` by name | box |
@@ -127,6 +128,7 @@ Its one element, `map`:
 | `normals` | 1: a normal map made from its height (below) |
 | `normal_layer` | a picture file of a normal map, OpenGL's way (green up), over the made one; `normal_dx` 1 for DirectX's (green down) |
 | `normal_strength` | how strongly its normal map bends the surface: 1 as made or drawn, 2 twice as steep | 
+| `sheen` | a pile's sheen (velvet, plush carpet, flock): darker seen square on, brighter toward the grazing, in its own colour, turned by its normal map's bends - 0 none, ~0.6 a carpet, 1 velvet | 
 | `per_cell` | 1: each layer file is one tile, laid whole in every cell - a photographed, tileable material; 0 (unless said), stretched over all six cells - a painting over the projection guide |
 | `tile` | metres of the thing one cell covers, its pattern going on round it from face to face; 0, each face the whole cell |
 | `blend` | 0 each face its own cell; 1 curves shade softly between the cells of the ways they face |
@@ -142,6 +144,8 @@ Its one element, `map`:
 | `dirt_tile`, `dirt_rough` | metres its photograph covers (1.5); how rough the dirt leaves it (0.85) |
 | `damp_layer` (`damp_height_layer`) | a photograph of its damp: laid where water has been - down a wall below its world's leaks, in streaks widening as they fall; a blot on a ceiling round one; a tide mark on the floor under it; rising from the floor (`Wear`) |
 | `damp`, `damp_rise`, `damp_tile`, `damp_rough` | how much (1); metres it rises up a wall from the floor (0); metres its photograph covers (2); how rough it leaves the surface (0.35) |
+| `damp_cover` | 0 (unless said): water - what it soaks darkened by its photograph; 1: what runs is its photograph's own colour laid over the surface (blood, paint), as glossy as `damp_rough` |
+| `damp_runs` | 0 (unless said): it runs down a wall in a sheet, widening as it falls (water); 1: in thin runs two or three centimetres apart, each of its own length, narrowing, a bead where it stopped (blood, paint, rust) |
 
 **Wear from its own shape.** A model that wears a texture saying any of
 the keys below has its wear made from its shape (`render::wear`, once, on
@@ -165,7 +169,7 @@ pays nothing.
 A world's `age` (0 new .. 1 long neglected; 1) is how far all of it has gone,
 and its `wear_field` (a picture of its own, red dirt and green damp, over
 `wear_x`, `wear_z`, `wear_w`, `wear_d`: `sg::field_picture`) adds what a
-Distribution spread to what the causes gather. A room's laid walls wear a
+Distribution spread to what the causes gather. It is a field of the floor: on walls and the sides of things it reaches only a hand's breadth up from the floor. A room's laid walls wear a
 texture as any thing does.
 
 **Colour spaces.** A texture's colours are as seen on a screen (sRGB), as a

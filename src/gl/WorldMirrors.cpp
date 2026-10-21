@@ -295,7 +295,7 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
             path_ = path_was;
             cull_.swap(cull_was);
             host_air_ = air_was;
-            mr.target.mipmap();
+            glint_mips(mr.target);
             ++times_.portal_views;
         }
         mr.normal = p.normal, mr.offset = p.offset, mr.strength = p.strength, mr.seen = seen, mr.glass = p.glass;
@@ -309,6 +309,35 @@ int GLWorldView::mirror_of(const Element& portal) const {
     for (int i = 0; i < set->count; ++i)
         if (set->at[i].glass == portal.id) return i + 1;
     return 0;
+}
+
+void GLWorldView::glint_mips(gl::RenderTarget& t) {
+    t.mipmap();  // (its sizes made and read between from now on; each drawn again below)
+    const gl::GLuint tex = t.color_texture();
+    if (!tex) return;
+    if (!glint_prog_) glint_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gl::glint_down_fs(), "glint down");
+    if (!glint_fbo_) gl::glGenFramebuffers(1, &glint_fbo_);
+    gl::glDisable(gl::GL_DEPTH_TEST);
+    gl::glDisable(gl::GL_BLEND);
+    glint_prog_->use();
+    glint_prog_->set("uSource", 0);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, glint_fbo_);
+    for (int k = 1;; ++k) {
+        const int w = std::max(1, t.width() >> k), h = std::max(1, t.height() >> k);
+        // (Only the size above read while this one is drawn: never a picture read where it is written.)
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_BASE_LEVEL, k - 1);
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAX_LEVEL, k - 1);
+        gl::glFramebufferTexture2D(gl::GL_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, gl::GL_TEXTURE_2D, tex, k);
+        gl::glViewport(0, 0, w, h);
+        glint_prog_->set("uTexel", 1.0f / static_cast<float>(std::max(1, t.width() >> (k - 1))), 1.0f / static_cast<float>(std::max(1, t.height() >> (k - 1))));
+        screen_.draw();
+        if (w == 1 && h == 1) break;
+    }
+    gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_BASE_LEVEL, 0);
+    gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAX_LEVEL, 1000);
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
 }
 
 void GLWorldView::mirror_uniforms(const gl::Program& p, bool use) {

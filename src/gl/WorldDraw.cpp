@@ -78,6 +78,25 @@ const std::array<std::string, N>& element_names(const char* array) {
 }
 }  // namespace
 
+float GLWorldView::far_of(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye) const {
+    float far = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
+    for (const PlacedRoom& placed : rooms) {
+        if (!placed.sheafed || !placed.room || placed.image) continue;
+        const Params& p = placed.room->params();
+        if (!p.has(Key{"room_w"}) || !p.has(Key{"room_d"})) continue;
+        // (Its box's corners, where the room stands in the space.)
+        for (double x : {0.0, p.num(Key{"room_w"})})
+            for (double y : {0.0, p.num(Key{"room_h"}, 3.0)})
+                for (double z : {0.0, p.num(Key{"room_d"})}) {
+                    const Vec3d c = placed.pose.position + rotate_xz({x, y, z}, placed.pose.yaw);
+                    const float d = std::sqrt((static_cast<float>(c.x) - eye.x) * (static_cast<float>(c.x) - eye.x) + (static_cast<float>(c.y) - eye.y) * (static_cast<float>(c.y) - eye.y) +
+                                              (static_cast<float>(c.z) - eye.z) * (static_cast<float>(c.z) - eye.z));
+                    far = std::max(far, d * 1.05f + 1.0f);
+                }
+    }
+    return far;
+}
+
 void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera& cam, float aspect, gl::RenderTarget& target, int depth, float znear, Key skip_portal, const std::vector<HalfSpace>& clips) {
     // A space that wraps is seen in every copy of it the eye can reach -
     // from inside it or through any doorway onto it: every view is drawn
@@ -140,7 +159,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         if (rooms[r].room && !rooms[r].image) entries[r] = &casters_in(rooms[r], r);
     times_.signature += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sig_from).count();
     const auto lights_from = std::chrono::steady_clock::now();
-    const uint64_t lit_key = (lights_key(rooms, entries) ^ worlds_stamp()) * 1099511628211ULL;
+    // (A reflection capture's lamps are as they stand: not this frame's.)
+    const uint64_t lit_key = ((lights_key(rooms, entries) ^ worlds_stamp()) * 1099511628211ULL) ^ (capturing_ ? 0x9e3779b97f4a7c15ULL : 0);
     if (lights_memo_.size() > 64) lights_memo_.clear();
     auto lit_memo = lights_memo_.find(lit_key);
     if (lit_memo == lights_memo_.end()) {
@@ -190,7 +210,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     }
     lod_px_ = 0.5f * static_cast<float>(target.height()) / std::tan(cam.fov * 0.5f);
     lod_least_ = static_cast<float>(rooms.front().room->params().num(Key{"lod_px"}, 0.75));
-    const float zfar = static_cast<float>(rooms.front().room->params().num(Key{"far"}, 120.0));
+    const float zfar = far_of(rooms, cam.eye);
     drawn_near_ = znear, drawn_far_ = zfar;
     if (depth == 0) deep_views_.clear();
     for (const PlacedRoom& placed : rooms)
@@ -901,7 +921,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // costs little, and kept while nothing it is made from moves) - a room's
     // haze is what is seen of it from any way. (A mirror's picture has none.)
     const Air* air = nullptr;
-    const float scatter = baking_ || mirroring_ || traced_surfaces ? 0.0f : static_cast<float>(weather(rooms.front().room, first, "scatter", 0.0));
+    const float scatter = baking_ || mirroring_ || capturing_ || traced_surfaces ? 0.0f : static_cast<float>(weather(rooms.front().room, first, "scatter", 0.0));
     if (scatter > 0.0f) {
         Air& a = air_for(rooms.front().room);
         a.near = 0.3f;
@@ -1158,6 +1178,32 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         gl::glClear(gl::GL_COLOR_BUFFER_BIT);
         target.second(false);
     }
+    // How each pixel moved since the last frame, drawn beside the scene where
+    // it is asked for (motion_on): the eye's own view, cleared to "not
+    // known" - what the scene does not say is found from depth after.
+    const bool moving_beside = motion_on() && depth == 0 && eye_view() && !mirroring_ && !traced_surfaces && surface_only_ == 0;
+    // (This view's alone: a view drawn within it - a doorway's - says none,
+    // and the one it is drawn within goes on saying it after.)
+    struct MotionPass {
+        bool& on;
+        const gl::RenderTarget& t;
+        bool was, mine;
+        ~MotionPass() {
+            if (mine) t.third(false);
+            on = was;
+        }
+    } motion_pass{motion_pass_, target, motion_pass_, moving_beside};
+    motion_pass_ = false;
+    if (moving_beside) {
+        if (!target.has_third()) target.add_third(gl::GL_RG16F);
+        const gl::GLenum third[3] = {gl::GL_NONE, gl::GL_NONE, gl::GL_COLOR_ATTACHMENT0 + 2};
+        gl::glDrawBuffers(3, third);
+        gl::glClearColor(1e4f, 1e4f, 0.0f, 0.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+        target.third(true);
+        motion_pass_ = true;
+        moved_now_.clear();
+    }
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
     gl::glEnable(gl::GL_MULTISAMPLE);
@@ -1171,11 +1217,16 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     // whenever a room's look brings a different program.
     const auto frame_uniforms = [&](const gl::Program& p) {
         p.set("uViewProj", drawn_proj);
+        if (motion_pass_) {
+            p.set("uMotionNow", view_proj);
+            p.set("uMotionSize", vp_w_, vp_h_);
+            p.set("uMoving", 0.0f);
+        }
         p.set("uDepthNudge", reversed ? 1.0f : 0.0f);
         p.set("uSnapAspect", vp_w_ / std::max(vp_h_, 1.0f));
         last_view_proj_ = drawn_proj, last_nudge_ = reversed ? 1.0f : 0.0f;
         p.set("uMirrorScreen", vp_w_, vp_h_);
-        mirror_uniforms(p, !mirroring_);
+        mirror_uniforms(p, !mirroring_ && !capturing_);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
         // (SG_SHOW_WEAR=1: what each mesh's shape says of its wear, for
@@ -1217,6 +1268,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         p.set("uBedNormals", kBedsUnit + 1);
         p.set("uEnv", 7);
         p.set("uEnvMix", 0.0f);
+        p.set("uCaptures", kCaptureUnit);  // the room's reflection captures (captures_to)
+        p.set("uCaptureHi", 0.0f, 0.0f, 0.0f, 0.0f);
         p.set("uCRT", 0.0f);
         p.set("uScreenUV", 0.0f);
         p.set("uViewport", vp_w_, vp_h_);
@@ -1325,6 +1378,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (A view traced: its twin that knows what is traced.)
         if (program && (traced_beside || traced_surfaces))
             if (const gl::Program* t = traced_of(*program)) program = t;
+        // (And one that says how each pixel moved, where that is asked.)
+        if (program && motion_pass_)
+            if (const gl::Program* m = moving_of(*program)) program = m;
         if (program != scene_) {
             scene_ = program;
             scene_->use();
@@ -1332,12 +1388,28 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         }
         bounds = prepare(look, shift, placed, room);
         }
+        // (The last frame's view, this room where it stood then.)
+        if (motion_pass_) scene_->set("uMotionWas", motion_was_of(placed.room, frame_matrix_));
         // (Its box, for dirt to gather in its corners: none for a world under the sky.)
         {
             const auto& rp = room.params();
             const bool boxed = rp.num(Key{"sky"}, 0.0) < 0.5 && rp.has(Key{"room_w"});
             scene_->set("uRoomBox", gl::Vec3{boxed ? static_cast<float>(rp.num(Key{"room_w"})) : 0.0f, boxed ? static_cast<float>(rp.num(Key{"room_h"}, 3.0)) : 0.0f,
                                              boxed ? static_cast<float>(rp.num(Key{"room_d"})) : 0.0f});
+            {
+                // (Rooms made one: the floor each covered, its walls where they were.)
+                const int regions = std::min(4, static_cast<int>(rp.num(Key{"regions"}, 0.0)));
+                float h[4] = {0, 0, 0, 0};
+                static const auto names = element_names<4>("uRegion");
+                for (int k = 0; k < regions; ++k) {
+                    const std::string r = "region" + std::to_string(k) + "_";
+                    scene_->set(names[static_cast<std::size_t>(k)].c_str(), static_cast<float>(rp.num(Key{r + "x0"})), static_cast<float>(rp.num(Key{r + "z0"})),
+                                static_cast<float>(rp.num(Key{r + "x1"})), static_cast<float>(rp.num(Key{r + "z1"})));
+                    h[k] = static_cast<float>(rp.num(Key{r + "h"}, 3.0));
+                }
+                scene_->set("uRegionH", h[0], h[1], h[2], h[3]);
+                scene_->set("uRegions", regions);
+            }
             // Its wear's causes (sg/domains/Wear.hpp): how old it is, and its
             // leaks - the eight nearest the eye - in its own frame.
             wear_age_ = static_cast<float>(std::clamp(rp.num(Key{"age"}, 1.0), 0.0, 1.0));
@@ -1357,7 +1429,7 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 near.push_back({std::hypot(at.x - cam.eye.x, at.z - cam.eye.z), l});
             }
             std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            const int n = static_cast<int>(std::min<std::size_t>(near.size(), 4));
+            const int n = static_cast<int>(std::min<std::size_t>(near.size(), 8));
             wear_leaks_ = n;
             for (int k = 0; k < n; ++k) {
                 const Vec3d at = position_of(*near[static_cast<std::size_t>(k)].second);
@@ -1465,9 +1537,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                        e.params.num(glass_key, 0.0) <= 0.0) {
                 uncut.push_back(&e);
             } else if (e.kind == kinds::mesh) {
+                // (Its motion kept, where it is asked for: a thing that has
+                // moved drawn on its own, saying where it stood.)
+                const bool own_motion = motion_pass_ && moved_one(i);
                 if (is_sprite(e) || cuts_out(e)) sprites.push_back(&e);
                 else if (e.params.num(add_key, 0.0) > 0.5) added.push_back(&e);
                 else if (e.params.num(glass_key, 0.0) > 0.0) glass.push_back(&e);
+                else if (own_motion) draw_moving(room, e);
                 else if (instanceable(e)) batch_crate(room, e);
                 else if (!batch_skinned(room, e)) draw_crate(room, e);
             } else if (e.kind == kinds::wall) {
@@ -1499,7 +1575,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
             scene_->set("uClipCount", own);
             clip_count_ = own;
             for (const Element* e : uncut)
-                if (instanceable(*e)) batch_crate(room, *e);
+                if (motion_pass_) draw_moving(room, *e);
+                else if (instanceable(*e)) batch_crate(room, *e);
                 else if (!batch_skinned(room, *e)) draw_crate(room, *e);
             flush_batches(*scene_, true);
             scene_->set("uClipCount", bounds);

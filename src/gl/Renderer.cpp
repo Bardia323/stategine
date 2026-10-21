@@ -517,31 +517,51 @@ void RenderTarget::bind_color(int unit) const {
     glBindTexture(GL_TEXTURE_2D, color_tex_);
 }
 
-void RenderTarget::add_second(GLenum internal_format) {
-    if (!fbo_ || has_second()) return;
+void RenderTarget::add_beside(int at, GLenum internal_format, GLuint& tex, GLuint& rb) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    const GLenum attachment = GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(at);
     if (samples_ > 0) {
-        glGenRenderbuffers(1, &second_rb_);
-        glBindRenderbuffer(GL_RENDERBUFFER, second_rb_);
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
         glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples_, internal_format, w_, h_);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_RENDERBUFFER, second_rb_);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, attachment, GL_RENDERBUFFER, rb);
     } else {
-        glGenTextures(1, &second_tex_);
-        glBindTexture(GL_TEXTURE_2D, second_tex_);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
         glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(internal_format), w_, h_, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + 1, GL_TEXTURE_2D, second_tex_, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, GL_TEXTURE_2D, tex, 0);
     }
     // (Drawn into only when said: until then, as the target was.)
-    const GLenum first = GL_COLOR_ATTACHMENT0;
-    glDrawBuffers(1, &first);
+    draw_buffers();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void RenderTarget::add_second(GLenum internal_format) {
+    if (!fbo_ || has_second()) return;
+    add_beside(1, internal_format, second_tex_, second_rb_);
+}
+
+void RenderTarget::add_third(GLenum internal_format) {
+    if (!fbo_ || has_third()) return;
+    add_beside(2, internal_format, third_tex_, third_rb_);
+}
+
+void RenderTarget::draw_buffers() const {
+    const GLenum which[3] = {GL_COLOR_ATTACHMENT0, second_on_ && has_second() ? GL_COLOR_ATTACHMENT0 + 1 : GL_NONE,
+                             third_on_ && has_third() ? GL_COLOR_ATTACHMENT0 + 2 : GL_NONE};
+    glDrawBuffers(which[2] != GL_NONE ? 3 : which[1] != GL_NONE ? 2 : 1, which);
+}
+
 void RenderTarget::second(bool drawn) const {
-    const GLenum both[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT0 + 1};
-    glDrawBuffers(drawn && has_second() ? 2 : 1, both);
+    second_on_ = drawn;
+    draw_buffers();
+}
+
+void RenderTarget::third(bool drawn) const {
+    third_on_ = drawn;
+    draw_buffers();
 }
 
 void RenderTarget::second_to(const RenderTarget& dst) const {
@@ -554,10 +574,23 @@ void RenderTarget::second_to(const RenderTarget& dst) const {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void RenderTarget::third_to(const RenderTarget& dst) const {
+    if (!has_third()) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+    glReadBuffer(GL_COLOR_ATTACHMENT0 + 2);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 void RenderTarget::destroy() {
     if (second_tex_) glDeleteTextures(1, &second_tex_);
     if (second_rb_) glDeleteRenderbuffers(1, &second_rb_);
-    second_tex_ = second_rb_ = 0;
+    if (third_tex_) glDeleteTextures(1, &third_tex_);
+    if (third_rb_) glDeleteRenderbuffers(1, &third_rb_);
+    second_tex_ = second_rb_ = third_tex_ = third_rb_ = 0;
+    second_on_ = third_on_ = false;
     if (fbo_) glDeleteFramebuffers(1, &fbo_);
     if (color_tex_) glDeleteTextures(1, &color_tex_);
     if (color_rb_) glDeleteRenderbuffers(1, &color_rb_);

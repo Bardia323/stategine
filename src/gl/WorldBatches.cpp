@@ -256,11 +256,14 @@ void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
         map.bind(unit);
         return true;
     };
+    // (A pile's sheen, its texture's: none unless it says.)
+    p.set("uSheen", tex ? static_cast<float>(tex->map().params.num("sheen", 0.0)) : 0.0f);
     const bool damp = bound && worn("damp", bound->damp_map, bound->damp_revision, kDampUnit);
     if (damp) {
         const Element& m = tex->map();
         p.set("uDampSet", static_cast<float>(m.params.num("damp", 1.0)), static_cast<float>(m.params.num("damp_rise", 0.0)),
               static_cast<float>(m.params.num("damp_tile", 2.0)), static_cast<float>(m.params.num("damp_rough", 0.35)));
+        p.set("uDampCover", static_cast<float>(m.params.num("damp_cover", 0.0)), static_cast<float>(m.params.num("damp_runs", 0.0)));
     }
     // (Whether each is worn: uWear's x and y; its room's age, z, is the room's.)
     bool dirt = false;

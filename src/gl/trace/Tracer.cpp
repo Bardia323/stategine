@@ -21,13 +21,16 @@ void GLWorldView::TracerGone::operator()(trace::Tracer* t) const { delete t; }
 
 bool GLWorldView::tracing() {
     if (root_ || output_ || baking_ || surface_only_ != 0 || !q_.trace) return false;
-    if (setting(post_, passes::scene, "trace", 0.0) <= 0.0) return false;
+    // (`trace.gi` alone traces the light from all round and nothing else.)
+    const bool all = setting(post_, passes::scene, "trace", 0.0) > 0.0;
+    const bool gi = setting(post_, passes::scene, "trace.gi", 0.0) > 0.0;
+    if (!all && !gi) return false;
     if (!trace_) trace_.reset(new trace::Tracer(*this));
     trace::Asked a;
     const auto said = [&](const char* name, double fallback) { return setting(post_, passes::scene, name, fallback); };
-    a.sun = said("trace.sun", 1.0) > 0.0;
-    a.lamps = said("trace.lamps", 1.0) > 0.0;
-    a.rough = static_cast<float>(std::clamp(said("trace.mirror", 0.22), 0.0, 1.0));
+    a.sun = all && said("trace.sun", 1.0) > 0.0;
+    a.lamps = all && said("trace.lamps", 1.0) > 0.0;
+    a.rough = all ? static_cast<float>(std::clamp(said("trace.mirror", 0.22), 0.0, 1.0)) : 0.0f;
     a.mirror = a.rough > 0.0;
     const double scale = said("trace.scale", 0.5);
     a.step = scale >= 0.99 ? 1 : (scale >= 0.49 ? 2 : 4);
@@ -37,6 +40,19 @@ bool GLWorldView::tracing() {
     a.brightest = static_cast<float>(std::max(said("trace.brightest", 4.0), 0.01));
     a.now = said("trace.now", 0.0) > 0.0;
     a.hold = static_cast<float>(std::clamp(said("trace.hold", 24.0), 1.0, 4096.0));
+    a.gi = gi;
+    if (gi) {
+        const double gs = said("trace.gi.scale", 0.5);
+        a.gi_step = gs >= 0.99 ? 1 : (gs >= 0.49 ? 2 : 4);
+        // (Below one: a ray a pixel every second frame, or every fourth -
+        // each pixel in turn - where what was kept holds.)
+        const double rays = said("trace.gi.rays", 0.25);
+        a.gi_every = rays < 0.375 ? 4 : (rays < 0.75 ? 2 : 1);
+        a.gi_rays = a.gi_every > 1 ? 1 : static_cast<int>(std::clamp(std::lround(rays), 1L, 4L));
+        a.gi_reach = static_cast<float>(std::clamp(said("trace.gi.reach", 12.0), 0.5, static_cast<double>(a.far)));
+        a.gi_hold = static_cast<float>(std::clamp(said("trace.gi.hold", 32.0), 1.0, 4096.0));
+        a.gi_bounce = static_cast<float>(std::max(said("trace.gi.bounce", 1.0), 0.0));
+    }
     trace_->asked = a;
     return a.any();
 }
@@ -72,8 +88,9 @@ constexpr int kSurfUnit = 20, kNodesUnit = 21, kTrisUnit = 22, kInstsUnit = 23, 
 constexpr int kPoint0Unit = 25, kMax0Unit = 26, kPoint1Unit = 27, kMax1Unit = 28, kSkyLightUnit = 29;
 constexpr int kSunSeenUnit = 11;
 constexpr int kNewUnit = 5, kKeptUnit = 6, kLastSurfUnit = 7, kPictureUnit = 9, kHitsUnit = 10;
-// And the units the scene reads the traced pictures from.
-constexpr int kSceneSurf = 20, kSceneSun = 21, kSceneLamps = 22, kSceneMirror = 23;
+// And the units the scene reads the traced pictures from (24 to 27 its
+// dirt, damp, wear and moss).
+constexpr int kSceneSurf = 20, kSceneSun = 21, kSceneLamps = 22, kSceneMirror = 23, kSceneGi = 28;
 
 void ensure(gl::RenderTarget& t, int w, int h, gl::GLenum format, bool depth = false) {
     if (t.valid() && t.width() == w && t.height() == h) return;
@@ -110,6 +127,10 @@ void dump(const gl::RenderTarget& t, const std::string& path) {
     std::ofstream out(path, std::ios::binary);
     out << "PF\n" << t.width() << " " << t.height() << "\n-1.0\n";
     for (std::size_t i = 0; i < px.size(); i += 4) out.write(reinterpret_cast<const char*>(&px[i]), 12);
+    // (And what each holds besides - its frames, its distance - as <name>.a.pfm.)
+    std::ofstream alpha(path + ".a.pfm", std::ios::binary);
+    alpha << "Pf\n" << t.width() << " " << t.height() << "\n-1.0\n";
+    for (std::size_t i = 0; i < px.size(); i += 4) alpha.write(reinterpret_cast<const char*>(&px[i + 3]), 4);
 }
 uint64_t fnv(uint64_t h, const void* p, std::size_t n) {
     const unsigned char* c = static_cast<const unsigned char*>(p);
@@ -194,6 +215,12 @@ void Tracer::sized(int w, int h) {
     // half each way whatever is asked, used whole when every pixel is traced.)
     for (gl::RenderTarget* t : {&mirror_raw_, &mirror_kept_[0], &mirror_kept_[1], &mirror_a_, &mirror_b_})
         ensure(*t, hw, hh, gl::GL_RGBA16F);
+    // The light from all round, at its own part of the pixels, laid on all.
+    if (asked.gi) {
+        const int gw = (w + asked.gi_step - 1) / asked.gi_step, gh = (h + asked.gi_step - 1) / asked.gi_step;
+        for (gl::RenderTarget* t : {&gi_raw_, &gi_kept_[0], &gi_kept_[1], &gi_a_, &gi_b_}) ensure(*t, gw, gh, gl::GL_RGBA16F);
+        ensure(gi_full_, w, h, gl::GL_RGBA16F);
+    }
 }
 
 void Tracer::common(const gl::Program& p, int step) const {
@@ -293,7 +320,7 @@ void Tracer::make_sky_light() {
     pass(p, sky_light_);
 }
 
-const gl::RenderTarget& Tracer::carry(const gl::RenderTarget& now, gl::RenderTarget kept[2], int step, bool mirror, float clamp) {
+const gl::RenderTarget& Tracer::carry(const gl::RenderTarget& now, gl::RenderTarget kept[2], int step, bool mirror, float clamp, float hold) {
     if (!carry_prog_) carry_prog_ = std::make_unique<gl::Program>(gl::post_vs(), carry_fs().c_str(), "trace carry");
     const gl::Program& p = *carry_prog_;
     p.use();
@@ -304,7 +331,7 @@ const gl::RenderTarget& Tracer::carry(const gl::RenderTarget& now, gl::RenderTar
     p.set("uNew", kNewUnit), p.set("uKept", kKeptUnit), p.set("uLastSurf", kLastSurfUnit);
     p.set("uLastVP", last_vp_);
     p.set("uLastEye", last_eye_);
-    p.set("uMost", history_ ? asked.hold : 1.0f);
+    p.set("uMost", history_ ? (hold > 0.0f ? hold : asked.hold) : 1.0f);
     p.set("uMirror", mirror ? 1.0f : 0.0f);
     p.set("uClamp", clamp);
     p.set("uKeptSize", static_cast<float>(kept[now_].width()), static_cast<float>(kept[now_].height()));
@@ -313,7 +340,7 @@ const gl::RenderTarget& Tracer::carry(const gl::RenderTarget& now, gl::RenderTar
 }
 
 const gl::RenderTarget& Tracer::smooth(const gl::RenderTarget& from, gl::RenderTarget& a, gl::RenderTarget& b, int step, int passes, float penumbra,
-                                       float sharp) {
+                                       float sharp, bool held_only) {
     if (!smooth_prog_) smooth_prog_ = std::make_unique<gl::Program>(gl::post_vs(), smooth_fs().c_str(), "trace smooth");
     const gl::Program& p = *smooth_prog_;
     p.use();
@@ -324,6 +351,8 @@ const gl::RenderTarget& Tracer::smooth(const gl::RenderTarget& from, gl::RenderT
     p.set("uPenumbra", penumbra);
     p.set("uPixel", pixel_);
     p.set("uSharp", sharp);
+    p.set("uHeldOnly", held_only ? 1 : 0);
+    p.set("uFull", held_only ? asked.gi_hold : 0.0f);
     const gl::RenderTarget* in = &from;
     for (int i = 0; i < passes; ++i) {
         gl::RenderTarget& out = (i & 1) ? b : a;
@@ -335,7 +364,7 @@ const gl::RenderTarget& Tracer::smooth(const gl::RenderTarget& from, gl::RenderT
     return *in;
 }
 
-void Tracer::widen(const gl::RenderTarget& from, gl::RenderTarget& into, int step, float rough) {
+void Tracer::widen(const gl::RenderTarget& from, gl::RenderTarget& into, int step, float rough, bool held) {
     if (!widen_prog_) widen_prog_ = std::make_unique<gl::Program>(gl::post_vs(), widen_fs().c_str(), "trace widen");
     const gl::Program& p = *widen_prog_;
     p.use();
@@ -343,6 +372,7 @@ void Tracer::widen(const gl::RenderTarget& from, gl::RenderTarget& into, int ste
     from.bind_color(kPictureUnit);
     p.set("uPicture", kPictureUnit);
     p.set("uRough", rough);
+    p.set("uHeld", held ? 1 : 0);
     pass(p, into);
 }
 
@@ -401,7 +431,7 @@ void Tracer::after(const std::vector<PlacedRoom>& rooms) {
 
 void Tracer::trace(const std::vector<PlacedRoom>& rooms) {
     Clock clock;
-    double ms[10] = {};
+    double ms[12] = {};
     ms[8] = surfaces_ms_;
     clock.start();
     // The world as rays meet it.
@@ -462,9 +492,11 @@ void Tracer::trace(const std::vector<PlacedRoom>& rooms) {
         widen(smoothed, mirror_full_, step, asked.rough);
         ms[7] = clock.lap();
     }
+    gi_made_ = false;
+    if (asked.gi) trace_gi(rooms, ms + 10);
     if (clock.on && frame_ % 60 == 0)
-        std::printf("trace ms: surfaces %.2f (ground laid %d) | things %.2f ground %.2f | sun %.2f +%.2f | lamps %.2f +%.2f | mirror %.2f +%.2f | %zu shapes, %zu tris, %zu instances (%zu tris placed)\n", ms[8], relaid_, ms[0],
-                    ms[1], ms[2], ms[3], ms[4], ms[5], ms[6], ms[7], shapes_.size(), tris_.size() / 12, insts_.size() / 16, placed_tris_);
+        std::printf("trace ms: surfaces %.2f (ground laid %d) | things %.2f ground %.2f | sun %.2f +%.2f | lamps %.2f +%.2f | mirror %.2f +%.2f | all round %.2f +%.2f | %zu shapes, %zu tris, %zu instances (%zu tris placed)\n", ms[8], relaid_, ms[0],
+                    ms[1], ms[2], ms[3], ms[4], ms[5], ms[6], ms[7], ms[10], ms[11], shapes_.size(), tris_.size() / 12, insts_.size() / 16, placed_tris_);
     if (const char* folder = std::getenv("SG_TRACE_DUMP")) {
         const char* at = std::getenv("SG_TRACE_DUMP_AT");
         if (frame_ == (at ? std::atoi(at) : 60)) {
@@ -472,6 +504,7 @@ void Tracer::trace(const std::vector<PlacedRoom>& rooms) {
             dump(surf_[now_], f + "/surf.pfm");
             if (sun_out_) dump(*sun_out_, f + "/sun.pfm"), dump(sun_raw_, f + "/sun_raw.pfm");
             if (asked.mirror) dump(mirror_full_, f + "/mirror.pfm"), dump(mirror_raw_, f + "/mirror_raw.pfm");
+            if (gi_made_) dump(gi_full_, f + "/gi.pfm"), dump(gi_raw_, f + "/gi_raw.pfm");
             if (squares_[0].n) dump(squares_[0].points, f + "/ground0.pfm"), dump(squares_[1].points, f + "/ground1.pfm");
             dump(sky_light_, f + "/sky.pfm");
         }
@@ -487,6 +520,44 @@ void Tracer::trace(const std::vector<PlacedRoom>& rooms) {
     gl::glViewport(0, 0, w_, h_);
 }
 
+void Tracer::trace_gi(const std::vector<PlacedRoom>& rooms, double* ms) {
+    Clock clock;
+    clock.start();
+    const int step = asked.gi_step;
+    if (!gi_prog_) gi_prog_ = std::make_unique<gl::Program>(gl::post_vs(), gi_fs().c_str(), "trace all round");
+    const gl::Program& p = *gi_prog_;
+    p.use();
+    common(p, step);
+    world_to(p);
+    // (Its own reach: a room's light comes back off the room.)
+    p.set("uReach", asked.gi_reach);
+    p.set("uGiRays", asked.gi_rays);
+    p.set("uGiEvery", asked.gi_every);
+    p.set("uGiBounce", asked.gi_bounce);
+    // (What was kept, to know where it holds: as the carry finds it.)
+    gi_kept_[now_ ^ 1].bind_color(kKeptUnit);
+    surf_[now_ ^ 1].bind_color(kLastSurfUnit);
+    p.set("uKept", kKeptUnit), p.set("uLastSurf", kLastSurfUnit);
+    p.set("uLastVP", last_vp_);
+    p.set("uLastEye", last_eye_);
+    p.set("uKeptSize", static_cast<float>(gi_kept_[0].width()), static_cast<float>(gi_kept_[0].height()));
+    // The room's doorways and probes, as the scene has them: where its rays
+    // leave it, and what what they meet is lit by besides.
+    v_.doors_to_program(rooms.front(), &p);
+    v_.probes_to_program(rooms.front(), &p);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    pass(p, gi_raw_);
+    ms[0] = clock.lap();
+    // Kept over frames - held loosely to what this frame's neighbours say (a
+    // ray a pixel is far from its mean) - then smoothed within surfaces, the
+    // less held the wider, and laid on every pixel with how much it holds.
+    const gl::RenderTarget& kept = carry(gi_raw_, gi_kept_, step, false, 0.0f, asked.gi_hold);
+    const gl::RenderTarget& smoothed = smooth(kept, gi_a_, gi_b_, step, 4, 0.0f, 0.0f, true);
+    widen(smoothed, gi_full_, step, 0.0f, true);
+    gi_made_ = true;
+    ms[1] = clock.lap();
+}
+
 void Tracer::to_scene(const gl::Program& p) const {
     if (!fresh()) {
         p.set("uTrace", 0.0f, 0.0f, 0.0f, 0.0f);
@@ -494,7 +565,11 @@ void Tracer::to_scene(const gl::Program& p) const {
     }
     const bool sun = asked.sun && seen_.sun && sun_out_;
     const int lamps = asked.lamps && lamps_out_ && lamps_made_ + 1 >= frame_ ? seen_.shadow_lamps : 0;
-    p.set("uTrace", sun ? 1.0f : 0.0f, static_cast<float>(lamps), asked.mirror ? asked.rough : 0.0f, 0.0f);
+    // (w: the light from all round traced - 1 in a room shut round, the
+    // look's own light from all round kept beside it; 2 under an open sky,
+    // which the rays found themselves.)
+    const float gi = asked.gi && gi_made_ ? (seen_.open ? 2.0f : 1.0f) : 0.0f;
+    p.set("uTrace", sun ? 1.0f : 0.0f, static_cast<float>(lamps), asked.mirror ? asked.rough : 0.0f, gi);
     p.set("uTraceSunDir", seen_.sun_dir);
     for (int k = 0; k < kShadowLamps; ++k) {
         const float* a = &seen_.shadow_lamp[static_cast<std::size_t>(k) * 4];
@@ -507,7 +582,8 @@ void Tracer::to_scene(const gl::Program& p) const {
     surf_[shown_].bind_color(kSceneSurf);
     if (sun) sun_out_->bind_color(kSceneSun);
     mirror_full_.bind_color(kSceneMirror);
-    p.set("uTraceSurf", kSceneSurf), p.set("uTraceSun", kSceneSun), p.set("uTraceMirror", kSceneMirror);
+    if (gi > 0.0f) gi_full_.bind_color(kSceneGi);
+    p.set("uTraceSurf", kSceneSurf), p.set("uTraceSun", kSceneSun), p.set("uTraceMirror", kSceneMirror), p.set("uTraceGI", kSceneGi);
     gl::glActiveTexture(gl::GL_TEXTURE0);
 }
 

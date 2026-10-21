@@ -554,9 +554,50 @@ vec3 lit_end(vec3 p, vec3 n, vec3 albedo, float glow, inout uint seed, bool sky)
 }
 )";
 
-std::string with_world(const char* own) {
-    return std::string("#version 330 core\n") + kSurfaces + gl::atmosphere_glsl() + gl::cloud_dome_glsl() + kWorld + kSky + kSkyLight + own;
+// What was kept of a picture where a pixel's surface was last frame: the
+// four nearest of its pixels that were that surface - as far from the last
+// eye as it should be, facing the same way - by how near (a: how many frames
+// it holds; 0, none: a pixel uncovered).
+const char* kHistory = R"(
+uniform sampler2D uKept;
+uniform sampler2D uLastSurf;
+uniform mat4 uLastVP;
+uniform vec3 uLastEye;
+uniform vec2 uKeptSize;
+// (`seen`: where it is seen - a mirror's image, not the mirror; p, n the
+// surface itself.)
+vec4 kept_at(vec3 seen, vec3 p, vec3 n) {
+    vec4 was = uLastVP * vec4(seen, 1.0);
+    vec4 kept = vec4(0.0);
+    if (was.w > 0.0) {
+        vec2 at = (was.xy / was.w * 0.5 + 0.5) * uKeptSize - 0.5;
+        vec2 f = fract(at);
+        ivec2 base = ivec2(floor(at));
+        float wsum = 0.0;
+        float expect = length(p - uLastEye);
+        for (int k = 0; k < 4; ++k) {
+            ivec2 o = ivec2(k & 1, k >> 1), c = base + o;
+            if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(uKeptSize)))) continue;
+            vec4 s = texelFetch(uLastSurf, c * uStep, 0);
+            if (s.z <= 0.0) continue;
+            // (The same surface: where it should be, facing as it does.)
+            if (abs(s.z - expect) > 0.03 * expect + 0.05) continue;
+            if (dot(oct_normal(s.xy), n) < 0.85) continue;
+            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+            kept += texelFetch(uKept, c, 0) * w;
+            wsum += w;
+        }
+        kept = wsum > 1e-3 ? kept / wsum : vec4(0.0);
+    }
+    // (What was kept, not a number - a picture never drawn into: none kept.)
+    if (!(kept.a >= 0.0 && kept.a < 1e5) || any(isnan(kept.rgb)) || any(isinf(kept.rgb))) kept = vec4(0.0);
+    return kept;
 }
+)";
+
+std::string with_world(const std::string& own) { return std::string("#version 330 core\n") + kSurfaces + gl::atmosphere_glsl() + gl::cloud_dome_glsl() + kWorld + kSky + kSkyLight + own; }
+
+std::string with_world(const char* own) { return with_world(std::string(own)); }
 
 }  // namespace
 
@@ -729,8 +770,317 @@ void main() {
     return source;
 }
 
+const std::string& gi_fs() {
+    static const std::string source = with_world(std::string(kHistory) + R"(
+// The light from all round a pixel's surface gets, traced: rays out over its
+// side, as many each way as it faces it (cosine-weighed), each bringing back
+// what it meets lit as a ray's end is lit (lit_end: the sun, the lamps, and
+// the sky where the world is open) and, for the light that has come round
+// more than once, what the probes say reaches it there - or, leaving by a
+// doorway that lets light in, what the far side gives that way. Kept as the
+// scene's `around` is: the light a surface facing that way gets, over pi
+// (the mean of what comes back). A doorway's light is also asked of directly,
+// a point of its opening a ray (it is small and bright: a ray out over the
+// side finds it seldom), the two weighed by how likely each was to find it
+// (MIS, the balance heuristic) - so a window lights a room softly, not in
+// specks.
+uniform int   uGiRays;      // rays a pixel traced
+uniform int   uGiEvery;     // 1, 2 or 4: a pixel traced every so many frames, in turn (where its history holds)
+uniform float uGiBounce;    // how much of the probes' light what a ray meets has besides
+
+// The doorways of the room and the light beyond each (doors_to_program, as
+// the scene has them): the middle of each opening and half its width; the
+// way across it (x, z) and half its height; the way into this room (x, z),
+// whether a door is shut in it (z), how much of the far side it lets in (w).
+const int MAX_DOORS = 4;
+uniform int  uDoorCount;
+uniform vec4 uDoorAt[MAX_DOORS];
+uniform vec4 uDoorAxis[MAX_DOORS];
+uniform vec4 uDoorIn[MAX_DOORS];
+uniform vec3 uDoorSky[MAX_DOORS];
+uniform vec3 uDoorGround[MAX_DOORS];
+
+// The room's probes (probes_to_program, as the scene has them).
+const int MAX_PROBES = 24;
+uniform int  uProbeCount;
+uniform vec4 uProbeAt[MAX_PROBES];
+uniform vec3 uProbeHalf[MAX_PROBES];
+uniform vec3 uProbeSoftLo[MAX_PROBES];
+uniform vec3 uProbeSoftHi[MAX_PROBES];
+uniform vec3 uProbeSH[MAX_PROBES * 9];
+float probe_weight(int i, vec3 p) {
+    vec4 at = uProbeAt[i];
+    vec3 d = p - at.xyz;
+    float c = cos(at.w), s = sin(at.w);
+    vec3 q = vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
+    vec3 lo = q + uProbeHalf[i], hi = uProbeHalf[i] - q;
+    vec3 a = clamp(1.0 + lo / max(uProbeSoftLo[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 b = clamp(1.0 + hi / max(uProbeSoftHi[i], vec3(1e-4)), 0.0, 1.0);
+    vec3 w = a * b;
+    w = w * w * (3.0 - 2.0 * w);
+    return w.x * w.y * w.z;
+}
+// (As the scene's probe_light: w1, w2 2/3 and 1/4 for what a surface facing
+// d is given, over pi; 1 and 1 for what arrives along d.)
+vec3 probes_at(vec3 p, vec3 d, float w1, float w2) {
+    float x = d.x, y = d.y, z = d.z;
+    float b[9] = float[9](0.282095, 0.488603 * y * w1, 0.488603 * z * w1, 0.488603 * x * w1,
+                          1.092548 * x * y * w2, 1.092548 * y * z * w2, 0.315392 * (3.0 * z * z - 1.0) * w2,
+                          1.092548 * x * z * w2, 0.546274 * (x * x - y * y) * w2);
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < MAX_PROBES; ++i) {
+        if (i >= uProbeCount) break;
+        float w = probe_weight(i, p);
+        if (w <= 0.0) continue;
+        vec3 e = vec3(0.0);
+        for (int k = 0; k < 9; ++k) e += uProbeSH[i * 9 + k] * b[k];
+        sum += max(e, vec3(0.0)) * w;
+        total += w;
+    }
+    return total > 0.0 ? sum / total : vec3(0.0);
+}
+
+bool door_open(int k) { return uDoorIn[k].z < 0.5 && uDoorIn[k].w > 0.0; }
+vec3 door_into(int k) { return vec3(uDoorIn[k].x, 0.0, uDoorIn[k].y); }
+// What comes in through doorway k along a ray going out by it, d: the far
+// side's sky above its horizon, its ground below - as bright as the soft
+// lamp the renderer lets in at an opening for its sky (through_doorways: a
+// lamp of 24 its half width times its half height, falling off as the
+// square, lights what faces it on its axis as an opening of 3 pi times the
+// sky's light does). So the rays and the probes agree on how much a window
+// lets in, and a room is as bright traced as not.
+const float kLetIn = 3.0 * kPi;
+vec3 door_light(int k, vec3 d) {
+    return mix(uDoorGround[k], uDoorSky[k], smoothstep(-0.12, 0.12, d.y)) * (kLetIn * uDoorIn[k].w);
+}
+// Where a ray going out crosses doorway k's opening (-1: it does not).
+float door_meet(int k, vec3 o, vec3 d) {
+    vec3 into = door_into(k);
+    float dn = dot(d, into);
+    if (dn > -1e-4) return -1.0;
+    float t = dot(uDoorAt[k].xyz - o, into) / dn;
+    if (t <= 0.0) return -1.0;
+    vec3 q = o + d * t - uDoorAt[k].xyz;
+    if (abs(dot(q.xz, uDoorAxis[k].xy)) > uDoorAt[k].w || abs(q.y) > uDoorAxis[k].z) return -1.0;
+    return t;
+}
+// How likely a point of doorway k asked directly lands where a ray going out
+// along d crosses it, t away (per solid angle; one doorway of `open` asked).
+float door_pdf(int k, vec3 d, float t, float open) {
+    float cos_d = max(-dot(d, door_into(k)), 1e-4);
+    float area = 4.0 * uDoorAt[k].w * uDoorAxis[k].z;
+    return t * t / (area * cos_d * open);
+}
+
+float ign_at(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+void main() {
+    vec3 p, n;
+    float dist, rough;
+    ivec2 q = surf_pixel();
+    if (!surface_at(q, p, n, dist, rough)) {
+        FragColor = vec4(0.0);
+        return;
+    }
+    // Facing away from the eye (a leaf's back, a wall seen from behind its
+    // thickness): turned to it.
+    vec3 v = normalize(uEye - p);
+    if (dot(n, v) < 0.0) n = -n;
+    // How much was kept where this surface was last frame (as the carry will
+    // find it). Where it holds, a part of the pixels is traced a frame, each
+    // in turn (a: -1, the rest kept as they were); where it is new - just
+    // uncovered - every one, and with more rays (variable rate).
+    float held = kept_at(p, p, n).a;
+    // (In turn by squares of eight pixels, not pixel by pixel: the card
+    // runs pixels in groups, and a group with one pixel in it costs as much
+    // as a full one.)
+    ivec2 tile = ivec2(gl_FragCoord.xy) >> 3;
+    int turn = uGiEvery >= 4 ? int[4](0, 3, 1, 2)[uFrame & 3] : (uGiEvery == 2 ? (uFrame & 1) * 3 : 0);
+    int mine = uGiEvery >= 4 ? (tile.x & 1) + 2 * (tile.y & 1) : (uGiEvery == 2 ? 3 * ((tile.x + tile.y) & 1) : 0);
+    if (held >= 2.0 && mine != turn) {
+        FragColor = vec4(0.0, 0.0, 0.0, -1.0);
+        return;
+    }
+    int rays = uGiRays * (held < 2.0 ? 2 : 1);
+    int open = 0;
+    for (int k = 0; k < MAX_DOORS; ++k)
+        if (k < uDoorCount && door_open(k)) ++open;
+    uint seed = seed_here(71u);
+    // (Each pixel's own place in a low-discrepancy run of ways, R2, moved on
+    // a step each frame: over a few frames the ways a pixel asks fill its
+    // side evenly, and next to it a pixel asks others - interleaved gradient
+    // noise, finer than white.)
+    vec2 px = gl_FragCoord.xy;
+    vec2 off = vec2(ign_at(px), ign_at(px + vec2(37.0, 11.0)));
+    vec2 off_door = vec2(ign_at(px + vec2(71.0, 23.0)), ign_at(px + vec2(13.0, 59.0)));
+    const vec2 kR2 = vec2(0.7548776662, 0.5698402910);
+    float bias = 0.012 + 0.0008 * dist;
+    vec3 o = p + n * bias;
+    vec3 sum = vec3(0.0);
+    // Each ray asks one of the two: a way out over the side, or a point of a
+    // doorway's opening - half and half where a doorway lets light in - and
+    // what it brings is weighed by how likely either was to find it (MIS, the
+    // balance heuristic, one sample: Veach's). One ray each, not two.
+    float c = open > 0 && (uSkip & 8) == 0 ? 0.5 : 1.0;
+    for (int r = 0; r < 16; ++r) {
+        if (r >= rays) break;
+        float i = float((uFrame / max(uGiEvery, 1)) * rays + r);
+        // (Which of the two: in turn, a pixel and its neighbours each the other.)
+        bool to_door = c < 1.0 && fract(off_door.x + 0.5 * i) >= 0.5;
+        // What is asked, a ray at a time, by one tracing of the world (one
+        // copy of it in the program, so the card holds more pixels at once):
+        // the way out, or to the point of a doorway; then from what it met,
+        // the way to the sun and to a lamp - each bringing its light if
+        // nothing stands between.
+        vec3 qo = o, qd;
+        float qt = uFar;
+        bool qany = false;
+        int door = -1, stage = 0;
+        float td = 1e30, pb = 0.0, door_w = 0.0;
+        vec3 sun_w = vec3(0.0), lamp_w = vec3(0.0), lamp_o = vec3(0.0), lamp_d = vec3(0.0, 1.0, 0.0);
+        float lamp_t = 0.0;
+        if (!to_door) {
+            qd = cosine_way(n, fract(off + floor(i * c) * kR2));
+            pb = max(dot(n, qd), 0.0) / kPi;
+            // Out by a doorway before anything is met?
+            for (int k = 0; k < MAX_DOORS; ++k) {
+                if (k >= uDoorCount || !door_open(k)) continue;
+                float t = door_meet(k, o, qd);
+                if (t > 0.0 && t < td) td = t, door = k;
+            }
+        } else {
+            vec2 w = fract(off_door + floor(i * 0.5) * kR2);
+            int pick = min(int(rnd(seed) * float(open)), open - 1);
+            for (int j = 0; j < MAX_DOORS; ++j) {
+                if (j >= uDoorCount || !door_open(j)) continue;
+                door = j;
+                if (pick-- == 0) break;
+            }
+            vec3 across = vec3(uDoorAxis[door].x, 0.0, uDoorAxis[door].y);
+            vec3 at = uDoorAt[door].xyz + across * ((2.0 * w.x - 1.0) * uDoorAt[door].w) + vec3(0.0, (2.0 * w.y - 1.0) * uDoorAxis[door].z, 0.0);
+            vec3 to = at - o;
+            float t = length(to);
+            qd = to / max(t, 1e-4);
+            float cs = dot(n, qd), cd = -dot(qd, door_into(door));
+            if (cs <= 0.0 || cd <= 0.0) continue;
+            float pl = door_pdf(door, qd, t, float(open));
+            door_w = (cs / kPi) / max(c * cs / kPi + (1.0 - c) * pl, 1e-6);
+            qt = max(t - 0.02, 0.0), qany = true;
+        }
+        for (int s = 0; s < 3; ++s) {
+            Hit h = no_hit(min(qt, uReach));
+            if ((uSkip & 1) == 0) things_trace(qo, qd, qany, h);
+            if (h.tri < 0) {
+                h.t = qt;
+                if ((uSkip & 2) == 0) ground_trace(qo, qd, h);
+            }
+            if (stage == 1) {
+                // To the sun.
+                if (h.tri < 0) sum += sun_w;
+                stage = dot(lamp_w, lamp_w) > 0.0 ? 2 : 3;
+                qo = lamp_o, qd = lamp_d, qt = lamp_t;
+            } else if (stage == 2) {
+                // To a lamp.
+                if (h.tri < 0) sum += lamp_w;
+                stage = 3;
+            } else if (to_door) {
+                if (h.tri < 0) sum += door_light(door, qd) * door_w;
+                stage = 3;
+            } else if (door >= 0 && (h.tri < 0 || td < h.t)) {
+                float pl = c < 1.0 ? door_pdf(door, qd, td, float(open)) : 0.0;
+                sum += door_light(door, qd) * (pb / max(c * pb + (1.0 - c) * pl, 1e-6));
+                stage = 3;
+            } else if (h.tri < 0) {
+                // Nothing met: the sky, where the world is open; in a room
+                // shut round, what the probes say comes that way.
+                sum += (uOpenSky > 0.5 ? trace_sky(qd) : probes_at(p, qd, 1.0, 1.0)) / c;
+                stage = 3;
+            } else {
+                // What was met, lit as a ray's end is (lit_end): what glows of
+                // it, the sky's light where the world is open, the probes'
+                // light for what came round more than once - and the sun and a
+                // lamp, asked next if anything stands between.
+                vec3 hp = qo + qd * h.t, hn, albedo;
+                float glow;
+                what_met(h, qd, hn, albedo, glow);
+                vec3 back = albedo * (glow + (uOpenSky > 0.5 ? sky_light(hn) : vec3(0.0)));
+                if (uGiBounce > 0.0) back += albedo * probes_at(hp, hn, 2.0 / 3.0, 0.25) * uGiBounce;
+                float far = length(hp - uEye);
+                vec3 l = sun_way(vec2(rnd(seed), rnd(seed)));
+                float ndl = dot(hn, l);
+                if (ndl > 0.0 && dot(uSunLight, uSunLight) > 0.0) {
+                    float seen = sun_seen(hp);
+                    if (seen >= 0.0) back += albedo * uSunLight * (ndl * seen);
+                    else if ((uSkip & 4) != 0) back += albedo * uSunLight * ndl;
+                    else sun_w = albedo * uSunLight * ndl;
+                }
+                if (uLampCount > 0) {
+                    // (As lit_end: every lamp's light here as if nothing stood
+                    // between, one chosen as much as it gives and asked.)
+                    vec3 lit[MAX_TRACE_LAMPS];
+                    float give[MAX_TRACE_LAMPS];
+                    float total = 0.0;
+                    for (int k = 0; k < MAX_TRACE_LAMPS; ++k) {
+                        give[k] = 0.0, lit[k] = vec3(0.0);
+                        if (k >= uLampCount) continue;
+                        vec3 ll;
+                        float ld;
+                        vec3 cl = lamp_at(k, hp, ll, ld) * max(dot(hn, ll), 0.0);
+                        lit[k] = cl, give[k] = dot(cl, vec3(0.2126, 0.7152, 0.0722));
+                        total += give[k];
+                    }
+                    if (total > 0.0) {
+                        float pick = rnd(seed) * total;
+                        int k = 0;
+                        for (int j = 0; j < MAX_TRACE_LAMPS; ++j) {
+                            if (j >= uLampCount) break;
+                            k = j;
+                            if (pick < give[j]) break;
+                            pick -= give[j];
+                        }
+                        float ld;
+                        lamp_at(k, hp, lamp_d, ld);
+                        if (give[k] > 0.0) {
+                            lamp_w = albedo * lit[k] * (total / give[k]);
+                            lamp_o = hp + hn * (0.01 + 0.0005 * far), lamp_t = ld - 0.05;
+                        }
+                    }
+                }
+                // (What a ray brings back at most: a bulb met close by is not
+                // a speck burning through. Each part held to what is left of
+                // it, so what is not let through - a sun behind something -
+                // takes nothing from the rest.)
+                const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+                float left = uBrightest, bright = dot(back, kLuma);
+                back *= bright > left ? left / bright : 1.0;
+                left = max(left - dot(back, kLuma), 0.0), bright = dot(sun_w, kLuma);
+                sun_w *= bright > left ? left / bright : 1.0;
+                left = max(left - dot(sun_w, kLuma), 0.0), bright = dot(lamp_w, kLuma);
+                lamp_w *= bright > left ? left / max(bright, 1e-6) : 1.0;
+                sum += back / c, sun_w /= c, lamp_w /= c;
+                qany = true;
+                if (dot(sun_w, sun_w) > 0.0) {
+                    stage = 1;
+                    qo = hp + hn * (0.02 + 0.0005 * far), qd = l, qt = uFar;
+                } else if (dot(lamp_w, lamp_w) > 0.0) {
+                    stage = 2;
+                    qo = lamp_o, qd = lamp_d, qt = lamp_t;
+                } else {
+                    stage = 3;
+                }
+            }
+            if (stage == 3) break;
+        }
+    }
+    FragColor = vec4(sum / float(rays), 1.0);
+}
+)");
+    return source;
+}
+
 const std::string& carry_fs() {
-    static const std::string source = std::string("#version 330 core\n") + kSurfaces + R"(
+    static const std::string source = std::string("#version 330 core\n") + kSurfaces + kHistory + R"(
 // This frame's picture taken into what was kept: where each pixel's surface
 // was last frame (uLastVP), if that is the same surface there - as far from
 // the last eye as it should be, facing the same way - what was kept there
@@ -740,13 +1090,8 @@ const std::string& carry_fs() {
 // Mirrors (uMirror): what is seen in a mirror moves as its image does, not
 // as the mirror: found where that image was.
 uniform sampler2D uNew;
-uniform sampler2D uKept;
-uniform sampler2D uLastSurf;
-uniform mat4 uLastVP;
-uniform vec3 uLastEye;
 uniform float uMost;
 uniform float uMirror;
-uniform vec2 uKeptSize;
 // What was kept held to what this frame's neighbours say it could be: above
 // 0, within that many of their spread of their mean (variance clipping);
 // below 0, within their least and most (a shadow that moves leaves none of
@@ -776,31 +1121,14 @@ void main() {
     }
     vec3 seen = p;
     if (uMirror > 0.5 && now.a > 0.0 && rough < 0.2) seen = uEye + normalize(p - uEye) * (dist + now.a);
-    vec4 was = uLastVP * vec4(seen, 1.0);
-    float held = 0.0;
-    vec4 kept = vec4(0.0);
-    if (was.w > 0.0) {
-        vec2 at = (was.xy / was.w * 0.5 + 0.5) * uKeptSize - 0.5;
-        vec2 f = fract(at);
-        ivec2 base = ivec2(floor(at));
-        float wsum = 0.0;
-        float expect = length(p - uLastEye);
-        for (int k = 0; k < 4; ++k) {
-            ivec2 o = ivec2(k & 1, k >> 1), c = base + o;
-            if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, ivec2(uKeptSize)))) continue;
-            vec4 s = texelFetch(uLastSurf, c * uStep, 0);
-            if (s.z <= 0.0) continue;
-            // (The same surface: where it should be, facing as it does.)
-            if (abs(s.z - expect) > 0.03 * expect + 0.05) continue;
-            if (dot(oct_normal(s.xy), n) < 0.85) continue;
-            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-            kept += texelFetch(uKept, c, 0) * w;
-            wsum += w;
-        }
-        if (wsum > 1e-3) kept /= wsum, held = kept.a;
+    vec4 kept = kept_at(seen, p, n);
+    float held = kept.a;
+    // (Not traced this frame - a part of the pixels a frame, in turn - and
+    // held: what was kept, as it was.)
+    if (now.a < 0.0) {
+        FragColor = held > 0.0 ? kept : vec4(0.0);
+        return;
     }
-    // (What was kept, not a number - a picture never drawn into: none kept.)
-    if (!(held >= 0.0 && held < 1e5) || any(isnan(kept.rgb)) || any(isinf(kept.rgb))) held = 0.0, kept = vec4(0.0);
     if (uClamp != 0.0 && held > 0.0) {
         vec3 was = kept.rgb;
         kept.rgb = clamp(kept.rgb, lo, hi);
@@ -829,12 +1157,20 @@ uniform int  uSpread;
 uniform float uPenumbra;   // the sun's radius (its sine), or 0
 uniform float uPixel;      // how wide a pixel is a metre from the eye
 uniform float uSharp;      // surfaces smoother than it left as they are: a still pool's image is sharp
+uniform int   uHeldOnly;   // 1: only neighbours that hold something (a above 0) count
+uniform float uFull;       // above 0: a pass this wide left out where the history holds as many frames as it, times 4 over its width
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
     vec4 here = texelFetch(uPicture, q, 0);
     vec3 p, n;
     float dist, rough;
     if (!surface_at(surf_pixel(), p, n, dist, rough) || rough < uSharp) {
+        FragColor = here;
+        return;
+    }
+    // (The more the history holds, the less wide it is smoothed: a held
+    // picture keeps the darkening where things meet.)
+    if (uFull > 0.0 && here.a * float(uSpread) >= 4.0 * uFull) {
         FragColor = here;
         return;
     }
@@ -861,13 +1197,16 @@ void main() {
             vec3 cp, cn;
             float cd, cr;
             if (!surface_at(c * uStep, cp, cn, cd, cr)) continue;
+            vec4 there = texelFetch(uPicture, c, 0);
+            if (uHeldOnly == 1 && there.a <= 0.0) continue;
             float plane = abs(dot(cp - p, n)) / (0.02 + 0.004 * dist * float(uSpread * uStep));
             float w = k[i + 1] * k[j + 1] * exp(-plane) * pow(max(dot(cn, n), 0.0), 32.0);
-            sum += texelFetch(uPicture, c, 0) * w;
+            sum += there * w;
             wsum += w;
         }
     vec4 s = wsum > 1e-6 ? sum / wsum : here;
-    FragColor = vec4(s.rgb, here.a);
+    // (Holding nothing itself, it holds what its neighbours lend it, a frame's worth.)
+    FragColor = vec4(s.rgb, uHeldOnly == 1 && here.a <= 0.0 && wsum > 1e-6 ? min(s.a, 1.0) : here.a);
 }
 )";
     return source;
@@ -881,6 +1220,7 @@ const std::string& widen_fs() {
 // the scene knows the picture is of the surface it draws.
 uniform sampler2D uPicture;
 uniform float uRough;   // above 0: only those of the surfaces no rougher than it
+uniform int   uHeld;    // 1: a is what the picture holds (its frames), laid as its colour is
 void main() {
     ivec2 q = ivec2(gl_FragCoord.xy);
     vec3 p, n;
@@ -893,15 +1233,16 @@ void main() {
     ivec2 base = ivec2(floor(at));
     vec2 f = fract(at);
     ivec2 size = textureSize(uPicture, 0);
-    vec3 sum = vec3(0.0);
+    vec4 sum = vec4(0.0);
     float wsum = 0.0;
-    vec3 any_c = vec3(0.0);
+    vec4 any_c = vec4(0.0);
     for (int k = 0; k < 4; ++k) {
         ivec2 o = ivec2(k & 1, k >> 1), c = clamp(base + o, ivec2(0), size - 1);
         vec3 cp, cn;
         float cd, cr;
         if (!surface_at(c * uStep, cp, cn, cd, cr) || (uRough > 0.0 && cr > uRough)) continue;
-        vec3 v = texelFetch(uPicture, c, 0).rgb;
+        vec4 v = texelFetch(uPicture, c, 0);
+        if (uHeld == 1 && v.a <= 0.0) continue;
         any_c = v;
         float plane = abs(dot(cp - p, n)) / (0.02 + 0.003 * dist);
         float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y) + 1e-3;
@@ -909,7 +1250,8 @@ void main() {
         sum += v * w;
         wsum += w;
     }
-    FragColor = vec4(wsum > 1e-5 ? sum / wsum : any_c, dist);
+    vec4 c = wsum > 1e-5 ? sum / wsum : any_c;
+    FragColor = vec4(c.rgb, uHeld == 1 ? c.a : dist);
 }
 )";
     return source;

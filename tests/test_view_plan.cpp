@@ -207,6 +207,26 @@ void lamp_ranges() {
     lamp.range = 1.0f;
     require(sg::render::light_meets_box(lamp, {0, 0, 0}, {1, 1, 1}), "a sun reaches everywhere");
 }
+// What stands in an opening keeps out as much as its box fills of it - unless
+// it says it fills less (`covers`): a frame or a blind made as one model.
+void openings_covered() {
+    sg::Spatial3D room(sg::Key{"covered"});
+    auto &window = room.add_element(sg::Key{"window"}, sg::kinds::portal);
+    window.params.set(sg::keys::x, 0.0).set(sg::keys::y, 1.0).set(sg::keys::z, 0.0).set(sg::keys::w, 2.0).set(sg::keys::h, 1.0)
+        .set(sg::keys::yaw, 1.5707963267948966);
+    auto &frame = room.add_element(sg::Key{"frame"}, sg::kinds::mesh);
+    frame.params.set(sg::keys::x, 0.0).set(sg::keys::y, 0.5).set(sg::keys::z, 0.03).set(sg::keys::sx, 2.0).set(sg::keys::sy, 1.0)
+        .set(sg::keys::sz, 0.05);
+    const sg::Pose at = sg::world_pose(room, window);
+    bool shut = false;
+    const float whole = sg::render::portal_occlusion(room, window, at, 1.0f, 0.5f, shut);
+    require(whole > 0.95f && shut, "a board filling an opening shuts it");
+    frame.params.set("covers", 0.0);
+    require(sg::render::portal_occlusion(room, window, at, 1.0f, 0.5f, shut) == 0.0f && !shut, "a frame that covers nothing keeps out nothing");
+    frame.params.set("covers", 0.4);
+    const float some = sg::render::portal_occlusion(room, window, at, 1.0f, 0.5f, shut);
+    require(std::fabs(some - 0.4f * whole) < 1e-4f && !shut, "a lattice keeps out what it covers of its box, and never shuts it");
+}
 } // namespace
 int main() {
     try {
@@ -254,6 +274,7 @@ int main() {
         lamp_ranges();
         sun_box_steps();
         sun_boxes_hold_the_view();
+        openings_covered();
         std::cout << "reconstruction, graph supremacy and one time ontology pass\n";
         return 0;
     } catch (const std::exception &ex) {

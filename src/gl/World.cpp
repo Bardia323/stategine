@@ -3,12 +3,16 @@
 #include "sg/render/Geometry.hpp"
 #include "sg/domains/Texture.hpp"
 #include <set>
+#include <typeinfo>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include "sg/domains/Shapes.hpp"
 #include "sg/core/Cache.hpp"
 
 #include "sg/domains/Atlas.hpp"
+#include "sg/domains/Room.hpp"
+#include "sg/domains/Light.hpp"
 #include "sg/domains/Fog.hpp"
 #include "sg/domains/Walk.hpp"
 
@@ -31,10 +35,179 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
             gl::answer();  // (a shader compiled: the window answers)
         }
     preparing_ = false;
+    // What stands where it cannot be: things pushed into the walls of the
+    // rooms it will draw (sg::into_walls).
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Room*>(g.find(id)))
+            for (const std::string& p : into_walls(*room)) out.push_back("state " + id.str() + ": " + p);
+    // Glass that is also a picture or a light: drawn as glass - blended over
+    // what is behind it, seen through - its picture and glow are mostly
+    // lost. (A recipe's part made of `glass` is glass by that name.)
+    {
+        std::set<Key> worn;
+        for (const Embedding& em : g.embeddings()) worn.insert(em.portal);
+        for (Key id : reach)
+            if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+                for (const Element& e : room->elements()) {
+                    if (!e.alive || e.kind != kinds::mesh || e.params.num(Key{"glass"}, 0.0) <= 0.0) continue;
+                    // (A pane is a box; a model of glass is made as glass.)
+                    if (!e.params.get_or<std::string>("shape", "").empty() && !e.params.is(Key{"shape"}, "box")) continue;
+                    // (A picture worn as a state - a Texture, a sheet - not a model's own map tinting its glass.)
+                    // (A pane - flat - wearing a picture: a frosted door's, a sign's; a
+                    // glass vessel tinted by its own material is glass.)
+                    double d[3] = {e.params.num(keys::sx, 1.0), e.params.num(keys::sy, 1.0), e.params.num(keys::sz, 1.0)};
+                    std::sort(d, d + 3);
+                    const bool pictured = worn.count(e.id) > 0 && d[0] < 0.05 * d[1], glowing = e.params.num(Key{"emissive"}, 0.0) > 0.0;
+                    if (pictured || glowing)
+                        out.push_back("state " + id.str() + ": " + e.id.str() + " is glass (`glass` " + std::to_string(e.params.num(Key{"glass"})) + ", seen through), yet " +
+                                      (pictured ? "wears a picture" : "glows") + " - mostly lost through it: if it is not glass, say `glass` 0 (a recipe's part of material `glass` is glass by its name)");
+                }
+    }
+    // Light from all round in boxes much coarser than a room asks: more of
+    // them asked for than the scene shader takes (kMaxProbes).
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id))) {
+            const auto boxes = grid_of(*room);
+            if (boxes.empty()) continue;
+            const double cell = std::clamp(room->params().num(Key{"probe_cell"}, 2.5), 0.5, 10.0);
+            const double got = 4.0 * boxes.front().half.x * boxes.front().half.z;
+            if (got > 2.0 * cell * cell) {
+                char b[240];
+                std::snprintf(b, sizeof b, "its light from all round asks boxes %.1f m across (`probe_cell`) but has %zu, at most %d: each %.1f by %.1f m - coarser than asked",
+                              cell, boxes.size(), kMaxProbes, 2.0 * boxes.front().half.x, 2.0 * boxes.front().half.z);
+                out.push_back("state " + id.str() + ": " + b);
+            }
+        }
+    // Surfaces that would fight, of one size in one plane.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+            for (const std::string& p : coinciding(*room)) out.push_back("state " + id.str() + ": " + p);
+    // A room closed by the renderer's box (`enclosed`, the default) that
+    // has a floor or a ceiling of its own where the box's are: two surfaces
+    // in one plane, the size of the room, fighting - the whole floor or
+    // ceiling flickering. (A room that lays its own says `enclosed` 0.)
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id))) {
+            const Params& p = room->params();
+            if (p.num(Key{"enclosed"}, 1.0) < 0.5 || p.num(Key{"sky"}, 0.0) > 0.5) continue;
+            const double w = p.num(Key{"room_w"}, 14.0), d = p.num(Key{"room_d"}, 12.0), h = p.num(Key{"room_h"}, 4.0);
+            for (const Element& e : room->elements()) {
+                if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+                const double sx = e.params.num(keys::sx, 0.0), sy = e.params.num(keys::sy, 0.0), sz = e.params.num(keys::sz, 0.0);
+                if (sx * sz < 0.25 * w * d) continue;
+                const double y = world_position(*room, e).y;
+                if (std::fabs(y + sy) < 0.01 || std::fabs(y - h) < 0.01) {
+                    out.push_back("state " + id.str() + ": " + e.id.str() + " is a floor or ceiling of its own where the renderer's box round the room has one (`enclosed`): they fight, the whole of it flickering - say `enclosed` 0 on a room that lays its own");
+                    break;
+                }
+            }
+        }
+    // Two floors (or ceilings) of one room in one plane, overlapping: rooms
+    // made one whose floors ran on under each other's walls - the two fight
+    // where both lie, the threshold flickering.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id))) {
+            struct Slab {
+                const Element* e;
+                double x0, z0, x1, z1, top, foot;
+            };
+            std::vector<Slab> slabs;
+            for (const Element& e : room->elements()) {
+                if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.params.has(keys::parent) || e.params.num(Key{"unseen"}, 0.0) > 0.5) continue;
+                // (A slab drawn as its box: a model's part is drawn by its own shape.)
+                if (!e.params.get_or<std::string>("shape", "").empty() && !e.params.is(Key{"shape"}, "box")) continue;
+                const double sx = e.params.num(keys::sx, 0.0), sy = e.params.num(keys::sy, 0.0), sz = e.params.num(keys::sz, 0.0);
+                if (sy > 0.6 || sx * sz < 4.0) continue;
+                const Pose p = world_pose(*room, e);
+                const double c = std::fabs(std::cos(p.yaw)), sn = std::fabs(std::sin(p.yaw)), ex = sx * c + sz * sn, ez = sx * sn + sz * c;
+                slabs.push_back({&e, p.position.x - ex * 0.5, p.position.z - ez * 0.5, p.position.x + ex * 0.5, p.position.z + ez * 0.5, p.position.y + sy, p.position.y});
+            }
+            bool said = false;
+            for (std::size_t i = 0; i < slabs.size() && !said; ++i)
+                for (std::size_t j = i + 1; j < slabs.size() && !said; ++j) {
+                    const Slab& a = slabs[i];
+                    const Slab& b = slabs[j];
+                    const double ox = std::min(a.x1, b.x1) - std::max(a.x0, b.x0), oz = std::min(a.z1, b.z1) - std::max(a.z0, b.z0);
+                    if (ox <= 0.05 || oz <= 0.05) continue;
+                    if (std::fabs(a.top - b.top) > 0.005 && std::fabs(a.foot - b.foot) > 0.005) continue;
+                    // (One far the smaller - a road on the land, a rug - is drawn nearer, steadily: only two of a size fight.)
+                    const double area_a = (a.x1 - a.x0) * (a.z1 - a.z0), area_b = (b.x1 - b.x0) * (b.z1 - b.z0);
+                    if (std::max(area_a, area_b) > 8.0 * std::min(area_a, area_b)) continue;
+                    char m[96];
+                    std::snprintf(m, sizeof m, "%.2f by %.2f m", ox, oz);
+                    out.push_back("state " + id.str() + ": " + a.e->id.str() + " and " + b.e->id.str() + " lie in one plane and overlap (" + m +
+                                  "): they fight, flickering where both are - end each where the other begins (rooms made one: at its walls' outer faces)");
+                    said = true;
+                }
+        }
+    // A space made one whose rooms' doorways cannot be walked through.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+            for (const std::string& p : space_faults(*room)) out.push_back("state " + id.str() + ": " + p);
+    // Lamps that light nothing: shut in what casts, or every one a fill.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+            for (const std::string& p : lamp_faults(*room)) out.push_back("state " + id.str() + ": " + p);
+    // A thing cut out by its picture's alpha (`cutout`) wearing a texture:
+    // a texture's fourth channel is its height, never an alpha - nothing is
+    // cut. And a card wearing a painting stretched over a texture's six
+    // cells: its face shows a sixth of it, its edges the rest.
+    for (const Embedding& em : g.embeddings()) {
+        const auto* tex = dynamic_cast<const Texture*>(g.find(em.guest));
+        const State* host = g.find(em.host);
+        const Element* thing = host ? host->find(em.portal) : nullptr;
+        if (tex && thing && thing->params.num(Key{"cutout"}, 0.0) > 0.0)
+            out.push_back("embedding " + em.name.str() + ": " + em.portal.str() + " says `cutout`, but wears " + em.guest.str() +
+                          ", a texture - whose fourth channel is its height, not its picture's alpha: nothing is cut. A cut-out card is a model with the picture as its map "
+                          "(its `map_Kd` with alpha), or wears the picture itself (a Surface2D, not a Texture)");
+        // (A texture that paints its own cells - a subclass - knows what it lays where.)
+        // (And only a box: a model wears it by its own uv.)
+        if (!tex || !thing || (!thing->params.get_or<std::string>("shape", "").empty() && !thing->params.is(Key{"shape"}, "box"))) continue;
+        if (typeid(*tex) != typeid(Texture) || tex->one_tile() || tex->map().params.num(Key{"per_cell"}, 0.0) > 0.5 ||
+            !tex->map().params.has(Key{"layer"}))
+            continue;
+        double d[3] = {thing->params.num(keys::sx, 1.0), thing->params.num(keys::sy, 1.0), thing->params.num(keys::sz, 1.0)};
+        std::sort(d, d + 3);
+        if (d[0] < 0.05 * d[1])
+            out.push_back("embedding " + em.name.str() + ": " + em.portal.str() + " is a card, and wears " + em.guest.str() +
+                          ", a picture stretched over six cells (`per_cell` 0) - its face shows a sixth of it: say `per_cell` 1 on the texture, the whole picture on each face");
+    }
+    // What the graph says a thing wears and nothing bound: shown bare.
+    if (!wearing_)
+        for (const Embedding& em : g.embeddings())
+            if (dynamic_cast<const Surface2D*>(g.find(em.guest))) {
+                const auto at = surfaces_.find(em.portal);
+                if (at == surfaces_.end() || !at->second.surface)
+                    out.push_back("embedding " + em.name.str() + ": " + em.portal.str() + " wears " + em.guest.str() +
+                                  ", but nothing bound it - it is drawn without it (prepare the graph not const, and it is bound by itself)");
+            }
     // What things wear, made now and on the card: never in the frame it is
     // first seen, through a doorway or round a corner.
     ready_skins();
     return out;
+}
+
+std::vector<std::string> GLWorldView::prepare(StateGraph& g) {
+    wearing_ = &g;
+    worn_at_ = ~uint64_t{0};
+    bind_worn();
+    return prepare(static_cast<const StateGraph&>(g));
+}
+
+void GLWorldView::bind_worn() {
+    // Every 2D state the graph embeds in a portal, on that portal - read
+    // again only when the graph's revision moves.
+    if (!wearing_ || wearing_->revision() == worn_at_) return;
+    worn_at_ = wearing_->revision();
+    for (const Embedding& em : wearing_->embeddings()) {
+        auto* t = dynamic_cast<Surface2D*>(wearing_->find(em.guest));
+        if (!t) continue;
+        const auto at = surfaces_.find(em.portal);
+        const bool by_hand = at != surfaces_.end() && at->second.surface && !worn_.count(em.portal);
+        if (by_hand || (at != surfaces_.end() && at->second.surface == t)) continue;
+        surfaces_[em.portal].surface = t;
+        worn_.insert(em.portal);
+    }
 }
 
 GLWorldView::Rect GLWorldView::ball_rect(const Spatial3D& world, const Element& e, const Camera& cam, float aspect) const {
@@ -528,7 +701,14 @@ const std::vector<PlacedRoom>& GLWorldView::glued_round(const Spatial3D& world) 
 
 void GLWorldView::set_quality(const GLQuality& to) {
     const GLQuality was = q_;
-    q_ = to;
+    q_ = render::with_machine(to);
+    // Another upscaler, or another mode of it: asked again whether the card
+    // can, and what was made of the frames before let go.
+    if (was.upscaler != q_.upscaler || was.dlss_mode != q_.dlss_mode) {
+        dlss_can_ = 0, taa_held_ = false;
+        parked_.clear();
+        if (target_w_ > 0) make_targets(target_w_, target_h_);
+    }
     // Shadow maps of another size, or room for them: the kept ones let go,
     // made again as lamps ask.
     if (was.shadow_size != q_.shadow_size) {
@@ -684,6 +864,8 @@ void GLWorldView::take_fewer() {
 }
 
 void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h) {
+    // (What the graph says is worn, bound by itself where it was prepared so.)
+    if (!root_) bind_worn();
     // A mesh that is no skin has no joints: what its vertex stage reads for
     // them, where its corners do not say (none of a skin's: posed_by_joints).
     gl::glVertexAttrib4f(11, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -714,7 +896,7 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // at once rather than adjusting to it, as each shot is exposed for itself.
     if (!root_ && !requested.empty() && requested.front().room) {
         const double shot = requested.front().room->camera().params.num(Key{"shot"}, 0.0);
-        if (shot_known_ && shot != shot_) taa_held_ = false, exposure_.settle = true;
+        if (shot_known_ && shot != shot_) taa_held_ = false, lens_held_ = false, exposure_.settle = true;
         shot_ = shot, shot_known_ = true;
     }
     // Drawn at a part of the screen's size, and laid on it in squares: the
@@ -934,6 +1116,8 @@ void main() {
         timing_ ? (gl::glFinish(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - feeds_from).count()) : 0.0;
     card_stamp(kCardFeeds);
     ensure_resources();
+    // (Whether the card's upscaler can make the eye's picture, asked once.)
+    ask_dlss();
     // (Drawn at a part of the screen's pixels, the TAA making the rest: every
     // picture up to it that size, and what comes after it the screen's.)
     out_w_ = fb_w, out_h_ = fb_h;
@@ -988,8 +1172,10 @@ void main() {
             return r;
         };
         // (Drawn at fewer pixels, more steps: each of the screen's is fallen
-        // on by some within the cycle.)
-        const uint64_t cycle = drawn_scale() < 1.0f ? 16 : 8;
+        // on by some within the cycle - for DLSS, eight for each of the
+        // screen's pixels one drawn pixel covers, as it asks.)
+        const float s = drawn_scale();
+        const uint64_t cycle = dlss_on() ? static_cast<uint64_t>(std::ceil(8.0f / (s * s) - 0.01f)) : s < 1.0f ? 16 : 8;
         jitter_x_ = halton(frame_count_ % cycle + 1, 2) - 0.5f;
         jitter_y_ = halton(frame_count_ % cycle + 1, 3) - 0.5f;
     } else if (!root_) {
@@ -1002,6 +1188,9 @@ void main() {
     if (!root_) warm_some();
     times_.feeds = feeds_ms;
     times_.feed_views = feed_views;
+    // The rooms relit taken where their looks ask (reflection captures):
+    // drawn as the eye's frame is, so after its pictures are ready.
+    if (!root_ && !baking_) capture_rooms();
     const auto mark = [this] {
         if (timing_) gl::glFinish();
         return std::chrono::steady_clock::now();
@@ -1264,7 +1453,34 @@ void main() {
     }
     scene_src_ = &resolve_;
     const double ao = setting(post_, passes::composite, "ao", 0.0);
-    view_ = ViewParams{eye_cam.fov, aspect, kNear, static_cast<float>(world.params().num(Key{"far"}, 120.0))};
+    view_ = ViewParams{eye_cam.fov, aspect, kNear, far_of(rooms, placed_camera(eye_cam, rooms.front().pose).eye)};
+    // (How fast the view turned, across the screen, since the last frame's
+    // way: last frame's middle, where it stands in this frame's picture.)
+    {
+        const Camera placed = placed_camera(eye_cam, rooms.front().pose);
+        const gl::Vec3 f = placed.forward;
+        const float fl = std::sqrt(f.x * f.x + f.y * f.y + f.z * f.z);
+        const bool had = turn_fwd_.x != 0.0f || turn_fwd_.y != 0.0f || turn_fwd_.z != 0.0f;
+        turn_rate_[0] = turn_rate_[1] = 0.0f;
+        if (fl > 1e-6f && had && dt_ > 0.0) {
+            const gl::Vec3 fw{f.x / fl, f.y / fl, f.z / fl};
+            gl::Vec3 right{fw.z * placed.up.y - fw.y * placed.up.z, fw.x * placed.up.z - fw.z * placed.up.x, fw.y * placed.up.x - fw.x * placed.up.y};
+            const float rl = std::sqrt(right.x * right.x + right.y * right.y + right.z * right.z);
+            if (rl > 1e-6f) {
+                right = {right.x / rl, right.y / rl, right.z / rl};
+                const gl::Vec3 upv{right.y * fw.z - right.z * fw.y, right.z * fw.x - right.x * fw.z, right.x * fw.y - right.y * fw.x};
+                const gl::Vec3& o = turn_fwd_;
+                const float z = o.x * fw.x + o.y * fw.y + o.z * fw.z;
+                if (z > 0.1f) {
+                    const float th = std::tan(eye_cam.fov * 0.5f);
+                    const float sx = (o.x * right.x + o.y * right.y + o.z * right.z) / z / (th * aspect) * 0.5f;
+                    const float sy = (o.x * upv.x + o.y * upv.y + o.z * upv.z) / z / th * 0.5f;
+                    turn_rate_[0] = static_cast<float>(-sx / dt_), turn_rate_[1] = static_cast<float>(-sy / dt_);
+                }
+            }
+        }
+        if (fl > 1e-6f) turn_fwd_ = {f.x / fl, f.y / fl, f.z / fl};
+    }
     if (ao > 0.0) {
         run_ao(static_cast<float>(ao),
                static_cast<float>(setting(post_, passes::composite, "ao.radius", 0.45)));
@@ -1275,14 +1491,21 @@ void main() {
     fog_depth_ = setting(post_, passes::composite, "uFogBloom", 0.0) > 0.0 || setting(post_, passes::composite, "uDof", 0.0) > 0.0 ||
                  setting(post_, passes::composite, "uHalation", 0.0) > 0.0;
     const double mosh = eye_view() ? setting(post_, passes::composite, "mosh", 0.0) : 0.0;
-    if ((fog_depth_ || taa_on() || mosh > 0.0) && ao <= 0.0) {
+    // (The eye's lens, as its camera says: a depth of field, a shutter.)
+    lens_of(world, eye_cam, aspect);
+    if ((fog_depth_ || taa_on() || motion_on() || mosh > 0.0 || lens_.on()) && ao <= 0.0) {
         const bool depth_part = scissor_to(own_seen_, scene_ms().width(), scene_ms().height());
         scene_ms().blit_depth_to(depth_);
         if (depth_part) gl::glDisable(gl::GL_SCISSOR_TEST);
     }
-    if (taa_on()) run_taa();
+    if (dlss_on()) run_dlss();
+    else if (motion_on()) run_motion();
+    if (taa_on() && !dlss_on()) run_taa();
+    keep_motion();
     if (mosh > 0.0) run_mosh(static_cast<float>(std::min(mosh, 1.0)));
     else mosh_held_ = false;
+    if (lens_.on()) run_lens();
+    else lens_held_ = false;
     meter_exposure();
     run_bloom();
     // (What the lens keeps sharp: the picture's mipmaps, for the softer rest.)

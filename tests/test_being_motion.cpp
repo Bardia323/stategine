@@ -1,7 +1,8 @@
 // A being's motion, exactly: a leg of two bones reaching a point solved as a
 // triangle, a cubic clip played by its tangents as glTF says, a clip's keys
 // thinned only where nothing a body shows would move, feet set down on the
-// ground as it goes, and one motion changed into another inertialized.
+// ground as it goes, one motion changed into another inertialized, and one
+// body in two places carried on from where the other left it.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -439,6 +440,53 @@ int main() {
         }
         check(kick[1] < 0.7 * kick[0], "inertialized, a body starts walking with less of a kick (" + std::to_string(kick[1]) + " m/s2, faded at once " + std::to_string(kick[0]) + ")");
         check(sg::distance(end[0], end[1]) < 0.01, "and a second and a half on it walks as the walk does (" + std::to_string(sg::distance(end[0], end[1])) + " m apart)");
+    }
+    {
+        // One body in two places (carry_body): while one lives, the other is
+        // kept as it is - a frame on, as the engine carries at the start of
+        // the next - and stepped in its turn, it goes on from there; what is
+        // carried into one that does not live is carried no further.
+        sg::StateGraph g;
+        auto& clock = g.add<sg::Temporal>("clock");
+        auto& here = g.add<sg::Being>(sg::Key{"here"});
+        auto& there = g.add<sg::Being>(sg::Key{"there"});
+        auto& beyond = g.add<sg::Being>(sg::Key{"beyond"});
+        for (sg::Being* b : {&here, &there, &beyond}) {
+            sg::humanoid(*b, 1.75);
+            sg::drive(g, clock, b->id(), b->live_event());
+        }
+        sg::carry_body(g, here, there);
+        sg::carry_body(g, there, here);
+        sg::carry_body(g, there, beyond);
+        g.connect("here", "go", "there", sg::TransitionKind::Switch);
+        g.connect("there", "back", "here", sg::TransitionKind::Switch);
+        g.set_initial("here");
+        sg::Engine e(g);
+        e.set_strict(true);
+        e.start();
+        e.fire(sg::Event{here.play_event(), sg::Params{}.set("clip", std::string("walk")).set("fade", 0.0)});
+        const sg::Params bind = beyond.element(sg::Key{"thigh_l"}).params;
+        sg::Params was;
+        for (int i = 0; i < 40; ++i) {
+            was = here.element(sg::Key{"thigh_l"}).params;
+            e.tick(1.0 / 60);
+        }
+        // (`there` now as `here` was before this frame's step.)
+        const sg::Params& now = there.element(sg::Key{"thigh_l"}).params;
+        check(now.num("qw") == was.num("qw") && now.num("qx") == was.num("qx") && now.num("awx") == was.num("awx"),
+              "a body in two places: the other kept as the one that lives was a frame before");
+        check(beyond.element(sg::Key{"thigh_l"}).params.num("qw") == bind.num("qw") && beyond.element(sg::Key{"thigh_l"}).params.num("qx") == bind.num("qx"),
+              "and nothing carried into one that does not live carried on from it");
+        // Gone over: it goes on walking from where the other left off.
+        const sg::Vec3d left = here.pose_of("foot_l").position, before = there.pose_of("foot_l").position;
+        e.fire(sg::Event{sg::Key{"go"}});
+        e.tick(1.0 / 60);
+        e.tick(1.0 / 60);
+        const sg::Vec3d went = there.pose_of("foot_l").position;
+        check(sg::distance(went, left) < 0.05 && sg::distance(went, before) < 0.08,
+              "and stepped in its turn, it walks on from there (" + std::to_string(sg::distance(went, left)) + " m from where the other left it)");
+        e.tick(1.0 / 60);
+        check(here.element(sg::Key{"thigh_l"}).params.num("qw") != was.num("qw"), "and the one left is kept as it goes on");
     }
     return failures == 0 ? 0 : 1;
 }

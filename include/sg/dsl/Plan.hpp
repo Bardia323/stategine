@@ -109,6 +109,11 @@ struct Glue {
     std::vector<std::pair<Key, Key>> also;
     bool wraps = false;
 };
+// sg::make_space
+struct Space {
+    Key name;
+    std::vector<Key> rooms;
+};
 // sg::drive
 struct Drive {
     sg::Drive d;
@@ -155,7 +160,7 @@ namespace sg::dsl {
 
 using Step = std::variant<plan::State, plan::Extern, plan::Element, plan::Param, plan::Arrow, plan::Compose, plan::Says,
                           plan::Functor, plan::Object, plan::EventMap, plan::ArrowMap, plan::ComposeFunctors, plan::Lens,
-                          plan::Connect, plan::Embed, plan::Glue, plan::Drive, plan::Port, plan::Keep, plan::Wear,
+                          plan::Connect, plan::Embed, plan::Glue, plan::Space, plan::Drive, plan::Port, plan::Keep, plan::Wear,
                           plan::Film, plan::Edit, plan::Initial, plan::Bind>;
 
 struct Plan {

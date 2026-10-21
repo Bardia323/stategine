@@ -245,5 +245,102 @@ int main() {
         const std::vector<double> between = sg::sun_blend(sg::unit(a + b));
         check(std::fabs(between[3] - between[4]) < 1e-9 && between[3] > 0.3, "halfway between two, half of each");
     }
+    // Reflection captures: a room with a mirror for a floor and a red stripe
+    // on its far wall, its look asking for captures (nothing traced). The
+    // stripe is seen in the floor below where it stands - the capture read
+    // where the way out meets the room's box, not from the box's middle -
+    // and the probes alone show no stripe there. Held still, nothing is
+    // taken again, not even with a lamp flickering; a lamp carried is. And a
+    // room that asks with no probes to capture from is drawn as ever.
+    {
+        sg::StateGraph cg;
+        auto& box = cg.add<sg::Spatial3D>("box");
+        box.params().set("room_w", 6.0).set("room_d", 6.0).set("room_h", 3.0).set("probe_cell", 3.0);
+        cg.set_initial("box");
+        box.fixture("mirror", 3.0, 0.0, 3.0).params.set(sg::keys::sx, 6.0).set(sg::keys::sy, 0.01).set(sg::keys::sz, 6.0)
+            .set(sg::keys::r, 0.95).set(sg::keys::g, 0.95).set(sg::keys::b, 0.95).set("roughness", 0.05).set("metal", 1.0);
+        box.fixture("stripe", 4.5, 0.0, 5.95).params.set(sg::keys::sx, 0.4).set(sg::keys::sy, 3.0).set(sg::keys::sz, 0.05)
+            .set(sg::keys::r, 0.9).set(sg::keys::g, 0.02).set(sg::keys::b, 0.02).set("emissive", 2.0);
+        sg::Element& bulb = box.light("bulb", {3.0, 2.8, 3.0}, 1.0, 1.0, 1.0);
+        bulb.params.set(sg::keys::intensity, 0.3).set("range", 8.0);
+        box.camera().params.set(sg::keys::x, 3.0).set(sg::keys::y, 1.5).set(sg::keys::z, 1.0).set(sg::keys::yaw, 1.5707963)
+            .set(sg::keys::pitch, 0.0).set(sg::keys::fov, 90.0);
+        auto& cl = cg.add<sg::LookState>("box.plain");
+        cl.uniform(sg::passes::composite, "uGrain", 0.0).uniform(sg::passes::composite, "uVignette", 0.0)
+            .uniform(sg::passes::composite, "uBloomStrength", 0.0).setting(sg::passes::scene, "reflect.captures", 1.0).fade(0.0);
+        sg::wear(cg, "box", "box.plain");
+        sg::render::GLWorldView cv;
+        const auto said = cv.prepare(cg);
+        for (const auto& p : said) std::printf("  ! %s\n", p.c_str());
+        cv.set_fixed_step(1.0 / 60.0);
+        const auto frame = [&](int n) {
+            std::vector<unsigned char> p(static_cast<std::size_t>(W) * H * 3);
+            for (int i = 0; i < n; ++i) cv.render(box, W, H);
+            sg::gl::glReadPixels(0, 0, W, H, sg::gl::GL_RGB, sg::gl::GL_UNSIGNED_BYTE, p.data());
+            return p;
+        };
+        // Along a row (from the bottom), where it is reddest, and how much redder than the row's middling.
+        struct Red {
+            int at = 0;
+            double peak = 0.0, middling = 0.0;
+        };
+        const auto reddest = [&](const std::vector<unsigned char>& p, int row) {
+            std::vector<double> red(W);
+            for (int x = 0; x < W; ++x) {
+                const unsigned char* c = &p[(static_cast<std::size_t>(row) * W + x) * 3];
+                red[x] = static_cast<double>(c[0]) - 0.5 * (c[1] + c[2]);
+            }
+            Red r;
+            r.at = static_cast<int>(std::max_element(red.begin(), red.end()) - red.begin());
+            r.peak = red[r.at];
+            std::vector<double> sorted = red;
+            std::nth_element(sorted.begin(), sorted.begin() + W / 2, sorted.end());
+            r.middling = sorted[W / 2];
+            return r;
+        };
+        const int wall_row = H / 2 + H / 10, floor_row = H / 2 - static_cast<int>(0.289 * H);
+        const auto with = frame(6);
+        const Red wall = reddest(with, wall_row), seen = reddest(with, floor_row);
+        std::printf("  the stripe: on the wall at %d (%.0f over %.0f); in the floor at %d (%.0f over %.0f)\n", wall.at, wall.peak, wall.middling,
+                    seen.at, seen.peak, seen.middling);
+        check(seen.peak - seen.middling > 20.0 && std::abs(seen.at - wall.at) <= W / 40,
+              "captured, a stripe on the wall is mirrored in the floor right below where it stands");
+        cl.setting(sg::passes::scene, "reflect.captures", 0.0);
+        const Red blurred = reddest(frame(6), floor_row);
+        std::printf("  the probes alone: %.0f over %.0f\n", blurred.peak, blurred.middling);
+        check(blurred.peak - blurred.middling < 0.5 * (seen.peak - seen.middling), "the probes alone blur it away: it is the captures that show it");
+        cl.setting(sg::passes::scene, "reflect.captures", 1.0);
+        frame(4);
+        // Still: nothing taken again, the picture the same frame to frame -
+        // a lamp flickering (down, out a moment, back) included.
+        int taken = 0;
+        auto last = frame(1);
+        double moved = 0.0;
+        for (int i = 0; i < 12; ++i) {
+            bulb.params.set(sg::keys::intensity, i % 3 == 0 ? 0.0 : i % 3 == 1 ? 0.12 : 0.3);
+            const auto now = frame(1);
+            if (i % 3 == 2) {
+                // (Compared where the lamp gives what it gave: the frames it stands at its own.)
+                for (std::size_t k = 0; k < now.size(); ++k) moved = std::max(moved, std::fabs(static_cast<double>(now[k]) - last[k]));
+                last = now;
+            }
+            taken += cv.times().captures;
+        }
+        std::printf("  held still, a lamp flickering: %d faces taken again; frames apart by %.0f levels at most\n", taken, moved);
+        check(taken == 0, "held still, a lamp flickering: no capture taken again");
+        check(moved <= 2.0, "and frame after frame where it stands at its own, the same picture");
+        bulb.params.set(sg::keys::intensity, 0.3).set(sg::keys::x, 1.0);
+        int carried = 0;
+        for (int i = 0; i < 4; ++i) frame(1), carried += cv.times().captures;
+        check(carried > 0, "a lamp carried: the captures are taken again, a face a frame");
+        // No probes (gi 0): what it asks for has nothing to be taken from - drawn as without.
+        box.params().set("gi", 0.0);
+        const auto none = frame(4);
+        cl.setting(sg::passes::scene, "reflect.captures", 0.0);
+        const auto never = frame(4);
+        double apart = 0.0;
+        for (std::size_t k = 0; k < none.size(); ++k) apart = std::max(apart, std::fabs(static_cast<double>(none[k]) - never[k]));
+        check(reddest(none, wall_row).peak > 20.0 && apart <= 2.0, "a room asking for captures with no probes is drawn as one that does not ask");
+    }
     return ok ? 0 : 1;
 }

@@ -179,4 +179,23 @@ bool sheafable(const Spatial3D& a, const Element& pa, const Spatial3D& b, const 
 // them by name, `root` first. Derived each time it is asked; never kept.
 std::vector<PlacedRoom> sheafify(const StateGraph& g, Key root, std::size_t most = 6, std::size_t lamps = 24, bool every = false);
 
+// Rooms made one, as the DSL's `space <name> = sheaf <room> <room> ...`
+// says: two local states made one local state - one room, its floor plan
+// whatever theirs make together - and nothing above it: it is a room like
+// any, embedded in, joined by doorways to others. The rooms must be one kind
+// of space (sheafable at every seam between them), reached from the first
+// through those seams, and close: a room two ways reach stands in one place
+// (no holonomy), and no two stand in each other. Then everything each is
+// made of is taken into `space` (a state of three dimensions, made
+// beforehand, empty but its eye) where the seams put it, the first where
+// the space's frame is: their walls, floors, things and lamps; what they
+// wear, worn by it; the floor each covered kept as its `regions` (what the
+// light from all round is laid over). Each doorway between them is a hole
+// in its walls (kind `hole`) - no view, no crossing. The rooms and their
+// seams with each other are gone; arrows of theirs went with them (the
+// space's own behaviour is its own, made on it). What is wrong is said in
+// `problems`, and nothing is made.
+bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::vector<std::string>* problems = nullptr);
+
+
 }  // namespace sg

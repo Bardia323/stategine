@@ -3,11 +3,14 @@
 A look may ask for its light to be traced (`trace`): the sun's shadow found
 by rays sent toward its disc, in place of its maps, and what a glossy surface
 mirrors by a ray sent the way its facets turn it. The light from all round is
-the engine's own, as ever - its probes, relit by the lamps (README *Light
-probes*) - never traced pixel by pixel. It is the renderer's, as its shadow
-maps are: it reads the world and writes nothing of it. A look that does not
-say `trace` draws exactly as it did and pays nothing (`sg_trace_gl`); nothing
-is made until one does.
+the engine's own unless it says otherwise - its probes, relit by the lamps
+(README *Light probes*) - or, where it asks (`trace.gi`), traced pixel by
+pixel: one bounce of what each surface faces, the probes' light for the rest.
+It is the renderer's, as its shadow maps are: it reads the world and writes
+nothing of it. A look that does not say `trace` draws exactly as it did and
+pays nothing (`sg_trace_gl`); nothing is made until one does. One that says
+`trace` but not `trace.gi` draws as it did before there was a `trace.gi`
+(`sg_gi_gl`).
 
 It runs wherever the renderer's GL runs - OpenGL, and Vulkan and D3D12
 through `src/gl/native` - as pictures drawn over the screen that read the
@@ -31,6 +34,12 @@ A look's scene pass settings (`look.setting(sg::passes::scene, ...)`):
 | `trace.brightest` | what a ray brings back at most (its brightness) | 4 |
 | `trace.hold` | frames a picture's history holds at most | 24 |
 | `trace.now` | traced before the scene, for this frame (a pass of the surfaces more); else after it, the scene reading the last frame's, carried to where each pixel now is | 0 |
+| `trace.gi` | the light from all round traced: one bounce of what each surface faces, in place of the probes' for its diffuse (alone, without `trace`, only it is traced) | 0: none, the probes' |
+| `trace.gi.scale` | the part of the pixels each way it is traced at: 1, 0.5 or 0.25 | 0.5 |
+| `trace.gi.rays` | rays a pixel a frame: 1 to 4; or below one, a ray every second (0.5) or every fourth (0.25) frame, each pixel in turn, where its history holds | 0.25 |
+| `trace.gi.reach` | how far its rays meet things, metres; past it, what the probes say comes that way (the sky, under an open one) | 12 |
+| `trace.gi.hold` | rays its history holds at most | 32 |
+| `trace.gi.bounce` | how much of the probes' light what a ray meets has besides the sun's and the lamps' - the light that has come round more than once | 1 |
 
 A thing that says `trace` 0 is not met by rays: it casts no traced shadow.
 One that says `cast` 0 neither (water, a walker's own legs - as with maps).
@@ -101,6 +110,42 @@ lamps (each as the scene lights by it, one chosen as much as it gives and
 asked if anything stands between), and the sky where the world is open to
 it - so water mirrors what stands round it, not only the sky.
 
+**The light from all round** (`trace.gi`). From each pixel's surface (of a
+part of the pixels, `trace.gi.scale`), a ray out over its side, as many each
+way as the side faces it (cosine-weighed), a pixel's ways a run that fills
+its side evenly over frames (R2, from where interleaved gradient noise puts
+each pixel in it). What it meets is lit as what a mirror's ray meets is - the
+sun (as the eye's pixels have it, or a ray of its own), a lamp, the sky where
+the world is open - times its colour, and the probes' light there besides for
+light that has come round more than once (`trace.gi.bounce`). What it brings
+back is kept as the scene's `around` is: the light a surface facing that way
+gets, over pi. Where a ray goes out by a doorway that lets light in - a
+window on a sunlit street - it brings what the far side gives that way: its
+sky above the horizon, its ground below (the far look's, and its room's
+nearest probe, as `uDoorSky`, `uDoorGround`), as bright as the soft lamp the
+renderer lets in at the opening for it (`through_doorways`): rays and probes
+agree on how much a window lets in. A window is small and bright, and a ray
+out over the side finds it seldom: half the rays ask a point of a doorway's
+opening instead, and each is weighed by how likely either way was to find it
+(Veach's balance heuristic, one sample), so a room is lit by its window
+softly, not in specks. The sun's disc is not looked for through it - the
+scene lights by the sun itself. A ray that meets nothing within its reach
+brings the sky under an open sky; in a room shut round, what the probes say
+comes that way. A room's shell as the renderer draws it (its floor and
+ceiling, and its walls where it lays none) is met by these rays, so the floor
+lights the ceiling over it. Each ray is one tracing of the world at a time -
+the way out, then the sun's way and a lamp's from what it met - so the
+program holds one copy of it and the card more pixels at once (it took twice
+as long with three).
+
+In the scene, where it is traced, it takes the place of the probes' light for
+the diffuse once its history holds a few rays (the probes' before that,
+where a surface is just uncovered) - under an open sky, of the look's sky and
+ground too; in a room shut round, the look's own light from all round is kept
+beside it. A lamp standing in for bounce (`indirect`) gives way to it as to
+the probes. What is mirrored keeps the probes'. The surface's colour and its
+own hollows (a surface map's occlusion) take it as they take the probes'.
+
 **Over frames, within surfaces.** Each picture is kept from frame to frame
 where each pixel's surface was the same last frame (as far from where the
 eye was, facing the same way), by the four nearest pixels that were; held to
@@ -112,7 +157,15 @@ Then smoothed within surfaces (Dammertz's a-trous, a few passes, each twice
 as wide; the sun's only within its penumbra and only as wide as it is), and
 the part-of-the-pixels pictures laid on every pixel by the four nearest that
 are of its surface. More rays where a history is new - just uncovered - and
-fewer where it holds (variable-rate, after Infinity Ward's).
+fewer where it holds (variable-rate, after Infinity Ward's). The light from
+all round is traced at a part of its pixels a frame where its history holds
+(`trace.gi.rays` below one) - in squares of eight, in turn: the card runs
+pixels in groups, and a group with one pixel traced in it costs as much as a
+full one - and at every pixel, with two rays, where it is new. It is held
+loosely (a ray a pixel is far from its mean: not held to its neighbours at
+all), smoothed only within the pixels that hold something, and the less its
+history holds the wider - held whole, it keeps the darkening where things
+meet.
 
 ## What it costs
 
@@ -127,6 +180,21 @@ Under a sun, the sun's maps it no longer lays pay for all of it and more (5.5 ms
 the desert's card were the sun's five maps). In a house shut round there is
 no sun to trace: what it costs there is what is mirrored and the instances'
 tree (3 ms of the processor's while things move) - ask for it where it pays.
+
+The light from all round (`trace.gi`), its own pass and its keeping and
+smoothing, on an RTX 4080 (shared with other work: medians of the frames
+it was not), memory-leak's dev room by day (1920 x 1080, 640 thousand
+triangles, 151 things, its window's blinds):
+
+| `trace.gi.scale` | `trace.gi.rays` | ms |
+| --- | --- | --- |
+| 0.5 | 0.25 | 6.7 |
+| 0.5 | 1 | about 11 |
+| 0.25 | 0.25 | 2.6 |
+
+What costs is the rays' going through the trees of boxes (a ray of the light
+off a room crosses half a dozen things' boxes, each its own tree), not what
+they meet: a pass with no ray costs 0.3 ms.
 
 `SG_TRACE_TIMES=1` says where the time goes every 60 frames (each part waited
 for: only for looking); `SG_TRACE_DUMP=<folder>` writes each picture there as
@@ -152,6 +220,13 @@ beside the eye's view and laying no maps for a traced sun; `render` calling
 the tracer before and after the eye's scene.
 
 ## Not yet
+
+The light from all round: a thing's colour is its picture's at four places
+of each triangle, times its own - a wall wearing a photograph is met as its
+plain colour. Through a doorway it finds the far side's sky and ground, not
+the far world itself (a sunlit house across the street is as bright as its
+sky). Strewn things and the views through doorways and mirrors are not lit
+by it. Over 3 ms at half the pixels each way on a large view.
 
 Lamps' shadows are their maps. A skin's tree is fitted, never made again, however far it bends
 from how it was bound. Strewn things (`placings`) are not met. The surfaces

@@ -68,6 +68,16 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
             out.push_back(l);
             continue;
         }
+        if (capturing_) {
+            // A reflection capture: each lamp as it stands - not this
+            // moment's flicker, which a capture kept for minutes would hold.
+            const float steady = steady_power(room, e);
+            if (steady >= 0.0f) l.power = steady;
+            if (l.power <= 0.0f) continue;
+            l.rank = l.power;
+            out.push_back(l);
+            continue;
+        }
         if (l.power <= 0.0f) continue;  // switched off
         l.rank = standing_of(room, e, l);
         out.push_back(l);
@@ -221,7 +231,8 @@ auto GLWorldView::through_doorways(const PlacedRoom& placed) -> std::vector<Ligh
     return out;
 }
 
-void GLWorldView::doors_to_program(const PlacedRoom& placed) {
+void GLWorldView::doors_to_program(const PlacedRoom& placed, const gl::Program* into) {
+    const gl::Program& to = into ? *into : *scene_;
     static const auto name = [](const char* base, int i) {
         static std::array<std::array<std::string, 4>, 5> names = [] {
             std::array<std::array<std::string, 4>, 5> n;
@@ -255,10 +266,13 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
                                 static_cast<float>(value(look, passes::scene, ky, fy) * amb),
                                 static_cast<float>(value(look, passes::scene, kz, fz) * amb)};
             };
-            scene_->set(name("uDoorAt", count), at.x, at.y, at.z, static_cast<float>(e.params.num(keys::w, 3.0) * 0.5));
-            scene_->set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
+            to.set(name("uDoorAt", count), at.x, at.y, at.z, static_cast<float>(e.params.num(keys::w, 3.0) * 0.5));
+            to.set(name("uDoorAxis", count), static_cast<float>(a.x), static_cast<float>(a.z),
                         static_cast<float>(e.params.num(keys::h, 2.0) * 0.5), 0.0f);
-            scene_->set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), shut ? 1.0f : 0.0f, 0.0f);
+            // (w: how much of what is beyond it the opening lets in - `light`;
+            // the scene's light from all round does not read it, a traced ray does.)
+            to.set(name("uDoorIn", count), static_cast<float>(in.x), static_cast<float>(in.z), shut ? 1.0f : 0.0f,
+                   static_cast<float>(std::clamp(e.params.num(Key{"light"}, 1.0), 0.0, 1.0)));
             gl::Vec3 sky = v3(Key{"uSky.x"}, Key{"uSky.y"}, Key{"uSky.z"}, 0.10, 0.13, 0.20),
                      ground = v3(Key{"uGround.x"}, Key{"uGround.y"}, Key{"uGround.z"}, 0.14, 0.10, 0.07);
             // And what the far room's probe nearest the doorway holds of its
@@ -281,11 +295,11 @@ void GLWorldView::doors_to_program(const PlacedRoom& placed) {
                     ground = ground + gl::Vec3{static_cast<float>(down.r), static_cast<float>(down.g), static_cast<float>(down.b)};
                 }
             }
-            scene_->set(name("uDoorSky", count), sky);
-            scene_->set(name("uDoorGround", count), ground);
+            to.set(name("uDoorSky", count), sky);
+            to.set(name("uDoorGround", count), ground);
             ++count;
         }
-    scene_->set("uDoorCount", count);
+    to.set("uDoorCount", count);
 }
 
 float GLWorldView::covered(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut) const {

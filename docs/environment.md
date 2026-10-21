@@ -92,6 +92,7 @@ process that put the things there:
 | competition - each keeps the others off | `disk` (spacing: blue noise) | trees, shrubs, beds in a ward, boulders on a plain |
 | seeding, falling, gathering round a source | `thomas` / `matern` (parents, children, spread) | moss, tussocks, stains, rubble from one fall |
 | a cause with a place | `bump` (at, sd, amount) | damp round a leak, litter by a door, wear round a handle |
+| a cause along a way | `stroke` (from, to, sd, amount; sd_to, amount_to) | a path worn into a lawn, something dragged down a hall, a trail of drips |
 | several at once | `sum` (of, weights) | superposition: intensities add, points of parts together |
 | sizes: many small, few large | `power` (lo, hi, alpha) | rocks, fragments, stains, settlements |
 | a size round a typical one | `lognormal` (median, spread) | plants of one kind, people |

@@ -112,10 +112,10 @@ public:
     // A copy is the same maps, belonging to no graph until one takes it; one
     // put in place of another keeps the place's graph.
     Functor(const Functor& o)
-        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), stamp_(o.stamp_),
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), from_living_(o.from_living_), stamp_(o.stamp_),
           obj_(o.obj_), mor_(o.mor_), evt_(o.evt_) {}
     Functor(Functor&& o) noexcept
-        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), stamp_(o.stamp_),
+        : name_(o.name_), from_(o.from_), to_(o.to_), identity_(o.identity_), cleanup_(o.cleanup_), from_living_(o.from_living_), stamp_(o.stamp_),
           obj_(std::move(o.obj_)), mor_(std::move(o.mor_)), evt_(std::move(o.evt_)) {}
     Functor& operator=(const Functor& o);
     // One put in place of a functor a graph holds keeps its name - the graph
@@ -158,6 +158,17 @@ public:
         return *this;
     }
     Cleanup cleanup() const { return cleanup_; }
+
+    // Kept (StateGraph::keep), it carries only from a source that lived -
+    // was stepped - the frame before: one body in two places, the one that
+    // lives carrying it to the other, and nothing carried into a state that
+    // is not living carried on again from it.
+    Functor& from_living(bool on = true) {
+        from_living_ = on;
+        remapped("from_living");
+        return *this;
+    }
+    bool from_living() const { return from_living_; }
 
     // --- arrow map ----------------------------------------------------------
     Functor& on_morphism(Key src_morphism, Key dst_morphism);
@@ -323,6 +334,7 @@ private:
     Key to_;
     bool identity_ = false;
     Cleanup cleanup_ = Cleanup::Drop;
+    bool from_living_ = false;
     uint64_t stamp_ = next_stamp();
     std::unordered_map<Key, ObjMap> obj_;
     std::unordered_map<Key, Key> mor_;

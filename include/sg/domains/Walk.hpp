@@ -74,6 +74,13 @@ std::vector<RayHit> rays(const State& space, const std::vector<RayAsk>& asks);
 // does any place that moves its walker its own way.
 void stand_clear(const State& space, Element& walker, double radius = 0.3);
 
+// Rooms made one (sg::make_space) whose holes - where a doorway between
+// two of them was - cannot be walked through: a walker of `radius` and
+// `height` steered through each one's middle, from a pace on one side to a
+// pace on the other - stopped by something solid across it (a thing's box
+// over the opening, a wall left closed there) is a fault, said with where.
+std::vector<std::string> space_faults(const State& space, double radius = 0.3, double height = 1.65);
+
 // One step of `walker` through `space`, pulled by `pull` (fields_of(space),
 // solved), `dt` long, ending at `time`. It reads and writes the walker's
 // params only: x y z (its eye), vx vy vz, its ground (stand_*), yaw and pitch

@@ -27,12 +27,14 @@ struct Solid {
     double reach;  // how far its furthest point is from its middle
 };
 
-std::vector<Solid> solids_of(const State& s, const Vec3d& near = {}, double reach = 0) {
+std::vector<Solid> solids_here(const State& s, const Vec3d& near, double reach) {
     std::vector<Solid> out;
     const std::vector<Vec3d> copies = images(s, near, reach);
     for (const Element& e : s.elements()) {
         if (!e.alive) continue;
         if (e.kind != kinds::wall && !(e.kind == kinds::mesh && e.params.num("solid", 0.0) > 0.5)) continue;
+        // (A wall said not `solid` is not: as a thing's `solid` is read.)
+        if (e.kind == kinds::wall && e.params.has(Key{"solid"}) && e.params.num("solid", 1.0) < 0.5) continue;
         const Pose w = world_pose(s, e);
         const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
         Solid d;
@@ -50,6 +52,8 @@ std::vector<Solid> solids_of(const State& s, const Vec3d& near = {}, double reac
     }
     return out;
 }
+
+std::vector<Solid> solids_of(const State& s, const Vec3d& near = {}, double reach = 0) { return solids_here(s, near, reach); }
 
 // Out of a solid: the way, and how far, a ball at `p` of radius `r` must go.
 bool push_out(const Solid& d, V3 p, double r, V3& normal, double& depth) {
@@ -280,6 +284,36 @@ bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, V
     if (dist) *dist = r.dist;
     if (what) *what = r.what;
     return true;
+}
+
+std::vector<std::string> space_faults(const State& space, double radius, double height) {
+    std::vector<std::string> out;
+    const std::vector<Opening> open = openings_of(space);
+    static const Key hole_kind{"hole"};
+    for (const Element& e : space.elements()) {
+        if (!e.alive || e.kind != hole_kind) continue;
+        const double hh = e.params.num(keys::h, 2.0) * 0.5;
+        if (hh * 2.0 < height) continue;  // a hatch, not walked upright
+        // (Its local x is the way into the room it was a doorway of; y up; its foot its middle less half its height.)
+        const Pose at = world_pose(space, e);
+        const Vec3d front = place_in(at, {1.0, -hh + height, 0.0}), past = place_in(at, {-1.0, -hh + height, 0.0});
+        const std::vector<Solid> solids = solids_of(space, front, 3.0);
+        V3 eye = v3(front);
+        const V3 up{0, 1, 0}, to = spatial::normalize(v3(past) - eye);
+        bool through = false;
+        for (int i = 0; i < 120 && !through; ++i) {
+            eye = eye + to * (radius * 0.25);
+            clear_pass(solids, open, eye, up, height, radius);
+            through = local_of(at, vd(eye)).x < -0.5;
+        }
+        if (!through) {
+            char b[96];
+            std::snprintf(b, sizeof b, "%.2f m from its plane", local_of(at, vd(eye)).x);
+            out.push_back("hole " + e.id.str() + " of " + space.id().str() + " (where two rooms were made one) cannot be walked through: a walker steered through its middle stops " +
+                          b + " - something solid stands across it (a thing's box over the opening, a wall not opened there)");
+        }
+    }
+    return out;
 }
 
 void stand_clear(const State& space, Element& walker, double radius) {

@@ -1,0 +1,6 @@
+# The window of gi_gl's room, glued to the open world it looks out on; the
+# views are presentation bindings for the overlap declared here.
+extern state room
+extern state out
+seam room.window <-> out.view
+    name window

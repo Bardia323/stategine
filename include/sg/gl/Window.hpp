@@ -146,6 +146,9 @@ public:
         dy_ = y - my_;
         mx_ = x;
         my_ = y;
+        // The frames a capture starts or ends (and the first): the cursor's
+        // jump to the middle and back is not the mouse moved - no turn.
+        if (settle_ > 0) dx_ = dy_ = 0, --settle_;
     }
 
     bool down(int key) const { return valid(key) && now_[static_cast<std::size_t>(key)]; }
@@ -159,7 +162,11 @@ public:
     double mouse_dx() const { return dx_; }
     double mouse_dy() const { return dy_; }
 
+    // Taken (hidden, unbounded: a turn), or let go. The polls it takes for
+    // the cursor's jump to arrive read no movement (mouse_dx 0): a program
+    // never takes the jump to the middle as a turn of the head.
     void capture_mouse(bool on) {
+        if (on != captured_) settle_ = kSettle;
         glfwSetInputMode(win_, GLFW_CURSOR, on ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
         captured_ = on;
     }
@@ -211,6 +218,10 @@ private:
     std::array<bool, GLFW_KEY_LAST + 1> now_{};
     std::array<bool, GLFW_KEY_LAST + 1> prev_{};
     double mx_ = 0, my_ = 0, dx_ = 0, dy_ = 0;
+    // Polls left that read no movement: the first, and those after a capture
+    // starts or ends (the cursor's jump can come a frame or two late).
+    static constexpr int kSettle = 3;
+    int settle_ = 1;
     bool captured_ = false;
     bool native_ = false, vsync_ = true;
 };

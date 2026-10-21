@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cstdio>
 #include "sg/domains/Light.hpp"
 
 namespace sg {
@@ -128,6 +130,112 @@ void spill(Element& lamp, const Spill& to, double dt, bool on, double tau) {
         toward(keys::intensity, to.level);
     else
         lamp.params.set(keys::intensity, 0.0);
+}
+
+namespace {
+// Whether `p` is shut in by `e`: inside its box, and - where it is a model -
+// its own faces round it most ways out.
+bool shut_in(const Spatial3D& room, const Element& e, const Vec3d& p) {
+    const double hx = 0.5 * e.params.num(keys::sx, 0.0), hz = 0.5 * e.params.num(keys::sz, 0.0), sy = e.params.num(keys::sy, 0.0);
+    if (hx <= 0.0 || hz <= 0.0 || sy <= 0.0) return false;
+    const Pose at = world_pose(room, e);
+    const Vec3d l = local_of(at, p);
+    if (std::fabs(l.x) >= hx || std::fabs(l.z) >= hz || l.y <= 0.0 || l.y >= sy) return false;
+    const std::string shape = e.params.get_or<std::string>("shape", "");
+    if (shape != "model") return true;
+    const std::vector<float>* made = room.model(Key{e.params.get_or<std::string>("model", "")});
+    if (!made || made->size() < 24) return false;
+    // In the model's unit box: rays out every way, against its triangles.
+    const Vec3d o{l.x / (2.0 * hx), l.y / sy - 0.5, l.z / (2.0 * hz)};
+    static const double r = 0.57735026919;
+    const Vec3d ways[14] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {r, r, r}, {r, r, -r}, {r, -r, r}, {r, -r, -r},
+                            {-r, r, r}, {-r, r, -r}, {-r, -r, r}, {-r, -r, -r}};
+    int met = 0;
+    for (const Vec3d& d : ways) {
+        bool hit = false;
+        for (std::size_t i = 0; i + 24 <= made->size() && !hit; i += 24) {
+            const Vec3d a{(*made)[i], (*made)[i + 1], (*made)[i + 2]}, b{(*made)[i + 8], (*made)[i + 9], (*made)[i + 10]},
+                c{(*made)[i + 16], (*made)[i + 17], (*made)[i + 18]};
+            const Vec3d e1 = b - a, e2 = c - a, q = cross(d, e2);
+            const double det = dot(e1, q);
+            if (std::fabs(det) < 1e-12) continue;
+            const Vec3d s = o - a;
+            const double u = dot(s, q) / det;
+            if (u < 0.0 || u > 1.0) continue;
+            const Vec3d t = cross(s, e1);
+            const double v = dot(d, t) / det;
+            if (v < 0.0 || u + v > 1.0) continue;
+            hit = dot(e2, t) / det > 1e-6;
+        }
+        met += hit ? 1 : 0;
+    }
+    return met >= 12;
+}
+}  // namespace
+
+std::vector<std::string> lamp_faults(const Spatial3D& room) {
+    std::vector<std::string> out;
+    const Params& rp = room.params();
+    int lamps = 0, real = 0;
+    bool sun = false;
+    for (const Element& l : room.elements()) {
+        if (!l.alive || l.kind != kinds::light) continue;
+        if (l.params.num(Key{"sun"}, 0.0) > 0.5) {
+            sun = true;
+            continue;
+        }
+        const bool indirect = l.params.num(Key{"indirect"}, 0.0) >= 0.5;
+        ++lamps;
+        real += !indirect || l.params.num(Key{"bounce"}, 1.0) < 0.5 ? 1 : 0;
+        if (indirect || l.params.num(keys::intensity, 1.0) <= 0.0) continue;
+        // What holds it: shadowed by it, a lamp lights nothing past it.
+        const Vec3d at = world_position(room, l);
+        for (const Element& e : room.elements()) {
+            if (!e.alive || (e.kind != kinds::mesh && e.kind != kinds::wall) || e.params.num(Key{"cast"}, 1.0) < 0.5) continue;
+            if (!shut_in(room, e, at)) continue;
+            out.push_back("lamp " + l.id.str() + " stands inside " + e.id.str() + ", which casts: shadowed by what holds it, it lights nothing past it - say `cast` 0 on " +
+                          e.id.str() + " (a shade, a globe, a fixture's glass: what its light comes through)");
+            break;
+        }
+    }
+    // A lamp in a fixture that has a bulb (a part of material `bulb`, or `lamps...`) is at
+    // that bulb: its light comes from there, every way its shade lets it -
+    // not from a point in front of it, which leaves dark what is behind the
+    // bulb (the wall a sconce hangs on) and lights what the shade would hide.
+    for (const Element& l : room.elements()) {
+        if (!l.alive || l.kind != kinds::light || l.params.num(Key{"sun"}, 0.0) > 0.5 || l.params.num(Key{"indirect"}, 0.0) >= 0.5) continue;
+        const Vec3d at = world_position(room, l);
+        for (const Element& b : room.elements()) {
+            // (A bulb: a part said to be one - `bulb`, or a fitting's `lamps`.)
+            const std::string m = b.params.get_or<std::string>("material", "");
+            if (!b.alive || b.kind != kinds::mesh || (m.find("bulb") == std::string::npos && m.rfind("lamps", 0) != 0)) continue;
+            const Pose bp = world_pose(room, b);
+            const double hx = 0.5 * b.params.num(keys::sx, 0.0), hz = 0.5 * b.params.num(keys::sz, 0.0), sy = b.params.num(keys::sy, 0.0);
+            // (Only the fixture it is in: within the box of what holds the bulb.)
+            const Vec3d in = local_of(bp, at);
+            if (std::fabs(in.x) > hx + 0.05 || std::fabs(in.z) > hz + 0.05 || in.y < -0.05 || in.y > sy + 0.05) continue;
+            const std::vector<float>* made = room.model(Key{b.params.get_or<std::string>("model", "")});
+            if (!made || made->size() < 8) continue;
+            Vec3d lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
+            for (std::size_t i = 0; i + 8 <= made->size(); i += 8) {
+                const Vec3d c{(*made)[i] * hx * 2.0, ((*made)[i + 1] + 0.5) * sy, (*made)[i + 2] * hz * 2.0};
+                lo = {std::min(lo.x, c.x), std::min(lo.y, c.y), std::min(lo.z, c.z)}, hi = {std::max(hi.x, c.x), std::max(hi.y, c.y), std::max(hi.z, c.z)};
+            }
+            const double off = std::hypot(std::max({lo.x - in.x, 0.0, in.x - hi.x}), std::max({lo.y - in.y, 0.0, in.y - hi.y}), std::max({lo.z - in.z, 0.0, in.z - hi.z}));
+            if (off > 0.03) {
+                char b2[64];
+                std::snprintf(b2, sizeof b2, "%.0f cm", off * 100.0);
+                out.push_back("lamp " + l.id.str() + " is " + b2 + " from the bulb of the fixture it is in (" + b.id.str() +
+                              "): its light comes from a point beside the bulb - stand it at the bulb (a lamp lit every way, its shade said `cast` 0)");
+            }
+            break;
+        }
+    }
+    const bool closed = rp.num(Key{"sky"}, 0.0) < 0.5 && rp.num(Key{"gi"}, 1.0) > 0.5;
+    if (lamps > 0 && real == 0 && !sun && closed)
+        out.push_back("lit by nothing: every lamp of it stands in for bounce (`indirect`), and where its light from all round holds such lamps give way to it - "
+                      "a bulb is a real lamp (a spot, or a lamp without `indirect`), or say `bounce` 0 on a fill that lights");
+    return out;
 }
 
 }  // namespace sg

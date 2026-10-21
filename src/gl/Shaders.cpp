@@ -247,6 +247,135 @@ float light_reach(int i, vec3 p, out vec3 l) {
     return source;
 }
 
+const char* capture_glsl() {
+    return R"(
+// A way out as a point of an octahedron's map unfolded (-1..1, up its
+// middle, down its corners), and back.
+vec2 oct_of(vec3 d) {
+    d /= abs(d.x) + abs(d.y) + abs(d.z);
+    vec2 p = d.xz;
+    if (d.y < 0.0) p = (1.0 - abs(p.yx)) * vec2(p.x >= 0.0 ? 1.0 : -1.0, p.y >= 0.0 ? 1.0 : -1.0);
+    return p;
+}
+vec3 oct_way(vec2 p) {
+    vec3 d = vec3(p.x, 1.0 - abs(p.x) - abs(p.y), p.y);
+    if (d.y < 0.0) d.xz = (1.0 - abs(d.zx)) * vec2(d.x >= 0.0 ? 1.0 : -1.0, d.z >= 0.0 ? 1.0 : -1.0);
+    return normalize(d);
+}
+// A map `n` texels a side keeps a texel's border round it - what lies just
+// past each edge, folded (a point past an edge is the point as far within
+// it, mirrored along it) - so it is read between texels with no seam. The
+// way out a texel (gl_FragCoord) is of; and where a way is read.
+vec3 capture_way(vec2 px, float n) {
+    vec2 p = (px - 1.0) / (n - 2.0) * 2.0 - 1.0;
+    if (abs(p.x) > 1.0) p = vec2((p.x > 0.0 ? 2.0 : -2.0) - p.x, -p.y);
+    if (abs(p.y) > 1.0) p = vec2(-p.x, (p.y > 0.0 ? 2.0 : -2.0) - p.y);
+    return oct_way(p);
+}
+vec2 capture_uv(vec3 d, float n) {
+    return (oct_of(d) * 0.5 + 0.5) * ((n - 2.0) / n) + 1.0 / n;
+}
+)";
+}
+
+const char* glint_down_fs() {
+    return R"(#version 330 core
+uniform sampler2D uSource;  // the size above, its only level shown
+uniform vec2 uTexel;        // a texel of it
+in vec2 vUV;
+out vec4 FragColor;
+void main() {
+    vec4 sum = vec4(0.0);
+    float weight = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        vec2 o = vec2(float(i & 1), float(i >> 1)) - 0.5;
+        vec4 c = texture(uSource, vUV + o * uTexel);
+        float w = 1.0 / (1.0 + dot(max(c.rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722)));
+        sum += c * w;
+        weight += w;
+    }
+    FragColor = sum / max(weight, 1e-6);
+}
+)";
+}
+
+const char* capture_fold_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+)") + capture_glsl() + R"(
+uniform sampler2D uFaces;  // the six faces in a row (+x -x +y -y +z -z), each as a camera looking that way sees it
+uniform float uSize;       // the map's texels a side, its border among them
+out vec4 FragColor;
+const vec3 kFaceF[6] = vec3[6](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+const vec3 kFaceU[6] = vec3[6](vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 0, 1), vec3(0, 1, 0), vec3(0, 1, 0));
+void main() {
+    vec3 d = capture_way(gl_FragCoord.xy, uSize);
+    vec3 a = abs(d);
+    int f = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1) : a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5);
+    vec3 r = normalize(cross(kFaceF[f], kFaceU[f]));
+    float z = dot(d, kFaceF[f]);
+    vec2 uv = vec2(dot(d, r), dot(d, kFaceU[f])) / z;
+    // (Read within its own face: the next one along the row is another way.)
+    vec2 size = vec2(textureSize(uFaces, 0));
+    float face = size.y;
+    vec2 at = clamp((uv * 0.5 + 0.5) * face, vec2(0.5), vec2(face - 0.5)) + vec2(float(f) * face, 0.0);
+    FragColor = vec4(textureLod(uFaces, at / size, 0.0).rgb, 1.0);
+}
+)";
+    return source.c_str();
+}
+
+const char* capture_blur_fs() {
+    static const std::string source = std::string(R"(#version 330 core
+)") + capture_glsl() + R"(
+uniform sampler2D uSource;  // the map whole, its smaller sizes made as a picture's are
+uniform float uSize;        // this size's texels a side
+uniform float uRough;       // the roughness it is blurred for
+out vec4 FragColor;
+const float kPi = 3.14159265;
+// The points of a Hammersley set, i of n.
+vec2 hammersley(uint i, uint n) {
+    uint b = i;
+    b = (b << 16u) | (b >> 16u);
+    b = ((b & 0x55555555u) << 1u) | ((b & 0xAAAAAAAAu) >> 1u);
+    b = ((b & 0x33333333u) << 2u) | ((b & 0xCCCCCCCCu) >> 2u);
+    b = ((b & 0x0F0F0F0Fu) << 4u) | ((b & 0xF0F0F0F0u) >> 4u);
+    b = ((b & 0x00FF00FFu) << 8u) | ((b & 0xFF00FF00u) >> 8u);
+    return vec2(float(i) / float(n), float(b) * 2.3283064365386963e-10);
+}
+void main() {
+    // Seen straight on (the way out, the normal and the eye one): the
+    // microfacets' ways about it, each the light that way, read from as
+    // small a size of the map as the way's share of the sphere is big - so a
+    // lamp a few texels across is spread, not dotted (Karis 2013, Colbert
+    // and Krivanek 2007).
+    vec3 n = capture_way(gl_FragCoord.xy, uSize);
+    vec3 t = normalize(cross(abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), n)), b = cross(n, t);
+    float a = uRough * uRough, a2 = a * a;
+    float source = float(textureSize(uSource, 0).x);
+    float texel = 4.0 * kPi / (source * source);
+    const uint kSamples = 96u;
+    vec3 sum = vec3(0.0);
+    float weight = 0.0;
+    for (uint i = 0u; i < kSamples; ++i) {
+        vec2 u = hammersley(i, kSamples);
+        float phi = 2.0 * kPi * u.x;
+        float ch = sqrt((1.0 - u.y) / (1.0 + (a2 - 1.0) * u.y)), sh = sqrt(1.0 - ch * ch);
+        vec3 h = t * (cos(phi) * sh) + b * (sin(phi) * sh) + n * ch;
+        vec3 l = 2.0 * dot(n, h) * h - n;
+        float ndl = dot(n, l);
+        if (ndl <= 0.0) continue;
+        float q = ch * ch * (a2 - 1.0) + 1.0;
+        float pdf = a2 / (kPi * q * q) * 0.25;
+        float lod = max(0.5 * log2(1.0 / (float(kSamples) * pdf * texel)) + 1.0, 0.0);
+        sum += textureLod(uSource, capture_uv(l, source), lod).rgb * ndl;
+        weight += ndl;
+    }
+    FragColor = vec4(sum / max(weight, 1e-6), 1.0);
+}
+)";
+    return source.c_str();
+}
+
 const char* air_glsl() {
     return R"(
 // The light of a world's lamps that its air scatters towards the eye, gathered
@@ -518,8 +647,9 @@ void main() {
         fell_near = exp(-1.5 * dot(fell, fell));
         cur = mix(cur, texture(uCurrent, t).rgb, fell_near);
     }
+    // (Its alpha: how many frames the picture here has held, over 64.)
     if (uFresh > 0.5) {
-        FragColor = vec4(cur, 1.0);
+        FragColor = vec4(cur, 0.0);
         return;
     }
     // The neighbourhood: what this frame says the pixel may be, and the
@@ -540,7 +670,7 @@ void main() {
     vec4 was = uReproject * vec4(vUV * 2.0 - 1.0, near * 2.0 - 1.0, 1.0);
     vec2 back = was.xy / was.w * 0.5 + 0.5;
     if (was.w <= 0.0 || any(lessThan(back, vec2(0.0))) || any(greaterThan(back, vec2(1.0)))) {
-        FragColor = vec4(cur, 1.0);
+        FragColor = vec4(cur, 0.0);
         return;
     }
     // What was, brought within what is: towards the neighbourhood's middle
@@ -552,8 +682,52 @@ void main() {
     vec3 out_ = abs(off / half_);
     float most = max(out_.x, max(out_.y, out_.z));
     if (most > 1.0) h = mid + off / most;
+    // How long the picture here has held: a frame more where what was is
+    // still what is; less as far as it had to be brought in (something
+    // changed there), none where it was far out. Held long, each new frame
+    // is taken in less - a still view settles, its jitter gone from every
+    // edge and every fine line (a blind's slats); moving, the frames before
+    // are carried by a resampling that softens, so a new one counts for more.
+    float age = texture(uHistory, back).a * 64.0;
+    age = most > 1.0 ? age * clamp(1.5 - 0.5 * most, 0.0, 1.0) : age + 1.0;
+    age = min(age, 63.0);
+    float moved = length((back - vUV) / uOutTexel);
+    float least = mix(0.035, 0.12, clamp(moved * 0.5, 0.0, 1.0));
+    float take = min(max(1.0 / (age + 1.0), least), 0.1);
     vec3 now = squash(cur);
-    FragColor = vec4(unsquash(mix(rgb(h), now, uUp > 0.5 ? 0.03 + 0.2 * fell_near : 0.1)), 1.0);
+    FragColor = vec4(unsquash(mix(rgb(h), now, uUp > 0.5 ? max(0.03 + 0.2 * fell_near, least) * min(1.0, take * 10.0) : take)), age / 64.0);
+}
+)";
+}
+
+const char* motion_fs() {
+    return R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uMoved;   // what the scene said of each pixel (1e4: not known)
+uniform sampler2D uDepth;
+uniform mat4 uReproject;    // this frame's clip space, unmoved, to the last frame's
+uniform vec2 uJitter;       // this frame's jitter, in clip units
+uniform vec2 uSize;         // the picture's pixels
+uniform float uReversedZ;
+uniform float uFresh;       // 1: no last frame to have come from
+void main() {
+    vec2 moved = texture(uMoved, vUV).rg;
+    if (uFresh > 0.5) {
+        FragColor = vec4(0.0);
+        return;
+    }
+    if (moved.x > 5e3) {
+        // (Moved as the view moved past it: found where it was by its depth,
+        // as the frames' smoothing finds it - at the point this pixel shows,
+        // the jitter taken back.)
+        float d = texture(uDepth, vUV).r;
+        if (uReversedZ > 0.5) d = 1.0 - d;
+        vec2 now = vUV * 2.0 - 1.0 - uJitter;
+        vec4 was = uReproject * vec4(now, d * 2.0 - 1.0, 1.0);
+        moved = was.w > 1e-6 ? (now - was.xy / was.w) * 0.5 * uSize : vec2(0.0);
+    }
+    FragColor = vec4(moved, 0.0, 1.0);
 }
 )";
 }
@@ -1327,10 +1501,10 @@ uniform vec3  uFarAt;        // where it sees from
 uniform vec3  uFarF, uFarR, uFarU;
 uniform float uFarT;         // a sun's view: the tangent of its half-angle
 uniform int   uBoxes;
-uniform vec4  uBoxAt[8];     // each box's middle, and its turn
-uniform vec3  uBoxHalf[8];
-uniform vec3  uBoxLo[8];
-uniform vec3  uBoxHi[8];
+uniform vec4  uBoxAt[24];    // each box's middle, and its turn (as many as kMaxProbes)
+uniform vec3  uBoxHalf[24];
+uniform vec3  uBoxLo[24];
+uniform vec3  uBoxHi[24];
 uniform sampler2D uBefore;   // the boxes' light, the bounce before: nine across, a face of a box up (relight_sh_fs)
 uniform int   uBounce;       // 1: and the boxes' light on it
 out vec4 FragColor;
@@ -1396,7 +1570,7 @@ void main() {
                               1.092548 * n.x * n.z * 0.25, 0.546274 * (n.x * n.x - n.y * n.y) * 0.25);
         vec3 sum = vec3(0.0);
         float total = 0.0;
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 24; ++i) {
             if (i >= uBoxes) break;
             float w = box_weight(i, p);
             if (w <= 0.0) continue;
@@ -1498,6 +1672,18 @@ layout(location = 1) out vec4 TraceSurf;
 #else
 vec4 TraceSurf;
 #endif
+// How this pixel moved since the last frame, in pixels (the jitter left
+// out): a thing that says where it stood last frame (uMoving 1) by that,
+// all else written as not known (1e4), for the view's own motion to be
+// found from depth after (GLWorldView::run_motion). Only in the program for
+// a view whose motion is asked for (SG_VELOCITY: GLWorldView::moving_of).
+#ifdef SG_VELOCITY
+layout(location = 2) out vec4 Motion;
+in vec4 vNowClip;
+in vec4 vWasClip;
+uniform float uMoving;
+uniform vec2 uMotionSize;  // the picture's pixels
+#endif
 
 uniform vec3  uAlbedo;
 uniform float uRoughness;     // 0 mirror-ish, 1 chalk
@@ -1526,6 +1712,11 @@ uniform sampler2D uDirt;
 uniform vec4 uDirtSet;
 uniform vec4 uDirtBand;       // w: how much settles on what faces up (dust, by gravity)
 uniform vec3 uRoomBox;
+// Rooms made one (sg::make_space): the floor each covered (x0 z0 x1 z1) and
+// its height, up to four - its walls and corners where each room's were.
+uniform vec4 uRegion[4];
+uniform vec4 uRegionH;
+uniform int uRegions;
 // (Packed, as the shader's registers are few: x dirt worn, y damp worn, z
 // the room's age, w how many of its leaks are given.)
 uniform vec4 uWear;
@@ -1535,7 +1726,9 @@ uniform vec4 uWear;
 // its age (0 new .. 1 long neglected), its leaks (xyz in its frame, reach).
 uniform sampler2D uDamp;
 uniform vec4 uDampSet;
-uniform vec4 uLeak[4];
+uniform float uSheen;      // a pile's sheen: velvet, plush carpet (0: none)
+uniform vec2 uDampCover;   // x 0: water - the surface darkened by its stain; 1: the photograph laid over as it is (blood, paint); y how much it runs in thin runs (0 a sheet)
+uniform vec4 uLeak[8];
 // Its room's wear fields (sg::field_picture): dirt in r, damp in g, over a
 // rectangle of its floor (x0, z0, 1/w, 1/d; w 0: none) - each point's share
 // added to what its causes gather there.
@@ -1559,7 +1752,12 @@ vec2 wear_field() {
     if (uWearField.z <= 0.0) return vec2(0.0);
     vec2 uv = (vRoom.xz - uWearField.xy) * uWearField.zw;
     if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec2(0.0);
-    return texture(uWearMap, uv).rg;
+    // (A field of the floor: what lies on it - a rug, a runner on it - and
+    // up what stands on it only as far as it splashes or is kicked, a hand's
+    // breadth; not up a wall to the ceiling over where it lies, nor on a
+    // table's top over it.)
+    float up = 1.0 - smoothstep(0.03, 0.12, vRoom.y);
+    return texture(uWearMap, uv).rg * up;
 }
 // A tiled skin's repeat never shown (Texture `scatter`, 0..1: x): each
 // hexagon of it read from a place of its own, turned within y radians
@@ -1650,7 +1848,7 @@ uniform float uAmbient;
 // its light fades in (the low sides, the high) - and what its lamps give it
 // from every way after lighting the room, as nine coefficients of spherical
 // harmonics.
-const int MAX_PROBES = 8;
+const int MAX_PROBES = 24;
 uniform int  uProbeCount;
 // 1: they are an open land's, round the eye - they saw what the ground gives
 // back, and where they hold the look's stand-in for it (uGround) gives way.
@@ -1664,8 +1862,12 @@ uniform int  uSurfaceOnly;
 // (src/gl/trace, docs/trace.md) - each a picture of the eye's view, read at
 // this pixel where it is of this surface (uTraceSurf: how far each pixel's
 // was): x, the sun's light through what stands between (its shadow); z,
-// what is mirrored, by surfaces no rougher than it (y, w: 0). All 0: none
-// of it, lit as ever. The light from all round is the engine's as ever. (Only in the program for a view traced: SG_TRACED.)
+// what is mirrored, by surfaces no rougher than it; w, the light from all
+// round traced (uTraceGI: what a surface facing its way gets, over pi, and
+// how many frames its history holds) - 1 in a room shut round (the look's
+// own light from all round kept beside it), 2 under an open sky (the rays
+// found the sky themselves). All 0: none of it, lit as ever. (Only in the
+// program for a view traced: SG_TRACED.)
 #ifdef SG_TRACED
 uniform vec4 uTrace;
 uniform vec3 uTraceSunDir;      // the sun it traced to
@@ -1674,6 +1876,7 @@ uniform vec3 uTraceEye;
 uniform sampler2D uTraceSurf;
 uniform sampler2D uTraceSun;
 uniform sampler2D uTraceMirror;
+uniform sampler2D uTraceGI;
 // y: how many lamps' shadows were traced (uTraceLamps r, g, b), each of the
 // lamp standing at uTraceLamp[k].
 uniform vec3 uTraceLamp[3];
@@ -1690,6 +1893,17 @@ uniform vec3 uProbeHalf[MAX_PROBES];
 uniform vec3 uProbeSoftLo[MAX_PROBES];
 uniform vec3 uProbeSoftHi[MAX_PROBES];
 uniform vec3 uProbeSH[MAX_PROBES * 9];
+// Reflection captures (GLWorldView::capture_rooms): what each probe box of
+// the room sees every way from its middle, lit as the room stands - a layer
+// a box, as the probes are numbered - and how the room's box lies, for what
+// is mirrored to be read where it stands on it (box-projected): its corner
+// where it is drawn and its turn (uCaptureAt), its near and far corners in
+// its own frame (uCaptureLo, uCaptureHi), and how many boxes hold one
+// (uCaptureHi.w; 0: none, the probes' as ever).
+uniform sampler2DArray uCaptures;
+uniform vec4 uCaptureAt;
+uniform vec3 uCaptureLo;
+uniform vec4 uCaptureHi;
 uniform float uDark;          // 1: what glows of itself does not (a probe's bake, lamp by lamp)
 
 // An open world has a sky instead of a ceiling: a gradient, and the sun in it.
@@ -1807,7 +2021,7 @@ uniform float uUndim;         // 1: this is part of the screen the room dims rou
 uniform float uFlat;
 // A round tube (x: 0 square, 1 round), and the panel's width over its height (y).
 uniform vec2  uRound;
-)") + crt_glsl_constants() + air_glsl() + R"(
+)") + crt_glsl_constants() + air_glsl() + capture_glsl() + R"(
 float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
 
 float noise(vec2 p) {
@@ -2256,6 +2470,48 @@ vec3 probe_light(vec3 p, vec3 d, float w1, float w2, out float cover) {
     return total > 0.0 ? sum / total : vec3(0.0);
 }
 
+// What the room's captures saw along `r` from `p` (uCaptures), for a
+// surface of `roughness`: the way out followed to the room's box, and each
+// capture read towards where it meets it from that capture's own middle -
+// so a wall mirrored in the floor stands where the wall is, not where it
+// would be seen from the box's middle - at the size blurred for that
+// roughness (between the two nearest), blended as the probes are; how much
+// they hold `p`, in `cover` (0: none).
+const int CAPTURE_LEVELS = 6;      // GLWorldView::kCaptureLevels
+const float CAPTURE_SIZE = 256.0;  // GLWorldView::kCaptureSize
+vec3 capture_level(int layer, vec3 d, int k) {
+    float n = CAPTURE_SIZE / float(1 << k);
+    return textureLod(uCaptures, vec3(capture_uv(d, n), float(layer)), float(k)).rgb;
+}
+vec3 captured(vec3 p, vec3 r, float roughness, out float cover) {
+    cover = 0.0;
+    int count = int(uCaptureHi.w + 0.5);
+    if (count <= 0) return vec3(0.0);
+    float c = cos(uCaptureAt.w), s = sin(uCaptureAt.w);
+    vec3 d = p - uCaptureAt.xyz;
+    vec3 q = clamp(vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z), uCaptureLo + 1e-3, uCaptureHi.xyz - 1e-3);
+    vec3 w = vec3(c * r.x + s * r.z, r.y, -s * r.x + c * r.z);
+    vec3 inv = 1.0 / max(abs(w), vec3(1e-5)) * vec3(w.x >= 0.0 ? 1.0 : -1.0, w.y >= 0.0 ? 1.0 : -1.0, w.z >= 0.0 ? 1.0 : -1.0);
+    vec3 out_at = max((uCaptureHi.xyz - q) * inv, (uCaptureLo - q) * inv);
+    vec3 meets = q + w * min(min(out_at.x, out_at.y), out_at.z);
+    float lod = clamp(roughness, 0.0, 1.0) * float(CAPTURE_LEVELS - 1);
+    int k0 = int(floor(lod)), k1 = min(k0 + 1, CAPTURE_LEVELS - 1);
+    float f = lod - float(k0);
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < MAX_PROBES; ++i) {
+        if (i >= uProbeCount || i >= count) break;
+        float wi = probe_weight(i, p);
+        if (wi <= 0.0) continue;
+        vec3 m = uProbeAt[i].xyz - uCaptureAt.xyz;
+        vec3 way = normalize(meets - vec3(c * m.x + s * m.z, m.y, -s * m.x + c * m.z));
+        sum += mix(capture_level(i, way, k0), capture_level(i, way, k1), f) * wi;
+        total += wi;
+    }
+    cover = min(total, 1.0);
+    return total > 0.0 ? sum / total : vec3(0.0);
+}
+
 // Percentage-closer filtering over a disc: 16 taps on a Vogel spiral, each the
 // hardware's own 2x2, the spiral turned for each pixel so the penumbra is a
 // smooth gradient dithered finely, not the steps of a fixed grid. The disc
@@ -2624,7 +2880,12 @@ float sized_ndh2(float across, float ndl, float ndv, float vdl) {
     nt = cs * nt + sn * nb, vt = cs * vt + sn * vb;
     // (n.h)^2 from the light turned to that point.
     float nh = ndv + ndl * c + nt, hh = 2.0 * (vdl * c + vt) + 2.0;
-    return max(max(nh * nh / max(hh, 1e-6), from), 0.0);
+    // (A squared cosine, never more than 1: looking almost straight at the
+    // light past a surface's edge - a back-lit rail, a thin leg against a
+    // low sun - the half-way vector is nearly nothing long, and divided by
+    // it this would pass 1 and GGX's denominator through zero: one pixel
+    // thousands of times as bright as the light gives, flashing.)
+    return clamp(max(nh * nh / max(hh, 1e-6), from), 0.0, 1.0);
 }
 
 // How a heap of grains scatters a lamp's light, over the smooth surface's
@@ -2882,6 +3143,11 @@ vec3 surface_albedo(out float rough_mod) {
 
 void main() {
     TraceSurf = vec4(0.0);
+#ifdef SG_VELOCITY
+    Motion = vec4(1e4, 1e4, 0.0, 0.0);
+    if (uMoving > 0.5 && vNowClip.w > 1e-6 && vWasClip.w > 1e-6)
+        Motion.xy = (vNowClip.xy / vNowClip.w - vWasClip.xy / vWasClip.w) * 0.5 * uMotionSize;
+#endif
     vLit = vWorld + uLatticeShift;
     vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
     if (vInstanced > 0.5) {
@@ -3109,9 +3375,21 @@ void main() {
         // (Settled on whatever faces up: a sill, a cabinet's top, the floor.)
         gather = max(gather, uDirtBand.w * smoothstep(0.7, 0.95, normalize(vRoomNormal).y));
         if (an.y < 0.7) gather = max(gather, 1.0 - smoothstep(0.0, uDirtBand.x, up));
-        if (uRoomBox.y > 0.0) {
-            if (an.y < 0.7) gather = max(gather, 1.0 - smoothstep(0.0, uDirtBand.y, uRoomBox.y - up));
-            float cx = min(vRoom.x, uRoomBox.x - vRoom.x), cz = min(vRoom.z, uRoomBox.z - vRoom.z);
+        // (The room's box - or, rooms made one, the box of the room this is in.)
+        vec3 box = uRoomBox;
+        vec2 from = vec2(0.0);
+        for (int k = 0; k < 4; ++k) {
+            if (k >= uRegions) break;
+            if (all(greaterThan(vRoom.xz, uRegion[k].xy - 0.4)) && all(lessThan(vRoom.xz, uRegion[k].zw + 0.4))) {
+                box = vec3(uRegion[k].z - uRegion[k].x, uRegionH[k], uRegion[k].w - uRegion[k].y);
+                from = uRegion[k].xy;
+                break;
+            }
+        }
+        if (box.y > 0.0) {
+            if (an.y < 0.7) gather = max(gather, 1.0 - smoothstep(0.0, uDirtBand.y, box.y - up));
+            vec2 q = vRoom.xz - from;
+            float cx = min(q.x, box.x - q.x), cz = min(q.y, box.z - q.y);
             // (Where two walls meet; on the floor and the ceiling, along the walls.)
             float corner = an.y > 0.7 ? min(cx, cz) : (an.x > an.z ? cz : cx);
             gather = max(gather, 1.0 - smoothstep(0.0, uDirtSet.y, max(corner, 0.0)));
@@ -3152,6 +3430,7 @@ void main() {
     // widen as they fall and thin out; a blot on the ceiling round it; a
     // tide mark on the floor where it lands; and rising from the floor up a
     // wall. Its edge, as dirt's, the photograph's own.
+    float covered = 0.0;  // how far what covers it fills its relief: flat where it lies thick
     if (uWear.y > 0.5 && uDampSet.x > 0.0) {
         vec3 rn = normalize(vRoomNormal), an = abs(rn);
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
@@ -3160,7 +3439,7 @@ void main() {
         float grains = 0.6 * d1.a + 0.4 * d2.a;
         float wet = 0.0;
         if (an.y < 0.7) wet = max(wet, 1.0 - smoothstep(0.0, uDampSet.y, vRoom.y));
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 8; ++i) {
             if (float(i) >= uWear.w) break;
             vec3 d = vRoom - uLeak[i].xyz;
             float reach = max(uLeak[i].w, 0.05);
@@ -3172,6 +3451,26 @@ void main() {
                 streak *= exp(-(off * off) / (reach * reach));
                 // (In streaks: the water runs in rivulets, not a sheet.)
                 streak *= 0.6 + 0.4 * texture(uDamp, vec2(along * 1.7, 0.31)).a;
+                if (uDampCover.y > 0.0) {
+                    // Thin runs (`damp_runs`): what runs heavy runs in lines
+                    // two or three centimetres apart, each of its own length,
+                    // narrowing as it falls, a bead where it stopped - many
+                    // under the leak, fewer out to its reach.
+                    float cols = along * 36.0, id = floor(cols), fx = fract(cols) - 0.5;
+                    float r1 = fract(sin(id * 12.9898 + float(i) * 78.233) * 43758.5453);
+                    float r2 = fract(sin(id * 39.3468 + float(i) * 11.135) * 24634.6345);
+                    float r3 = fract(sin(id * 73.156 + float(i) * 52.235) * 13758.937);
+                    float here = step(r1, exp(-(along * along) / (reach * reach * 0.3)) * 0.42 * uDampCover.y);
+                    // (Each from its own height: where it gathered enough to run.)
+                    float from = below - r3 * 0.18 * reach;
+                    float len = (0.2 + 2.4 * r2 * r2) * reach;
+                    float k = clamp(from / len, 0.0, 1.0);
+                    float w = mix(0.46, 0.16, k) * (0.6 + 0.6 * r3);
+                    float run = here * (1.0 - smoothstep(w * 0.6, w, abs(fx))) * smoothstep(-0.03, 0.0, from) * (1.0 - smoothstep(len - 0.02, len, from));
+                    // (The bead: a drop about 8 mm across where it stopped; fx / 36 is metres across.)
+                    float bead = here * (1.0 - smoothstep(0.003, 0.0045, length(vec2(fx / 36.0, from - len + 0.004))));
+                    streak = mix(streak, max(run, bead), uDampCover.y);
+                }
                 wet = max(wet, streak);
             } else {
                 float r = length(d.xz) / reach;
@@ -3181,8 +3480,10 @@ void main() {
         wet = min(wet + wear_field().g, 1.0);
         wet *= uDampSet.x * uWear.z;
         float m = smoothstep(1.0 - wet - 0.07, 1.0 - wet + 0.07, grains) * step(0.001, wet);
-        albedo = mix(albedo, albedo * d1.rgb * 1.6, m);
-        roughness = mix(roughness, uDampSet.w, m * 0.7);
+        // (Water darkens what it soaks; what covers - blood, paint - is its own colour over it.)
+        albedo = mix(albedo, mix(albedo * d1.rgb * 1.6, d1.rgb, uDampCover.x), m);
+        covered = m * uDampCover.x * smoothstep(0.02, 0.22, wet);
+        roughness = mix(roughness, uDampSet.w, m * mix(0.7, 1.0, uDampCover.x));
     }
     // Damp by its water (a land that says where its water stands): darker
     // and glossier the nearer the waterline, as wet sand is - its edge
@@ -3242,6 +3543,18 @@ void main() {
         vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
         n = normalize(abs(det) * n - grad);
         bent = true;
+    }
+    // (What covers it - blood pooled, paint - fills the pile and the grain
+    // where it lies thick: its face is its own, smooth.)
+    if (covered > 0.0) n = normalize(mix(n, face_n, covered));
+    // A pile's sheen (`sheen`, a texture's: velvet, plush carpet): its fibres
+    // stand up out of the surface, so seen square on the eye looks down
+    // between them into their shade, and seen aslant along their sides,
+    // lit - darker face on, brighter toward the grazing, in its own colour;
+    // the map's bends (the pile's lie) turning it, so it moves as the eye does.
+    if (uSheen > 0.0) {
+        float nv = clamp(dot(n, v), 0.0, 1.0);
+        diffuse *= max(1.0 + uSheen * (1.5 * pow(1.0 - nv, 3.0) - 0.22 * nv * nv), 0.0);
     }
     // Water over land that says how deep it is: no line where it meets the
     // shore - in its last fifth of a metre it thins out, the ground under it
@@ -3383,6 +3696,20 @@ void main() {
     // how much they hold this point (0: the light from all round below).
     float probe_cover = 0.0;
     vec3 probe_given = uProbeCount > 0 ? probe_light(vLit, n, 2.0 / 3.0, 0.25, probe_cover) : vec3(0.0);
+    // Where it is traced, the light from all round the rays found - taken
+    // whole once its history holds a few frames, the probes' before that -
+    // and a lamp standing in for bounce gives way to it as to the probes.
+    float bounce_cover = probe_cover;
+#ifdef SG_TRACED
+    float gi_cover = 0.0;
+    vec3 gi_given = vec3(0.0);
+    if (traced && uTrace.w > 0.0) {
+        vec4 gi = texelFetch(uTraceGI, trace_px, 0);
+        gi_cover = clamp((gi.a - 1.0) / 3.0, 0.0, 1.0);
+        gi_given = gi.rgb;
+        bounce_cover = mix(probe_cover, 1.0, gi_cover);
+    }
+#endif
 
     vec3 direct = vec3(0.0), bounced = vec3(0.0);
     // (A lamp whose light ends before this part of the view gives it nothing.)
@@ -3479,7 +3806,7 @@ void main() {
         // (Light standing in for bounce is the probes' where they hold: their
         // bake saw the bounce itself, and it would count twice.)
         if (uLightB[i].y > 0.5)
-            bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightB[i].y > 0.8 ? probe_cover : 0.0));
+            bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightB[i].y > 0.8 ? bounce_cover : 0.0));
         else direct += lobe * ndl * uLightColor[i] * reach * shadow;
     }
 
@@ -3522,7 +3849,19 @@ void main() {
         vec3 m = probe_light(vLit, normalize(mix(r, n, rr)), mix(1.0, 2.0 / 3.0, rr), mix(1.0, 0.25, rr), unused);
         around += probe_given * probe_cover;
         mirrored += m * probe_cover;
+        // And where the room was captured, what is mirrored is what the
+        // captures saw - the room itself, its lamps' shades, its doorways'
+        // light - in place of the probes' blur of it.
+        float capture_cover;
+        vec3 seen = captured(vLit, normalize(mix(r, n, rr)), roughness, capture_cover);
+        mirrored = mix(mirrored, seen, capture_cover);
     }
+#ifdef SG_TRACED
+    // Traced: what the rays found, for the diffuse, in place of the probes'
+    // (and, under an open sky, of the look's sky and ground, which they met
+    // themselves). What is mirrored keeps the probes'.
+    if (gi_cover > 0.0) around = mix(around, (uTrace.w > 1.5 ? vec3(0.0) : mix(ground_here, sky_here, n.y * 0.5 + 0.5)) + gi_given, gi_cover);
+#endif
     // Under an open sky a glossy surface reflects the sky itself - its
     // colours, its clouds, the sun's glint - as rougher surfaces cannot.
     if (mMirror > 0.0) mirrored = mix(mirrored, sky(normalize(vec3(r.x, abs(r.y), r.z))), mMirror * (1.0 - roughness));
@@ -3754,10 +4093,46 @@ uniform float uRaw;  // 1: the light itself, undeveloped (a viewer's film: the e
 uniform vec4  uFocus;
 uniform float uFocusFall;
 uniform float uFringe;     // the lens's colour fringe: pixels the red and the blue part at the frame's corner (0: none)
+uniform float uBarrel;     // a wide lens's barrel: how far the frame's corner is bowed out (0: none; 0.05 a little)
 uniform float uHalation;   // film's red glow round what is brightest (0: none)
+uniform float uSharpen;    // what a camera's processing gives back of the detail its smoothing over frames took (0: none, 1 most)
+uniform float uSharpenHalo; // a phone's or camcorder's sharpening: an unsharp mask left unclamped - its edges ringed light and dark (0: none)
+uniform float uEdgeSmear;  // a cheap lens's edges: each point smeared out along its line from the middle, its colours parted along it - red out, blue in (pixels at the corner; 0: none)
+uniform float uReadout;    // a rolling shutter: seconds its rows take to be read, top to bottom (0: a global shutter)
+uniform vec2  uTurnRate;   // how fast the view turns across the screen, parts of it a second (the renderer's)
+uniform float uCornerSoft; // a cheap lens's corners, softer than its middle (0: none, 1 most)
+uniform float uChromaHalf; // video's colour: carried at half the pixels each way, its brightness at all (0: none, 1 video's 4:2:0)
+uniform float uDarkChroma; // a sensor's darks losing their colour: how much of it the deepest keep less (0: none, 1 grey)
 )") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// The scene at a pixel, its detail given back as much as it can take: each
+// pixel pushed from its four neighbours by as much as their spread leaves
+// room for (contrast-adaptive - least where an edge is already hard, so
+// nothing rings), in light pressed into 0..1 so a lamp does not throw a
+// dark halo round it; never past what the five of them span.
+vec3 scene_at(vec2 uv) {
+    vec3 c = texture(uScene, uv).rgb;
+    // (A cheap camera's sharpening: the picture pushed from its own blur and
+    // nothing to hold it - each edge gets its halo, dark one side, light the
+    // other, as video's processing leaves them.)
+    if (uSharpenHalo > 0.0) {
+        vec3 pc = c / (1.0 + c), pb = textureLod(uScene, uv, 1.2).rgb;
+        pb = pb / (1.0 + pb);
+        vec3 p = clamp(pc + uSharpenHalo * (pc - pb), 0.0, 0.995);
+        c = p / (1.0 - p);
+    }
+    if (uSharpen <= 0.0) return c;
+    vec3 n = texture(uScene, uv + vec2(0.0, uTexel.y)).rgb, s = texture(uScene, uv - vec2(0.0, uTexel.y)).rgb;
+    vec3 e = texture(uScene, uv + vec2(uTexel.x, 0.0)).rgb, w = texture(uScene, uv - vec2(uTexel.x, 0.0)).rgb;
+    vec3 pc = c / (1.0 + c), pn = n / (1.0 + n), ps = s / (1.0 + s), pe = e / (1.0 + e), pw = w / (1.0 + w);
+    vec3 lo = min(pc, min(min(pn, ps), min(pe, pw))), hi = max(pc, max(max(pn, ps), max(pe, pw)));
+    vec3 amp = sqrt(clamp(min(lo, 1.0 - hi) / max(hi, vec3(1e-4)), 0.0, 1.0));
+    vec3 k = -amp * mix(0.125, 0.2, clamp(uSharpen, 0.0, 1.0));
+    vec3 p = clamp((pc + k * (pn + ps + pe + pw)) / (1.0 + 4.0 * k), lo, hi);
+    return p / max(1.0 - p, vec3(1e-4));
+}
 
 // The scene as the lens sees it: sharp round its point of focus, softer the
 // further from it on the screen (a tilt-shift turned round that point, as a
@@ -3766,7 +4141,13 @@ float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 // spiral), each read from the mipmap a level finer than the disc so they
 // overlap and no copy of an edge stands apart from another.
 vec3 focused(vec2 uv) {
-    vec3 sharp = texture(uScene, uv).rgb;
+    vec3 sharp = scene_at(uv);
+    // (A cheap lens's corners: softer the further from its middle.)
+    if (uCornerSoft > 0.0) {
+        vec2 d = (uv - 0.5) * vec2(uTexel.y / uTexel.x, 1.0);
+        float k = smoothstep(0.3, 0.95, length(d) * 1.2) * uCornerSoft;
+        if (k > 0.0) sharp = mix(sharp, textureLod(uScene, uv, 1.3).rgb, k);
+    }
     if (uFocus.w <= 0.0) return sharp;
     vec2 d = (uv - uFocus.xy) * vec2(uTexel.y / uTexel.x, 1.0);
     float k = smoothstep(uFocus.z, uFocus.z + max(uFocusFall, 1e-3), length(d));
@@ -3781,32 +4162,81 @@ vec3 focused(vec2 uv) {
     return mix(sharp, sum / 24.0, smoothstep(0.0, 0.2, k));
 }
 
+// Where a wide lens takes this pixel's light from: straight lines bowed out
+// from the middle, more the further out (r^2), the picture drawn a little
+// larger so the bowing still fills the frame's corners.
+vec2 lens_uv(vec2 uv) {
+    if (uBarrel <= 0.0) return uv;
+    vec2 d = (uv - 0.5) * vec2(uTexel.y / uTexel.x, 1.0);
+    float corner = dot(vec2(0.5 * uTexel.y / uTexel.x, 0.5), vec2(0.5 * uTexel.y / uTexel.x, 0.5));
+    float k = uBarrel / max(corner, 1e-4);
+    // (The corner reads the corner: the middle is drawn larger, the edges
+    // gathered in - a barrel.)
+    vec2 bowed = d * (1.0 + k * dot(d, d)) / (1.0 + k * corner);
+    return 0.5 + bowed * vec2(uTexel.x / uTexel.y, 1.0);
+}
+
 void main() {
-    vec3 scene = focused(vUV);
+    vec2 uv = lens_uv(vUV);
+    // A rolling shutter: its rows read top to bottom, each a little later -
+    // the view turning, each row is where the view had turned to by then: a
+    // turn leans what stands upright.
+    if (uReadout > 0.0) uv -= uTurnRate * uReadout * (0.5 - vUV.y);
+    vec3 scene = focused(uv);
     // (Its colours parted towards the edges, red out and blue in, as a
     // lens's glass bends them unevenly.)
     if (uFringe > 0.0) {
-        vec2 d = vUV - 0.5, off = d * dot(d, d) * 2.0 * uFringe * uTexel;
-        scene = vec3(focused(vUV + off).r, scene.g, focused(vUV - off).b);
+        vec2 d = uv - 0.5, off = d * dot(d, d) * 2.0 * uFringe * uTexel;
+        scene = vec3(focused(uv + off).r, scene.g, focused(uv - off).b);
+    }
+    // (A cheap wide lens toward its edges: each point drawn out along its
+    // line from the middle - a zoom blur that grows as the square of how far
+    // out - and its colours spread along that line, red to the outside, blue
+    // to the inside: the edge's aberration as a smear, not two copies.)
+    if (uEdgeSmear > 0.0) {
+        vec2 d = uv - 0.5;
+        vec2 reach = d * dot(d, d) * 4.0 * uEdgeSmear * uTexel;
+        vec3 sum = vec3(0.0), wsum = vec3(0.0);
+        for (int i = 0; i < 11; ++i) {
+            float t = float(i) / 10.0 * 2.0 - 1.0;  // -1 inside .. +1 outside
+            vec3 w = vec3(smoothstep(-0.6, 1.0, t), 1.0 - abs(t) * 0.8, smoothstep(0.6, -1.0, t));
+            sum += texture(uScene, uv + reach * t).rgb * w;
+            wsum += w;
+        }
+        vec3 smeared = sum / wsum;
+        float k = smoothstep(0.05, 0.45, length(d * vec2(uTexel.y / uTexel.x, 1.0)) * 1.6);
+        scene = mix(scene, smeared, k);
     }
     // (Film's halation: the light of what is brightest come back through the
     // film red, round it - seen where it falls on what is darker, lost on
     // what is as bright.)
     if (uHalation > 0.0) {
-        vec3 glow = texture(uBloom, vUV).rgb;
+        vec3 glow = texture(uBloom, uv).rgb;
         float under = 1.0 - smoothstep(0.25, 1.0, luma(scene * uExposure));
         scene += glow * vec3(1.0, 0.32, 0.12) * uHalation * under;
     }
     if (uRaw > 0.5) {
         // (Its bloom is the developing eye's own, laid on what it sees.)
-        FragColor = vec4(scene + texture(uBloom, vUV).rgb * fog_bloom(vUV) + godrays(vUV), 1.0);
+        FragColor = vec4(scene + texture(uBloom, uv).rgb * fog_bloom(uv) + godrays(uv), 1.0);
         return;
     }
-    scene += texture(uBloom, vUV).rgb * (uBloomStrength + fog_bloom(vUV));
-    scene += godrays(vUV);
-    vec3 color = smooth_edges(vUV, tonemap(scene * uExposure));
+    scene += texture(uBloom, uv).rgb * (uBloomStrength + fog_bloom(uv));
+    scene += godrays(uv);
+    // (A video sensor's noise, in the light as exposed, before the curve.)
+    if (uSensor.x > 0.0) scene += sensor_noise(scene * uExposure, gl_FragCoord.xy, uTime) / max(uExposure, 1e-4);
+    vec3 color = smooth_edges(uv, tonemap(scene * uExposure));
+    // (Video's colour: its brightness every pixel's, its colour a block of
+    // four's - read from the picture a level down, through the same curve.)
+    if (uChromaHalf > 0.0) {
+        vec3 low = tonemap((textureLod(uScene, uv, 1.0).rgb + texture(uBloom, uv).rgb * uBloomStrength) * uExposure);
+        vec3 swapped = luma(color) + (low - luma(low));
+        color = mix(color, max(swapped, vec3(0.0)), uChromaHalf);
+    }
 
     color = mix(vec3(luma(color)), color, uSaturation) * uTint;
+    // (A sensor's darks: few photons, its colour the first to go - the
+    // shadows grey towards black while the lit keep theirs.)
+    if (uDarkChroma > 0.0) color = mix(vec3(luma(color)), color, 1.0 - uDarkChroma * (1.0 - smoothstep(0.015, 0.22, luma(color))));
 
     // Vignette, then the film.
     vec2 d = vUV - 0.5;

@@ -103,4 +103,15 @@ inline constexpr double kSpillTau = 0.05793432494637012;
 // arrow of the state the lamp is in: a function of the lamp and its `{dt}`.
 void spill(Element& lamp, const Spill& to, double dt, bool on = true, double tau = kSpillTau);
 
+// What is wrong with a room's lamps, said when it is first drawn
+// (GLWorldView::prepare):
+//   - lit by nothing: every lamp it has stands in for bounce (`indirect`,
+//     and not `bounce` 0) and no sun comes in - where its light from all
+//     round holds (any closed room's probes) such lamps give way to it, and
+//     the probes take no light from them: a bulb is a real lamp;
+//   - shut in: a lamp that throws shadows standing inside something that
+//     casts them (its own shade, a fixture's glass, a wall) - shadowed by
+//     what holds it, it lights nothing beyond: that thing says `cast` 0.
+std::vector<std::string> lamp_faults(const Spatial3D& room);
+
 }  // namespace sg

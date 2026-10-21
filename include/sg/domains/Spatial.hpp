@@ -79,9 +79,18 @@ public:
     int rows() const { return static_cast<int>(params().num(keys::h, 16)); }
 };
 
+struct Pose;
+
 class Spatial3D : public SpatialState {
 public:
     explicit Spatial3D(Key id);
+
+    // --- rooms made one (the DSL's `space`, sg::make_space) -------------
+    // Everything `from` is made of taken into this one, standing `at` in
+    // its frame: its elements (but its eye - this one has its own), what it
+    // keeps of their shapes and pictures. Its arrows are its own and stay
+    // with it. What is named as something already here is left, and said.
+    std::vector<std::string> absorb(Spatial3D& from, const Pose& at);
 
     Element& mesh(Key id, double x, double y, double z, char glyph = '#');
 
@@ -227,6 +236,7 @@ struct Pose {
     Vec3d position;
     double yaw = 0.0, pitch = 0.0, roll = 0.0;
 };
+
 
 inline bool upright(const Pose& p) { return p.pitch == 0.0 && p.roll == 0.0; }
 // `v` turned as the pose turns, and back again.
@@ -464,5 +474,16 @@ Vec3d out_through(const Pose& door, const Vec3d& v);
 // does not already say of its pull and its floor. A space whose own walker
 // keeps level ground (a room, a desert, a corridor) gives its account so.
 void on_level_ground(Params& out, const Pose& door, double h, double (*ground)(const void*, double, double), const void* of);
+
+// Surfaces that would fight: two drawn things of a space, each with an
+// upright face in one plane (within a millimetre), facing one way,
+// overlapping by more than a few centimetres each way - of so
+// nearly one size that the renderer's rule for coinciding surfaces (the
+// smaller is seen: Shaders.hpp) cannot tell which (and no `depth_layer`
+// parts them). A plug flush with a door's leaf, a paper laid on a wall
+// exactly where another is. Boxes and walls by their faces; a model by its
+// box only where its own corners lie flat on that face. Said when a world
+// is first drawn (GLWorldView::prepare).
+std::vector<std::string> coinciding(const Spatial3D& space);
 
 }  // namespace sg

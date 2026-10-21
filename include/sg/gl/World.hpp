@@ -180,7 +180,7 @@ public:
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
 
-    explicit GLWorldView(GLQuality q = {}) : q_(q), standard_(Key{"<standard>"}) {
+    explicit GLWorldView(GLQuality q = {}) : q_(render::with_machine(q)), standard_(Key{"<standard>"}) {
         standard_look(standard_, q_);
     }
 
@@ -198,6 +198,7 @@ public:
         double portals = 0, shadows = 0, scene = 0, post = 0, scene_cpu = 0;
         double feeds = 0;  // screens showing whole worlds, drawn before the rest
         int portal_views = 0, feed_views = 0;
+        int captures = 0;  // faces of reflection captures drawn (none while nothing they were taken of moves)
         int draws = 0, instanced = 0;  // scene draw calls, and how many things were drawn in batches
         int shadow_maps = 0;           // shadow layers drawn again (most frames, none)
         int shadow_casters = 0;        // and the casters they were drawn with, summed
@@ -253,6 +254,18 @@ public:
     // to belongs to that state, and switching its look is how they adjust.
     void attend(const State* s) { attend_ = s; }
     const FrameTimes& times() const { return times_; }
+    // How each pixel of the eye's view moved since the last frame, kept from
+    // the next frame on whoever else asks (DLSS does, for itself): in the
+    // drawn pixels, RG, from where it was to where it is, the jitter left
+    // out - what moves itself as it moved, the rest as the view moved past
+    // it. Derived each frame, written nowhere but here; nothing asked, not
+    // made (gl::RenderTarget invalid).
+    void set_motion(bool kept) { motion_asked_ = kept; }
+    const gl::RenderTarget& motion() const { return motion_; }
+    // Whether the card's upscaler (Quality::upscaler) makes the eye's picture
+    // now, and, where it was asked for and cannot, why (the TAA in its place).
+    bool upscaled_by_card() const { return dlss_on(); }
+    const std::string& upscaler_said() const { return dlss_why_; }
     // Whether models' fewer faces (Quality::lod) are still being made, or
     // made and not yet given to the card (the next frame gives them).
     bool lod_pending() const;
@@ -297,8 +310,22 @@ public:
     // reachable from its initial one - and check each against what this
     // renderer feeds it. Call once there is a GL context, before the first
     // frame. What comes back is what is wrong, as counterexamples; a look
-    // whose shader fails is shown with the built-in one instead.
+    // whose shader fails is shown with the built-in one instead. And what
+    // the world would show wrong, each a mistake met before (docs/
+    // workflows.md section 11): things standing into walls (into_walls),
+    // lamps that light nothing (lamp_faults), a space made one whose inner
+    // doorways cannot be walked through (space_faults), surfaces of one size in one
+    // plane (coinciding), a card wearing a painting over six cells, a cut-out
+    // that wears a texture, glass that wears a picture or glows, light from
+    // all round clamped coarser than asked. A program prints them.
     std::vector<std::string> prepare(const StateGraph& g);
+    // The same, and from now on what the graph says things wear is shown on
+    // them by itself: every embedding of a 2D state (a Texture, a sheet, a
+    // screen's picture) in a portal is bound to that portal, now and again
+    // whenever the graph changes - no program has to remember to. A portal
+    // bound by hand (bind_surface) keeps what it was given. Given a const
+    // graph instead, prepare says which portals wear a picture nothing bound.
+    std::vector<std::string> prepare(StateGraph& g);
     // (prepare also makes the pictures of every texture bound by then -
     // colour, surface and normal maps - on every core, packed and kept on
     // disk where the quality says (as warm does), and sends them to the card:
@@ -307,6 +334,7 @@ public:
     // Attach a 2D state to a portal element: its raster becomes the texture.
     void bind_surface(Key portal_element, Surface2D* surface) {
         surfaces_[portal_element].surface = surface;
+        worn_.erase(portal_element);
     }
 
     // Shafts of daylight in `room`: toward `at` (a point in the room, where
@@ -751,13 +779,16 @@ private:
     // The doorways of a room, and the light from all round beyond each, for
     // the scene shader (around_at): a thing through a doorway is lit as one -
     // with what the far room's probe nearest the doorway holds, if it has any.
-    void doors_to_program(const PlacedRoom& placed);
+    // (`into`: a program of the tracer's instead of the scene's - its rays
+    // leave by the same doorways.)
+    void doors_to_program(const PlacedRoom& placed, const gl::Program* into = nullptr);
 
     // A room's light probes on the scene program (up to kMaxProbes): each
     // box placed as the room is, and what its lamps give it now (or, baking
     // its second bounce, what the first saw: probe_override_).
-    static constexpr int kMaxProbes = 8;  // matches the scene shader
-    void probes_to_program(const PlacedRoom& placed);
+    static constexpr int kMaxProbes = gl::kShaderProbes;  // every shader's arrays held to it (sg_shader_counts)
+    // (`into`: a program of the tracer's, lighting what its rays meet.)
+    void probes_to_program(const PlacedRoom& placed, const gl::Program* into = nullptr);
     // A probe's sets, read from its params once while they stand.
     struct ProbeSets {
         uint64_t stamp = ~uint64_t{0};
@@ -818,6 +849,14 @@ private:
         OwnedBuffer& operator=(const OwnedBuffer&) = delete;
         ~OwnedBuffer();
     };
+    // And a texture (a room's reflection captures).
+    struct OwnedTexture {
+        gl::GLuint id = 0;
+        OwnedTexture() = default;
+        OwnedTexture(const OwnedTexture&) = delete;
+        OwnedTexture& operator=(const OwnedTexture&) = delete;
+        ~OwnedTexture();
+    };
     // A lamp's light on a room's surroundings (per bounce, per box), kept
     // while it stands where it was and the shell is the same (`place`).
     struct LampLight {
@@ -868,9 +907,54 @@ private:
         std::vector<std::map<std::string, Sh9>> sets;  // per box, per lamp of the room's own (at 1, in white)
         std::vector<Sh9> let_in;                       // per box, all that its openings let in, as it is
         uint64_t revision = 0;                         // moves whenever the sets do
+        // Its reflection captures (capture_rooms): each box's room seen every
+        // way from its middle, lit as it stands - an octahedron's map a layer,
+        // its smaller sizes blurred as a rougher surface blurs what it
+        // mirrors; what each was taken of; the box being taken a face a frame
+        // (-1: none) and its faces so far. And each lamp as a capture takes
+        // it - not this moment's flicker: the most it has given lately, and
+        // the relight it last gave any.
+        OwnedTexture captures;
+        int capture_layers = 0;
+        std::vector<Digest> captured;
+        int capturing = -1, capture_faces = 0;
+        struct Steady {
+            float peak = 0.0f;
+            uint64_t lit = 0, seen = 0;
+        };
+        std::map<std::string, Steady> steady;
+        Digest lamps_stand;  // the lamps as they stand (a capture is of them)
     };
     std::unordered_map<const Spatial3D*, RoomLight> room_light_;
+    // Reflection captures (README *Reflections*): each room relit this frame
+    // (relit_) whose look asks (`reflect.captures`) taken - all of it the
+    // first time it is seen, and after that, where what a box's capture was
+    // taken of has changed (its shell, a lamp moved, one out or on, or its
+    // standing gone a half stop), a face a frame - drawn as the eye's view
+    // is, with each lamp at its standing; and put on the scene program with
+    // the room's probes (captures_to). kCaptureFace pixels a face; kept
+    // kCaptureSize square, kCaptureLevels sizes (the scene shader's).
+    static constexpr int kCaptureFace = 128, kCaptureSize = 256, kCaptureLevels = 6, kCaptureUnit = 19;
+    void capture_rooms();
+    // One face of a box's capture drawn (into capture_faces_, its place in
+    // the row); the six folded into the box's layer, and blurred.
+    void capture_face(const Spatial3D& room, RoomLight& rl, int box, int face);
+    void fold_capture(RoomLight& rl, int box);
+    void captures_to(const PlacedRoom& placed, const RoomLight* rl, int count);
+    // A lamp as a capture takes it: its standing, or 0 if it has been out a
+    // while (a flicker's dark moment is not out). -1: no capture knows it.
+    float steady_power(const Spatial3D& room, const Element& lamp) const;
+    std::vector<const Spatial3D*> relit_;
+    bool capturing_ = false;  // a capture being drawn: lamps as they stand; no captures, mirrors or traced light in it
+    gl::RenderTarget capture_seen_, capture_faces_, capture_source_;
+    std::unique_ptr<gl::Program> capture_fold_prog_, capture_blur_prog_;
+    gl::GLuint capture_fbo_ = 0;
     std::unique_ptr<gl::Program> relight_prog_, relight_sh_prog_;
+    // A picture's smaller sizes made so a glint does not flood them (gl::glint_down_fs):
+    // what a mirror or a capture is read blurred from.
+    void glint_mips(gl::RenderTarget& t);
+    std::unique_ptr<gl::Program> glint_prog_;
+    gl::GLuint glint_fbo_ = 0;
     // A light's own uniforms as light `i` of a program that lights
     // (lights_glsl): all but its shadow maps'.
     // (A sun's light times `sun_air`: as much as gets down through a planet's air.)
@@ -923,6 +1007,11 @@ private:
     // portal recursion level: a room seen through a window does not itself open
     // further windows.
 
+    // How far the eye at `eye` sees in these rooms: the first one's `far` -
+    // and, where rooms are made one space with it, out to the far end of
+    // every one of them, whatever its own says: a room joined to the one
+    // stood in is never cut off black where the first room's sight ends.
+    float far_of(const std::vector<PlacedRoom>& rooms, const gl::Vec3& eye) const;
     void draw_world(const std::vector<PlacedRoom>& rooms, const Camera& cam, float aspect,
                     gl::RenderTarget& target, int depth, float znear, Key skip_portal = Key{},
                     const std::vector<HalfSpace>& clips = {});
@@ -983,6 +1072,10 @@ private:
         Placed placed;
         Chain chain;
         ShapeMemo shape;
+        // Where its box stood before it last moved, and in which frame it
+        // moved: the first frame of a thing's motion knows where it came from.
+        RoomMatrix before;
+        uint64_t moved_in = 0;
     };
     uint64_t chain_stamp(const State& st, const Element& e, Chain& memo) const;
     Placed& placed_in(PlacedSlot& slot, const State& st, const Element& e) const;
@@ -1436,6 +1529,13 @@ private:
 
     // Looks, and the programs they compile to.
     const StateGraph* graph_ = nullptr;
+    // What the graph says is worn, bound by itself (prepare(StateGraph&)):
+    // the graph it reads, the revision it last read it at, and the portals
+    // it bound (never one bound by hand).
+    StateGraph* wearing_ = nullptr;
+    uint64_t worn_at_ = ~uint64_t{0};
+    std::set<Key> worn_;
+    void bind_worn();
     // Drawn as the far side of an own-look doorway: what is cut away (the
     // near side of that doorway's plane), and the doorway left out.
     std::vector<HalfSpace> own_clips_;
@@ -1929,13 +2029,61 @@ private:
     // The eye's own view (not one drawn for another, nor baked): the only one
     // a picture is made of the frames before for.
     bool eye_view() const { return !root_ && !output_ && !baking_ && surface_only_ == 0; }
-    bool taa_on() const { return q_.taa && eye_view(); }
+    // (Smoothed over frames: by the engine's TAA, or by the card's upscaler,
+    // which smooths as it makes the picture whole - and, where the card has
+    // none, by the TAA in its place.)
+    bool taa_on() const { return (q_.taa || q_.upscaler != Quality::upscale_taa) && eye_view(); }
     // Drawn at a part of the screen's pixels each way, the TAA making the
-    // screen's whole of them over frames (Quality::render_scale): how much
-    // (1: the screen's own); and the screen's size it makes.
-    float drawn_scale() const { return taa_on() && q_.render_scale < 0.999f ? std::max(q_.render_scale, 0.5f) : 1.0f; }
+    // screen's whole of them over frames (Quality::render_scale), or DLSS
+    // (Quality::dlss_mode): how much (1: the screen's own); and the screen's
+    // size it makes.
+    float drawn_scale() const;
     int out_w_ = 0, out_h_ = 0;
     void run_taa();
+    // The card's own upscaler (Quality::upscaler: NVIDIA's DLSS, drawn by the
+    // Vulkan backend - gl::upscale): asked whether it can the first frame it
+    // is wanted (0 not yet, 1 it can, -1 it cannot: the TAA instead, and why
+    // said once), and the picture it makes, the screen's size.
+    int dlss_can_ = 0;
+    std::string dlss_why_;
+    bool dlss_on() const { return q_.upscaler != Quality::upscale_taa && dlss_can_ > 0 && eye_view(); }
+    gl::RenderTarget dlss_out_;
+    void ask_dlss();
+    void run_dlss();
+    // How each pixel of the eye's view moved since the last frame (DLSS's
+    // motion vectors; set_motion): kept only while something asks for it.
+    // The scene says it where a thing moved itself - each thing drawn on its
+    // own keeps where it stood (moved_now_, by its room and its name), and
+    // the frame after reads it as where it was - and the rest is found from
+    // depth, as the view moved past it (run_motion: motion_fs). What a
+    // skin's joints do within it is not said: a skin moves as its thing does.
+    bool motion_asked_ = false;
+    bool motion_on() const { return (motion_asked_ || dlss_on()) && eye_view(); }
+    gl::RenderTarget motion_, motion_seen_;
+    std::unique_ptr<gl::Program> motion_prog_;
+    std::unordered_map<std::uint64_t, gl::Mat4> moved_now_, moved_last_;
+    // The thing being drawn on its own (the eye's view, while motion is
+    // kept), and which of its draws: set_model keeps where it stands.
+    const void* moving_room_ = nullptr;
+    const Element* moving_ = nullptr;
+    int moving_part_ = 0;
+    bool motion_pass_ = false;  // the scene being drawn says how each pixel moved
+    void draw_moving(const Spatial3D& room, const Element& e);
+    // The last frame's view, its world, its rooms and eye, for the motion -
+    // kept whoever smooths the frames.
+    gl::Mat4 motion_last_vp_ = gl::Mat4::identity();
+    const void* motion_last_world_ = nullptr;
+    std::vector<std::pair<const void*, gl::Mat4>> motion_last_rooms_;
+    gl::Vec3 motion_last_eye_{0, 0, 0};
+    bool motion_held_ = false;
+    // The last frame's view with a room where it stood then (for the scene's
+    // uMotionWas), or this frame's frame where it was not drawn then.
+    gl::Mat4 motion_was_of(const void* room, const gl::Mat4& now_frame) const;
+    // A scene program's twin that says how each pixel moved (SG_VELOCITY).
+    std::unordered_map<const gl::Program*, const gl::Program*> moving_twin_;
+    const gl::Program* moving_of(const gl::Program& p);
+    void run_motion();
+    void keep_motion();
     // How a pixel of this frame's view is found in a last one (its view, its
     // world, where its rooms stood, its eye): clip space to clip space. False
     // where it cannot be (a world not drawn with it, a jump): identity then.
@@ -2130,6 +2278,30 @@ private:
     // composite's uFocus and uFocusFall (blur 0: all of it sharp).
     float focus_[4] = {0, 0, 0, 0}, focus_fall_ = 0;
     void focus_of(const Spatial3D& world, const Camera& eye, float aspect);
+    // The eye's lens this frame, as its camera says (WorldLens.cpp; README
+    // *The lens*): a thin lens's depth of field (`fstop`, `focal` or
+    // `sensor`, `focus_distance` or `focus`) and its shutter's motion blur
+    // (`shutter`, `shutter_time`). Both off unless the camera says: nothing
+    // made, no pass run. What it was drawn of last frame (the view, its
+    // world, its rooms, its eye) is how a pixel's motion is found.
+    struct Lens {
+        float aperture = 0.0f;  // the aperture (A = f / N) over the sensor's height; 0: no depth of field
+        float focal = 0.0f;     // metres
+        float focus = 0.0f;     // metres; 0: on what is in the middle of the picture
+        float shutter = 0.0f;   // the shutter's time open over the frame's; 0: no motion blur
+        bool on() const { return aperture > 0.0f || shutter > 0.0f; }
+    } lens_;
+    static constexpr int kLensTile = 16;  // pixels of the picture a square of its tiles holds
+    void lens_of(const Spatial3D& world, const Camera& eye, float aspect);
+    void run_lens();
+    gl::RenderTarget lens_half_, lens_fill_, lens_bokeh_, lens_tiles_, lens_spread_, lens_sharp_, lens_moved_;
+    std::unique_ptr<gl::Program> lens_setup_prog_, lens_fill_prog_, lens_tiles_prog_, lens_spread_prog_, lens_bokeh_prog_, lens_merge_prog_,
+        lens_motion_prog_;
+    bool lens_held_ = false;  // last frame's view known: motion can be found
+    gl::Mat4 lens_last_vp_ = gl::Mat4::identity();
+    const void* lens_last_world_ = nullptr;
+    std::vector<std::pair<const void*, gl::Mat4>> lens_last_rooms_;
+    gl::Vec3 lens_last_eye_{0, 0, 0};
     // The lamps the eye sees this frame, on the screen (a look's halation
     // gathers round them): where (0..1), how far along the view, their light.
     static constexpr int kHaloLamps = 16;
@@ -2176,6 +2348,11 @@ private:
     struct ViewParams {
         float fov = 1.2f, aspect = 1.0f, znear = 0.05f, zfar = 120.0f;
     } view_;
+    // How fast the eye's view turned, across the screen (parts of the
+    // screen a second, x and y), from the last frame's way to this one's:
+    // what a rolling shutter skews by (composite `uReadout`).
+    gl::Vec3 turn_fwd_{0, 0, 0};
+    float turn_rate_[2] = {0, 0};
 
     Pose frame_;              // the placement of the room currently being drawn
     gl::Mat4 frame_matrix_;   // the same thing, ready to multiply

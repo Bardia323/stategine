@@ -103,6 +103,7 @@ private:
         const Seam s = doorway_seam(g.name, g.a, g.pa, g.b, g.pb, g.also);
         for (Key f : {s.a_to_b, s.b_to_a, s.glue_ab, s.glue_ba}) fresh_functor(f);
     }
+    void check(const plan::Space&) {}
     void check(const plan::Drive& d) {
         for (const Drive& have : g_.drives())
             if (have.name == d.d.name) return no("drive " + d.d.name.str() + " is already in the graph");
@@ -191,6 +192,10 @@ public:
     void make(const plan::Connect& c) { g_.connect(c.t); }
     void make(const plan::Embed& e) { g_.embed(e.e); }
     void make(const plan::Glue& gl) { glue_doorway(g_, gl.name, gl.a, gl.pa, gl.b, gl.pb, gl.also, gl.wraps); }
+    void make(const plan::Space& sp) {
+        std::vector<std::string> why;
+        if (!make_space(g_, sp.name, sp.rooms, &why)) throw std::runtime_error(why.empty() ? "space " + sp.name.str() + " not made" : why.front());
+    }
     void make(const plan::Drive& d) {
         sg::drive(g_, clock(g_, d.d.clock.str()), d.d.state, d.d.trigger, d.d.additive, d.d.keeps, d.d.lane);
     }
@@ -306,6 +311,7 @@ std::string unit_of(const Step& step) {
             else if constexpr (std::is_same_v<S, plan::Connect>) return "transition " + transition_name(st.t).str();
             else if constexpr (std::is_same_v<S, plan::Embed>) return "embed " + st.e.name.str();
             else if constexpr (std::is_same_v<S, plan::Glue>) return "seam " + st.name.str();
+            else if constexpr (std::is_same_v<S, plan::Space>) return "space " + st.name.str();
             else if constexpr (std::is_same_v<S, plan::Drive>) return "drive " + st.d.name.str();
             else if constexpr (std::is_same_v<S, plan::Port>) return "port " + st.state.str() + " " + st.event.str();
             else if constexpr (std::is_same_v<S, plan::Keep>) return "keep " + st.functor.str();
@@ -746,6 +752,10 @@ Reloaded reload(const Plan& before, const Plan& after, StateGraph& g, const Nati
         });
         each(changed, "seam ", now, [&](const std::string& key, const Unit& u) {
             for (const plan::Glue* gl : u.all<plan::Glue>()) r.maker().make(*gl);
+            out.changed.push_back(key);
+        });
+        each(changed, "space ", now, [&](const std::string& key, const Unit& u) {
+            for (const plan::Space* sp : u.all<plan::Space>()) r.maker().make(*sp);
             out.changed.push_back(key);
         });
         each(changed, "drive ", now, [&](const std::string& key, const Unit& u) {

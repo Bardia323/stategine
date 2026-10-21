@@ -236,6 +236,14 @@ public:
     // What lay_walls made: "shell", "face", "skirt" or "blank" (`laid`).
     std::vector<const Element*> laid(const std::string& what) const;
 
+    // A thing - its parts - moved straight out of the wall it stands into
+    // until all of it, its own corners where it is a model, is `gap` in
+    // front of the wall's face: its back to the wall. What hangs on a wall
+    // is put there by its middle and stood off it so (a model stands by its
+    // footprint's middle, and half of it would be in the wall). How far it
+    // moved; 0 if it stood clear.
+    double stand_off_walls(const std::vector<Key>& parts, double gap = 0.002);
+
 private:
     // How far a wall runs on past the room's corner at `p` (coming from `q`):
     // its thickness at an outside corner, nothing at an inside one.
@@ -243,5 +251,17 @@ private:
     // Along a curved wall: enough to close the gap where two pieces meet.
     static double bend(const std::vector<plan::P2>& pts, std::size_t i, double t);
 };
+
+// The things of a walled room that stand into its walls - their footprint,
+// turned as they are, more than `slack` past the floor's edge where no
+// opening is (a skirting's depth: deeper, a thing reads as pushed through
+// the wall): a model stood by its middle against a wall is half in it. A
+// thing set into a wall on purpose says `in_wall` = 1; one in an opening (a
+// door in its doorway) or hung on one (`hangs_on`: a window's frame, its
+// curtain) is let be, and so is what runs under the walls (a floor, a
+// ceiling: half the room or more). Empty for a room with no walls laid.
+// Said when a world is first drawn (GLWorldView::prepare): a thing pushed
+// through a wall is seen from the far side, or from the room beyond.
+std::vector<std::string> into_walls(const Room& room, double slack = 0.05);
 
 }  // namespace sg

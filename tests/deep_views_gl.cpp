@@ -66,6 +66,10 @@ int main() {
     hazy.uniform(sg::passes::scene, "uFogDensity", 0.02);
     hazy.setting(sg::passes::scene, "scatter", 0.0);
     sg::wear(g, "c", "hazy");
+    // (b's lens: none, until a wide one is tried below.)
+    auto& bowed = g.add<sg::LookState>("bowed");
+    bowed.uniform(sg::passes::composite, "uBarrel", 0.0);
+    sg::wear(g, "b", "bowed");
 
     sg::render::GLWorldView view;
     sg::dsl::Bindings bindings;
@@ -133,6 +137,27 @@ int main() {
         check(d < 6.0 && holes <= 0, "a window in its own look, the eye at z " + std::to_string(z) + " x " + std::to_string(x) +
                                            ", shows what a view through it shows (" + std::to_string(d) + " levels a pixel apart, " +
                                            std::to_string(holes) + " pixels more of nothing)");
+    }
+
+    // A window in its own look whose world's lens is a wide one: the lens is
+    // the eye's, laid on the whole picture once - the picture through the
+    // window is not bowed again inside it (nor reaches past the part of the
+    // screen it was drawn in).
+    {
+        eye.params.set(sg::keys::z, 3.7).set(sg::keys::x, 7.0);
+        a.element("pa").params.set("own_look", 1.0);
+        const auto straight = picture();
+        bowed.uniform(sg::passes::composite, "uBarrel", 0.3);
+        // (A step aside and back: the window's picture drawn again, not held.)
+        eye.params.set(sg::keys::x, 7.05);
+        picture();
+        eye.params.set(sg::keys::x, 7.0);
+        const auto wide = picture();
+        a.element("pa").params.set("own_look", 0.0);
+        bowed.uniform(sg::passes::composite, "uBarrel", 0.0);
+        const double d = apart(straight, wide);
+        check(d < 0.05, "a window in its own look, its world's lens a wide one: the picture through it bowed only by the eye's lens (" +
+                            std::to_string(d) + " levels a pixel apart)");
     }
 
     // A doorway the eye cannot see (Quality::skip_unseen): a screen stood

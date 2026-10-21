@@ -80,7 +80,10 @@ auto GLWorldView::placed_of(const State& st, const Element& e) const -> Placed& 
 
 auto GLWorldView::placed_in(PlacedSlot& slot, const State& st, const Element& e) const -> Placed& {
     const uint64_t stamp = chain_stamp(st, e, slot.chain);
-    if (slot.placed.stamp != stamp) slot.placed = Placed{stamp};
+    if (slot.placed.stamp != stamp) {
+        if (slot.placed.boxed) slot.before = slot.placed.box, slot.moved_in = frame_count_;
+        slot.placed = Placed{stamp};
+    }
     return slot.placed;
 }
 
@@ -715,6 +718,29 @@ void GLWorldView::set_model(const RoomMatrix& local) {
     last_model_ = frame_matrix_ * local.m;
     scene_->set("uModel", last_model_);
     scene_->set("uTexModel", local.m);
+    // A thing drawn on its own while the view's motion is kept: where it
+    // stood last frame (or here, the first), and where it stands now kept
+    // for the next - by its room, its name and which of its draws this is.
+    if (motion_pass_ && moving_) {
+        const uint64_t key = (static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(moving_room_)) * 0x9E3779B97F4A7C15ULL) ^
+                             (static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(moving_->id.handle())) * 0xC2B2AE3D27D4EB4FULL) ^
+                             (static_cast<uint64_t>(moving_part_++) * 0x165667B19E3779F9ULL);
+        const auto was = moved_last_.find(key);
+        // (Not drawn on its own last frame: where its box stood before it
+        // moved, if that was this frame - else it stood here.)
+        const PlacedSlot& slot = slot_of(*moving_);
+        const gl::Mat4& before = was != moved_last_.end() ? was->second : moving_part_ == 1 && slot.moved_in == frame_count_ ? slot.before.m : local.m;
+        scene_->set("uWasModel", before);
+        scene_->set("uMoving", 1.0f);
+        moved_now_[key] = local.m;
+    }
+}
+
+void GLWorldView::draw_moving(const Spatial3D& room, const Element& e) {
+    moving_room_ = &room, moving_ = &e, moving_part_ = 0;
+    draw_crate(room, e);
+    moving_room_ = nullptr, moving_ = nullptr;
+    scene_->set("uMoving", 0.0f);
 }
 
 void GLWorldView::draw_room(const Spatial3D& world) {

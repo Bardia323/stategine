@@ -161,7 +161,44 @@ into the other's wall. `descent_defects` names it:
 seam: hall.e_a reaches 0.150000 m past doorway doorway, into the room on the other side
 ```
 
-### One space, sheafified (`sheaf`)
+### Rooms made one room (`space`)
+
+Two rooms of one kind - both of three dimensions, met by a rigid motion at a
+plain walked doorway, one scale, both walled or both under a sky - may be
+made one, and only where a world says so, in its source:
+
+```
+seam hall.to_lounge <-> lounge.to_hall
+    name arch
+space hotel = sheaf hall lounge
+```
+
+`sg::make_space(graph, hotel, {hall, lounge})` (what the line compiles to)
+takes two local states and makes them one local state: one room, its floor
+plan whatever theirs make together (no rectangle), one frame, one eye, one
+walker, one physics, one look, one clock. Nothing stands above it - it is a
+room like any, embedded in, joined by doorways to other worlds. Everything
+the rooms were made of is taken into it (`Spatial3D::absorb`) where the
+seams put each, the first where its frame begins: walls, floors, things,
+lamps, what they wear; the floor each covered is kept as its `regions` (its
+light from all round laid over each, its corners' dirt where each room's
+walls were, its floors in its physics); their wear fields are laid again as
+one. Each doorway between them is a hole in its walls (kind `hole`) - no
+view, no crossing: walked through as any gap is. The rooms and their seams
+with each other are no more; arrows of theirs went with them (what the room
+does is made on it).
+
+It refuses, saying why, rooms that are not one kind of space, rooms not
+reached through the seams between them, a ring of rooms that does not close
+(a holonomy: a room two ways reach in two places), rooms that stand in each
+other. `GLWorldView::prepare` says a hole of it no walker can pass
+(`sg::space_faults`: something solid across it).
+
+### One space, sheafified (`sheaf`) - the older way
+
+(Superseded by `space`, where a world can say it: rooms drawn and simulated
+as one while each stays its own state - Memory Leak's house still stands on
+it. A new world says `space`.)
 
 Glued is not one. A seam glues two rooms: each stays a presheaf - its own
 local section, in its own frame, with its own look and its own physics - and
@@ -200,6 +237,15 @@ kind of space; everywhere else rooms are glued as ever, each its own.
   shut), and then only what is seen through those doorways; elsewhere only
   what has moved in it (`PlacedRoom::things_only`). A view through a doorway
   onto a room shows the space it is part of (`GLWorldView::glued_round`).
+
+* Rooms made one meet **back to back**. A room's walls stand `wall_t`
+  outside its floor; a doorway on the floor's edge, joined to another so,
+  puts each room's wall in the other, their faces fighting where they meet.
+  Each side's account of the doorway (`State::overlap`) says how far its
+  walls reach past it (`walls`), and the overlap law names a seam whose two
+  walls stand in each other: stand each doorway at the back of its wall
+  (or say `differs walls` - it stays one space). And the eye sees out to
+  the far end of every room of the space, whatever its own room's `far`.
 
 It is derived, never kept: nothing is written to any state, and the rooms
 it places are where the seams' own carries put them. `sg_crossings_gl`
@@ -1091,17 +1137,126 @@ mipmapped, and the composite reads it softer the further from the point,
 each pixel a filled disc of it as wide as it is out of focus (24 taps in a
 sunflower's spiral, a level finer than the disc) (`sg_land_gl`).
 
+That is a look, not a lens. A camera that says its aperture is seen through
+a real one - a thin lens, sharp at one distance and soft before and behind it
+by how far, as footage filmed with a camera is:
+
+| Camera param | Means | Unless it says |
+| --- | --- | --- |
+| `fstop` | the aperture, as an f-number (1.4 wide open, 16 shut down) | 0: a pinhole, all sharp |
+| `focal` | the focal length, mm; the sensor then as big as it and the `fov` make it | what the `fov` makes of the sensor |
+| `sensor` | the sensor's width, mm; its height as the picture's shape makes it | 36 (a full frame) |
+| `focus_distance` | where it is sharp, metres along the view | its `focus` thing, as far off as it stands (`focus_up` over it); saying neither, what is in the middle of the picture |
+| `shutter` | the part of each frame the shutter is open (0.5: a 180 degree shutter) | 0: none |
+| `shutter_time` | how long it is open, seconds (1/48), in place of `shutter`; never longer than the frame | - |
+
+Each point is a circle on the sensor, c = A |d - s| / d * f / (s - f) (A =
+f / N, d how far it is, s the focus), as many pixels as it is of the sensor's
+height. The picture is spread by it at half its pixels: each point a disc
+gathered where it would scatter - what is behind a pixel spreading no wider
+than the pixel's own circle (a sharp thing stands clear of the soft wall
+behind it, no halo), what is in front of the focus over everything (a near
+thing soft over a sharp one, seen through at its edges) - with its light
+kept as it was, so a lamp out of focus is a bright disc; the far points of a
+wide disc read from a coarser picture of only what is out of focus, so a
+small lamp fills its disc and a sharp edge spreads nothing. The widest
+circle drawn is 8% of the picture's height.
+
+The shutter blurs each pixel along the way the picture moved under it while
+it was open: how far it went since the last frame (found by its depth, as
+the frames' smoothing finds it), times the part of the frame's own time
+(`set_frame_delta`) the shutter was open - so the blur is an exposure, and a
+frame told no time is a still. What is in front smears over what is behind
+and is seen through at its edges; what is behind never smears over it. At
+most 32 pixels either side. The motion is the view's: things that move
+themselves are blurred only as the view moves past them, not by their own
+motion (each thing's own, `set_motion`, is kept for DLSS, not read here yet). A cut (`shot`)
+starts it again.
+
+The eye's own view only, after the frames' smoothing and before the glow
+(a lamp's disc glows). A camera that says neither draws exactly as before and
+pays nothing; on the 4080, at 1920 x 1080, a depth of field takes about
+0.3 ms (0.9 ms with every pixel at its widest circle), the shutter 0.25 ms
+(`sg_lens_gl`).
+
 A camera says when its shot changes (`shot`, any number - a cut whenever it
 is another): what the eye made of the frames before is let go (its
 smoothing over frames), and it takes the new shot's light at once rather
 than easing to it (`sg_exposure_gl`).
+
+A look's lens bows the picture as a wide one does (`uBarrel`, its
+composite's: straight lines bowed out toward the frame's corners; 0.04 reads
+wide, 0.06 curves a shelf at the frame's edge) and parts its colours at the
+edges (`uFringe`). It is the eye's, laid once on the whole picture: a world
+seen through a window in its own look is developed in that look - its grade,
+its glow - but not bowed or fringed again inside the eye's picture (`sg_deep_views_gl`).
+
+### Styles
+
+A world's look is its grade and its effects, a state of the world, fading
+as worlds change. Under it, how the picture is made at all is its *style*
+(`sg/gl/Style.hpp`): a named set of the look's values and a few of the
+world's own, kept as data - `pass.key = value` a line:
+
+```
+# styles/photoreal.style
+composite.uSharpen = 0.6      # a look's uniform
+scene.trace.gi = 0            # a look's setting
+composite.shader = pixel      # a pass's shader, one of the engine's
+place.probe_cell = 1.3        # a param of the world itself
+```
+
+`sg::gl::apply_style(look, world, "photoreal")` lays it under a look when
+the world is made: each value the look (or the world) does not already say
+is taken from the style; what the look says stays its own. So looks stay on
+top, a fade between two worlds fades between their styles too, and the
+renderer knows nothing of styles. Built in: `photoreal` (the settings
+docs/workflows.md found against photographs), `video` (a handheld digital
+camera in a dark house: its sensor's noise, `uSensor`, a wide cheap lens
+with soft corners, `uCornerSoft`, a rolling shutter, `uReadout`, video's
+half-resolution colour, `uChromaHalf`; the darks' colour gone first, `uDarkChroma`),
+`psx` (240 rows, 32 steps a channel, dithered), `standard` (nothing). A project's are files, found in
+`SG_STYLES`, then `styles/` beside the program. The machine's quality
+(antialiasing, the upscaler, resolution: render.conf) is not a style's.
+
+### The card's upscaler
+
+The eye's picture is made whole over frames by the engine's own smoothing
+(`taa`, `render_scale`), or by the card's: NVIDIA's DLSS, where the Vulkan
+backend draws on an NVIDIA card (`Quality::upscaler`; render.conf
+`upscaler = dlss`, or `dlaa` for DLSS at the screen's own pixels). The view
+is drawn at the part of the screen's pixels its `dlss_mode` says
+(`quality` two thirds each way, `balanced` 0.58, `performance` a half,
+`ultra_performance` a third, `native` all), moved by a part of a pixel each
+frame, and DLSS makes the screen's picture of it from that picture, its
+depth, how each pixel moved since the last frame and the frames before; the
+lens, the glow and the composite follow at the screen's size, as after the
+TAA.
+
+How each pixel moved is the renderer's own (`GLWorldView::set_motion`):
+a thing that has moved is drawn on its own and says where it stood last
+frame - kept by the renderer, by its room and its name, as it keeps its
+other caches, never written to the world - and the rest is found from depth
+as the view moved past it. A skin's joints within it are not said. Nothing
+asks, nothing is made.
+
+It is a machine's choice, as `trace` is: no look or world can ask for it,
+and where it cannot be (OpenGL, D3D12, no NVIDIA card, DLSS's file not beside
+the program) the TAA smooths the eye instead and the view says why, once.
+`SG_QUALITY="upscaler = dlss; dlss_mode = performance"` says it over any
+program's own quality. What it costs, and what ships with it:
+[native.md](docs/native.md#dlss).
 
 ### Light traced along rays
 
 A look may ask for its light to be traced (`trace`): the sun's shadow by rays
 to its disc - as soft as the sun makes it, every twig its own - in place of
 its maps; what water and glossy things mirror, by rays the way their facets
-turn them. The light from all round stays the engine's own (its probes).
+turn them. The light from all round is the engine's own (its probes) unless
+the look says `trace.gi`: then one bounce of it traced from each pixel's
+surface - the floor's sunlit patch lighting the ceiling, a red wall's colour
+on the floor beside it, a box's foot darker, a window lighting the room - the
+probes' light for what came round more than once (`sg_gi_gl`).
 Things are met under trees of boxes made once a shape, the ground as its
 heights round the eye; it runs wherever the renderer's GL does (OpenGL,
 Vulkan, D3D12), with no card's ray tracing asked for. A look that does not
@@ -1236,6 +1391,44 @@ The laws (`probe_faults`, a Spatial3D's `faults`): a probe's box lies in its
 room, its sets are 27 numbers each, every lamp it holds a set for is there,
 and it was baked from the room as it is - its shell, its lamps' places and
 cones (`probe_digest`); moving a chair does not make it stale.
+
+### Reflections
+
+A look may ask for what its room's glossy things mirror to be captured
+(`reflect.captures` 1, scene pass): each of the room's relit boxes (above)
+keeps a picture of the room seen every way from its middle, lit as the room
+stands - its lamps, its probes' light, its shades glowing, what its openings
+show of the rooms it is one space with - drawn by the eye's own view, as a
+mirror's view is, 128 pixels a face. The six faces are folded into an
+octahedron's map 256 pixels square (a texel's border round it, so it is read
+with no seam), and its smaller sizes, down to 8, are blurred as a rougher
+surface blurs what it mirrors (GGX, sampled from the map's own smaller sizes,
+so a lamp is spread, not dotted). A room's maps are a layer a box of one
+array on the card: 0.7 MB a box, 16.8 MB for a room of 24 boxes (the 46 m
+hall's), whatever the count, read through one sampler.
+
+The scene shader reads them where a surface mirrors: the way out followed to
+the room's box, and each box's map read towards where it meets it from that
+box's own middle (box-projected) - a wall in the floor stands below the wall,
+not where it would be seen from the box's middle - at the size for the
+surface's roughness, blended between boxes as the probes are, in place of the
+probes' blur of what is mirrored; the split sum as ever says how much it
+mirrors. A plane that reflects (`reflects`) shows its own picture over them,
+and where the look traces (`trace`), what the rays found wins while the
+surface is smooth enough to trace (`trace.mirror`); the captures are what is
+mirrored everywhere else. `reflect.captures` 1 and `trace` 0 is captures
+alone.
+
+Captured whole the first time a room is seen (warming, `view.warm`, takes
+every place's then: about a second for the hall and its lounge, 48 boxes);
+after that, a box is taken again only when what it was taken of changes -
+the room's shell (what the probes see: what moves is left out of both), a
+lamp moved or turned, a lamp out a while or back on, its standing gone half
+a stop - a face a frame, about a millisecond. A lamp is captured at its
+standing - the most it has given lately, let down slowly, as its shadow map's
+place is kept - so a flicker, a stutter, a moment dark is not taken again
+(the fitting's own glow is as it was at that moment). A room with no boxes
+(`gi` 0, an open land) asks for nothing and is drawn as ever (`sg_probes_gl`).
 
 ## The notation
 

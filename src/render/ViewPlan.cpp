@@ -379,6 +379,12 @@ float portal_occlusion(const Spatial3D &room, const Element &portal, const Pose 
             continue;
         if (e.params.num(Key{"cast"}, 1.0) < 0.5)
             continue;
+        // (`covers`: how much of its box a thing fills - a leaf or a board
+        // all of it, 1; a frame, a lattice or a blind's slats next to none:
+        // what they keep out their own shadows say, slat by slat.)
+        const float covers = static_cast<float>(std::clamp(e.params.num(Key{"covers"}, 1.0), 0.0, 1.0));
+        if (covers <= 0.0f)
+            continue;
         const Vec3d c = world_pose(room, e).position; // in the room, not off its anchor
         const double dx = c.x - door.position.x, dz = c.z - door.position.z;
         if (dx * dx + dz * dz > (half_w + 1.5) * (half_w + 1.5))
@@ -399,7 +405,7 @@ float portal_occlusion(const Spatial3D &room, const Element &portal, const Pose 
             continue;
         const float w = std::max(0.0f, std::min(u1, half_w) - std::max(u0, -half_w));
         const float h = std::max(0.0f, std::min(v1, half_h) - std::max(v0, -half_h));
-        const float part = w * h / (4.0f * half_w * half_h);
+        const float part = covers * w * h / (4.0f * half_w * half_h);
         most = std::max(most, part);
         if (part > 0.95f && d1 - d0 < 0.1f)
             shut = true;

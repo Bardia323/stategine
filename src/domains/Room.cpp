@@ -1,3 +1,4 @@
+#include <limits>
 #include "sg/domains/Room.hpp"
 
 #include "sg/domains/Shapes.hpp"
@@ -675,6 +676,158 @@ void Room::lay_walls() {
     // same element when it is wanted again.
     for (auto& e : elements())
         if (!used.count(e.id) && e.params.has(Key{"laid"})) e.alive = false;
+}
+
+std::vector<std::string> into_walls(const Room& room, double slack) {
+    std::vector<std::string> out;
+    if (room.laid("shell").empty()) return out;
+    const Outline ol = room.outline();
+    const std::vector<Opening> holes = room.openings();
+    // Rooms made one (sg::make_space): its floor plan is the floor each
+    // covered (`regions`), its ways through them its doorways and its holes.
+    struct Rect {
+        double x0, z0, x1, z1;
+        double area() const { return (x1 - x0) * (z1 - z0); }
+        double outside(const P2& p) const { return std::hypot(std::max({x0 - p.x, 0.0, p.x - x1}), std::max({z0 - p.z, 0.0, p.z - z1})); }
+    };
+    std::vector<Rect> regions;
+    for (int k = 0; k < static_cast<int>(room.params().num(Key{"regions"}, 0.0)); ++k) {
+        const std::string r = "region" + std::to_string(k) + "_";
+        regions.push_back({room.params().num(Key{r + "x0"}), room.params().num(Key{r + "z0"}), room.params().num(Key{r + "x1"}), room.params().num(Key{r + "z1"})});
+    }
+    std::vector<std::pair<Pose, double>> ways;
+    if (!regions.empty())
+        for (const Element& w : room.elements())
+            if (w.alive && (w.kind == kinds::portal || w.kind == Key{"hole"})) ways.push_back({world_pose(room, w), 0.5 * w.params.num(keys::w, 1.0)});
+    int more = 0;
+    for (const Element& e : room.elements()) {
+        if (!e.alive || e.kind != kinds::mesh || e.params.has(Key{"laid"})) continue;
+        if (e.params.num(Key{"unseen"}, 0.0) > 0.5 || e.params.num(Key{"in_wall"}, 0.0) > 0.5) continue;
+        const double hx = 0.5 * e.params.num(keys::sx, 0.0), hz = 0.5 * e.params.num(keys::sz, 0.0);
+        if (hx <= 0.0 || hz <= 0.0) continue;
+        // (What runs under the walls on purpose - a floor, a ceiling, a
+        // carpet laid wall to wall - is the room's own, not a thing in it.)
+        double floor = room.w() * room.d();
+        if (!regions.empty()) {
+            const P2 c{world_pose(room, e).position.x, world_pose(room, e).position.z};
+            floor = 1e30;
+            for (const Rect& r : regions)
+                if (r.outside(c) < 0.5) floor = std::min(floor, r.area());
+        }
+        if (4.0 * hx * hz >= 0.5 * floor) continue;
+        // (What hangs on an opening - a window's frame, its curtain and rod -
+        // goes with it, into the wall round it.)
+        bool hung = false;
+        for (const Element* up = &e; up && !hung;) {
+            hung = up->params.has(Key{"hangs_on"});
+            const std::string* parent = up->params.text(keys::parent);
+            up = parent && !parent->empty() && *parent != up->id.str() ? room.find(Key{*parent}) : nullptr;
+        }
+        if (hung) continue;
+        const Pose at = world_pose(room, e);
+        double worst = 0.0;
+        std::size_t wall = 0;
+        const auto test = [&](const Vec3d& c) {
+            const P2 p{c.x, c.z};
+            if (!regions.empty()) {
+                double deep = 1e30;
+                for (const Rect& r : regions) deep = std::min(deep, r.outside(p));
+                if (deep <= worst) return;
+                for (const auto& [w, half] : ways) {
+                    const Vec3d l = local_of(w, c);
+                    if (std::fabs(l.x) < 0.6 && std::fabs(l.z) < half + 0.3) return;
+                }
+                worst = deep, wall = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            if (ol.inside(p)) return;
+            const double deep = ol.clearance(p);
+            if (deep <= worst) return;
+            // Through an opening of the wall it is nearest: in its doorway.
+            std::size_t near = 0;
+            double best = 1e18;
+            for (std::size_t w = 0; w < ol.walls.size(); ++w) {
+                double off = 0;
+                ol.walls[w].nearest(p, &off);
+                if (off < best) best = off, near = w;
+            }
+            const double along = ol.walls[near].nearest(p);
+            const bool opening = std::any_of(holes.begin(), holes.end(), [&](const Opening& o) {
+                return o.side == static_cast<int>(near) && along > o.lo() - 0.3 && along < o.hi() + 0.3;
+            });
+            if (!opening) worst = deep, wall = near;
+        };
+        // Its box first; then, for a model whose box goes into a wall, its
+        // own corners - a palm's fronds spread wide of where they are.
+        for (double x : {-hx, hx})
+            for (double z : {-hz, hz}) test(at.position + rotate_xz({x, 0.0, z}, at.yaw));
+        const std::vector<float>* made = worst > slack && e.params.get_or<std::string>("shape", "") == "model"
+                                             ? room.model(Key{e.params.get_or<std::string>("model", "")})
+                                             : nullptr;
+        if (made && made->size() >= 8) {
+            worst = 0.0;
+            const double sy = e.params.num(keys::sy, 1.0);
+            const std::size_t step = std::max<std::size_t>(1, made->size() / 8 / 20000) * 8;
+            for (std::size_t i = 0; i + 8 <= made->size(); i += step)
+                test(place_in(at, {(*made)[i] * hx * 2.0, ((*made)[i + 1] + 0.5) * sy, (*made)[i + 2] * hz * 2.0}));
+        }
+        if (worst <= slack) continue;
+        if (out.size() >= 8) {
+            ++more;
+            continue;
+        }
+        char b[64];
+        std::snprintf(b, sizeof b, "%.2f", worst);
+        out.push_back("thing " + e.id.str() + " stands " + b + " m into the " + (wall < ol.walls.size() ? ol.tag(wall) : std::string("nearest")) +
+                      " wall: stand it against the wall's face, its back to it (a model stands by its footprint's middle), or say `in_wall` if it is set into it");
+    }
+    if (more) out.push_back("and " + std::to_string(more) + " more things stand into its walls");
+    return out;
+}
+
+double Room::stand_off_walls(const std::vector<Key>& parts, double gap) {
+    const Outline ol = outline();
+    // The deepest any of it goes past the floor's edge, and which way is in there.
+    double deepest = 0.0;
+    P2 in{0, 0};
+    const auto test = [&](const Vec3d& c) {
+        const P2 p{c.x, c.z};
+        if (ol.inside(p)) return;
+        const double deep = ol.clearance(p) + gap;
+        if (deep <= deepest) return;
+        std::size_t near = 0;
+        double best = 1e18;
+        for (std::size_t w = 0; w < ol.walls.size(); ++w) {
+            double off = 0;
+            ol.walls[w].nearest(p, &off);
+            if (off < best) best = off, near = w;
+        }
+        P2 dir;
+        const P2 on = ol.walls[near].at(ol.walls[near].nearest(p), &dir);
+        deepest = deep, in = ol.inward(on, dir);
+    };
+    for (Key k : parts) {
+        const Element* e = find(k);
+        if (!e || !e->alive) continue;
+        const Pose at = world_pose(*this, *e);
+        const double hx = 0.5 * e->params.num(keys::sx, 0.0), hz = 0.5 * e->params.num(keys::sz, 0.0), sy = e->params.num(keys::sy, 1.0);
+        const std::vector<float>* made = e->params.get_or<std::string>("shape", "") == "model" ? model(Key{e->params.get_or<std::string>("model", "")}) : nullptr;
+        if (made && made->size() >= 8)
+            for (std::size_t i = 0; i + 8 <= made->size(); i += 8) test(place_in(at, {(*made)[i] * hx * 2.0, ((*made)[i + 1] + 0.5) * sy, (*made)[i + 2] * hz * 2.0}));
+        else
+            for (double x : {-hx, hx})
+                for (double z : {-hz, hz}) test(at.position + rotate_xz({x, 0.0, z}, at.yaw));
+    }
+    if (deepest <= 0.0) return 0.0;
+    // Moved as one: each part that is not posed from another of them.
+    for (Key k : parts) {
+        Element* e = find(k);
+        if (!e) continue;
+        const std::string* parent = e->params.text(keys::parent);
+        if (parent && std::find(parts.begin(), parts.end(), Key{*parent}) != parts.end()) continue;
+        e->params.set(keys::x, e->params.num(keys::x) + in.x * deepest).set(keys::z, e->params.num(keys::z) + in.z * deepest);
+    }
+    return deepest;
 }
 
 }  // namespace sg

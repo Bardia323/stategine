@@ -6,6 +6,7 @@
 // (render::Graphics): made from the file, changed by its own arrow, kept to
 // what each may be.
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,38 @@ int main() {
     check(problems.empty() && back.msaa == 8 && back.shadow_budget_mb == -1 && !back.instancing && back.bloom_strength == 0.25f &&
               back.shadow_size == odd.shadow_size && back.pack == odd.pack,
           "the file written for a quality reads back to it");
+
+    // Who makes the picture whole over frames: said as words.
+    {
+        Quality u;
+        problems.clear();
+        sg::render::read_quality("upscaler = dlss\ndlss_mode = performance\n", u, &problems);
+        check(problems.empty() && u.upscaler == Quality::upscale_dlss && u.dlss_mode == Quality::dlss_performance, "the upscaler and its mode, said as words");
+        Quality none = u;
+        sg::render::read_quality("upscaler = fsr\n", none, &problems);
+        check(problems.size() == 1 && none.upscaler == Quality::upscale_dlss, "an upscaler there is none of is said, and left as it was");
+        Quality dlaa;
+        dlaa.upscaler = Quality::upscale_dlaa;
+        Quality read_back;
+        sg::render::read_quality(sg::render::quality_text(dlaa), read_back, nullptr);
+        check(read_back.upscaler == Quality::upscale_dlaa && sg::render::quality_text(dlaa).find("upscaler = dlaa") != std::string::npos,
+              "and written as words, read back");
+        check(sg::render::dlss_scale(Quality::dlss_quality) > 0.66f && sg::render::dlss_scale(Quality::dlss_native) == 1.0f, "each mode's part of the pixels");
+        // The machine's word over a program's.
+#ifdef _WIN32
+        _putenv("SG_QUALITY=upscaler = dlaa; msaa = 0");
+#else
+        setenv("SG_QUALITY", "upscaler = dlaa; msaa = 0", 1);
+#endif
+        const Quality machine = sg::render::with_machine(Quality{});
+        check(machine.upscaler == Quality::upscale_dlaa && machine.msaa == 0 && machine.shadow_size == defaults.shadow_size, "SG_QUALITY says over a program's quality");
+#ifdef _WIN32
+        _putenv("SG_QUALITY=");
+#else
+        unsetenv("SG_QUALITY");
+#endif
+        check(sg::render::with_machine(Quality{}).upscaler == Quality::upscale_taa, "and saying nothing changes nothing");
+    }
 
     // The settings as a state.
     {

@@ -382,6 +382,48 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
     endif()
     add_test(NAME sg_trace_gl COMMAND sg_trace_gl)
 
+    # The light from all round traced (trace.gi): nothing of it unless a look says; the ceiling over a sunlit floor lit by it, a red wall's colour on the floor, a box's foot darker.
+    if(SG_BUILD_DSL)
+      add_executable(sg_gi_gl tests/gi_gl.cpp)
+      target_link_libraries(sg_gi_gl PRIVATE stategine_dev glfw stategine_dsl)
+      stategine_compile_dsl(sg_gi_gl NAME gi SOURCES tests/dsl/gi.sg)
+      if(WIN32)
+        target_link_libraries(sg_gi_gl PRIVATE opengl32)
+      endif()
+      add_test(NAME sg_gi_gl COMMAND sg_gi_gl)
+    endif()
+
+    # The eye's lens (README *The lens*): nothing new unless a camera says; a thin lens's depth of field (sharp at the focus, the rest by its circle of confusion, lamps as discs); a shutter's motion blur by how far things went while it was open.
+    # How each pixel of the eye's view moved (GLWorldView::set_motion, DLSS's motion vectors): nothing still, the jitter none; a thing going sideways as far as it went; a turn of the eye as the picture moved.
+    add_executable(sg_motion_gl tests/motion_gl.cpp)
+    target_link_libraries(sg_motion_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_motion_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_motion_gl COMMAND sg_motion_gl)
+
+    # The card's own upscaler (Quality::upscaler: DLSS on Vulkan): the screen's picture, lit, as the TAA's, as sharp, still once settled; where it cannot be (drawn by GL), why said and the TAA in its place.
+    add_executable(sg_dlss_gl tests/dlss_gl.cpp)
+    target_link_libraries(sg_dlss_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_dlss_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_dlss_gl COMMAND sg_dlss_gl)
+    add_test(NAME sg_dlss_fallback_gl COMMAND sg_dlss_gl)
+    set_tests_properties(sg_dlss_fallback_gl PROPERTIES ENVIRONMENT "SG_GPU=gl")
+
+    # A style laid under a look: the look's own kept, the rest the style's, the world's lines the world's (sg/gl/Style.hpp).
+    add_executable(sg_style tests/style.cpp)
+    target_link_libraries(sg_style PRIVATE stategine_dev glfw)
+    add_test(NAME sg_style COMMAND sg_style)
+
+    add_executable(sg_lens_gl tests/lens_gl.cpp)
+    target_link_libraries(sg_lens_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_lens_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_lens_gl COMMAND sg_lens_gl)
+
     # Fog pooled where a world says: the wall through it its colour, past it as it was; its wisps moved by its world's time alone.
     add_executable(sg_fog_gl tests/fog_gl.cpp)
     target_link_libraries(sg_fog_gl PRIVATE stategine_dev glfw)
@@ -469,6 +511,15 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_coplanar_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_coplanar_gl COMMAND sg_coplanar_gl)
+
+    # The seams the photographic rooms found, closed: what is worn shown by
+    # itself, a joined room drawn to its end, a card's picture on its face.
+    add_executable(sg_guards_gl tests/guards_gl.cpp)
+    target_link_libraries(sg_guards_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_guards_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_guards_gl COMMAND sg_guards_gl)
 
     # How things are drawn, a state the renderer follows: changed while drawing, and back.
     add_executable(sg_graphics_gl tests/graphics_gl.cpp)
@@ -640,6 +691,14 @@ if(SG_BUILD_TESTS)
   add_executable(sg_channels tests/test_channels.cpp)
   target_link_libraries(sg_channels PRIVATE stategine_dev)
   add_test(NAME sg_channels COMMAND sg_channels)
+  # Rooms made one room (the DSL's `space`): one state, its doorway between them a hole walked and seen through; what cannot be one refused.
+  add_executable(sg_space tests/space.cpp)
+  target_link_libraries(sg_space PRIVATE stategine_dev)
+  add_test(NAME sg_space COMMAND sg_space)
+  # Every shader's light-from-all-round arrays as many as the engine hands it (gl::kShaderProbes).
+  add_executable(sg_shader_counts tests/shader_counts.cpp)
+  target_link_libraries(sg_shader_counts PRIVATE stategine_dev)
+  add_test(NAME sg_shader_counts COMMAND sg_shader_counts)
   # The rigid world's laws: a step tried again from the same bodies and the
   # same cache (contacts, joints, islands) is the same to the last bit; a
   # stack asleep wakes whole; casts and rays through the index meet what
@@ -905,7 +964,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_render_conf sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_lanes sg_director sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_deep_views_gl sg_crossings_gl
-      sg_instancing_gl sg_upscale_gl sg_compute_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_upscale_gl sg_compute_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_guards_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape sg_finish_gl)

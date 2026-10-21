@@ -115,6 +115,23 @@ int main() {
     sg::add_leak(room, sg::Key{"dry"}, {1, 3, 1}, 0.0);
     room.params().set("age", 2.0);
     check(room.faults().size() == 2, "a leak that reaches nowhere, and an age past the most: each named");
+    // A stroke: a cause along a way - as strong all along it as across it at
+    // its middle, nothing off its ends beyond its spread; narrowed to its end.
+    {
+        sg::Distribution t(sg::Key{"trail"});
+        t.law(sg::Key{"drag"}, "stroke", sg::Params{}.set("from_x", 0.0).set("from_z", 0.0).set("to_x", 0.0).set("to_z", 10.0).set("sd", 0.2).set("amount", 5.0));
+        t.law(sg::Key{"thin"}, "stroke", sg::Params{}.set("from_x", 0.0).set("from_z", 0.0).set("to_x", 0.0).set("to_z", 10.0).set("sd", 0.2).set("sd_to", 0.05).set("amount", 5.0).set("amount_to", 0.0));
+        const sg::Area a{-5, -5, 10, 20};
+        check(t.faults().empty(), "a stroke said rightly has no faults");
+        const double mid = sg::intensity(t, sg::Key{"drag"}, 0, 5, a), start = sg::intensity(t, sg::Key{"drag"}, 0, 1, a);
+        check(std::fabs(mid - start) < 1e-9 && mid > 0.0, "a stroke is as strong all along it");
+        check(sg::intensity(t, sg::Key{"drag"}, 1.0, 5, a) < mid * 1e-4, "and nothing a metre to its side");
+        check(sg::intensity(t, sg::Key{"drag"}, 0, 12, a) < mid * 1e-4, "nor beyond its end");
+        check(sg::intensity(t, sg::Key{"thin"}, 0, 9.5, a) < sg::intensity(t, sg::Key{"thin"}, 0, 0.5, a), "fading to its end as it says");
+        sg::Distribution bad(sg::Key{"bad"});
+        bad.law(sg::Key{"x"}, "stroke", sg::Params{}.set("sd", 0.0));
+        check(!bad.faults().empty(), "a stroke of no width is a fault");
+    }
     std::printf("%s\n", failed ? "FAILED" : "all passed");
     return failed ? 1 : 0;
 }

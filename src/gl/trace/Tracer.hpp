@@ -27,7 +27,16 @@ struct Asked {
     float sky = 1.0f;      // the sky's light, as many times (`trace.sky`)
     float brightest = 4.0f;  // what a ray brings back at most (`trace.brightest`)
     float hold = 24.0f;    // frames a history holds at most (`trace.hold`)
-    bool any() const { return sun || mirror || lamps; }
+    // The light from all round, traced (`trace.gi`): one bounce of what each
+    // pixel's surface faces, in place of the probes' for its diffuse.
+    bool gi = false;
+    int gi_step = 2;          // pixels each way to one traced (`trace.gi.scale`)
+    int gi_rays = 1;          // rays a pixel traced (`trace.gi.rays`)
+    int gi_every = 4;         // and every how many frames (`trace.gi.rays` below one: 2 or 4)
+    float gi_reach = 12.0f;   // how far they meet things (`trace.gi.reach`), metres
+    float gi_hold = 32.0f;    // frames its history holds at most (`trace.gi.hold`)
+    float gi_bounce = 1.0f;   // how much of the probes' light what a ray meets has besides (`trace.gi.bounce`)
+    bool any() const { return sun || mirror || lamps || gi; }
     bool operator==(const Asked& o) const;
 };
 
@@ -104,6 +113,7 @@ private:
     Shape* make_shape(const Spatial3D& space, const Element& e);
     void pose_skin(Shape& s);
     void gather_things(const std::vector<PlacedRoom>& rooms);
+    Shape* cube_ = nullptr;          // a room's shell, as rays meet it: boxes of the one cube
 
     // The ground: its heights round the eye in two squares, fine and coarse.
     struct Square {
@@ -141,6 +151,8 @@ private:
     gl::RenderTarget sun_raw_, sun_kept_[2], sun_a_, sun_b_;
     gl::RenderTarget mirror_raw_, mirror_kept_[2], mirror_a_, mirror_b_, mirror_full_;
     gl::RenderTarget lamps_raw_, lamps_kept_[2], lamps_a_, lamps_b_;
+    gl::RenderTarget gi_raw_, gi_kept_[2], gi_a_, gi_b_, gi_full_;
+    bool gi_made_ = false;    // the light from all round traced this frame or the last
     gl::RenderTarget sky_light_;
     const gl::RenderTarget* sun_out_ = nullptr;
     const gl::RenderTarget* lamps_out_ = nullptr;
@@ -162,16 +174,17 @@ private:
     float pixel_ = 0.0f;     // how wide a pixel is a metre from the eye
     int frame_ = 0;
     uint64_t sky_of_ = 0;
-    std::unique_ptr<gl::Program> sky_prog_, sun_prog_, lamps_prog_, mirror_prog_, carry_prog_, smooth_prog_, widen_prog_, heights_prog_, highest_prog_;
+    std::unique_ptr<gl::Program> gi_prog_, sky_prog_, sun_prog_, lamps_prog_, mirror_prog_, carry_prog_, smooth_prog_, widen_prog_, heights_prog_, highest_prog_;
     void sized(int w, int h);
     void common(const gl::Program& p, int step) const;
     void world_to(const gl::Program& p) const;
     void make_sky_light();
     void pass(const gl::Program& p, const gl::RenderTarget& into) const;
-    const gl::RenderTarget& carry(const gl::RenderTarget& now, gl::RenderTarget kept[2], int step, bool mirror, float clamp);
+    const gl::RenderTarget& carry(const gl::RenderTarget& now, gl::RenderTarget kept[2], int step, bool mirror, float clamp, float hold = -1.0f);
     const gl::RenderTarget& smooth(const gl::RenderTarget& from, gl::RenderTarget& a, gl::RenderTarget& b, int step, int passes,
-                                   float penumbra, float sharp = 0.0f);
-    void widen(const gl::RenderTarget& from, gl::RenderTarget& into, int step, float rough);
+                                   float penumbra, float sharp = 0.0f, bool held_only = false);
+    void widen(const gl::RenderTarget& from, gl::RenderTarget& into, int step, float rough, bool held = false);
+    void trace_gi(const std::vector<PlacedRoom>& rooms, double* ms);
 };
 
 }  // namespace sg::render::trace

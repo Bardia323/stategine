@@ -264,6 +264,11 @@ private:
         if (g.wraps) o << (g.also.empty() ? ", {}" : "") << ", true";
         o << ");\n";
     }
+    void step(std::ostream& o, const plan::Space& sp) {
+        o << I() << "{\n" << I() << "    std::vector<std::string> why;\n" << I() << "    if (!sg::make_space(graph, " << lit(sp.name) << ", {";
+        for (std::size_t i = 0; i < sp.rooms.size(); ++i) o << (i ? ", " : "") << lit(sp.rooms[i]);
+        o << "}, &why)) throw std::runtime_error(why.empty() ? std::string(\"space not made\") : why.front());\n" << I() << "}\n";
+    }
     void step(std::ostream& o, const plan::Drive& d) {
         o << I() << "sg::drive(graph, sg::dsl::clock(graph, " << lit(d.d.clock) << "), " << lit(d.d.state) << ", " << lit(d.d.trigger) << ", "
           << (d.d.additive ? "true" : "false") << ", " << keeps_name(d.d.keeps)

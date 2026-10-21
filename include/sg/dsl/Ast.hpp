@@ -201,6 +201,13 @@ struct SeamAst {
     bool wraps = false;
 };
 
+// space <name> = sheaf <room> <room> ...: rooms of one kind made one space.
+struct SpaceAst {
+    Loc at;
+    std::string name;
+    std::vector<std::string> rooms;
+};
+
 struct EmbedAst {
     Loc at;
     std::string host_portal;  // "host.portal", split by the checker
@@ -282,6 +289,7 @@ struct Program {
     std::vector<LensAst> lenses;
     std::vector<TransitionAst> transitions;
     std::vector<SeamAst> seams;
+    std::vector<SpaceAst> spaces;
     std::vector<EmbedAst> embeds;
     std::vector<DriveAst> drives;
     std::vector<PortAst> ports;

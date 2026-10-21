@@ -15,10 +15,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "Device.hpp"
+#include "Dlss.hpp"
 
 namespace sg::gl::native {
 
@@ -156,6 +158,8 @@ public:
     Texture* window_depth() override { return window_depth_; }
     void present(bool vsync) override;
     void finish() override;
+    bool can_upscale(std::string& why) override;
+    bool upscale(const Upscale&, std::string& why) override;
 
 private:
     static constexpr int kFrames = 2;
@@ -301,6 +305,14 @@ private:
 
     std::unordered_map<std::uint64_t, VkSampler> samplers_;
     std::array<Texture*, 8> empties_{};
+
+    // NVIDIA's DLSS (Dlss.hpp): started the first time it is asked for, and
+    // the picture it makes (written by it, so its own: copied into the
+    // texture asked for).
+    std::unique_ptr<Dlss> dlss_;
+    bool dlss_tried_ = false;
+    std::string dlss_why_;
+    Texture* dlss_out_ = nullptr;
 };
 
 VulkanDevice::~VulkanDevice() {
@@ -310,6 +322,8 @@ VulkanDevice::~VulkanDevice() {
     }
     vkDeviceWaitIdle(device_);
     end_rendering();
+    dlss_.reset();  // (before the device it was made on)
+    if (dlss_out_) free_texture(dlss_out_);
     for (Frame& f : frames_) {
         retire(f);
         for (Chunk& c : f.chunks) free_buffer(c.buffer);
@@ -348,6 +362,20 @@ bool VulkanDevice::start(GLFWwindow* window, std::string& why) {
         return false;
     }
     std::vector<const char*> exts(glfw_ext, glfw_ext + n_ext);
+    // And what DLSS needs of them, where the card's driver has it (asked of
+    // NGX before anything is made; nothing where there is no NGX).
+    std::vector<std::string> dlss_instance, dlss_device;
+    Dlss::wanted(dlss_instance, dlss_device);
+    {
+        std::uint32_t n = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> all(n);
+        vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+        for (const std::string& e : dlss_instance)
+            if (std::any_of(all.begin(), all.end(), [&](const VkExtensionProperties& p) { return e == p.extensionName; }) &&
+                std::none_of(exts.begin(), exts.end(), [&](const char* x) { return e == x; }))
+                exts.push_back(e.c_str());
+    }
     std::vector<const char*> layers;
     if (const char* v = std::getenv("SG_VK_VALIDATE"); v && *v == '1') {
         std::uint32_t n = 0;
@@ -425,6 +453,8 @@ bool VulkanDevice::start(GLFWwindow* window, std::string& why) {
     std::vector<const char*> dev_exts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
     conditional_ = has(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
     if (conditional_) dev_exts.push_back(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+    for (const std::string& e : dlss_device)
+        if (has(e.c_str()) && std::none_of(dev_exts.begin(), dev_exts.end(), [&](const char* x) { return e == x; })) dev_exts.push_back(e.c_str());
 
     VkPhysicalDeviceFeatures2 have{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     vkGetPhysicalDeviceFeatures2(physical_, &have);
@@ -434,6 +464,14 @@ bool VulkanDevice::start(GLFWwindow* window, std::string& why) {
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     f12.timelineSemaphore = VK_TRUE;
     f12.hostQueryReset = VK_TRUE;
+    {
+        // (What DLSS reads its buffers by, where the card has it.)
+        VkPhysicalDeviceVulkan12Features h12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 h{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        h.pNext = &h12;
+        vkGetPhysicalDeviceFeatures2(physical_, &h);
+        f12.bufferDeviceAddress = h12.bufferDeviceAddress;
+    }
     f12.pNext = &f13;
     VkPhysicalDeviceConditionalRenderingFeaturesEXT fcr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     fcr.conditionalRendering = VK_TRUE;
@@ -747,6 +785,7 @@ Texture* VulkanDevice::create_texture(const TextureInfo& info) {
     ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!is_packed(info.format))
         ici.usage |= depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (info.storage) ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     if (info.kind == TexKind::cube) ici.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     if (info.kind == TexKind::tex3d) ici.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     if (info.format == Format::srgba8) ici.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
@@ -1652,6 +1691,58 @@ void VulkanDevice::present(bool vsync) {
 }
 
 void VulkanDevice::finish() { submit(true); }
+
+// --- the card's own upscaler -----------------------------------------------------
+
+bool VulkanDevice::can_upscale(std::string& why) {
+    if (!dlss_tried_) {
+        dlss_tried_ = true;
+        dlss_ = std::make_unique<Dlss>();
+        if (!dlss_->start(instance_, physical_, device_, dlss_why_)) dlss_.reset();
+    }
+    if (!dlss_) why = dlss_why_;
+    return dlss_ != nullptr;
+}
+
+bool VulkanDevice::upscale(const Upscale& u, std::string& why) {
+    if (!can_upscale(why)) return false;
+    if (!u.color || !u.depth || !u.motion || !u.output) {
+        why = "a picture DLSS reads is missing";
+        return false;
+    }
+    const int ow = u.output->info.w, oh = u.output->info.h;
+    // (Its own picture, written by work on the card's own: the size asked.)
+    if (dlss_out_ && (dlss_out_->info.w != ow || dlss_out_->info.h != oh)) destroy(dlss_out_), dlss_out_ = nullptr;
+    if (!dlss_out_) {
+        TextureInfo ti;
+        ti.format = Format::rgba16f;
+        ti.w = ow, ti.h = oh;
+        ti.storage = true;
+        dlss_out_ = create_texture(ti);
+    }
+    end_rendering();
+    barrier();  // (everything drawn into what it reads, written)
+    const auto image = [&](Texture* t) {
+        Dlss::Image i;
+        i.image = t->image;
+        i.view = view(t, VK_IMAGE_VIEW_TYPE_2D, 0, 1, 0, 1, true);
+        i.format = t->format == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM : t->format;
+        i.w = t->info.w, i.h = t->info.h;
+        i.depth = is_depth(t->info.format);
+        return i;
+    };
+    Dlss::Ask a;
+    a.color = image(u.color), a.depth = image(u.depth), a.motion = image(u.motion), a.output = image(dlss_out_);
+    a.jitter_x = u.jitter_x, a.jitter_y = u.jitter_y, a.motion_x = u.motion_x, a.motion_y = u.motion_y;
+    a.reset = u.reset, a.reversed = u.reversed, a.quality = u.quality, a.frame_ms = u.frame_ms, a.exposure = u.exposure;
+    const bool done = dlss_->evaluate(cmd(), a, why);
+    // (It bound pipelines and descriptors of its own: nothing of ours is bound now.)
+    bound_ = Bound_{};
+    written_ = true;
+    if (!done) return false;
+    copy(dlss_out_, 0, 0, 0, 0, u.output, 0, 0, 0, 0, std::min(ow, u.output->info.w), std::min(oh, u.output->info.h));
+    return true;
+}
 
 }  // namespace
 

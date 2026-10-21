@@ -47,8 +47,11 @@ public:
 
     // From the world outside, straight to a state, through a port the graph
     // declares (StateGraph::port): delivered at the start of the next frame,
-    // and the state's arrows run on it then. An undeclared one is refused.
-    void send(Key state, Event e);
+    // and the state's arrows run on it then. An undeclared one is refused:
+    // not delivered, said once (on_problem), and false - never thrown in
+    // play, where a program's mistake would end the game. A strict engine
+    // (tests) throws.
+    bool send(Key state, Event e);
 
     // The stack moved by hand. Within the world, what moves the stack is a
     // transition the graph declares, taken on an event: no state can call
@@ -203,7 +206,8 @@ private:
     // Each kept functor carries what changed in its source since it last did
     // (StateGraph::keep), at the start of the frame, once the edits asked
     // for are done - so a target that asked for something (a block let go
-    // on a model) is answered before it follows its source again.
+    // on a model) is answered before it follows its source again. One kept
+    // `from_living` carries only from a state stepped the frame before.
     void carry_kept();
 
     // Each embedding opened, closed and focused as its portal now says
@@ -368,6 +372,7 @@ private:
     std::vector<Event> inbox_;
     std::vector<Key> focus_;  // open, focused embeddings, innermost last
     std::unordered_set<const State*> stepped_;  // this frame's, so each has its moment once
+    std::unordered_set<const State*> lived_;    // the last frame's stepped (carry_kept: from_living)
     std::unordered_map<const State*, std::vector<Route>> routes_;
     uint64_t routes_revision_ = ~uint64_t{0};
     std::vector<Key> due_;  // OnEvent embeddings an event crossed this frame

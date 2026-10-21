@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -1744,6 +1745,14 @@ void Finish() { g->dev->finish(); }
 void ClipControl(GLenum, GLenum depth) { g->zero_to_one = depth == GL_ZERO_TO_ONE; }
 
 }  // namespace
+
+#if !defined(_WIN32)
+// (D3D12 is Windows' own: built nowhere else.)
+std::unique_ptr<Device> make_d3d12(GLFWwindow*, std::string& why) {
+    why = "D3D12 is Windows' own";
+    return nullptr;
+}
+#endif
 }  // namespace native
 
 namespace {
@@ -1824,6 +1833,29 @@ void present_native(bool vsync) {
     if (!g) return;
     g->dev->present(vsync);
     ++g->frame;
+}
+
+bool can_upscale(std::string& why) {
+    using namespace native;
+    if (!g) {
+        why = "drawn by OpenGL, which has no upscaler of the card's";
+        return false;
+    }
+    return g->dev->can_upscale(why);
+}
+
+bool upscale(const Upscale& u, std::string& why) {
+    using namespace native;
+    if (!g) return can_upscale(why);
+    const auto tex = [](unsigned name) -> Texture* {
+        TexObj* t = g->textures.get(name);
+        return t ? realize(*t) : nullptr;
+    };
+    Device::Upscale d;
+    d.color = tex(u.color), d.depth = tex(u.depth), d.motion = tex(u.motion), d.output = tex(u.output);
+    d.jitter_x = u.jitter_x, d.jitter_y = u.jitter_y, d.motion_x = u.motion_x, d.motion_y = u.motion_y;
+    d.reset = u.reset, d.reversed = u.reversed, d.quality = u.quality, d.frame_ms = u.frame_ms, d.exposure = u.exposure;
+    return g->dev->upscale(d, why);
 }
 
 }  // namespace sg::gl

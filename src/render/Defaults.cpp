@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,8 @@ struct Setting {
     float Quality::*number = nullptr;
     bool Quality::*flag = nullptr;
     const char* what;
+    // A whole number said as a word: its words, in order from 0.
+    std::vector<const char*> words = {};
 };
 const Setting kSettings[] = {
     {"shadow_size", &Quality::shadow_size, nullptr, nullptr, "pixels a side of each lamp's shadow map (1024 is cheaper, softer)"},
@@ -46,7 +49,19 @@ const Setting kSettings[] = {
     {"proxies", nullptr, nullptr, &Quality::proxies, "still things of a room's cells drawn together, each cell in a call or two (true/false)"},
     {"lod", nullptr, nullptr, &Quality::lod, "a model far off drawn with fewer faces, where no pixel would show the difference (true/false)"},
     {"trace", nullptr, nullptr, &Quality::trace, "light traced along rays where a look asks for it (`trace`, `path`); false: never (true/false)"},
+    {"upscaler", &Quality::upscaler, nullptr, nullptr,
+     "who makes the picture whole over frames: taa (the engine's), dlss (NVIDIA's DLSS, drawn at fewer pixels: Vulkan, an NVIDIA card), dlaa (DLSS at the screen's pixels)",
+     {"taa", "dlss", "dlaa"}},
+    {"dlss_mode", &Quality::dlss_mode, nullptr, nullptr,
+     "with dlss, how few pixels it draws: quality (2/3 each way), balanced (0.58), performance (1/2), ultra_performance (1/3), native (all)",
+     {"quality", "balanced", "performance", "ultra_performance", "native"}},
 };
+// A word's place among a setting's words; -1 if it is none of them.
+int word_of(const Setting& s, const std::string& w) {
+    for (std::size_t i = 0; i < s.words.size(); ++i)
+        if (w == s.words[i]) return static_cast<int>(i);
+    return -1;
+}
 std::string trimmed(const std::string& s) {
     std::size_t a = 0, b = s.size();
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
@@ -84,10 +99,19 @@ void read_quality(const std::string& text, Quality& into, std::vector<std::strin
             if (value == "true" || value == "1" || value == "on" || value == "yes") into.*(s->flag) = true;
             else if (value == "false" || value == "0" || value == "off" || value == "no") into.*(s->flag) = false;
             else say(key + " is true or false, not " + value);
+        } else if (s->whole && word_of(*s, value) >= 0) {
+            into.*(s->whole) = word_of(*s, value);
         } else if (s->whole) {
             const long v = std::strtol(value.c_str(), &end, 10);
-            if (value.empty() || *end != '\0') say(key + " is a whole number, not " + value);
-            else into.*(s->whole) = static_cast<int>(v);
+            if (value.empty() || *end != '\0') {
+                std::string said = key + " is a whole number, not " + value;
+                if (!s->words.empty()) {
+                    said = key + " is one of";
+                    for (const char* w : s->words) said += std::string(" ") + w;
+                    said += ", not " + value;
+                }
+                say(said);
+            } else into.*(s->whole) = static_cast<int>(v);
         } else {
             const float v = std::strtof(value.c_str(), &end);
             if (value.empty() || *end != '\0') say(key + " is a number, not " + value);
@@ -115,6 +139,7 @@ Quality quality_from_params(const Params& p, Quality base) {
             const std::string w = trimmed(*t);
             if (w == "true" || w == "on" || w == "yes") v = 1.0;
             else if (w == "false" || w == "off" || w == "no") v = 0.0;
+            else if (word_of(s, w) >= 0) v = word_of(s, w);
             else {
                 char* end = nullptr;
                 v = std::strtod(w.c_str(), &end);
@@ -140,6 +165,29 @@ Quality kept_to_bounds(Quality q) {
     q.exposure = std::clamp(q.exposure, 0.05f, 16.0f);
     q.reflection_scale = std::clamp(q.reflection_scale, 0.1f, 1.0f);
     q.pixel = std::clamp(q.pixel, 1, 8);
+    q.upscaler = std::clamp(q.upscaler, 0, 2);
+    q.dlss_mode = std::clamp(q.dlss_mode, 0, 4);
+    return q;
+}
+
+float dlss_scale(int mode) {
+    static const float kScale[] = {2.0f / 3.0f, 0.58f, 0.5f, 1.0f / 3.0f, 1.0f};
+    return kScale[std::clamp(mode, 0, 4)];
+}
+
+Quality with_machine(Quality q) {
+    const char* said = std::getenv("SG_QUALITY");
+    if (!said || !*said) return q;
+    std::string text = said;
+    std::replace(text.begin(), text.end(), ';', '\n');
+    std::vector<std::string> problems;
+    read_quality(text, q, &problems);
+    // (Said once a program: it is the machine's word, not a world's.)
+    static bool told = false;
+    if (!told) {
+        told = true;
+        for (const std::string& p : problems) std::fprintf(stderr, "SG_QUALITY: %s\n", p.c_str());
+    }
     return q;
 }
 
@@ -161,6 +209,7 @@ std::string quality_text(const Quality& q) {
            "# keeps the engine's default. `key = value`; `#` starts a remark.\n\n";
     for (const Setting& s : kSettings) {
         std::string value = s.flag ? (q.*(s.flag) ? "true" : "false") : s.whole ? std::to_string(q.*(s.whole)) : std::to_string(q.*(s.number));
+        if (s.whole && q.*(s.whole) >= 0 && static_cast<std::size_t>(q.*(s.whole)) < s.words.size()) value = s.words[static_cast<std::size_t>(q.*(s.whole))];
         if (s.number) {
             while (value.size() > 1 && value.back() == '0') value.pop_back();
             if (value.back() == '.') value.pop_back();

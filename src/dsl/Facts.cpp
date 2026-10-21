@@ -250,6 +250,10 @@ std::vector<std::string> facts(const Plan& plan) {
                     functor(seam.b_to_a, st.b, st.a, {{SpatialState::camera_id(), SpatialState::camera_id()}});
                     functor(seam.glue_ab, st.a, st.b, glue_ab);
                     functor(seam.glue_ba, st.b, st.a, glue_ba);
+                } else if constexpr (std::is_same_v<S, plan::Space>) {
+                    std::string f = "space " + st.name.str() + " =";
+                    for (Key r : st.rooms) f += " " + r.str();
+                    out.push_back(f);
                 } else if constexpr (std::is_same_v<S, plan::Drive>) {
                     out.push_back(drive_fact(st.d));
                 } else if constexpr (std::is_same_v<S, plan::Port>) {

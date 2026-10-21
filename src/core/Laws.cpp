@@ -1589,6 +1589,19 @@ std::vector<Violation> overlaps(const StateGraph& g, std::size_t first, std::siz
             if (!lets("eye") && A.has(Key{"eye"}) && B.has(Key{"eye"}) && std::fabs(A.num(Key{"eye"}) - B.num(Key{"eye"})) > kFloor)
                 say("the eye is carried " + std::to_string(A.num(Key{"eye"})) + " m up in " + sm.a.str() + " and " +
                     std::to_string(B.num(Key{"eye"})) + " m in " + sm.b.str() + ", and whoever crosses rises or sinks: or say `differs eye`");
+            // Made one space (`sheaf` both sides), the two rooms meet at the
+            // doorway's plane: their walls round it, together, may reach no
+            // further than it - else each room's wall stands in the other,
+            // and where their faces meet they fight.
+            const auto sheafed = [](const State* s, Key k) {
+                const Element* e = s->find(k);
+                return e && e->params.num(Key{"sheaf"}, 0.0) > 0.5;
+            };
+            if (!lets("walls") && sheafed(a, pa) && sheafed(b, pb) && A.has(Key{"walls"}) && B.has(Key{"walls"}) &&
+                A.num(Key{"walls"}) + B.num(Key{"walls"}) > kFloor)
+                say("one space here, yet the walls of its two rooms stand one inside the other: " + sm.a.str() + "'s reach " +
+                    std::to_string(A.num(Key{"walls"})) + " m past the doorway, " + sm.b.str() + "'s " + std::to_string(B.num(Key{"walls"})) +
+                    " m - stand each doorway at the back of its wall (a room's walls are `wall_t` outside its floor), so the rooms meet back to back");
             // Walked through, a side that gives no account of what it is
             // checked against cannot be held to it: said, not passed.
             if (A.num(walk, 0.0) > 0.5 && B.num(walk, 0.0) > 0.5)

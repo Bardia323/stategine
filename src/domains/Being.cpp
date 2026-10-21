@@ -1462,4 +1462,19 @@ Key retarget(StateGraph& g, const Being& from, const Being& to, Key name, bool o
     return name;
 }
 
+Key carry_body(StateGraph& g, const Being& from, const Being& to, Key name) {
+    if (name.empty()) name = Key{from.id().str() + ".as." + to.id().str()};
+    if (g.functor(name)) return name;
+    Functor f(name, from.id(), to.id());
+    for (const Element& e : from.elements()) {
+        if (e.kind == kClip || e.kind == Key{"skin"}) continue;
+        const Element* there = to.find(e.id);
+        if (there && there->kind == e.kind) f.on_object(e.id, e.id, transport::copy_all);
+    }
+    f.from_living();
+    g.set_functor(std::move(f));
+    g.keep(name);
+    return name;
+}
+
 }  // namespace sg

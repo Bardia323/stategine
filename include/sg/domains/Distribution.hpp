@@ -88,6 +88,12 @@ std::vector<Vec3d> points(const Law& law, const Area& area, const std::function<
 // Field laws (intensity only, sampled as any is):
 //   bump   at_x at_z sd amount   a cause's own field: a Gaussian round a
 //                                point (a leak, a fallen ceiling, a door)
+//   stroke from_x from_z to_x to_z sd amount (sd_to amount_to)
+//                                a cause along a way: a band `sd` either
+//                                side of a segment, `amount` a metre of it -
+//                                a trail, a path worn, something dragged -
+//                                narrowing or fading to its end as `sd_to`
+//                                and `amount_to` say (as at its start unless)
 //   sum    of="a b c" [w_a=]     the named laws of the distribution, added
 //                                (each times its weight, 1 unless said)
 // The intensity of a named law of `d` at (x, z), per square metre (a

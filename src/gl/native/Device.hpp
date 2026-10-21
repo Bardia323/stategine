@@ -57,6 +57,7 @@ struct TextureInfo {
     int w = 1, h = 1, depth = 1;  // depth: a volume's depth, an array's layers (6, a cube's faces)
     int levels = 1;
     int samples = 1;
+    bool storage = false;  // written by work on the card's own (an upscaler's picture)
 };
 
 // How a picture is read (GL's texture or sampler parameters).
@@ -258,6 +259,23 @@ public:
     virtual Texture* window_depth() = 0;
     // Shown: window_color, rows turned GL's way up. Then the next frame.
     virtual void present(bool vsync) = 0;
+
+    // The card's own upscaler (NVIDIA's DLSS, on Vulkan), in order with what
+    // is drawn: `output` made from the jittered `color` at fewer pixels (or
+    // as many: DLAA), its `depth`, how each pixel moved (`motion`), and the
+    // pictures before. False, with why, where there is none: nothing done.
+    struct Upscale {
+        Texture *color = nullptr, *depth = nullptr, *motion = nullptr, *output = nullptr;
+        float jitter_x = 0, jitter_y = 0, motion_x = 1, motion_y = 1;
+        bool reset = false, reversed = false;
+        int quality = 0;
+        float frame_ms = 0, exposure = 0;
+    };
+    virtual bool can_upscale(std::string& why) {
+        why = "this backend has no upscaler of the card's";
+        return false;
+    }
+    virtual bool upscale(const Upscale&, std::string& why) { return can_upscale(why); }
     // Everything asked done.
     virtual void finish() = 0;
 };

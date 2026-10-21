@@ -12,6 +12,7 @@ const std::string& sky_fs();        // the light from all round, by which way a 
 const std::string& sun_fs();
 const std::string& lamps_fs();        // the sun's light reaching each pixel, through what stands between
 const std::string& mirror_fs();     // what a glossy surface mirrors
+const std::string& gi_fs();         // the light from all round a surface gets, traced
 const std::string& carry_fs();      // a picture kept over frames, where what it shows held still
 const std::string& smooth_fs();     // a picture smoothed within its surfaces (a-trous)
 const std::string& widen_fs();      // a picture of a part of the pixels laid on all of them

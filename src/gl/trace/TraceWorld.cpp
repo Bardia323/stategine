@@ -12,6 +12,7 @@
 
 #include "TraceShaders.hpp"
 #include "Tracer.hpp"
+#include "sg/render/ViewPlan.hpp"
 
 namespace sg::render::trace {
 
@@ -126,7 +127,8 @@ void tri_floats(float* out, const float* a, const float* b, const float* c) {
 }  // namespace
 
 bool Asked::operator==(const Asked& o) const {
-    return sun == o.sun && mirror == o.mirror && lamps == o.lamps && step == o.step && rough == o.rough && far == o.far && sky == o.sky && now == o.now;
+    return sun == o.sun && mirror == o.mirror && lamps == o.lamps && step == o.step && rough == o.rough && far == o.far && sky == o.sky && now == o.now &&
+           gi == o.gi && gi_step == o.gi_step;
 }
 
 void Texels::put(const std::vector<float>& data, std::size_t from, std::size_t count) {
@@ -360,6 +362,7 @@ void Tracer::gather_things(const std::vector<PlacedRoom>& rooms) {
     }
     if (stale_) {
         shapes_.clear(), nodes_.clear(), tris_.clear(), masks_.clear(), worn_.clear(), content_.clear();
+        cube_ = nullptr;
         shape_nodes_ = 0, shapes_moved_ = true, stale_ = false;
     }
     uint64_t of = 1469598103934665603ULL;
@@ -404,6 +407,47 @@ void Tracer::gather_things(const std::vector<PlacedRoom>& rooms) {
             }
             mix(s->node_base), mix(e.params.stamp());
             insts.push_back(in);
+        }
+        // The room's shell as the renderer draws it (its floor and ceiling,
+        // and its walls where it lays none of its own): met by the light from
+        // all round, so a ray from the floor finds the ceiling over it, not
+        // the sky. Only where that is asked: a sun let in at a window, a
+        // mirror's ray, have not met it before. (Its walls only in a room
+        // with no doorway: one standing over a wall, the wall is not cut
+        // for it, and a ray out through it would be stopped.)
+        const auto& rp = room.params();
+        if (asked.gi && rp.num(Key{"sky"}, 0.0) <= 0.5 && !(placed.sheafed && !rp.has(Key{"room_w"}))) {
+            if (!cube_) {
+                const Element box(Key{"shell"}, kinds::mesh);
+                cube_ = make_shape(room, box);
+            }
+            const std::vector<DrawInstance> shell = enclosure(room);
+            const bool doorways = !v_.index_of(room).portals.empty();
+            for (std::size_t k = 0; cube_ && k < shell.size(); ++k) {
+                if (k >= 2 && doorways) break;  // (the first two its floor and ceiling)
+                const gl::Mat4 m = frame * shell[k].model;
+                const gl::Mat4 inv = m.inverse();
+                Inst in;
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 4; ++c) in.rows[r * 4 + c] = inv.m[c * 4 + r];
+                for (int c = 0; c < 8; ++c) {
+                    const gl::Vec3 w = m.transform_point({(c & 1) ? 0.5f : -0.5f, (c & 2) ? 0.5f : -0.5f, (c & 4) ? 0.5f : -0.5f});
+                    const float f[3] = {w.x, w.y, w.z};
+                    in.box.grow(f);
+                }
+                in.tint = pack_colour(static_cast<float>(shell[k].colour.r), static_cast<float>(shell[k].colour.g), static_cast<float>(shell[k].colour.b));
+                in.glow = 0.0f;
+                in.root = cube_->node_base;
+                cube_->used = static_cast<uint64_t>(frame_);
+                placed_tris_ += cube_->tris;
+                for (float f : m.m) {
+                    uint32_t b;
+                    std::memcpy(&b, &f, 4);
+                    mix(b);
+                }
+                mix(static_cast<uint64_t>(in.tint));
+                insts.push_back(in);
+            }
         }
     }
     mix(insts.size()), mix(shape_nodes_);

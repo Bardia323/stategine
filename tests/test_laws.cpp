@@ -1249,13 +1249,21 @@ void test_ports_are_declared() {
     g.set_initial("gauge");
     sg::Engine e(g);
     e.start();
-    bool refused = false;
+    std::string said;
+    e.on_problem = [&](const std::string& p) { said = p; };
+    const bool refused = !e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
+    e.run_fixed(0.1, 1);
+    check(refused && gauge.find("needle")->params.num("v") == 0.0, "nothing comes in through a port the graph does not declare");
+    check(said.find("no such port") != std::string::npos, "and the refusal is said, not thrown: a program's mistake never ends a game in play");
+    bool threw = false;
+    e.set_strict(true);
     try {
         e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
     } catch (const std::exception&) {
-        refused = true;
+        threw = true;
     }
-    check(refused, "nothing comes in through a port the graph does not declare");
+    e.set_strict(false);
+    check(threw, "a strict engine (a test's) throws on it");
     g.port("gauge", "reading");
     e.send("gauge", sg::Event{"reading", sg::Params{}.set("v", 3.0)});
     e.run_fixed(0.1, 1);

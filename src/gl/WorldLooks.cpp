@@ -196,6 +196,24 @@ const gl::Program* GLWorldView::cutout_of(const gl::Program& p) {
     return cutout_[&p] = twin;
 }
 
+const gl::Program* GLWorldView::moving_of(const gl::Program& p) {
+    if (auto it = moving_twin_.find(&p); it != moving_twin_.end()) return it->second;
+    const auto src = sources_of_.find(&p);
+    const gl::Program* twin = nullptr;
+    if (src != sources_of_.end()) {
+        std::string vs = src->second.first, fs = src->second.second;
+        for (std::string* s : {&vs, &fs}) {
+            const std::size_t line = s->find('\n');
+            s->insert(line == std::string::npos ? 0 : line + 1, "#define SG_VELOCITY\n");
+        }
+        std::string error;
+        twin = shared_program(vs, fs, "moving", error);
+        // (Said, once: a twin that does not build leaves the motion to the view's alone.)
+        if (!twin) std::fprintf(stderr, "render: the scene shader that says its motion does not build - the view's motion alone: %s\n", error.c_str());
+    }
+    return moving_twin_[&p] = twin;
+}
+
 const gl::Program* GLWorldView::traced_of(const gl::Program& p) {
     if (auto it = traced_.find(&p); it != traced_.end()) return it->second;
     const auto src = sources_of_.find(&p);

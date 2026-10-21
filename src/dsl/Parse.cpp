@@ -754,6 +754,19 @@ struct Parser {
         prog.seams.push_back(std::move(s));
     }
 
+    // space <name> = sheaf <room> <room> ... - on one line.
+    void space_item() {
+        SpaceAst s;
+        s.at = loc();
+        const int line = toks[p - 1].line;
+        s.name = name("the space's name (a state)");
+        expect("=");
+        expect_word("sheaf");
+        while (!end() && cur().t == T::Ident && cur().line == line) s.rooms.push_back(name("a room"));
+        if (s.rooms.size() < 2) fail("a space is made of two rooms or more", "space <name> = sheaf <room> <room> ...");
+        prog.spaces.push_back(std::move(s));
+    }
+
     void embed_item() {
         EmbedAst e;
         e.at = loc();
@@ -915,7 +928,7 @@ struct Parser {
 
     // --- program ----------------------------------------------------------------------------
     static const std::set<std::string>& heads() {
-        static const std::set<std::string> h = {"state", "extern", "functor", "compose", "lens", "transition", "seam", "embed",
+        static const std::set<std::string> h = {"state", "extern", "functor", "compose", "lens", "transition", "seam", "space", "embed",
                                                 "drive", "port", "keep", "wear", "film", "when", "bind", "transport", "edit", "initial"};
         return h;
     }
@@ -957,6 +970,7 @@ struct Parser {
         else if (head == "lens") lens_item();
         else if (head == "transition") transition_item();
         else if (head == "seam") seam_item();
+        else if (head == "space") space_item();
         else if (head == "embed") embed_item();
         else if (head == "drive") drive_item();
         else if (head == "port") port_item();
@@ -971,7 +985,7 @@ struct Parser {
         else {
             --p;
             fail("`" + head + "` begins nothing in the language",
-                 "declarations: state, extern state, functor, compose, lens, transition, seam, embed, drive, port, keep, wear, film, when, bind, transport, edit, initial");
+                 "declarations: state, extern state, functor, compose, lens, transition, seam, space, embed, drive, port, keep, wear, film, when, bind, transport, edit, initial");
         }
     }
 
