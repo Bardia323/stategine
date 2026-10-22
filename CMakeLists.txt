@@ -365,6 +365,12 @@ if(SG_BUILD_EXAMPLES AND SG_BUILD_GL)
       target_link_libraries(sg_lamps_gl PRIVATE opengl32)
     endif()
     add_test(NAME sg_lamps_gl COMMAND sg_lamps_gl)
+    add_executable(sg_ao_gl tests/ao_gl.cpp)
+    target_link_libraries(sg_ao_gl PRIVATE stategine_dev glfw)
+    if(WIN32)
+      target_link_libraries(sg_ao_gl PRIVATE opengl32)
+    endif()
+    add_test(NAME sg_ao_gl COMMAND sg_ao_gl)
 
     # A look's sky as a planet's: blue at noon, red low towards a setting sun, far things seen through its air; nothing of it unless the look says.
     add_executable(sg_sky_gl tests/sky_gl.cpp)
@@ -964,7 +970,7 @@ endif()
 if(SG_BUILD_TESTS AND NOT EMSCRIPTEN)
   foreach(_check sg_tests sg_algebra sg_core_only sg_rigid sg_cache sg_rooms sg_walk sg_texture sg_pack sg_render_conf sg_modeler sg_terrain sg_being sg_ragdoll sg_spatial sg_fields
       sg_rope sg_laws sg_lanes sg_director sg_incremental sg_authority sg_looks_gl sg_doorway_light_gl sg_deep_views_gl sg_crossings_gl
-      sg_instancing_gl sg_upscale_gl sg_compute_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_guards_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
+      sg_instancing_gl sg_upscale_gl sg_compute_gl sg_pack_gl sg_culling_gl sg_card_gl sg_lamps_gl sg_ao_gl sg_sky_gl sg_fog_gl sg_horizon_gl sg_strewn_gl sg_ripple_gl sg_land_gl sg_skin_gl sg_lod_gl sg_ahead_gl sg_stream_gl sg_air_gl sg_exposure_gl sg_point_shadow_gl sg_probes_gl sg_shadow_lag_gl sg_coplanar_gl sg_guards_gl sg_graphics_gl sg_models_gl sg_net sg_net_numerics sg_net_distributed sg_net_placement
       sg_net_agreement sg_net_transport sg_projected sg_projected_gl sg_dsl
       sg_dsl_strong sg_net_ice sg_web_rtc_peer sg_view_plan sg_cross_platform
       sg_browser_render stategine_shape sg_finish_gl)

@@ -570,12 +570,16 @@ void main() {
 }
 
 // --- ambient occlusion ---------------------------------------------------------
-// How much of the sky each pixel can see, from the depth buffer alone: a
-// hemisphere of taps round it, each asking whether the depth there stands in
-// front. Creases, corners and whatever sits on something darken, as bounced
-// light does not reach them. The tap pattern turns with the pixel over a 4x4
-// tile, so the blur after it (a 4x4 box, kept to one surface by depth)
-// averages the noise away.
+// How much of the light from all round reaches each pixel, from the depth
+// buffer: GTAO (Jimenez et al. 2016, "Practical Real-Time Strategies for
+// Accurate Indirect Occlusion"; as Intel's XeGTAO does it). In a few
+// directions across the screen it walks out each way to the highest thing
+// standing over the surface within `uRadius` metres (the horizon, fading out
+// past 0.6 of it), then integrates what is open between the two horizons,
+// weighted by the cosine to the surface's normal - the visibility a ray
+// tracer finds, not a count of taps. The directions and steps turn with each
+// pixel (interleaved gradient noise) and, where frames are averaged (TAA,
+// DLSS: `uFrame`), with each frame: the average is the integral.
 inline const char* ao_fs() {
     return R"(#version 330 core
 in vec2 vUV;
@@ -584,56 +588,101 @@ uniform sampler2D uDepth;
 uniform vec2  uTexel;     // one pixel of the depth buffer
 uniform float uNear, uFar, uTanHalf, uAspect, uRadius;
 uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
+uniform float uFrame;      // which frame, where frames are averaged (else 0)
+uniform int   uSlices, uSteps;
 
+const float PI = 3.14159265, HALF_PI = 1.5707963;
 float linear(float d) {
     if (uReversedZ > 0.5) return uNear * uFar / (uNear + d * (uFar - uNear));
     float z = d * 2.0 - 1.0;
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
 }
 vec3 view_at(vec2 uv) {
-    float z = linear(texture(uDepth, uv).r);
+    float z = linear(textureLod(uDepth, uv, 0.0).r);
     vec2 ndc = uv * 2.0 - 1.0;
     return vec3(ndc.x * uTanHalf * uAspect * z, ndc.y * uTanHalf * z, -z);
 }
+float fast_acos(float x) {
+    float a = abs(x), r = (-0.156583 * a + HALF_PI) * sqrt(1.0 - a);
+    return x >= 0.0 ? r : PI - r;
+}
+float ign(vec2 px) { return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715)))); }
 
 void main() {
     float d = texture(uDepth, vUV).r;
     if (uReversedZ > 0.5 ? d <= 0.0 : d >= 1.0) { FragColor = vec4(1.0); return; }
     vec3 p = view_at(vUV);
-    // The surface's normal from its neighbours, each side's nearer one, so
-    // an edge does not bend it.
+    // The surface's normal from its neighbours, each side's nearer one, so an edge does not bend it.
     vec3 px1 = view_at(vUV + vec2(uTexel.x, 0.0)) - p, px0 = p - view_at(vUV - vec2(uTexel.x, 0.0));
     vec3 py1 = view_at(vUV + vec2(0.0, uTexel.y)) - p, py0 = p - view_at(vUV - vec2(0.0, uTexel.y));
-    vec3 dx = abs(px1.z) < abs(px0.z) ? px1 : px0;
-    vec3 dy = abs(py1.z) < abs(py0.z) ? py1 : py0;
-    vec3 n = normalize(cross(dx, dy));
-    vec3 t = normalize(abs(n.y) < 0.9 ? cross(n, vec3(0, 1, 0)) : cross(n, vec3(1, 0, 0)));
-    vec3 b = cross(n, t);
-
-    vec2 cell = mod(floor(gl_FragCoord.xy), 4.0);
-    float turn = (cell.x * 4.0 + cell.y) / 16.0 * 6.2831853;
-    const int N = 16;
-    float occluded = 0.0;
-    for (int i = 0; i < N; ++i) {
-        float fi = float(i);
-        float a = fi * 2.3999632 + turn;                 // the golden angle
-        float h = fract(fi * 0.618034 + 0.13);           // how far up the hemisphere
-        float r = mix(0.12, 1.0, (fi + 0.5) / float(N));
-        r *= r;                                           // more taps close in
-        vec3 dir = normalize(cos(a) * sqrt(1.0 - h * h) * t + sin(a) * sqrt(1.0 - h * h) * b + h * n);
-        vec3 s = p + dir * (r * uRadius);
-        vec2 uv = vec2(s.x / (-s.z * uTanHalf * uAspect), s.y / (-s.z * uTanHalf)) * 0.5 + 0.5;
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
-        float there = linear(texture(uDepth, uv).r);
-        float in_front = step(there, -s.z - 0.02);
-        float near = smoothstep(0.0, 1.0, uRadius / max(abs(-p.z - there), 1e-4));
-        occluded += in_front * near;
+    vec3 n = normalize(cross(abs(px1.z) < abs(px0.z) ? px1 : px0, abs(py1.z) < abs(py0.z) ? py1 : py0));
+    vec3 v = normalize(-p);
+    if (dot(n, v) < 0.0) n = -n;
+    // The radius in pixels where the surface is; too small to see, nothing is hidden.
+    float pixel = -p.z * 2.0 * uTanHalf * uTexel.y;
+    float reach = min(uRadius / pixel, 0.4 / uTexel.y);
+    if (reach < 1.5) { FragColor = vec4(1.0); return; }
+    float falloff = 0.615 * uRadius, from = uRadius - falloff;
+    float fmul = -1.0 / falloff, fadd = from / falloff + 1.0;
+    // The noise: the slice's angle and the steps' offsets, per pixel, per frame.
+    vec2 cell = gl_FragCoord.xy + uFrame * vec2(5.588238, 5.588238);
+    float noise_slice = ign(cell), noise_step = ign(cell + vec2(17.0, 31.0));
+    // The slices turn evenly round the eye's ray to this pixel, not round the
+    // screen: off the middle of the view the ray leans, and slices even on
+    // the screen are not even round it - an open floor came out greyer the
+    // further from the middle it was seen (sg_ao_gl).
+    vec3 t1 = normalize(abs(v.y) < 0.99 ? cross(v, vec3(0.0, 1.0, 0.0)) : cross(v, vec3(1.0, 0.0, 0.0)));
+    vec3 t2 = cross(v, t1);
+    vec2 here = vec2(p.x / (-p.z * uTanHalf * uAspect), p.y / (-p.z * uTanHalf));
+    float visible = 0.0;
+    for (int s = 0; s < uSlices; ++s) {
+        float phi = (float(s) + noise_slice) / float(uSlices) * PI;
+        vec3 dir = cos(phi) * t1 + sin(phi) * t2;
+        // (Which way that is on the screen: where a step along it lands, in pixels.)
+        vec3 q = p + dir * (0.01 * -p.z);
+        vec2 there = vec2(q.x / (-q.z * uTanHalf * uAspect), q.y / (-q.z * uTanHalf));
+        vec2 omega = (there - here) * 0.5 / uTexel;
+        omega /= max(length(omega), 1e-6);
+        vec3 ortho = dir;
+        vec3 axis = normalize(cross(ortho, v));
+        vec3 pn = n - axis * dot(n, axis);
+        float pn_len = length(pn);
+        float cos_n = clamp(dot(pn, v) / max(pn_len, 1e-4), 0.0, 1.0);
+        float nn = sign(dot(ortho, pn)) * fast_acos(cos_n);
+        float low0 = cos(nn + HALF_PI), low1 = cos(nn - HALF_PI);
+        float h0c = low0, h1c = low1;
+        for (int k = 0; k < uSteps; ++k) {
+            float t = fract(noise_step + float(s + k * uSlices) * 0.618034);
+            float st = (float(k) + t) / float(uSteps);
+            st = st * st + 1.3 / reach;   // more steps near; never the pixel itself
+            vec2 off = round(st * reach * omega) * uTexel;
+            vec2 ua = vUV + off, ub = vUV - off;
+            vec3 a = view_at(ua) - p, b = view_at(ub) - p;
+            float la = length(a), lb = length(b);
+            float ca = dot(a / max(la, 1e-5), v), cb = dot(b / max(lb, 1e-5), v);
+            // (Past the screen's edge nothing is known: no horizon there - the
+            // edge's own depth, read again, would stand up as one.)
+            float wa = all(greaterThanEqual(ua, vec2(0.0))) && all(lessThanEqual(ua, vec2(1.0))) ? 1.0 : 0.0;
+            float wb = all(greaterThanEqual(ub, vec2(0.0))) && all(lessThanEqual(ub, vec2(1.0))) ? 1.0 : 0.0;
+            ca = mix(low0, ca, clamp(la * fmul + fadd, 0.0, 1.0) * wa);
+            cb = mix(low1, cb, clamp(lb * fmul + fadd, 0.0, 1.0) * wb);
+            h0c = max(h0c, ca), h1c = max(h1c, cb);
+        }
+        float h0 = -fast_acos(h1c), h1 = fast_acos(h0c);
+        h0 = nn + clamp(h0 - nn, -HALF_PI, HALF_PI);
+        h1 = nn + clamp(h1 - nn, -HALF_PI, HALF_PI);
+        float sn = sin(nn);
+        float arc0 = (cos_n + 2.0 * h0 * sn - cos(2.0 * h0 - nn)) * 0.25;
+        float arc1 = (cos_n + 2.0 * h1 * sn - cos(2.0 * h1 - nn)) * 0.25;
+        visible += pn_len * (arc0 + arc1);
     }
-    float ao = 1.0 - occluded / float(N);
-    FragColor = vec4(vec3(ao), 1.0);
+    visible = clamp(visible / float(uSlices), 0.0, 1.0);
+    FragColor = vec4(vec3(visible), 1.0);
 })";
 }
 
+// The noise smoothed, kept to one surface: a 5 x 5 gaussian of the pixels
+// at the same depth (within 2% of it) - the frames' averaging does the rest.
 inline const char* ao_blur_fs() {
     return R"(#version 330 core
 in vec2 vUV;
@@ -651,13 +700,11 @@ float linear(float d) {
 void main() {
     float zc = linear(texture(uDepth, vUV).r);
     float sum = 0.0, weight = 0.0;
-    // Exactly the 4x4 tile the taps turn over, so their pattern cancels;
-    // a neighbour on another surface (a depth break) is left out.
-    for (int y = -2; y < 2; ++y)
-        for (int x = -2; x < 2; ++x) {
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) {
             vec2 uv = vUV + vec2(x, y) * uTexel;
             float z = linear(texture(uDepth, uv).r);
-            float w = abs(z - zc) < zc * 0.04 ? 1.0 : 0.0;
+            float w = exp(-0.35 * float(x * x + y * y)) * exp(-abs(z - zc) / (zc * 0.02));
             sum += texture(uAO, uv).r * w;
             weight += w;
         }
@@ -676,6 +723,8 @@ uniform sampler2D uScene;
 uniform sampler2D uAO;
 uniform sampler2D uDepth;
 uniform float uStrength;
+uniform float uBounce;     // the albedo light bounces off inside a crease (0..1)
+uniform float uShow;
 uniform float uNear, uFar;
 uniform vec2  uTexel;
 uniform float uReversedZ;  // 1: the depth is reversed (near 1, far 0)
@@ -700,8 +749,14 @@ void main() {
         for (int y = -1; y <= 1; ++y)
             for (int x = -1; x <= 1; ++x) ao = max(ao, texture(uAO, vUV + vec2(x, y) * uTexel).r);
     }
+    // Light bounced again inside what hides it (Jimenez's fit, `uBounce` the
+    // surfaces' albedo): a pale crease is not as dark as a black one.
+    float A = uBounce, a = 2.0404 * A - 0.3324, b = -4.7951 * A + 0.6417, cc = 2.7552 * A + 0.6903;
+    ao = max(ao, ((ao * a + b) * ao + cc) * ao);
     float k = uStrength * scene.a;
-    FragColor = vec4(c * mix(1.0, pow(ao, 1.6), k), 1.0);
+    FragColor = vec4(c * mix(1.0, ao, k), 1.0);
+    // (`ao.show`: 1 the occlusion alone, 2 the share of each pixel it may darken - to look at.)
+    if (uShow > 0.5) FragColor = vec4(vec3(uShow < 1.5 ? ao : scene.a), 1.0);
 })";
 }
 

@@ -1889,6 +1889,9 @@ int traced_lamp(int i) {
 }
 #endif
 uniform vec4 uProbeAt[MAX_PROBES];
+uniform highp usampler2D uProbeIndex;  // the boxes reaching each cell of the floor plan (GLWorldView::probe_index)
+uniform vec4 uProbeGrid;               // its origin x, z, 1 / its cell, and 1 where there is one
+uniform vec2 uProbeGridSize;  // its cells across and deep
 uniform vec3 uProbeHalf[MAX_PROBES];
 uniform vec3 uProbeSoftLo[MAX_PROBES];
 uniform vec3 uProbeSoftHi[MAX_PROBES];
@@ -1919,6 +1922,7 @@ uniform samplerCube uEnv;     // what is seen every way from a polished thing (a
 // screen it was drawn for (clip x0, y0, x1, y1); how much it reflects, how
 // much of its picture holds that part (x, y), and its picture's mip levels.
 uniform int  uMirrorCount;
+uniform float uShowMirror;   // (SG_SHOW_MIRROR: where a mirror is laid, magenta)
 uniform vec4 uMirrorPlane[2];
 uniform vec4 uMirrorSeen[2];
 uniform vec4 uMirrorUse[2];
@@ -1997,6 +2001,7 @@ uniform float uNormalStrength;
 uniform float uNormalFlipY;
 uniform float uTexFlip;       // 1: the picture's rows run bottom up (a rendered one)
 uniform float uUntone;        // 1: the picture is already developed (a world's feed): undo the tone curve
+uniform float uUntoneGain;    // and how bright it is shown: a screen's `bright` (a set's tube in the place's light scale)
 
 // A portal into another room is sampled in screen space: the other side was
 // rendered with the matching virtual camera, so the quad becomes a window
@@ -2436,6 +2441,10 @@ void around_at(vec3 p, out vec3 sky, out vec3 ground) {
 float probe_weight(int i, vec3 p) {
     vec4 at = uProbeAt[i];
     vec3 d = p - at.xyz;
+    // (Out of its reach - its box and the blend round it, a ball round both -
+    // nothing: no turn worked out for a box the point is nowhere near.)
+    vec3 reach = uProbeHalf[i] + max(uProbeSoftLo[i], uProbeSoftHi[i]);
+    if (dot(d, d) > dot(reach, reach)) return 0.0;
     float c = cos(at.w), s = sin(at.w);
     vec3 q = vec3(c * d.x + s * d.z, d.y, -s * d.x + c * d.z);
     vec3 lo = q + uProbeHalf[i], hi = uProbeHalf[i] - q;
@@ -2444,6 +2453,15 @@ float probe_weight(int i, vec3 p) {
     vec3 w = a * b;
     w = w * w * (3.0 - 2.0 * w);
     return w.x * w.y * w.z;
+}
+
+// Which boxes may hold `p`: the four its cell of the floor plan names (255:
+// none more), or - more than four there (254), or no map - every one.
+uvec4 probe_candidates(vec3 p) {
+    if (uProbeGrid.w < 0.5) return uvec4(254u);
+    ivec2 c = ivec2(floor((p.xz - uProbeGrid.xy) * uProbeGrid.z));
+    if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(vec2(c), uProbeGridSize))) return uvec4(255u);
+    return texelFetch(uProbeIndex, c, 0);
 }
 
 // The light the probes hold arriving along `d` - each band weighted as a
@@ -2457,7 +2475,14 @@ vec3 probe_light(vec3 p, vec3 d, float w1, float w2, out float cover) {
                           1.092548 * x * z * w2, 0.546274 * (x * x - y * y) * w2);
     vec3 sum = vec3(0.0);
     float total = 0.0;
-    for (int i = 0; i < MAX_PROBES; ++i) {
+    uvec4 near = probe_candidates(p);
+    bool every = near.x == 254u;
+    for (int k = 0; k < MAX_PROBES; ++k) {
+        int i = k;
+        if (!every) {
+            if (k >= 4 || near[k] >= 255u) break;
+            i = int(near[k]);
+        }
         if (i >= uProbeCount) break;
         float w = probe_weight(i, p);
         if (w <= 0.0) continue;
@@ -2499,7 +2524,14 @@ vec3 captured(vec3 p, vec3 r, float roughness, out float cover) {
     float f = lod - float(k0);
     vec3 sum = vec3(0.0);
     float total = 0.0;
-    for (int i = 0; i < MAX_PROBES; ++i) {
+    uvec4 near = probe_candidates(p);
+    bool every = near.x == 254u;
+    for (int k = 0; k < MAX_PROBES; ++k) {
+        int i = k;
+        if (!every) {
+            if (k >= 4 || near[k] >= 255u) break;
+            i = int(near[k]);
+        }
         if (i >= uProbeCount || i >= count) break;
         float wi = probe_weight(i, p);
         if (wi <= 0.0) continue;
@@ -3247,7 +3279,7 @@ void main() {
             // it went in, not twice as flat.
             vec3 y = min(tex, vec3(0.985));
             vec3 a = 2.43 * y - 2.51, b = 0.59 * y - 0.03, c = 0.14 * y;
-            tex = max((-b - sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a), 0.0);
+            tex = max((-b - sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a), 0.0) * uUntoneGain;
         }
         albedo = mix(albedo, tex, uTexMix);
     }
@@ -3895,6 +3927,7 @@ void main() {
         // edge on (0.2 or so a polished floor, 1 a mirror) - not only edge on
         // as bare Fresnel gives - and less as it roughens.
         reflected = max(reflected, vec3(uMirrorUse[k].x * (1.0 - roughness)));
+        if (uShowMirror > 0.5) { FragColor = vec4(seen, 1.0); return; }
     }
     // Traced: what a glossy surface mirrors, as it is that way.
 #ifdef SG_TRACED

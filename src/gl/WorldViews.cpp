@@ -363,7 +363,7 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         const bool deep_view = !deeper && !own && depth == 0 && !in_mirror && wp.shown_far > 0.0f && wp.shown;
         // A picture already developed in its own look is taken back
         // through the tone curve, to come out as it went in.
-        if (own) scene_->set("uUntone", 1.0f);
+        if (own) scene_->set("uUntone", 1.0f), scene_->set("uUntoneGain", 1.0f);
         const float a0 = static_cast<float>(e.params.num(Key{"crop_a0"}, 0.0)), a1 = static_cast<float>(e.params.num(Key{"crop_a1"}, 1.0));
         const float b0 = static_cast<float>(e.params.num(Key{"crop_b0"}, 0.0)), b1 = static_cast<float>(e.params.num(Key{"crop_b1"}, 1.0));
         if (a1 <= a0 || b1 <= b0) return;
@@ -463,6 +463,11 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         // (`untone` = 0): then the picture is only colour, as a canvas is,
         // and reflects the room's light and no more.
         scene_->set("uUntone", e.params.num(Key{"untone"}, 1.0) > 0.5 && !f->second.viewer_film ? 1.0f : 0.0f);
+        // (`bright`: how much light the panel gives what it shows - 1, as it
+        // was seen; a set's tube in a place whose lamps are scaled to an
+        // exposure of 0.2 is five times as bright, as its lamps are. A window
+        // says nothing: what is beyond it is seen as the eye sees it.)
+        scene_->set("uUntoneGain", static_cast<float>(e.params.num(Key{"bright"}, 1.0)));
     } else {
         auto it = bound_surfaces().find(e.id);
         if (it == bound_surfaces().end() || !it->second.surface) return;  // a plain opening

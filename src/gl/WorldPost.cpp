@@ -1,3 +1,4 @@
+#include <fstream>
 // The GL view's passes after the scene: ambient occlusion, bloom, the
 // eye's exposure, the composite and the finish; and what makes the eye's
 // picture whole over frames - the TAA, or the card's own upscaler (DLSS).
@@ -280,6 +281,10 @@ void GLWorldView::run_ao(float strength, float radius) {
     ao_prog_->set("uTanHalf", tan_half);
     ao_prog_->set("uAspect", view_.aspect);
     ao_prog_->set("uRadius", radius);
+    // (Turned each frame where frames are averaged - the average is the integral; still where they are not.)
+    ao_prog_->set("uFrame", taa_on() || dlss_on() ? static_cast<float>(frame_count_ % 64) : 0.0f);
+    ao_prog_->set("uSlices", static_cast<int>(setting(post_, passes::composite, "ao.slices", 3.0)));
+    ao_prog_->set("uSteps", static_cast<int>(setting(post_, passes::composite, "ao.steps", 6.0)));
     screen_.draw();
 
     ao_b_.bind();
@@ -299,6 +304,8 @@ void GLWorldView::run_ao(float strength, float radius) {
     ao_apply_prog_->set("uScene", 0);
     ao_apply_prog_->set("uAO", 1);
     ao_apply_prog_->set("uStrength", strength);
+    ao_apply_prog_->set("uBounce", static_cast<float>(setting(post_, passes::composite, "ao.bounce", 0.3)));
+    ao_apply_prog_->set("uShow", static_cast<float>(setting(post_, passes::composite, "ao.show", 0.0)));
     ao_apply_prog_->set("uDepth", 2);
     ao_apply_prog_->set("uNear", view_.znear);
     ao_apply_prog_->set("uReversedZ", gl::reversed_depth() ? 1.0f : 0.0f);
@@ -782,6 +789,17 @@ void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
         screen_.draw();
     }
     as_composite_left();
+}
+
+std::vector<float> GLWorldView::occlusion(int& w, int& h) const {
+    // (The last frame's, smoothed: what was laid on the light from all round.)
+    w = ao_b_.width(), h = ao_b_.height();
+    std::vector<float> px(static_cast<std::size_t>(w) * h);
+    if (w <= 0 || h <= 0) return px;
+    ao_b_.bind();
+    gl::glReadPixels(0, 0, w, h, gl::GL_RED, gl::GL_FLOAT, px.data());
+    gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+    return px;
 }
 
 }  // namespace sg::render

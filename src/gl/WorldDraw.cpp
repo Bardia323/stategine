@@ -1227,6 +1227,8 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         last_view_proj_ = drawn_proj, last_nudge_ = reversed ? 1.0f : 0.0f;
         p.set("uMirrorScreen", vp_w_, vp_h_);
         mirror_uniforms(p, !mirroring_ && !capturing_);
+        static const bool show_mirror = std::getenv("SG_SHOW_MIRROR") != nullptr;
+        p.set("uShowMirror", show_mirror ? 1.0f : 0.0f);
         p.set("uInstanced", 0);
         p.set("uDim", 0.0f);
         // (SG_SHOW_WEAR=1: what each mesh's shape says of its wear, for
@@ -1520,17 +1522,24 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 for (std::size_t i : c->members) proxied->skip[i] = 1;
             }
         }
-        for (const auto i : planned) {
+        // What the room's own shell is (its laid walls, floor, ceiling - what
+        // `enclose` laid) is drawn after all that stands in it, as the
+        // renderer's own box is (draw_room, below): behind everything, where
+        // something hides it it is refused by depth, not shaded. Drawn first,
+        // every wall behind a curtain was shaded for nothing - Room 2's
+        // lighting a third of it.
+        std::vector<std::size_t> shell_last;
+        const auto draw_one = [&](std::size_t i) {
             const auto& e=room.elements()[i];
-            if (proxied && proxied->skip[i]) continue;
+            if (proxied && proxied->skip[i]) return;
             if (placed.things_only && !(e.kind == kinds::mesh && moved_one(i) && !is_sprite(e) && !cuts_out(e) && e.params.num(glass_key, 0.0) <= 0.0))
-                continue;
-            if (e.kind == kinds::wall && fills_opening(e)) continue;
+                return;
+            if (e.kind == kinds::wall && fills_opening(e)) return;
             // `unseen`: no eye sees it - it still casts its shadow (a walker's
             // own body, seen from inside it); `mirrored` too, and a mirror
             // shows it (that body, in the glass).
-            if (e.params.num(unseen_key, 0.0) > 0.5 && !(mirroring_ && e.params.num(mirrored_key, 0.0) > 0.5)) continue;
-            if (hidden_ && hidden_->count(e.id.key())) continue;  // (moving: not what the probes see)
+            if (e.params.num(unseen_key, 0.0) > 0.5 && !(mirroring_ && e.params.num(mirrored_key, 0.0) > 0.5)) return;
+            if (hidden_ && hidden_->count(e.id.key())) return;  // (moving: not what the probes see)
             if (e.kind == terrain_kind()) {
                 draw_terrain(room, e);
             } else if (e.kind == kinds::mesh && whole && moved_one(i) && !e.params.has(laid_key) && !is_sprite(e) && !cuts_out(e) &&
@@ -1566,10 +1575,18 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
                 seen_here.planes.insert(seen_here.planes.end(), cull_.begin(), cull_.end());
                 strewn_into(room, e, &seen_here, static_cast<float>(e.params.num(Key{"far"}, 250.0)));
             }
+        };
+        for (const auto i : planned) {
+            const auto& e = room.elements()[i];
+            if (!placed.things_only && e.params.has(laid_key) && !moved_one(i)) shell_last.push_back(i);
+            else draw_one(i);
         }
+        flush_batches(*scene_, true);
+        // (Its still things drawn together a cell at a time, too, before the shell.)
+        if (!merged.empty()) draw_proxies(merged);
+        for (const auto i : shell_last) draw_one(i);
         lap(3, part_at);
         flush_batches(*scene_, true);
-        if (!merged.empty()) draw_proxies(merged);
         if (!uncut.empty()) {
             const int own = std::min(static_cast<int>(clips.size()), kMaxBounds);
             scene_->set("uClipCount", own);

@@ -1,5 +1,6 @@
 // The GL view's lamp cells (Quality::lamp_cells): which of the frame's lamps
 // can light each part of the view, so each part asks only those.
+#include <vector>
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
@@ -68,11 +69,40 @@ void GLWorldView::lamp_cells(const std::vector<Light>& lights, const gl::Mat4& v
         int tx0 = 0, tx1 = cx - 1, ty0 = 0, ty1 = cy - 1;
         float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
         bool behind = false;
-        for (int k = 0; k < 8 && !behind; ++k) {
-            const gl::Vec3 q = l.pos + gl::Vec3{(k & 1) ? r : -r, (k & 2) ? r : -r, (k & 4) ? r : -r};
+        // What it can light: a spot its cone (its tip, rings round its axis
+        // out to the end of its reach, and the cap there), drawn round wide
+        // enough to hold the round of each; a lamp lighting every way, the
+        // box round its ball. A downlight lights a pool, not a room: by its
+        // ball every cell of the room's view asked it.
+        std::vector<gl::Vec3> hull;
+        const float dl = std::sqrt(gl::dot(l.dir, l.dir));
+        if (l.outer < 1.4f && dl > 1e-6f) {
+            const gl::Vec3 ax = l.dir * (1.0f / dl);
+            const gl::Vec3 a = std::fabs(ax.y) < 0.9f ? gl::Vec3{0.0f, 1.0f, 0.0f} : gl::Vec3{1.0f, 0.0f, 0.0f};
+            gl::Vec3 u = gl::cross(ax, a);
+            u = u * (1.0f / std::sqrt(gl::dot(u, u)));
+            const gl::Vec3 v = gl::cross(ax, u);
+            hull.push_back(l.pos);
+            hull.push_back(l.pos + ax * r);
+            // (Rings at the cone's edge and half way to its axis, on the ball of
+            // its reach; each an octagon round its circle - 1/cos(pi/8) out.)
+            for (float frac : {0.5f, 1.0f}) {
+                const float th = l.outer * frac, along = r * std::cos(th), across = r * std::sin(th) * 1.0824f;
+                for (int k = 0; k < 8; ++k) {
+                    const float ph = static_cast<float>(k) * 0.78539816f;
+                    hull.push_back(l.pos + ax * along + u * (across * std::cos(ph)) + v * (across * std::sin(ph)));
+                }
+            }
+        } else {
+            for (int k = 0; k < 8; ++k) hull.push_back(l.pos + gl::Vec3{(k & 1) ? r : -r, (k & 2) ? r : -r, (k & 4) ? r : -r});
+        }
+        for (const gl::Vec3& q : hull) {
             const gl::Vec3 h = at_clip(view_proj, q.x, q.y, q.z, 1.0f);
-            if (h.z <= 1e-4f) behind = true;
-            else x0 = std::min(x0, h.x / h.z), x1 = std::max(x1, h.x / h.z), y0 = std::min(y0, h.y / h.z), y1 = std::max(y1, h.y / h.z);
+            if (h.z <= 1e-4f) {
+                behind = true;
+                break;
+            }
+            x0 = std::min(x0, h.x / h.z), x1 = std::max(x1, h.x / h.z), y0 = std::min(y0, h.y / h.z), y1 = std::max(y1, h.y / h.z);
         }
         if (!behind) {
             if (x1 < -1.0f || x0 > 1.0f || y1 < -1.0f || y0 > 1.0f) continue;  // not in the view at all

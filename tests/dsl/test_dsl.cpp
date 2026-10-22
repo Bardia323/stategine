@@ -354,6 +354,30 @@ state room_b : spatial3d { element door : portal { x = 5.0 y = 0.0 z = 0.0 yaw =
               "a seam identifies doorways");
     }
 
+    // A seam at a doorway a space took in from its rooms is glued once the
+    // space is made: planned after it, however the source orders them.
+    {
+        const auto c = compile(R"(
+extern state hall
+extern state lounge
+extern state hotel
+extern state beyond
+seam hotel.hall.to_beyond <-> beyond.beyond.door
+    name out
+seam hall.hall.arch <-> lounge.lounge.arch
+    name arch
+space hotel = sheaf hall lounge
+)");
+        check(c.ok(), "a seam on a space's doorway compiles: " + c.report());
+        int space_at = -1, out_at = -1, arch_at = -1, i = 0;
+        for (const auto& st : c.plan.steps) {
+            if (std::holds_alternative<sg::dsl::plan::Space>(st)) space_at = i;
+            if (const auto* g = std::get_if<sg::dsl::plan::Glue>(&st)) (g->name.str() == "out" ? out_at : arch_at) = i;
+            ++i;
+        }
+        check(arch_at >= 0 && space_at > arch_at && out_at > space_at, "its rooms' seam before the space is made, the space's own after it");
+    }
+
     // when: an event mapping, and nothing at run time.
     {
         const auto c = compile(std::string(kCamera) + R"(

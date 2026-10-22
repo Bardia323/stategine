@@ -1,6 +1,8 @@
 // The GL view's light probes: a room's probes on the scene program, and
 // their bake - the room seen every way from each, lamp by lamp, taken to
 // spherical harmonics and handed back as data (sg/domains/Probe.hpp).
+#include <cstdio>
+#include <cstdlib>
 #include "sg/gl/World.hpp"
 
 #include <algorithm>
@@ -74,6 +76,7 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program*
     const gl::Program& to = into ? *into : *scene_;
     const ProbeNames& names = probe_names(kMaxProbes);
     int count = 0;
+    std::vector<ProbeBoxAt> at_;
     // Relit live (light_rooms): the room's own boxes, or its declared
     // probes that hold no bake - each box's sets times its lamps' light now.
     if (const RoomLight* rl = placed.room && !baking_ ? live_light(*placed.room) : nullptr) {
@@ -89,6 +92,8 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program*
             to.set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
             to.set(names.half[count].c_str(), gl::Vec3{static_cast<float>(b.half.x), static_cast<float>(b.half.y), static_cast<float>(b.half.z)});
+            at_.push_back({static_cast<float>(p.position.x), static_cast<float>(p.position.z), static_cast<float>(p.yaw),
+                           static_cast<float>(b.half.x + std::max(b.soft_lo.x, b.soft_hi.x)), static_cast<float>(b.half.z + std::max(b.soft_lo.z, b.soft_hi.z))});
             to.set(names.lo[count].c_str(), gl::Vec3{static_cast<float>(b.soft_lo.x), static_cast<float>(b.soft_lo.y), static_cast<float>(b.soft_lo.z)});
             to.set(names.hi[count].c_str(), gl::Vec3{static_cast<float>(b.soft_hi.x), static_cast<float>(b.soft_hi.y), static_cast<float>(b.soft_hi.z)});
             for (std::size_t k = 0; k < 9; ++k)
@@ -97,6 +102,7 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program*
             ++count;
         }
         to.set("uProbeCount", count);
+        probe_index(to, at_);
         to.set("uProbeOpen", rl->open ? 1.0f : 0.0f);
         if (!into) captures_to(placed, rl, count);
         return;
@@ -120,6 +126,8 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program*
             to.set(names.at[count].c_str(), static_cast<float>(p.position.x), static_cast<float>(p.position.y + 0.5 * sy),
                         static_cast<float>(p.position.z), static_cast<float>(p.yaw));
             to.set(names.half[count].c_str(), gl::Vec3{static_cast<float>(0.5 * sx), static_cast<float>(0.5 * sy), static_cast<float>(0.5 * sz)});
+            at_.push_back({static_cast<float>(p.position.x), static_cast<float>(p.position.z), static_cast<float>(p.yaw),
+                           static_cast<float>(0.5 * sx + std::max(side("soft.nx"), side("soft.px"))), static_cast<float>(0.5 * sz + std::max(side("soft.nz"), side("soft.pz")))});
             to.set(names.lo[count].c_str(), gl::Vec3{side("soft.nx"), side("soft.ny"), side("soft.nz")});
             to.set(names.hi[count].c_str(), gl::Vec3{side("soft.px"), side("soft.py"), side("soft.pz")});
             for (std::size_t k = 0; k < 9; ++k)
@@ -129,8 +137,73 @@ void GLWorldView::probes_to_program(const PlacedRoom& placed, const gl::Program*
         }
     }
     to.set("uProbeCount", count);
+    probe_index(to, at_);
     to.set("uProbeOpen", 0.0f);
     if (!into) captures_to(placed, nullptr, 0);
+}
+
+void GLWorldView::probe_index(const gl::Program& to, const std::vector<ProbeBoxAt>& boxes) {
+    // (SG_PROBE_INDEX=0: every box looked at, as before the map - to compare.)
+    static const bool off = std::getenv("SG_PROBE_INDEX") && std::string(std::getenv("SG_PROBE_INDEX")) == "0";
+    if (boxes.empty() || off) {
+        to.set("uProbeGrid", 0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+    // Each box's reach on the floor plan, a rectangle round its turned box and blend.
+    struct Rect2 {
+        float x0, z0, x1, z1;
+    };
+    std::vector<Rect2> r;
+    uint64_t key = 1469598103934665603ULL;
+    float x0 = 1e30f, z0 = 1e30f, x1 = -1e30f, z1 = -1e30f;
+    for (const ProbeBoxAt& b : boxes) {
+        const float c = std::fabs(std::cos(b.yaw)), s = std::fabs(std::sin(b.yaw));
+        const float ex = c * b.hx + s * b.hz, ez = s * b.hx + c * b.hz;
+        r.push_back({b.x - ex, b.z - ez, b.x + ex, b.z + ez});
+        x0 = std::min(x0, b.x - ex), z0 = std::min(z0, b.z - ez), x1 = std::max(x1, b.x + ex), z1 = std::max(z1, b.z + ez);
+        for (float f : {b.x, b.z, b.yaw, b.hx, b.hz}) key = (key ^ std::hash<float>{}(f)) * 1099511628211ULL;
+    }
+    ProbeIndex& ix = probe_indices_[key];
+    if (!ix.tex) {
+        // (A quarter of a metre a cell, or coarser for a large plan: at most 128 across.)
+        const float cell = std::max(0.25f, std::max(x1 - x0, z1 - z0) / 128.0f);
+        ix.x0 = x0, ix.z0 = z0, ix.inv = 1.0f / cell;
+        ix.w = std::max(1, static_cast<int>(std::ceil((x1 - x0) / cell))), ix.h = std::max(1, static_cast<int>(std::ceil((z1 - z0) / cell)));
+        std::vector<unsigned char> px(static_cast<std::size_t>(ix.w) * ix.h * 4, 255);
+        for (int j = 0; j < ix.h; ++j)
+            for (int i = 0; i < ix.w; ++i) {
+                const float cx0 = x0 + i * cell, cz0 = z0 + j * cell, cx1 = cx0 + cell, cz1 = cz0 + cell;
+                unsigned char* o = &px[(static_cast<std::size_t>(j) * ix.w + i) * 4];
+                int n = 0;
+                for (std::size_t k = 0; k < r.size(); ++k) {
+                    if (r[k].x1 < cx0 || r[k].x0 > cx1 || r[k].z1 < cz0 || r[k].z0 > cz1) continue;
+                    if (n == 4) {
+                        o[0] = 254;  // (more than four reach it: all are looked at)
+                        break;
+                    }
+                    o[n++] = static_cast<unsigned char>(k);
+                }
+            }
+        if (std::getenv("SG_SAY_PROBE_INDEX")) {
+            int many = 0;
+            for (std::size_t q = 0; q < px.size(); q += 4) many += px[q] == 254;
+            std::fprintf(stderr, "probe index: %zu boxes, %dx%d cells of %.2f m from %.2f %.2f, %d cells looking at all\n", boxes.size(), ix.w, ix.h, cell, x0, z0, many);
+            for (const ProbeBoxAt& b : boxes) std::fprintf(stderr, "  box at %.2f %.2f yaw %.2f reach %.2f %.2f\n", b.x, b.z, b.yaw, b.hx, b.hz);
+        }
+        gl::glGenTextures(1, &ix.tex);
+        gl::glActiveTexture(gl::GL_TEXTURE0 + static_cast<gl::GLenum>(kProbeIndexUnit));
+        gl::glBindTexture(gl::GL_TEXTURE_2D, ix.tex);
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_NEAREST);
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_NEAREST);
+        gl::glTexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGBA8UI), ix.w, ix.h, 0, gl::GL_RGBA_INTEGER, gl::GL_UNSIGNED_BYTE, px.data());
+        gl::glActiveTexture(gl::GL_TEXTURE0);
+    }
+    gl::glActiveTexture(gl::GL_TEXTURE0 + static_cast<gl::GLenum>(kProbeIndexUnit));
+    gl::glBindTexture(gl::GL_TEXTURE_2D, ix.tex);
+    gl::glActiveTexture(gl::GL_TEXTURE0);
+    to.set("uProbeIndex", kProbeIndexUnit);
+    to.set("uProbeGrid", ix.x0, ix.z0, ix.inv, 1.0f);
+    to.set("uProbeGridSize", static_cast<float>(ix.w), static_cast<float>(ix.h));
 }
 
 Sh9 GLWorldView::capture(const Spatial3D& room, const Vec3d& at, int size) {

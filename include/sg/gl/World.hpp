@@ -175,8 +175,8 @@ public:
     static constexpr std::size_t kMaxLights = 32;   // matches the scene shader: lamps one draw is lit by
     static constexpr std::size_t kAllLights = 64;   // lamps a frame keeps, over every room it draws
     static constexpr std::size_t kShadowMaps = 24;  // layers of the shadow array; matches the scene shader
-    static constexpr std::size_t kShadowLights = 10;  // lights with maps: a lamp with no cone counts once for its six layers, a sun once for its boxes
-    static constexpr std::size_t kOwnShadows = 6;  // a room's own strongest six cast; the rest are for doorways and a sun's close-up map
+    static constexpr std::size_t kShadowLights = 16;  // lights with maps: a lamp with no cone counts once for its six layers, a sun once for its boxes
+    static constexpr std::size_t kOwnShadows = 12;  // a room's own strongest twelve cast, while the layers last (a room of downlights is mostly spots, one layer each); the rest are for doorways and a sun's close-up map
     static constexpr int kMaxBounds = 8;           // doorways per room; matches the scene shader
     static constexpr float kNear = 0.05f;          // the near plane, metres
 
@@ -247,6 +247,10 @@ public:
         uint64_t frame = 0;  // the frame they are of: 0 while none is known
     };
     void set_card_timing(bool on);
+    // The last frame's ambient occlusion (GTAO, smoothed), as laid on the
+    // light from all round: 1 open, 0 hidden; w x h, bottom row first. To
+    // look at and to test - not every frame (it waits for the card).
+    std::vector<float> occlusion(int& w, int& h) const;
     const CardTimes& card_times() const { return card_; }
     // The state the viewer is attending to - an interface they sit at, say.
     // Its active look is laid over every room's own (the uniforms it sets win),
@@ -789,6 +793,19 @@ private:
     static constexpr int kMaxProbes = gl::kShaderProbes;  // every shader's arrays held to it (sg_shader_counts)
     // (`into`: a program of the tracer's, lighting what its rays meet.)
     void probes_to_program(const PlacedRoom& placed, const gl::Program* into = nullptr);
+    // A map over the boxes' floor plan, each cell the (at most four) boxes
+    // whose blend reaches it - 254: more, look at all - so a pixel weighs
+    // the few that hold it, not every box: made once for boxes where they are.
+    struct ProbeBoxAt {
+        float x, z, yaw, hx, hz;
+    };
+    void probe_index(const gl::Program& to, const std::vector<ProbeBoxAt>& boxes);
+    struct ProbeIndex {
+        gl::GLuint tex = 0;
+        float x0 = 0, z0 = 0, inv = 0;
+        int w = 0, h = 0;
+    };
+    std::map<uint64_t, ProbeIndex> probe_indices_;
     // A probe's sets, read from its params once while they stand.
     struct ProbeSets {
         uint64_t stamp = ~uint64_t{0};
@@ -1710,6 +1727,8 @@ private:
     static constexpr int kBedsUnit = 17;
     // A worn texture's dirt (Texture::dirt_raster): past the traced pictures' units.
     static constexpr int kDirtUnit = 24, kDampUnit = 25, kWearFieldUnit = 26, kMossUnit = 27;
+    // Which probe boxes reach each part of a room's floor plan (probe_index).
+    static constexpr int kProbeIndexUnit = 30;  // (28 and 29 are the tracer's: kSceneGi, kSkyLightUnit)
     float wear_age_ = 1.0f;  // the age of the room being drawn (sg/domains/Wear.hpp), for what wears a texture in it
     int wear_leaks_ = 0;     // ... and how many of its leaks the scene shader was given
     gl::GLuint shadow_depths_ = 0;

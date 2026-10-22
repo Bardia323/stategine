@@ -97,6 +97,12 @@ public:
         for (const Program& p : progs_) lenses_of(p);
         for (const Program& p : progs_) seams_of(p);  // before what carries their functors
         for (const Program& p : progs_) spaces_of(p);
+        // A seam at a doorway a space took in from its rooms (`hotel.hall.to_room2`)
+        // is glued once the space is made: after every space, in the order said.
+        std::stable_partition(glue_steps_.begin(), glue_steps_.end(), [&](const Step& st) {
+            const auto* g = std::get_if<plan::Glue>(&st);
+            return !g || (!spaces_named_.count(g->a.str()) && !spaces_named_.count(g->b.str()));
+        });
         for (const Program& p : progs_) transitions_of(p);
         for (const Program& p : progs_) embeds_of(p);
         for (const Program& p : progs_) wears_of(p);
@@ -139,6 +145,7 @@ private:
     bool have_initial_ = false;
 
     // The plan, in groups: the order a graph has to be made in.
+    std::set<std::string> spaces_named_;
     std::vector<Step> extern_steps_, state_steps_, functor_steps_, compose_steps_, relation_steps_, wear_steps_, glue_steps_,
         drive_steps_, port_steps_, other_steps_;
 
@@ -854,6 +861,7 @@ private:
         for (const SpaceAst& s : p.spaces) {
             bool ok = state_named(s.name, s.at, "a space made one");
             plan::Space sp{Key{s.name}, {}};
+            spaces_named_.insert(s.name);
             for (const std::string& r : s.rooms) {
                 ok = state_named(r, s.at, "a room of a space") && ok;
                 if (r == s.name) {

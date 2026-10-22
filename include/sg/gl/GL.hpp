@@ -141,6 +141,8 @@ constexpr GLenum GL_STREAM_DRAW = 0x88E0;
 // Pictures of whole numbers, read by a shader as they are (words of bits).
 constexpr GLenum GL_RG32UI = 0x823C;
 constexpr GLenum GL_RG_INTEGER = 0x8228;
+constexpr GLenum GL_RGBA8UI = 0x8D7C;
+constexpr GLenum GL_RGBA_INTEGER = 0x8D99;
 constexpr GLenum GL_UNSIGNED_INT = 0x1405;
 
 // --- entry points -------------------------------------------------------------

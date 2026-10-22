@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 // The GL view's mirrors: a plane things in a view's room say they reflect
 // in, and the room seen in it - drawn again from the eye mirrored in that
 // plane, only what stands above it, only where the plane is on the screen,
@@ -198,6 +200,13 @@ void GLWorldView::draw_mirrors(const std::vector<PlacedRoom>& rooms, const Camer
             planes.push_back(p);
             if (planes.size() >= static_cast<std::size_t>(kMirrors)) break;
         }
+    }
+    // (SG_SAY_MIRRORS: which planes each view mirrors, every second.)
+    if (std::getenv("SG_SAY_MIRRORS") && frame_count_ % 60 == 0) {
+        std::fprintf(stderr, "mirrors f%llu path '%s' room %s placed0 %d planned %d planes %zu:", (unsigned long long)frame_count_, path_.c_str(), room.id().str().c_str(), placed0 ? 1 : 0,
+                     planned != mirror_plans_.end() ? 1 : 0, planes.size());
+        for (const MirrorPlane& p : planes) std::fprintf(stderr, " [n %.2f %.2f %.2f o %.2f s %.2f]", p.normal.x, p.normal.y, p.normal.z, p.offset, p.strength);
+        std::fprintf(stderr, "\n");
     }
     const float scale = std::clamp(q_.reflection_scale, 0.1f, 1.0f);
     const bool eyes_own = path_.empty();

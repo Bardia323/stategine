@@ -304,6 +304,22 @@ drawn (every program prints them: read them) - and a test holds the guard.
 | running in a room made of rooms at 12 m/s, a sprint through walls | a realm took "no box round it and no part named `ceiling`" for open sky - a room made of rooms says `enclosed` 0 (its own floors and ceilings, no box to fight them), and its ceilings are named for its rooms | open sky is nothing over the walker, looked for (a ray up); a place's run is its own pace eased in and out (the hotel's: walk 0.9, run 2.3 m/s, over half a second) | `realms_laws`: hurrying, fast under open sky, a run under a roof of any name |
 | the notes on the floor could not be taken up | the hand took only what its one ray met: a sheet flat on a dark floor, 2 m off, is a thin mark, and nothing on the screen to aim by | nothing on the ray: the loose thing nearest it within 8 degrees (the game's `Hand`) | try the hand by script before saying it works (`HOTEL_CLICKS`, `HOTEL_INSPECT`, `HOTEL_SAY_BODIES`) |
 | a page held up to read, white, its ink gone | the page `undim` under a dark place's exposure: a lit sheet past white | where the exposure is for the dark, the page dims with the room as it comes close (the eye taken in by it) | look at a page read in every new place: its paper under 230 of 255 |
+| a seam to another place from a room made one: "no element hall.to_room2 in state hotel" | the notation glued every seam before it made any space | a seam at a doorway a space took in (`seam hotel.hall.to_room2 <-> ...`) is planned after the space is made | `sg_dsl`: its rooms' seam before the space, the space's own after it |
+| a door taken into a room made one: nameless, its events said by a room that is no more | a place named its doors by its own prefix (`hotel.` + ...), and the room that said its events was removed | a door is named by its doorway's id less the place's prefix where it has one (`hall.to_room2` in the hotel); the one room says the events (`Place::door_said`), the .sg names them `hotel.hall.to_room2.hold` | - (the hotel's walk through it) |
+| nothing loose in a room made one ever moved: a bottle taken up stayed on its table | `join_bodies` carried a body's parts to the things of the place named for their room (`lounge.` to `lounge`): the one room is named `hotel` | a part goes to the thing of its own name when the place has it | said at start: "! <part>: a part of <physics> that no place's thing is carried to" |
+| a set showing a place (a tape, a camera) black in the hotel | a picture of a place is shown as light at the brightness it was seen with; the hotel's lamps are five times as many lumens, for an exposure of 0.2 | a screen is a light of its own, in its place's light scale: the panel's `bright` (the hotel's set: 1 / its exposure). A window says nothing: what is beyond it is seen with the viewer's own eye | `sg_deep_views_gl`: a window in its own look shows what a view through it shows |
+| a set switched off still showing its snow | its signal's embedding follows the set, opened again by the engine whatever the set said | off, the lit glass is not drawn (`unseen`): the set's own dead tube is seen (`Place::screen_shows`) | - |
+| E at a deck did nothing | the deck's model was not solid: the eye's ray went through it | whatever is to be used is solid, or has a hand's pad (`reach`) - here the nightstand round the deck takes the tape too | `Place::use_faults`, said at the hotel's start; the game's laws list theirs (43, to settle) |
+| shapes flat against what they stand on; folds of velvet with no depth | the ambient occlusion was hemisphere taps within 0.3 m: its buffer averaged 0.94, next to nothing in a crease | GTAO (Jimenez et al. 2016, as XeGTAO): horizons searched each way in a few slices, the cosine-weighted visibility integrated between them; noise turned each frame where frames are averaged; light bounced inside a crease (`ao.bounce`, 0.3); the styles' radius 0.6 m (`ao.radius`, `ao.slices`, `ao.steps`) | `sg_ao_gl`: a box's foot and the corners deep, the open floor open |
+| an open floor greyed toward the frame's edges (10% at its corners) | GTAO's slices turned evenly on the screen: off the middle the eye's ray leans, and even on the screen is not even round it - a bias, not noise | each slice a direction square to the eye's ray, turned evenly round it, stepped along where it lands on the screen | `sg_ao_gl`: the open floor's darkest 1% over 0.92, anywhere in the frame |
+| AO looked at through `ao.show` read wrong (nearly white) | the picture shown goes through the camera's film after: exposure, its adapting, the curve, the lift | read the occlusion itself: `GLWorldView::occlusion` (the hotel: `HOTEL_SAY_AO=file.png`) | - |
+| most of a room's lamps lit through everything | a room's own six strongest only were given shadow maps - Room 2's thirteen | twelve, while the 24 layers last (a spot takes one) | `SG_SHADOW_PICK=1` says which lamps cast |
+| what stands lit straight from above still sits on the floor | occlusion darkens only the light from all round; a downlight's own shadow falls under what it lights | - (to come: contact shadows for the lamps' light, a short march along the depth buffer toward each) | - |
+| a simple room at 24 ms a frame on a 4080 (the budget is 15) | each pixel weighed every probe box (24) three times over - the light given, the light mirrored, the captures - a turn worked out for each; a floor's own mirror drawing the room again for nothing to be seen in it (8 ms); every downlight asked by every pixel (its ball, not its cone) | the boxes that reach each cell of the floor plan in a map (`probe_index`, at most four, else all): 24 to 12 ms, the same picture to a level; a spot's cells by its cone; no planar mirror where the room's captures already show what the floor would | `tools/frame_budget.py`: every eye of a place under 15 ms at 1080p, or it fails; `SG_PROBE_INDEX=0` and a diff: the map changes nothing |
+| a frame's time in passes no timer named | the card's `feeds` and `views` were timed but never printed | print every pass (`HOTEL_TIMES`); profile by median over 30 s, never one reading (the same eye read 19 to 29 ms) | - |
+| the light from all round wrong where a view was traced | the probes' map was given texture unit 28, the tracer's (`kSceneGi`) | unit 30, its owners named beside it | `sg_gi_gl` |
+| a "faster" shader 70% slower | a list of the boxes kept per pixel in a local array, indexed as it ran: on the card, out of registers into memory | candidates from a texture, each a uniform's index; never a local array indexed by a variable in a pixel's shader | - (measure every change: `frame_budget.py`) |
+| a button too small to aim at | a pad the size of the button, inside the model's own box | a pad a little larger than the button, standing a few centimetres proud of the face | - (try it by script: `HOTEL_USE`, `HOTEL_SAY_USE`) |
 
 ### 11a. Blood, dirt and story
 
@@ -390,3 +406,57 @@ rest dead.
 7. **Steady**: time it looking every way, turn fast, hold still (section 8).
 8. **To the PC**: the Windows build, then the sync (exe, every asset it
    opens, the upscaler's file and the conf beside the exe).
+
+### 13. A place from a story (what is said, what is done)
+
+What the user gives: the story (what happened there, who was there, what
+is left), the layout (rooms, their sizes, which are one space and which are
+reached through a door - another place), the camera (the `photoreal` or
+`video` look, section 11b) and what can be done (taken up, read, switched,
+put in, opened). Everything after that is a step below, done by code where
+code can do it; what needs judgement (choosing models, reading a picture,
+placing by the story) is the agent's, by this list. Look at every result
+(several eyes, section 2), measure it, then go on.
+
+1. **Rooms**: a C++ builder per room (the hotel's `hall()`, `lounge()`,
+   `house::room2`): walls with their openings (`add_opening`, a door's
+   `door` flag), `enclose`, photographed materials (`wear_material`,
+   `clothe`; a new one: a row in `tools/fetch_textures.py` and a `.mat`).
+   A drawn pattern made a rug: `tools/room2_rugs.py` (its picture woven
+   in a photographed carpet's pile).
+2. **Joins in the `.sg`**: rooms that are one space, `space x = sheaf a b`;
+   another place through a door, a `seam` (on the space's doorway if it
+   was a room of one: `hotel.hall.to_room2`), its two `transition`s, the
+   door's own state (`sg::Door`, its `hung`/`beyond`/`by` functors, as
+   `tools/hotel.sg`), the places' drives and ports. The program follows
+   the engine's current place (`engine.current()`), never one place.
+3. **Props, by their roads** (section 6): Poly Haven at 2k for a hero
+   (`tools/fetch_models.py <assets> --res 2k <id>`; measure it by ray in
+   Blender before placing it); built by script in Blender with
+   photographed finishes (`tools/gen/hotel_build.py`: a builder, its
+   `info.json` saying where its working parts are - a deck's slot, a
+   button - so the C++ places by numbers, not by eye); Trellis last.
+4. **What can be done** - the machinery, each a few lines:
+   - taken up: `house::loose_thing` (a model's parts carried by its body);
+   - read: `clue` / `house::loose_paper` (a page of `assets/books/<x>.txt`);
+   - a door: `door_way` + `door_leaf` on a hinge anchor, `sg::Door` in the .sg;
+   - switched: `circuit(name, lamps, glows, pads)` - a pad (`reach`) per switch;
+   - a screen: `Room::tv` (its signal embedded in the .sg; `bright` 1/exposure
+     in a dark-exposed place), on its circuit (off: the dead tube);
+   - a tape and its deck: the deck's `use` `tape:<glass>` and its slot from
+     the deck's place (`tape_x/y/mouth_z/in_z/yaw`), `memleak::Deck` (hand.hpp)
+     in the loop; what the tape shows: `memleak::tape_of` (a place's cameras);
+   - sound for each: a CC0 recording (a row of `tools/sounds.py`'s HOTEL,
+     its Freesound page checked for CC0), cued where it happens.
+5. **Light and camera**: sections 3, 10, 11b; a lamp at its fixture's bulb;
+   every door the player comes to lit.
+6. **Try every action by script** before saying it works: `HOTEL_STAND`
+   (`room2:` too), `HOTEL_STAND2` (a second look in the same run),
+   `HOTEL_USE` (E at frames), `HOTEL_CLICKS`, `HOTEL_INSPECT`,
+   `HOTEL_SAY_USE`, `HOTEL_SAY_BODY`, `HOTEL_SAY_SOUND`, `HOTEL_TAPE_AT`.
+   Read what the program says at start (`!` lines: nothing to be used out
+   of reach, no part carried nowhere, no lamp off its bulb).
+   And the frame budget: `tools/frame_budget.py` at an eye in every room,
+   looking along it and into its doorways - 15 ms on the 4080 at 1080p,
+   each over it profiled pass by pass before anything is cut.
+7. **To the PC** (section 12, 8).
