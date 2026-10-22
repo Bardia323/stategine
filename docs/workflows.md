@@ -591,4 +591,25 @@ non-commercial), EmoTalk and FaceDiffuser (no clear licence).
   the captured stance as the first clip.
 - ComfyUI keeps its models on the card: free it (`POST /free`) before a
   stage that needs the GPU.
+- Sapiens2's normals are in OpenGL's camera frame (y up, z toward the
+  camera); the fit's is OpenCV's (y down, z ahead): turn y and z over.
+  Check any network's frame against a fitted body's own normals, axis by
+  axis, before fitting to it.
+- A finer mesh fitted from nothing ran away (63 cm): the same smoothing
+  weights smooth a mesh with half the edge a quarter as much (bending a
+  sixteenth). Go coarse to fine: the silhouettes' shape on MHR's own mesh,
+  lifted to the finer (`capture/dense.py`, each triangle in four), the
+  normals adding detail only, bounded (a few cm), on clothes and hair.
+- MHR has teeth, a tongue and eyeballs inside its head: offsets pushed them
+  out through the lips and lids. They never move. The face is the head
+  ahead of its joint and below the brow (by place, not by how it faces:
+  the nostrils' insides face down), and keeps its shape; a boot, like the
+  scalp, is low-passed - one rounded shell, never claws.
+- A normal map baked from a network's normals carries their disagreement
+  with the mesh too (a 24-degree lean on average): keep the detail only - a
+  blur that keeps to the atlas' islands, taken away - and less of it on a
+  face seen at a video's size.
+- Skins wear glTF's normal and ORM pictures (`Being::skin_map`, given to
+  the host as `skin_normal` / `skin_surface` by `show_skins`): an A/B shot
+  with and without the map in the file is how to see that it is worn.
 
