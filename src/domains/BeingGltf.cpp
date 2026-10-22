@@ -404,6 +404,16 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         }
         Element& s = add_element(Key{sname}, Key{"skin"});
         s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix).set("rig", rig);
+        // How its material is drawn: cut out where its picture's alpha is under
+        // its cutoff (glTF's MASK: hair cards, lashes), seen from both sides.
+        {
+            const J& prim0 = d.j["meshes"][std::size_t(nodes[std::size_t(mesh_node)]["mesh"].i(0))]["primitives"][0];
+            if (prim0.has("material")) {
+                const J& mat = d.j["materials"][std::size_t(prim0["material"].i(0))];
+                if (mat["alphaMode"].s == "MASK") s.params.set("cutout", mat.has("alphaCutoff") ? mat["alphaCutoff"].num(0.5) : 0.5);
+                if (mat["doubleSided"].t == J::Bool && mat["doubleSided"].b) s.params.set("two_sided", 1.0);
+            }
+        }
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
         // Which joints the skin binds anything to (`bound`): a joint it binds
         // nothing to only marks a place - the end of a head, a toe. (Bound
@@ -964,6 +974,8 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
             // (Its own picture worn as it is first shown; after that, whatever
             // it has been given to wear - a face, an open mouth - it keeps.)
             if (!e->params.has(Key{"skin"})) e->params.set("skin", pic.str()).set("uv", 1.0);
+            for (const char* k : {"cutout", "two_sided"})
+                if (s.params.has(Key{k})) e->params.set(k, s.params.num(Key{k}));
             for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, 1.0);
             // Its maps, worn by the same uvs: the folds and pores its picture
             // was baked with (`skin_normal`), how rough, shut in and metal it
