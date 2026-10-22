@@ -613,3 +613,82 @@ non-commercial), EmoTalk and FaceDiffuser (no clear licence).
   the host as `skin_normal` / `skin_surface` by `show_skins`): an A/B shot
   with and without the map in the file is how to see that it is worn.
 
+
+### 8. The head under the hair, from one photo (`--head`)
+
+A video's head is a shell over the hair, and its face only as deep as the
+silhouettes and landmarks say: horns, bulging ears and jaw where the shell
+was taken for skull. The head is measured instead from one picture of the
+person bald, square on, evenly lit (a Flux Klein edit of a frame: seed 21,
+all 12 steps, ReferenceLatent), and MHR's head is laid onto it, keeping
+MHR's rig, UVs and expression shapes:
+
+    tools/video_to_character.py work/<name>/orbit.mp4 --head work/<name>/bald.png
+
+`capture/headscan.py`, each step kept in `work/<name>/head/`:
+
+1. TRELLIS.2 (ComfyUI) on the picture: the sculpt, shape only, ~60k faces
+   (`sculpt.glb`).
+2. The user's SimplifyMeshSDF node group (`~/BlenderFiles/morpheus2.blend`,
+   `SG_SDF_BLEND` names another) through `tools/blender/sdf_clean.py`: one
+   closed skin (`sdf_0.006.ply`).
+3. MediaPipe on the sculpt seen square on, Umeyama onto MHR's head
+   landmarks: the sculpt in the head's frame (`align.npz`, ~0.5 cm off).
+4. The sculpt smoothed as points (`capture/smooth.mls`, each point laid
+   on the plane through its neighbours): 12 neighbours everywhere, 64 where
+   stubble was, the lips and eyes least, the two blended by a soft mask
+   (`scan.ply`, `scan.npz`).
+5. The wrap (`capture/wrap.py`): MHR's bald head drawn onto the scan's
+   nearest surface facing its way; each ear MHR's own, laid on the
+   sculpt's ear whole (turned, moved, sized: `fit_part`); the eyes and
+   mouth his first fit's, moved whole onto the sculpt's landmarks; folds
+   relaxed (`unfold`); teeth, tongue and eyeballs carried with the face.
+   Kept as the tool's offsets (`head.pt`).
+
+The video still textures it: its frames are projected through the shape
+fitted to the video (that is where they line up), and MHR's UVs carry them
+onto the new head vertex for vertex. The hair cards are rooted on the new
+skull, as thick as the video's hair stood off it.
+
+Settings and why:
+
+- Voxel 0.006 (in TRELLIS's unit; ~2.2 mm on a head). 0.007 lost the brows
+  and lids; 0.005 kept the stubble's noise.
+- The TRELLIS refiner is left off. At 1536 it does not fit beside
+  ComfyUI's own ~2.4 GB on the 16 GB card; at 1024 its eyes, nose and lips
+  are better, but stubble and brows come out as loose flaps with holes
+  (the SDF of that turns inside out).
+
+Errors met:
+
+- A nearest-point wrap tore the ears onto the skull: thin flaps whose
+  nearest surface is the head behind them. Ears are placed whole, and
+  matches must face the same way.
+- Fins from the ear canal: MediaPipe's face outline lands on MHR's ear and
+  on the sculpt's cheek. The outline points are dropped (a silhouette in a
+  picture is no fixed skin; they pulled ridges along the jaw too).
+- Creases on the chin, jaw and temple came from TRELLIS: it makes a
+  stubble edge a step and leaves seams, the SDF keeps them, the wrap copies
+  them. Smoothing along the mesh cannot fix a surface of flaps; point
+  smoothing can - but a hard edge between two smoothings made its own
+  seam.
+- The sculpt's eyes and mouth are soft lumps (puffy closed lids): the
+  first fit's are used instead.
+- A step in stiffness (6x round the eyes) creases the skin at its edge:
+  stiffness eased in.
+- MHR has eyeballs: cutting the skin inside the lids and setting spheres
+  behind left ragged holes. MHR's own, wearing the video's picture, glossy
+  in the ORM map.
+- The large face views and the video meeting at a hard edge showed as a
+  band across the forehead (two tones, two sharpnesses): eased over ~2 cm.
+- The crown fill painted under the cards up to a height painted a high
+  forehead as a fringe: kept behind the hairline. Hair only where the
+  video's hair stood off the skull, and none within 4 cm of an ear.
+- Hair cards drawn long and lifted to the hair shell's full thickness made
+  a mop: short (2-5 cm), lifted at most ~1 cm at the sides, 3 on top, the
+  front swept up and back (forward, it fell as a fringe).
+- A hotel built before the engine's cutout reads hair cards as opaque
+  sheets: rebuild it.
+- Look in a bright eye (`HOTEL_EXPOSURE=3 HOTEL_GRAIN=0 HOTEL_FSTOP=16`,
+  `HOTEL_EYE=hall:x,y,z,yaw,pitch,fov` - the last is the field of view,
+  never 0): the hall's own light hides the eyes.
