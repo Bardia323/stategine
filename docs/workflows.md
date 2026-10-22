@@ -460,3 +460,135 @@ placing by the story) is the agent's, by this list. Look at every result
    looking along it and into its doorways - 15 ms on the 4080 at 1080p,
    each over it profiled pass by pass before anything is cut.
 7. **To the PC** (section 12, 8).
+
+## A person from a video
+
+A real or generated orbit video of a person made into a rigged, textured
+character the engine reads (a skinned glTF), and that character's face
+moved by speech. The tool stands beside the engine, not in it:
+`~/stategine/stategine-capture` (private). The engine reads what it makes
+as it reads any rigged glTF (`sg::cast`); where a character needs more of
+the engine (skin normal and ORM maps, morph targets, skin shading, a
+joint-name map for retarget), that is engine machinery, never a change of
+its ontology. Started 2026-10-22.
+
+### 1. The capture asked for
+
+One person standing still in an A-pose (arms about 30 degrees out), even
+soft light from all round, a plain ground, the camera circling once at
+constant speed, the whole body in frame all the way round. 9:16 (a
+standing person fills it), the highest resolution offered (1080x1920
+ideal, 720x1280 the least for a face worth texturing), 6-10 s at 24 fps or
+more. A generated video is asked the same, with a negative prompt against
+walking, talking, blinking, hair blowing, camera shake, cuts and zoom.
+
+### 2. The models (code and licence checked first)
+
+| Stage | Model | Licence |
+| --- | --- | --- |
+| body model and rig | MHR, Meta's Momentum Human Rig (`facebookresearch/MHR`, assets v1.0.1) | Apache-2.0 |
+| a body from one picture | SAM 3D Body (`facebook/sam-3d-body-dinov3`, gated, approved by hand) | SAM License (commercial, no military) |
+| the person cut out | BiRefNet (ComfyUI's copy) | MIT |
+| masks through a video | SAM 3 (`facebook/sam3`, gated) | SAM License |
+| camera poses | MapAnything, its Apache weights (`facebook/map-anything-apache`); VGGT-1B-Commercial a second road (gated) | Apache-2.0 |
+| normals and other cues | Sapiens2 | Meta's own (no non-commercial clause) |
+| speech to face | NVIDIA Audio2Face-3D v3.0 (diffusion, `network.onnx`) | NVIDIA Open Model License (commercial) |
+
+Kept out of the core, opt-in only: MASt3R and Sapiens v1 (CC BY-NC),
+WiLoR (CC BY-NC-ND, and MANO's licence), CoRA (non-commercial; only for a
+flash-lit face). Checked and passed over for speech: UniTalker and SAiD
+(2024, no tongue or eyes), ARTalk (FLAME, whose licence is
+non-commercial), EmoTalk and FaceDiffuser (no clear licence).
+
+### 3. Where things are, and the smallest footprint
+
+- Its venv `.venv` overlays ComfyUI's `venv2` (Python 3.12, torch 2.9.1
+  cu128) by a `.pth` line: only what venv2 lacks is installed into it (14
+  MB). Never put numpy 2 into it - venv2's compiled modules (onnxruntime
+  and others) break.
+- MHR's assets: `~/stategine/downloads/mhr/assets/assets` (4.5 GB;
+  `MHR_ASSETS` names another). Weights the tool fetches: `weights/`
+  (gitignored), only the files used (SAM 3D Body's checkpoint and config,
+  not its second copy of MHR).
+- SAM 3D Body's code: `third_party/sam-3d-body`, run with our own box,
+  mask and camera - no detector, no field-of-view model, no detectron2.
+
+### 4. MHR, as the tool uses it
+
+- Run through its TorchScript model (`mhr_model.pt`): skeleton, skinning,
+  UVs, identity and expression shapes and pose correctives are all in it,
+  and it runs on any torch. pymomentum is not used: its 0.1.114 wheel
+  segfaults beside torch 2.9 (`Character.with_blend_shape`).
+- 127 joints (`body_world`, `root`, ... fingers, twist bones, jaw, teeth,
+  tongue, eyes), at most four weights a vertex (the engine's four), a real
+  UV atlas (a large face square, hands, body, legs, feet), 45 identity
+  shapes (20 body, 20 head, 5 hands), 72 FACS expression shapes (linear:
+  glTF morph targets as they are). Seven levels of detail; LOD 1 (18,439
+  vertices) the default.
+- Centimetres, Y up; a joint's state is [t, q xyzw, s], a point goes to
+  t + s R(q) p. Model parameters: 0-129 the pose (root and joint angles),
+  130-203 the body's proportions (the `*_length/width_flexible` lengths
+  and `scale_*`) - a person's, fixed for every clip of them.
+- Bound in MHR's zero pose at the person's proportions, without scale on
+  the joints (exact for a body whose proportions do not change; within
+  1-3.5 mm of MHR's own vertices, checked by evaluating the glTF in numpy
+  and through Blender's importer). Pose correctives are not exported.
+
+### 5. The steps, in the order built
+
+1. One picture -> MHR -> glTF: `tools/image_to_character.py photo out.glb`
+   (BiRefNet mask, its box, SAM 3D Body, `capture/export.py`). Writes
+   `out.json` beside it: identity, proportions, the picture's pose.
+2. Clips: retarget Mixamo-rigged motion (Bruce's) onto MHR's skeleton;
+   motion from a video read by SAM 3D Body frame by frame (MHR already,
+   no retarget), smoothed.
+3. The video fit, all in `tools/video_to_character.py work/<name>/orbit.mp4`
+   (each stage kept beside the video, skipped when there): BiRefNet masks
+   and SAM 3D Body on every second frame; the cameras from the body (a
+   plain ground gives nothing to track: the person stands still, so how
+   SAM 3D Body reads the body turned in each frame is the orbit); one body
+   fitted to every silhouette (shape, proportions, joint angles shared, a
+   correction per view); the face to MediaPipe's 478 landmarks; offsets
+   along the normals for clothes and hair.
+4. Texture: the frames projected onto MHR's 2048 atlas, each texel from the
+   views that see it most squarely, unseen texels inpainted, islands padded.
+5. The face from speech: Audio2Face-3D's skin motion (its own face mesh,
+   24,002 vertices; also tongue, jaw, eyes) solved onto MHR's own 72
+   expressions through a fitted correspondence of the two faces; jaw,
+   tongue and eyes on MHR's joints. ARKit's 52 weights kept beside it.
+6. Opt-in: hands (WiLoR), a flash-lit face (CoRA).
+
+### 6. Into the engine
+
+- A character to look at in the hotel: `HOTEL_CAST=<glb>,x,z,yaw,height`
+  (the hall's coordinates, yaw in degrees, the person's real height - the
+  engine fits any model to the height it is told).
+- A person cast must be shown each frame by whoever draws
+  (`cast::show` before `view.render`), or its skin never moves; and one
+  cast where the place does not count it active needs `always`
+  (`cast::person(..., why, true)`), or its clip never plays.
+
+### 7. Errors already met
+
+- A view's root as Euler angles wraps going round the person: smoothing
+  the orbit on them tipped the body over in the back view. Correct each
+  view by a small turn (axis-angle) and measure smoothness on quaternions.
+- A body fitted to clothed silhouettes swells to fill them (a thick neck
+  inside a hood, a jowly face on it): keep its shape near SAM 3D Body's
+  reading (learnt for the body under clothes), let the offsets fill.
+- Free 3D offsets fold at hair (fins, holes): push along the normal only;
+  hold the face's front, hands and feet (silhouettes say nothing of a face
+  seen from the front; a floor shadow in a mask is no boot); low-pass the
+  scalp (hair grew two ridges otherwise).
+- The face needs its own cue: MediaPipe on a crop of the head (a face 150
+  px tall in the frame is too small for it whole), placed on MHR's surface
+  by running MediaPipe on renders of MHR's own head.
+- The atlas is drawn with MHR's v and the glTF's v is 1 - MHR's: turn the
+  picture over (MHR's face is bottom-left in glTF's way). Check by reading
+  the colour at a known vertex's glTF uv - and look at it in Blender before
+  blaming the engine.
+- With no clip the engine shows the bind pose (MHR's: arms out): export
+  the captured stance as the first clip.
+- ComfyUI keeps its models on the card: free it (`POST /free`) before a
+  stage that needs the GPU.
+
