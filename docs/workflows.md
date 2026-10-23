@@ -765,12 +765,35 @@ Errors met:
 Best: captured motion. `--walk Neutral_FW.bvh` (any of 100STYLE's 100
 walking styles - Neutral, Depressed, Old, Heavyset, HandsInPockets... - kept
 whole in `~/stategine/downloads/100style`, CC BY 4.0: credit "100STYLE,
-Mason, Starke & Komura 2022" in the game). `capture/mocap.py` reads the BVH,
-takes the period from the left foot's own rhythm (the whole pose nearly
-repeats every step: matching that cut half a cycle), the straightest,
-steadiest stretch of that length, turns it to face +z, and fits MHR's own
-pose to it by bone directions (the actor's proportions are not his):
-0.6 degrees off. No reading of a video could look as natural.
+Mason, Starke & Komura 2022" in the game). `tools/mocap_to_walk.py
+walk.bvh <name>.glb fit_hands.pkl <name>_walk.glb` (what `--walk` runs):
+`capture/mocap.py` takes the period from the left foot's own rhythm (the
+whole pose nearly repeats every step: matching that cut half a cycle) and
+the straightest, steadiest stretch of that length; then **Blender
+retargets it, as an animator would** (`tools/blender/retarget_bvh.py`,
+headless):
+
+1. The character (MHR rests in an A) is posed into the actor's T: upper
+   and lower arms and legs turned onto the actor's rest bone directions.
+2. His thighs lean out by what makes up the hips' difference: MHR's hip
+   joints are 13 cm apart, 100STYLE's 21.5 - on the actor's turns alone
+   his feet came in and his knees nearly met. atan(half the difference /
+   leg length): 2.7 degrees.
+3. Each frame, each mapped bone is given the actor's whole turn from his
+   T (`R = R_actor A_rest^-1 T_char`, world space, parents first) on
+   Blender's free bones - roll included, no MHR limits; the pelvis carries
+   the actor's height and sway (scaled by leg length), in place.
+4. `tools/blender_walk_to_glb.py` writes it through the character's own
+   rest skeleton, turned so the hips face +z, with its `pace` (the
+   actor's hips' speed at his leg length). The `.blend` is kept beside the
+   clip, to look at and adjust by hand.
+
+What did not work (all walked like a zombie - knees together, arms stuck
+to the body, the arm swinging the wrong way): fitting MHR's own pose
+parameters to the actor's bone directions (a direction carries no roll:
+knees, elbows and palms stayed rolled as MHR's A had them), and fitting
+them to the actor's whole turns. The T-against-A rest is the root of it:
+pose the character into the actor's rest first, then copy turns.
 
 Two things that made every walk drag (fixed in the engine):
 
@@ -785,10 +808,6 @@ Two things that made every walk drag (fixed in the engine):
   as `pace`, sized with the body, used by `sg::cast` before any guess. The
   capture tool writes it (the actor's hips' speed over the cycle, at his leg
   length).
-- In the fit, the feet, spine, neck and head carry the actor's turn from his
-  rest pose rather than copy his bone's direction (the two skeletons put
-  those joints in different places); the legs and arms copy directions (the
-  rests differ: T against MHR's A).
 
 From a video of him walking (rougher):
 
