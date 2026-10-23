@@ -488,6 +488,9 @@ video and skipped when its file is there (delete a file to run it again).
 4. Eyes, hair cards, boots, the glTF: `<name>.glb` (standing in the rig's
    rest pose when he was filmed in a T); the head's forms given back from
    its sculpt in Blender (section 8, *The head's forms*).
+   Then three passes for quality (sections 11-12): the face cropped tight
+   in the front views and textured at 4096; the skin's pores and sheen from
+   that texture; the body refined by Hi3D and baked into the normal map.
 5. **The refinement, by hand in Blender** - the stage that makes it good.
    The tool lays the character out (`<name>_refine.blend`, textures packed,
    rest pose) and stops there; the fine work is done in it by looking:
@@ -1008,3 +1011,75 @@ Errors met:
   posed: with two skins on one skeleton the unit held the last posed one's.
   Each skinned mesh binds its own joints as it is fetched to be drawn
   (`gl::Mesh::bind_joints`).
+
+### 11. The face's texture and the skin (2026-10-23)
+
+"His skin looks like plastic... the quality of the texture of his face is
+really bad." Measured, not guessed:
+
+- The face had 600 x 600 texels in the 2048 atlas (28.6 a cm) - not the
+  limit. The source was: the large views were 300 px crops of the 1080 x
+  1920 frame round the head and shoulders, the face some 100 px of it,
+  Klein's redrawing at 1024 putting the face in 280 px (14 a cm). Now
+  `enhance.tight` crops the face itself (its landmarks' extent and a
+  fifth: ~175 px of the frame) in the views within 50 degrees of square on
+  and Klein redraws them at 1024 (strength 8 of 12 - 6 stayed soft; 8 draws
+  stubble and skin and keeps the face where it is): 45 texels a cm. The
+  stitcher takes them beside the head crops (a view may carry several
+  pictures now; the square-on view's sharpest one anchors the face) and
+  the base colour is 4096.
+- The ORM map gave all skin one roughness (0.52; the neck counted as cloth,
+  0.86) and the normal map, from the video's normals, had no pore.
+  `capture/skin.py`: the base colour's fine detail (a high-pass of its
+  brightness: pores, stubble, creases) laid into a 4096 normal map as bumps
+  and into the roughness round 0.5 (a pore rougher, smooth skin glossier),
+  on skin alone (face, neck, ears, hands).
+- The eyeballs (by hand): roughness 0.3, not 0.06 (they flared); a darker,
+  warmer sclera shading off to its edges (bright white made him stare); a
+  larger iris (25 degrees: 11.8 mm) with the ball turned up 6 degrees, so
+  the upper lid lies on the iris as in his photograph.
+- What the video cannot give, a picture or video of his face can: `--face`
+  is the road to a face texture better than this.
+
+### 12. The body from Hi3D (`capture/hi3d.py`)
+
+The body fitted to silhouettes was a smooth suit - no pocket, seam or fold.
+Hi3D v1.0 (hi3d-official, on Sparc3D; commercial use allowed, with notice
+above 200k monthly users or $1M monthly revenue) refines a coarse mesh
+against a picture of the same thing. The finished character, standing as
+captured (`tools/blender/posed_mesh.py`), refined against the square-on
+frame (the person masked) at 1536: a million vertices with the jacket's
+pockets, seams and collar, the jeans' folds, the boots' laces - 11 minutes
+on the 4080 with sequential CPU offload (straight on the card, with the
+card shared, the second pass's decode ran out at 11 GB). Its face is not
+his and its hair is not used.
+
+**A working file only - never in the game.** Set back on him by ICP (it
+comes out recentred and rescaled: scale 0.93, 0.2 degrees, 5.6 mm off his
+surface on median), then two things, in Blender:
+
+- his body takes its broad forms (`tools/blender/body_forms.py`): posed as
+  it stands, carried along its normals onto it (at most 12 mm), smoothed
+  (6 passes at 0.5 - fewer left it lumpy: a 75k mesh cannot hold a crisp
+  jacket edge), head, hands and eyes left; the move, measured in the
+  stance, carried back through the skin to the rest pose (`uncarry` with
+  the stance's skeleton). Median 3 mm, at most 10.
+- its fine detail baked into his normal map (`tools/blender/bake_detail.py`:
+  Cycles, tangent space, selected to active, cage 8 mm, rays 12 mm - at
+  40 mm, with the arms close to the body, the torso's rays found the arm),
+  laid on the clothes only and only where believable (under 50 degrees of
+  tilt; past it a ray found the wrong surface).
+
+The game mesh stays his 75,777 vertices; the detail rides in the 4096
+normal map. Set up: `HI3D_DIR` (default `~/stategine/downloads/hi3d`): a
+Python 3.10 venv with torch 2.5.0+cu124, the flash-attn 2.7.4.post1 wheel
+for torch 2.5/cu12 (no build), `pip install -e Hi3Dv1.0[inference]` with
+its constraints, weights in `weights/` (snapshot of hi3d-official/Hi3Dv1.0;
+DINOv2-large and CLIP ViT-L/14 in the HF cache). Without it the tool goes
+on without this step.
+
+Errors met: the glTF carries a small icosphere, and "the last mesh in the
+scene" picked it as Hi3D's mesh (2 m box, 47 cm off) - take what the
+import adds. A vertex no joint moves (an eye's opening cut away) made the
+skin's inverse singular - left alone. Still open: the webbing between his
+legs (the original fit joined the jeans; more than 12 mm to undo).
