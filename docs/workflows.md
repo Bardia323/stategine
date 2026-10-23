@@ -785,12 +785,24 @@ Errors met:
   blended over a band (cut sharp, they sheared at a tear line); the shell
   on the foot capped at a boot's thickness (the hem stacked on it in the
   video stood 4-7 cm off it).
-- Knock-kneed, the feet on one line under his middle (crossing it): a walk
-  read from a 3/4 view loses where the feet are across. `motion.stance`:
-  each leg turned about its hip, round the walk's way, its ankle set
-  under its own hip (85% of the hip's width out), then the thigh and shin
-  turned about the hip-ankle line till the knee bends straight ahead (set
-  apart, the knees bowed). Hips 12 cm apart, knees 11, feet 10.
+- Why the walk came out wrong at all: SAM 3D Body reads each frame alone,
+  from one camera; at a 3/4 angle the far side is half hidden and guessed
+  and depth along the view is foreshortened - feet crossing under him, the
+  pelvis 20 degrees off his path, a 40 cm stride, an arm that never swung
+  back. Fixed in the cycle (capture/motion.py), by what a walk is:
+  - `symmetric`: each side what the other did half a cycle before,
+    mirrored - the better-seen side kept (`near_side`: MediaPipe Pose's
+    visibility over the video), the far side made its mirror, the middle
+    (spine, pelvis, head) the mean of itself and its own mirror. Turns are
+    reflected through MHR's own rest pose (q_far = m(q_near) m(q_near_rest)^-1
+    q_far_rest), so each joint's frame mirrors as its skin does.
+  - facing: the whole cycle turned so the hips face where he walks.
+  - `stride`: each leg's swing scaled about its middle to a step of
+    0.41 x his height x sqrt(cadence / 110) - what the reading cannot say.
+  - `stance`: each foot under its own hip (1.6 x half the hips' width out),
+    the knee bent straight ahead.
+  First person: arms counter-swing with their legs (-0.65), feet 21 cm
+  apart, stride +-57 cm, chest square.
 - An "inverted foot" at his heel as he walked was his hair: the game's
   `cast::show` stood every skin's box on the ground, and the hair cards'
   box does not start at the feet. All of a being's skins move alike now
