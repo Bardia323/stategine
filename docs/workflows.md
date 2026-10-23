@@ -791,6 +791,16 @@ headless):
    toe out 7 degrees while it bears weight, and thigh and shin are rolled so
    the knee cap faces the way the knee bends (the foot's way when the leg
    is near straight).
+   His hands are posed relaxed (`tools/blender/hand.py`, `RELAXED`):
+   MHR rests with a flat hand and 100STYLE has no fingers, so they hung
+   straight and looked limp. Each finger bends about the hand's crosswise
+   line toward the palm, more toward the little finger (knuckle 22-35,
+   middle 30-40, end 14-18 degrees); the thumb's base brings it out in
+   front of the palm and its two joints curl it across toward the little
+   finger (bent toward the palm like a finger, it stood straight out of
+   it). `hand.pose(char, view_layer, side, angles)` poses any hand for
+   any animation (`FIST` too); a fist checked the skin: knuckles and the
+   thumb's web bend cleanly on MHR's own finger weights.
 5. The loop closed. The cycle is sampled evenly over exactly one period
    (frames at fractional BVH times: 83 frames at 60 fps make 42 at 30.36),
    and what is left between the end and the start - the actor never quite
