@@ -783,7 +783,15 @@ headless):
    T (`R = R_actor A_rest^-1 T_char`, world space, parents first) on
    Blender's free bones - roll included, no MHR limits; the pelvis carries
    the actor's height and sway (scaled by leg length), in place.
-4. `tools/blender_walk_to_glb.py` writes it through the character's own
+4. The legs set straight about their own length (after the transfer, the
+   joints left where they are): the actor's feet toe in (Neutral: 9 and 15
+   degrees - his Toe joint straight ahead of his ankle at rest) and his
+   shins roll in as each foot takes the weight; on the character that read
+   as pigeon toes and a knee caving in for a moment. Each foot is turned to
+   toe out 7 degrees while it bears weight, and thigh and shin are rolled so
+   the knee cap faces the way the knee bends (the foot's way when the leg
+   is near straight).
+5. `tools/blender_walk_to_glb.py` writes it through the character's own
    rest skeleton, turned so the hips face +z, with its `pace` (the
    actor's hips' speed at his leg length). The `.blend` is kept beside the
    clip, to look at and adjust by hand.
