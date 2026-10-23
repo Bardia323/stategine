@@ -759,3 +759,45 @@ Errors met:
   145 frames in one model, exhaustive matching): structure from motion
   needs a rigid subject. The fit's cameras, corrected by the matches
   through the surface, are the ones used.
+
+### 10. His walk, from his own video (`--walk`)
+
+`--walk walk.mp4` (him walking in place, the camera with him): SAM 3D Body
+reads MHR from every frame, so the motion is his own skeleton's - no
+retarget. `capture/motion.py` finds the cycle (the pose's best repeat:
+1.79 s for the first person), loops it, takes out the camera's turn,
+faces it the way the feet push, grounds it (`<name>_walk.glb`, a skeleton
+and its clip). In the engine it walks as Bruce does: `sg::cast` measures
+the stride from the clip, the body goes as fast as its feet say, and
+`sg::pace` plants each foot (`Being::plant`) - nothing slides.
+
+Errors met:
+
+- Legs bent, stepping on the ankle: `Being::ankles` took MHR's shin twist
+  bones (`lowleg_twist3/4`, low and hanging from the knee) for ankles and
+  planted them. Of what hangs from one knee, only the lowest is its ankle.
+- Boots that bent like bare feet and a cuff dragged off the ankle: MHR's
+  feet are bare feet (heel, arch, toes each a joint) and the fitted shell
+  of the boots and the jeans' hem was skinned to them. `capture/rig.py`:
+  below the boot's top the skin follows the foot whole (`transversetarsal`;
+  bound to `foot` alone the true ankle's turn was lost and the toes
+  pointed down), the toe box bends at the ball, the cuff follows the shin,
+  blended over a band (cut sharp, they sheared at a tear line); the shell
+  on the foot capped at a boot's thickness (the hem stacked on it in the
+  video stood 4-7 cm off it).
+- Knock-kneed, the feet on one line under his middle (crossing it): a walk
+  read from a 3/4 view loses where the feet are across. `motion.stance`:
+  each leg turned about its hip, round the walk's way, its ankle set
+  under its own hip (85% of the hip's width out), then the thigh and shin
+  turned about the hip-ankle line till the knee bends straight ahead (set
+  apart, the knees bowed). Hips 12 cm apart, knees 11, feet 10.
+- An "inverted foot" at his heel as he walked was his hair: the game's
+  `cast::show` stood every skin's box on the ground, and the hair cards'
+  box does not start at the feet. All of a being's skins move alike now
+  (`HOTEL_SAY_SKINS` prints each skin's box). To tell such a thing from
+  the clip, `CAST_PLANT=0` shows the clip with its feet left alone, and a
+  build with `NO_HAIR_CARDS=1` shows the body alone.
+- A skinned mesh's joints were bound to the shader's unit only when it was
+  posed: with two skins on one skeleton the unit held the last posed one's.
+  Each skinned mesh binds its own joints as it is fetched to be drawn
+  (`gl::Mesh::bind_joints`).

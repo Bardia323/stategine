@@ -165,6 +165,11 @@ public:
     // first corner, first instance) - culled on the card (GL 4.3).
     void draw_commands(GLuint commands, GLsizei count) const;
     void pose(const std::vector<float>& joints) const;
+    // Its own joints made the ones its skin reads (the joints texture unit):
+    // before each draw - two skins posed in turn left the unit with the
+    // last one's, and the other drawn by them (a second mesh on a skeleton
+    // - hair cards - put by the body's joints at a foot).
+    void bind_joints() const;
     mutable uint64_t posed = 0;
 
     // Drawn `instances` times in one call, each as `buffer` says: per

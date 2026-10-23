@@ -511,6 +511,7 @@ const gl::Mesh& GLWorldView::shape_plain(const State& st, const Element& e) cons
             if (const std::vector<float>* joints = space->skin_pose(memo.model)) m.pose(*joints);
             m.posed = now;
         }
+        m.bind_joints();
         return m;
     };
     if (memo.mesh && memo.stamp == e.params.stamp() && (memo.made == 0 || memo.made == made())) return posed(*memo.mesh);
