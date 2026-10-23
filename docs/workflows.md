@@ -791,10 +791,23 @@ headless):
    toe out 7 degrees while it bears weight, and thigh and shin are rolled so
    the knee cap faces the way the knee bends (the foot's way when the leg
    is near straight).
-5. `tools/blender_walk_to_glb.py` writes it through the character's own
+5. The loop closed. The cycle is sampled evenly over exactly one period
+   (frames at fractional BVH times: 83 frames at 60 fps make 42 at 30.36),
+   and what is left between the end and the start - the actor never quite
+   repeats - is eased over the cycle, bone by bone. The clip then ends
+   with its first frame again: the engine's clip is as long as its last
+   key, so without it the wrap took no time. (Both together: at the wrap
+   the planted foot jumped 8 cm in one frame and the knee dropped.)
+6. `tools/blender_walk_to_glb.py` writes it through the character's own
    rest skeleton, turned so the hips face +z, with its `pace` (the
-   actor's hips' speed at his leg length). The `.blend` is kept beside the
-   clip, to look at and adjust by hand.
+   actor's hips' speed at his leg length) and its rate.
+
+By hand: the `.blend` kept beside the clip (`<name>_walk.blend`: textures
+packed, the walk keyed and looping, the actor beside him) is opened in
+Blender and adjusted - the hands, say - and given back in place of the
+BVH: `tools/mocap_to_walk.py <name>_walk.blend <name>.glb fit_hands.pkl
+<name>_walk.glb` reads every frame as it now is
+(`tools/blender/blend_to_walk.py`) and writes the clip again.
 
 What did not work (all walked like a zombie - knees together, arms stuck
 to the body, the arm swinging the wrong way): fitting MHR's own pose
