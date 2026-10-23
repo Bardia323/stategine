@@ -77,6 +77,40 @@ Vec3d Being::facing() const {
     // Where its toes are from its ankles - a low joint's children, or what it
     // shows on it, ahead of it - across the floor; else the way a pose
     // faces, x.
+    // From each ankle (ankles()) to the furthest of what hangs below it -
+    // the toe's tip, however many joints the foot has: summing every low
+    // joint's children (MHR's foot is five - heel, arch, ball - some of them
+    // pointing down and back) turned it 75 degrees off, and a walk measured
+    // along that went a quarter as fast as its feet: they slid.
+    {
+        Vec3d sum{};
+        const auto parent_of = [&](const Element& e) { return e.params.get_or<std::string>("parent_joint", ""); };
+        for (Key ak : ankles()) {
+            const Element* a = find(ak);
+            if (!a) continue;
+            const Vec3d at{a->params.num("px"), 0, a->params.num("pz")};
+            Vec3d far{};
+            double best = 0;
+            for (const Element& k : elements()) {
+                if (k.kind != kJoint && k.kind != kPart) continue;
+                // (Below the ankle: its joint, or the joint it is shown on, descends from it.)
+                std::string up = k.kind == kJoint ? parent_of(k) : k.params.get_or<std::string>("joint", "");
+                bool under = false;
+                for (int n = 0; !up.empty() && n < 16; ++n) {
+                    if (up == ak.str()) { under = true; break; }
+                    const Element* u = find(Key{up});
+                    up = u ? parent_of(*u) : std::string();
+                }
+                if (!under) continue;
+                const Vec3d d{k.params.num("px") - at.x, 0, k.params.num("pz") - at.z};
+                const double l = std::sqrt(d.x * d.x + d.z * d.z);
+                if (l > best) best = l, far = d;
+            }
+            sum = sum + far;
+        }
+        const double l = std::sqrt(sum.x * sum.x + sum.z * sum.z);
+        if (l > 1e-6) return Vec3d{sum.x / l, 0, sum.z / l};
+    }
     double low, high;
     extent(low, high);
     const double ankle = low + 0.15 * (high - low);
@@ -141,6 +175,8 @@ void Being::resize(double k) {
             for (const char* c : {"ox", "oy", "oz"}) e.params.set(c, e.params.num(c) * k);
         } else if (e.kind == kSkin) {
             e.params.set("rig", e.params.num("rig", 1.0) * k);
+        } else if (e.kind == Key{"clip"} && e.params.has(Key{"pace"})) {
+            e.params.set("pace", e.params.num("pace") * k);
         } else if (e.kind == Key{"goal"}) {
             for (Key c : {keys::x, keys::y, keys::z}) e.params.set(c, e.params.num(c) * k);
             // (A foot set down: how far it lets slip, how high it steps, all by its leg.)

@@ -772,6 +772,24 @@ steadiest stretch of that length, turns it to face +z, and fits MHR's own
 pose to it by bone directions (the actor's proportions are not his):
 0.6 degrees off. No reading of a video could look as natural.
 
+Two things that made every walk drag (fixed in the engine):
+
+- How fast a walker goes was read from its clip's feet (`Being::ground_speed`:
+  a foot's speed back while it is lowest). On MHR it read 0.21 m/s for a walk
+  of 0.9 - the heading it measured along came from every low joint's
+  children (MHR's foot is five joints, some pointing down and back), and the
+  "lowest" window caught the heel still landing and the toe leaving - so the
+  feet slid back at four times the pace. Now `Being::facing` goes from each
+  ankle to the furthest thing below it (the toe), and a walk that knows its
+  pace says so: the glTF animation's `extras.pace` (m/s), kept on the clip
+  as `pace`, sized with the body, used by `sg::cast` before any guess. The
+  capture tool writes it (the actor's hips' speed over the cycle, at his leg
+  length).
+- In the fit, the feet, spine, neck and head carry the actor's turn from his
+  rest pose rather than copy his bone's direction (the two skeletons put
+  those joints in different places); the legs and arms copy directions (the
+  rests differ: T against MHR's A).
+
 From a video of him walking (rougher):
 
 `--walk walk.mp4` (him walking in place, the camera with him): SAM 3D Body

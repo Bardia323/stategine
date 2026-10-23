@@ -73,7 +73,12 @@ Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Castin
     if (how.plant)
         for (Key ankle : b.ankles()) b.plant(ankle.str());
     // How fast its walk goes as made: as said, else as its own feet say it.
-    const double pace_of = how.stride > 0 || stride.empty() ? how.stride : b.ground_speed(stride);
+    // (How fast: as told; else as its walk says it was made - captured motion
+    // knows; else as its feet seem to go, a guess: on MHR's five-jointed feet
+    // it came out a quarter of the truth, and the feet slid.)
+    const Element* walk_clip = stride.empty() ? nullptr : b.find(Key{"clip." + stride});
+    const double made = walk_clip ? walk_clip->params.num("pace", 0.0) : 0.0;
+    const double pace_of = how.stride > 0 || stride.empty() ? how.stride : made > 0 ? made : b.ground_speed(stride);
     // (A walker stands on the floor, its lowest foot on it, whatever its clip
     // makes of its hips: its walk read beside its own clips leaves its
     // standing a little lower than it is - whoever shows it grounds it.)

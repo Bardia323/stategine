@@ -544,6 +544,11 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         }
         const std::string clip_name = an["name"].s.empty() ? "anim" + std::to_string(a) : an["name"].s;
         clip(clip_name, keys_text, true);
+        // How fast it goes as made (metres a second), if its maker knew -
+        // captured motion does (`extras.pace`): kept on the clip as `pace`,
+        // sized as its joints are; what its feet would say is a guess.
+        if (an["extras"]["pace"].num(0.0) > 0)
+            if (Element* ce = find(Key{"clip." + clip_name})) ce->params.set("pace", an["extras"]["pace"].num(0.0) * rig);
         ++a;
     }
     resolve();
