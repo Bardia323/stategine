@@ -110,7 +110,14 @@ std::vector<Key> Being::ankles() const {
         const Element* knee = up_of(j);
         const Element* hip = knee ? up_of(*knee) : nullptr;
         if (!hip || knee->params.num("py") < j.params.num("py") + 0.12 * h || hip->params.num("py") < knee->params.num("py") + 0.12 * h) continue;
-        out.push_back(j.id);
+        // Of what hangs from one knee, only the lowest is its ankle: a rig's
+        // twist bones down the shin (MHR's lowleg_twist) are low too, and
+        // planted on the floor they bent the leg onto its ankle.
+        bool lower = false;
+        for (const Element& o : elements())
+            if (o.kind == kJoint && &o != &j && o.params.get_or<std::string>("parent_joint", "") == knee->id.str() && o.params.num("py") < j.params.num("py"))
+                lower = true;
+        if (!lower) out.push_back(j.id);
     }
     return out;
 }

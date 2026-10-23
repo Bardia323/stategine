@@ -614,19 +614,26 @@ non-commercial), EmoTalk and FaceDiffuser (no clear licence).
   with and without the map in the file is how to see that it is worn.
 
 
-### 8. The head under the hair, from one photo (`--head`)
+### 8. The head under the hair, from his face (`--face`)
 
 A video's head is a shell over the hair, and its face only as deep as the
 silhouettes and landmarks say: horns, bulging ears and jaw where the shell
 was taken for skull. The head is measured instead from one picture of the
-person bald, square on, evenly lit (a Flux Klein edit of a frame: seed 21,
-all 12 steps, ReferenceLatent), and MHR's head is laid onto it, keeping
-MHR's rig, UVs and expression shapes:
+person bald, square on, evenly lit, and MHR's head is laid onto it,
+keeping MHR's rig, UVs and expression shapes. The whole road is one
+command - a body video and, if there is one, a picture or video of the face:
 
-    tools/video_to_character.py work/<name>/orbit.mp4 --head work/<name>/bald.png
+    tools/video_to_character.py work/<name>/orbit.mp4 --face face.mp4
 
 `capture/headscan.py`, each step kept in `work/<name>/head/`:
 
+0. The bald picture (`bald.png`): the face's most square-on, sharpest
+   frame of `--face` (a picture is taken as it is; with no `--face`, the
+   body video's own large front view), cropped round the head (`face.png`),
+   made bald by Flux Klein with the settings the user chose: seed 21, all
+   12 of 12 steps, the picture as its ReferenceLatent, "the exact same man
+   ... but completely bald" (`headscan.BALD_PROMPT`). `--head bald.png`
+   gives one ready; `--no-head` keeps the video's head.
 1. TRELLIS.2 (ComfyUI) on the picture: the sculpt, shape only, ~60k faces
    (`sculpt.glb`).
 2. The user's SimplifyMeshSDF node group (`~/BlenderFiles/morpheus2.blend`,
@@ -644,11 +651,17 @@ MHR's rig, UVs and expression shapes:
    mouth his first fit's, moved whole onto the sculpt's landmarks; folds
    relaxed (`unfold`); teeth, tongue and eyeballs carried with the face.
    Kept as the tool's offsets (`head.pt`).
+6. Stitched to the body (`headscan.stitch`): the head kept exactly; the
+   change between it and the body as fitted carried down the neck and the
+   collar as a harmonic field (each vertex the average of its neighbours,
+   the head's edge held, nothing moved 14 cm away) - the neck and hood
+   follow the head, their detail kept. (The wrap's own short falloff left
+   a crease under the jaw and a collar standing off the neck.)
 
-The video still textures it: its frames are projected through the shape
-fitted to the video (that is where they line up), and MHR's UVs carry them
-onto the new head vertex for vertex. The hair cards are rooted on the new
-skull, as thick as the video's hair stood off it.
+The video still textures it (section 9): its frames are projected through
+the shape fitted to the video (that is where they line up), and MHR's UVs
+carry them onto the new head vertex for vertex. The hair cards are rooted
+on the new skull, as thick as the video's hair stood off it.
 
 Settings and why:
 
@@ -676,11 +689,10 @@ Errors met:
   first fit's are used instead.
 - A step in stiffness (6x round the eyes) creases the skin at its edge:
   stiffness eased in.
-- MHR has eyeballs: cutting the skin inside the lids and setting spheres
-  behind left ragged holes. MHR's own, wearing the video's picture, glossy
-  in the ORM map.
-- The large face views and the video meeting at a hard edge showed as a
-  band across the forehead (two tones, two sharpnesses): eased over ~2 cm.
+- MHR has no eyeballs: its eyes are its skin's own surface. Cutting the
+  skin inside the lids and setting spheres behind left ragged holes. The
+  eyes are that skin wearing the square-on view's eyes, glossy (roughness
+  ~0.08) inside each lid's contour in the ORM map.
 - The crown fill painted under the cards up to a height painted a high
   forehead as a fringe: kept behind the hairline. Hair only where the
   video's hair stood off the skull, and none within 4 cm of an ear.
@@ -692,3 +704,58 @@ Errors met:
 - Look in a bright eye (`HOTEL_EXPOSURE=3 HOTEL_GRAIN=0 HOTEL_FSTOP=16`,
   `HOTEL_EYE=hall:x,y,z,yaw,pitch,fov` - the last is the field of view,
   never 0): the hall's own light hides the eyes.
+
+### 9. The texture: stitched, not averaged
+
+Averaging every view's texels lays the views' disagreements over each
+other: a generated orbit's cameras are read from the body and its head moves
+a little on its own, so a feature lands a few mm apart from each view -
+an iris painted twice (on the lid and in the eye), a blur. A texture solved
+as one unknown fitted to every view at once (with per-view warps) came out
+noisy and was dropped. What works is what photogrammetry does, after the
+views are made to agree:
+
+1. Agreement (`capture/views.py`, `ViewSet.align`): SIFT features (OpenCV)
+   in each pair of views within 50 degrees of each other - every 4th
+   frame and the 9 large face views - matched (ratio 0.75, mutual, RANSAC
+   fundamental matrix). Each match is followed onto the fitted surface in
+   its own view (rasterised: triangle, barycentrics) and projected into the
+   other; each view gets a correction solved by Adam with small steps
+   (3e-4), Huber at 2 px, the square-on large view held still: first a turn
+   and shift of the head and of the body apart, then a smooth warp of its
+   picture (a 16x9 grid; 12x12 on a large view). On the first person:
+   48,403 matches over 738 pairs; 4.47 px apart as fitted (median), 2.99
+   after the turns, 1.33 after the warps (60% within 2 px). Kept as
+   `view_corr.pt`.
+2. The mosaic (`capture/texmosaic.py`; Waechter, Moehrle, Goesele, "Let
+   There Be Color!", ECCV 2014 - OpenMVS' method): each triangle takes ONE
+   view, chosen by graph cuts (alpha-expansion, PyMaxflow) on a Potts
+   energy - its quality in a view (projected area in pixels, its middle
+   the nearest surface there and inside the mask, facing it) against a
+   cost of 15 for each neighbour on another view. The square-on large view
+   counts 3x, so it takes the face's whole front. The large views (Klein's
+   redrawing of a head crop) texture the head only.
+3. Seams: a colour offset per (vertex, view) solved by least squares so
+   the two sides of every seam meet and each patch stays smooth; texels
+   take theirs by barycentrics; each view feathered 2.5 texels past its
+   patch where it also sees the triangles. Hands and soles keep the
+   projection's own clean-up (one skin tone; rubber).
+
+Errors met:
+
+- One triangle at a time (ICM) stuck at ~29,000 seam edges: moving a
+  boundary costs nothing either way. Graph cuts move whole regions (9,000).
+- Counting a triangle's covered pixels as its quality: on the fine mesh a
+  triangle covers 1-4 pixels in a frame, the counts were noise and
+  neighbours never agreed. Its exact projected area instead.
+- Every frame as a candidate: frames 2.5 degrees apart see nearly the same,
+  and each extra choice is another seam. Every 4th.
+- With no preference, two large views split the face down the nose and
+  disagreed there: the square-on one holds the front.
+- The large views textured the hood and shoulders with what Klein invented
+  round the head (a white patch on the jacket, hair on a shoulder): they
+  are kept to the head.
+- COLMAP could not hold the generated body orbit together (at best 56 of
+  145 frames in one model, exhaustive matching): structure from motion
+  needs a rigid subject. The fit's cameras, corrected by the matches
+  through the surface, are the ones used.
