@@ -472,9 +472,95 @@ the engine (skin normal and ORM maps, morph targets, skin shading, a
 joint-name map for retarget), that is engine machinery, never a change of
 its ontology. Started 2026-10-22.
 
+### 0. End to end: what to give it, what comes out
+
+    PYTHONPATH=. .venv/bin/python tools/video_to_character.py work/<name>/orbit.mp4 --face face.mp4
+
+Given: the orbit video (section 1; a T pose best) and, optionally, his
+face - a short video or a picture, square on (else the orbit's own front
+view). Nothing else: every stage below runs in turn, each kept beside the
+video and skipped when its file is there (delete a file to run it again).
+
+1. The body fitted (section 5), the face and hands to their landmarks.
+2. The head under the hair from a bald picture of his face, stitched to the
+   body down the neck (section 8).
+3. The texture stitched from the views, not averaged (section 9).
+4. Eyes, hair cards, boots, the glTF: `<name>.glb` (standing in the rig's
+   rest pose when he was filmed in a T); the head's forms given back from
+   its sculpt in Blender (section 8, *The head's forms*).
+5. **The refinement, by hand in Blender** - the stage that makes it good.
+   The tool lays the character out (`<name>_refine.blend`, textures packed,
+   rest pose) and stops there; the fine work is done in it by looking:
+   - the head: its shape where it is still flat or creased, the eyes opened
+     (the skin inside the lids, not into the corners) and eyeballs set on
+     the eye joints;
+   - the hands: bent into a fist and relaxed, fixed where the skin folds
+     wrong;
+   - the rigging: skin weights repainted wherever a joint bends the skin
+     badly (knees, elbows, shoulders, wrists, the neck, the jaw).
+   Rules of the .blend: move vertices, delete faces (never vertices), repaint
+   the joints' vertex groups, add parts as new mesh objects parented to a
+   bone with one image-textured material and the custom property `part=1`;
+   the bones stay as they are (the walk and the engine are made on them).
+   Then `touch work/<name>/<name>_refined` and run the same command again:
+   `capture/refine.py` carries every change over (vertices moved, faces taken
+   out, weights repainted, parts on their bones) and the rest runs on the
+   refined character.
+
+   The first person's refinement (dad2, 2026-10-23), as it went:
+   - eyes: the opening traced on a straight-on orthographic render of each
+     eye (Blender's matcap with cavity shows the lids' edges; a grid over
+     it to read off), the faces inside it taken out, not into the corners.
+     Growing a selection from the eye's front by the lid's fold failed (the
+     lower lid flows into the eye's surface with no fold), and so did
+     MediaPipe's contour (it sits higher and thinner than the opening in
+     the mesh). The eyeball: a sphere fitted to the skin cut away - MHR's
+     own eye surface, what its lids close over - at 14 mm (free, it fits
+     17: flatter than an eye, why the eyes looked flat), a 0.7 mm cornea,
+     his iris colour read off the painted eye in the texture (a ring round
+     the pupil), glossy (roughness 0.06), on the eye joint. The lids' edges
+     settled 0.2 mm off the ball (they stood up to 1.8 mm off), the corners'
+     skin tucked just under its surface (a jagged edge showed). A blink is
+     expr_12/13 with expr_28/29 (14/15 is a look down): the lids close over
+     the ball, nothing through.
+   - rigging: knee, hip, elbow, shoulder, wrist and neck bent far and looked
+     at in clay; MHR's weights held (smoothing round elbows and knees
+     changed nothing over 0.02).
+
+   The rule behind it, from what was learned: **where a person's eye does
+   better than a rule in code - the small things, a face, a hand, how a joint
+   bends the skin - it is done by hand, and the tool only lays it out and
+   carries it over.** Code for the bulk; hands for the finish. (The walk's
+   legs, knees, feet and hands, the eyes' first placement in code: each
+   went right only when looked at and fixed by hand, then kept as a rule.)
+6. The walk, retargeted in Blender with his hands relaxed, feet held and the
+   loop closed: `<name>_walk.glb`, and `<name>_walk.blend` /
+   `_walk_edit.blend` to adjust by hand (section 10).
+7. The checks: `tools/check_character.py work/<name> <name>` (run at the
+   end, and on its own any time) writes `checks/report.txt` and
+   `checks/sheet.png`, and says loudly what is out of bounds. Each bound is
+   something that once went wrong:
+
+   | Check | Bound | What it caught |
+   | --- | --- | --- |
+   | loop seam | wrap step <= 1.5x the usual | the planted knee dropping at the loop |
+   | feet sliding | held foot < 5 cm/s | the heel sliding as it landed |
+   | feet apart | 10-20 cm | knees meeting, then too narrow |
+   | feet straight | < 5 degrees out or in while down | pigeon toes, then a V |
+   | knee caps | within 8 degrees of the foot while down | a knee caving in |
+   | hands clear | >= 2 cm from the body all stride | hands brushing the thighs |
+   | hand rig, head | looked at: relaxed hand, a fist, the head in colour and clay | a limp hand, a thumb standing out |
+   | the face moving | looked at: jaw, blink, smile, brows by its own expression shapes | an iris dragged down by a blink (no eyeball) |
+
+   The judge of motion is a person: after the checks pass, a corridor
+   video in the hotel (`HOTEL_CAST`, `HOTEL_CAST_WALK`, natural light) is
+   looked at by the user.
+
 ### 1. The capture asked for
 
-One person standing still in an A-pose (arms about 30 degrees out), even
+One person standing still in a T pose (arms straight out: nothing hidden
+under them, the hands apart from the body; an A pose, arms about 30
+degrees out, works too), even
 soft light from all round, a plain ground, the camera circling once at
 constant speed, the whole body in frame all the way round. 9:16 (a
 standing person fills it), the highest resolution offered (1080x1920
@@ -705,6 +791,33 @@ Errors met:
   `HOTEL_EYE=hall:x,y,z,yaw,pitch,fov` - the last is the field of view,
   never 0): the hall's own light hides the eyes.
 
+#### The head's forms (Blender, `tools/blender/head_forms.py`)
+
+The head came out flat: lit from the front in the hotel, the face read as
+painted on. Not too few polygons (edges 1.8 mm, 21,700 vertices on the
+head) - the forms themselves: smoothing the stubble's noise out of the
+sculpt (`scan`) took the brow, the eye sockets, the cheekbones and the
+folds by the mouth with it. Now, after the first export, the sculpt is
+brought into the body's frame (`head/align.npz`), smoothed in Blender only
+as far as the stubble (12 Laplacian passes), and each head vertex carried
+along its normal onto it (Shrinkwrap, project both ways, at most 8 mm),
+then lightly smoothed where it moved:
+
+- weighted by the head joint's own skin weight (1 on the head, fading down
+  the neck as the skin does);
+- none on the lids and lips, ramping in round them (whole within 4 mm of
+  MediaPipe's eye contour, free past 18; lips 2-9 mm; the nostrils 3-10):
+  MHR's lids and lips are made to close and open, and the sculpt is a mess
+  right there (a short ramp left a ridge over each lid; the nostrils a
+  notch under the nose);
+- none on the ears (MHR's own, placed whole), a quarter on the scalp.
+
+Vertices move, the mesh does not change: the expression shapes, skin and
+UVs hold - the face still animates (checked: jaw, blink, smile, brows).
+Masking by how much each vertex moves in the expressions was tried first
+and was too broad (the cheeks move too). The rest of the head's finish is
+the refinement by hand (section 0).
+
 ### 9. The texture: stitched, not averaged
 
 Averaging every view's texels lays the views' disagreements over each
@@ -760,13 +873,13 @@ Errors met:
   needs a rigid subject. The fit's cameras, corrected by the matches
   through the surface, are the ones used.
 
-### 10. His walk (`--walk`)
+### 10. His walk
 
-Best: captured motion. `--walk Neutral_FW.bvh` (any of 100STYLE's 100
+Captured motion, retargeted in Blender: 100STYLE's `Neutral_FW.bvh` unless `--walk other.bvh` (any of 100STYLE's 100
 walking styles - Neutral, Depressed, Old, Heavyset, HandsInPockets... - kept
 whole in `~/stategine/downloads/100style`, CC BY 4.0: credit "100STYLE,
 Mason, Starke & Komura 2022" in the game). `tools/mocap_to_walk.py
-walk.bvh <name>.glb fit_hands.pkl <name>_walk.glb` (what `--walk` runs):
+walk.bvh <name>.glb fit_hands.pkl <name>_walk.glb` (what the tool runs):
 `capture/mocap.py` takes the period from the left foot's own rhythm (the
 whole pose nearly repeats every step: matching that cut half a cycle) and
 the straightest, steadiest stretch of that length; then **Blender
@@ -787,8 +900,20 @@ headless):
    T (`R = R_actor A_rest^-1 T_char`, world space, parents first) on
    Blender's free bones - roll included, no MHR limits; the pelvis carries
    the actor's height and sway (scaled by leg length), in place.
-4. The legs set straight about their own length (after the transfer, the
-   joints left where they are): the actor's feet toe in (Neutral: 9 and 15
+4. The loop closed - on the walk as carried over, before the legs are
+   set straight (closed after, its small turns down each leg added up to
+   the planted foot turned 10 degrees). The cycle is sampled evenly over exactly one period
+   (frames at fractional BVH times: 83 frames at 60 fps make 42 at 30.36),
+   and what is left between the end and the start - the actor never quite
+   repeats - is eased over the cycle, bone by bone, along each bone's
+   own motion (it goes where the bone is busy: a foot in the air). The clip then ends
+   with its first frame again: the engine's clip is as long as its last
+   key, so without it the wrap took no time. (Both together: at the wrap
+   the planted foot jumped 8 cm in one frame and the knee dropped.)
+5. The legs set straight about their own length on each frame (the
+   joints left where they are), measured against the way he faces - square
+   to his hips, as the clip walks - not the way the actor went, a few
+   degrees off it: the actor's feet toe in (Neutral: 9 and 15
    degrees - his Toe joint straight ahead of his ankle at rest) and his
    shins roll in as each foot takes the weight; on the character that read
    as pigeon toes and a knee caving in for a moment. Each foot is turned to
@@ -808,13 +933,6 @@ headless):
    out of it). `hand.pose(char, view_layer, side, angles)` poses any hand for
    any animation (`FIST` too); a fist checked the skin: knuckles and the
    thumb's web bend cleanly on MHR's own finger weights.
-5. The loop closed. The cycle is sampled evenly over exactly one period
-   (frames at fractional BVH times: 83 frames at 60 fps make 42 at 30.36),
-   and what is left between the end and the start - the actor never quite
-   repeats - is eased over the cycle, bone by bone. The clip then ends
-   with its first frame again: the engine's clip is as long as its last
-   key, so without it the wrap took no time. (Both together: at the wrap
-   the planted foot jumped 8 cm in one frame and the knee dropped.)
 6. The feet held on the ground. The body goes at the walk's pace; a foot
    that is down has to go back under it at exactly that pace or it
    slides - and as each heel landed and the foot rolled down, the actor's
@@ -861,16 +979,10 @@ Two things that made every walk drag (fixed in the engine):
   capture tool writes it (the actor's hips' speed over the cycle, at his leg
   length).
 
-From a video of him walking (rougher):
-
-`--walk walk.mp4` (him walking in place, the camera with him): SAM 3D Body
-reads MHR from every frame, so the motion is his own skeleton's - no
-retarget. `capture/motion.py` finds the cycle (the pose's best repeat:
-1.79 s for the first person), loops it, takes out the camera's turn,
-faces it the way the feet push, grounds it (`<name>_walk.glb`, a skeleton
-and its clip). In the engine it walks as Bruce does: `sg::cast` measures
-the stride from the clip, the body goes as fast as its feet say, and
-`sg::pace` plants each foot (`Being::plant`) - nothing slides.
+(A walk read from a video of him - SAM 3D Body on each frame, made
+symmetric, its stride and stance set by rule - was the first road and is
+gone: one camera guessed the far side and foreshortened depth, and no
+fixing made it walk well.)
 
 Errors met:
 
@@ -886,24 +998,6 @@ Errors met:
   blended over a band (cut sharp, they sheared at a tear line); the shell
   on the foot capped at a boot's thickness (the hem stacked on it in the
   video stood 4-7 cm off it).
-- Why the walk came out wrong at all: SAM 3D Body reads each frame alone,
-  from one camera; at a 3/4 angle the far side is half hidden and guessed
-  and depth along the view is foreshortened - feet crossing under him, the
-  pelvis 20 degrees off his path, a 40 cm stride, an arm that never swung
-  back. Fixed in the cycle (capture/motion.py), by what a walk is:
-  - `symmetric`: each side what the other did half a cycle before,
-    mirrored - the better-seen side kept (`near_side`: MediaPipe Pose's
-    visibility over the video), the far side made its mirror, the middle
-    (spine, pelvis, head) the mean of itself and its own mirror. Turns are
-    reflected through MHR's own rest pose (q_far = m(q_near) m(q_near_rest)^-1
-    q_far_rest), so each joint's frame mirrors as its skin does.
-  - facing: the whole cycle turned so the hips face where he walks.
-  - `stride`: each leg's swing scaled about its middle to a step of
-    0.41 x his height x sqrt(cadence / 110) - what the reading cannot say.
-  - `stance`: each foot under its own hip (1.6 x half the hips' width out),
-    the knee bent straight ahead.
-  First person: arms counter-swing with their legs (-0.65), feet 21 cm
-  apart, stride +-57 cm, chest square.
 - An "inverted foot" at his heel as he walked was his hair: the game's
   `cast::show` stood every skin's box on the ground, and the hair cards'
   box does not start at the feet. All of a being's skins move alike now
