@@ -333,7 +333,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
     // (`skin_normal`) and surface map (`skin_surface`); cut out where its
     // alpha is clear (`cutout`), lit from whichever side it is seen
     // (`two_sided`), and letting light through (`translucent`).
-    static const Key skin_key{"skin"}, uv_key{"uv"}, normal_key{"skin_normal"}, surface_key{"skin_surface"}, cutout_key{"cutout"},
+    static const Key skin_key{"skin"}, uv_key{"uv"}, normal_key{"skin_normal"}, surface_key{"skin_surface"}, cutout_key{"cutout"}, subsurface_key{"subsurface"},
         two_key{"two_sided"}, through_key{"translucent"}, dx_key{"normal_dx"}, strength_key{"normal_strength"};
     if (e.params.has(skin_key) && bind_skin(st, e)) {
         const bool uv = e.params.num(uv_key, 0.0) > 0.5;
@@ -352,6 +352,8 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         const gl::Mesh& mesh = normals ? shape_of(st, e) : shape_seen(st, e);
         if (normals && !mesh.tangents_made()) mesh.set_tangents(tangents_of(st, e));
         scene_->set("uCutout", cut);
+        const float subsurface = static_cast<float>(std::clamp(e.params.num(subsurface_key, 0.0), 0.0, 1.0));
+        scene_->set("uSubsurface", subsurface);
         scene_->set("uTwoSided", two);
         scene_->set("uTranslucent", through);
         scene_->set("uNormalMapOn", normals ? 1.0f : 0.0f);
@@ -362,6 +364,7 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         }
         mesh.draw();
         if (cut > 0.0f) scene_->set("uCutout", 0.0f);
+        if (subsurface > 0.0f) scene_->set("uSubsurface", 0.0f);
         if (two > 0.0f) scene_->set("uTwoSided", 0.0f), scene_->set("uTranslucent", 0.0f);
         if (normals) scene_->set("uNormalMapOn", 0.0f), scene_->set("uNormalStrength", 1.0f);
         if (surface) scene_->set("uSurfaceMapOn", 0.0f);

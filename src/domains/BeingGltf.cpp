@@ -412,6 +412,9 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
                 const J& mat = d.j["materials"][std::size_t(prim0["material"].i(0))];
                 if (mat["alphaMode"].s == "MASK") s.params.set("cutout", mat.has("alphaCutoff") ? mat["alphaCutoff"].num(0.5) : 0.5);
                 if (mat["doubleSided"].t == J::Bool && mat["doubleSided"].b) s.params.set("two_sided", 1.0);
+                // (Skin: light through it, scattered - `extras.subsurface`, how
+                // much texel by texel in its picture's alpha.)
+                if (mat["extras"]["subsurface"].num(0.0) > 0) s.params.set("subsurface", mat["extras"]["subsurface"].num(0.0));
             }
         }
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
@@ -979,7 +982,7 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
             // (Its own picture worn as it is first shown; after that, whatever
             // it has been given to wear - a face, an open mouth - it keeps.)
             if (!e->params.has(Key{"skin"})) e->params.set("skin", pic.str()).set("uv", 1.0);
-            for (const char* k : {"cutout", "two_sided"})
+            for (const char* k : {"cutout", "two_sided", "subsurface"})
                 if (s.params.has(Key{k})) e->params.set(k, s.params.num(Key{k}));
             for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, 1.0);
             // Its maps, worn by the same uvs: the folds and pores its picture

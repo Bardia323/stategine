@@ -1078,8 +1078,45 @@ its constraints, weights in `weights/` (snapshot of hi3d-official/Hi3Dv1.0;
 DINOv2-large and CLIP ViT-L/14 in the HF cache). Without it the tool goes
 on without this step.
 
+The head, the same way (`hi3d.head`): Hi3D on the head alone - his bust
+(the top 40 cm, at the rig's rest pose) against his bald, square-on picture
+(`head/bald.png`), so the head fills the grid: forehead lines, crow's feet,
+the brows and stubble in relief, a whole ear. At 1024 (1536's third pass ran
+out of memory on the shared card; 1024 is 0.4 mm a voxel on a 40 cm bust),
+8.5 minutes. Set on his head at rest by ICP, baked there (`bake_detail.py
+... rest`) and laid on the head and scalp. Its broad forms are not taken:
+they already agree with his head (median 0.06 mm), and where they do not -
+the skull's sides - carrying them left a ridge round the temple.
+
 Errors met: the glTF carries a small icosphere, and "the last mesh in the
 scene" picked it as Hi3D's mesh (2 m box, 47 cm off) - take what the
-import adds. A vertex no joint moves (an eye's opening cut away) made the
-skin's inverse singular - left alone. Still open: the webbing between his
-legs (the original fit joined the jeans; more than 12 mm to undo).
+import adds. (Blender sorts objects by name: the head step had the same bug
+and worked by luck while the sculpt was called `sculpt_cm` - with Hi3D's
+`aligned_rest_cm` it took an eyeball.) A vertex no joint moves (an eye's opening cut away) made the
+skin's inverse singular - left alone.
+
+The webbing between his legs (the refinement, by hand): the silhouette fit
+cannot see between touching thighs, so it pressed each thigh's inner side
+into the other from 67 cm up to the crotch - two tubes fused, not one sheet.
+Fixed in the .blend: the crotch region set on Hi3D's surface (nearest point,
+measured in his stance and carried back through the skin), then each
+thigh's inner side moved out from the midline (up to 1.2 cm, from the crotch
+at 79 cm down to 55 cm, fading out by 45). Two things tried first made it
+worse and were undone: lifting the crotch's underside straight up (it tore
+flaps that showed in a stride), and smoothing the folds (it opened holes).
+The test is a stride (one thigh 35 degrees forward, the other 25 back),
+looked at from below.
+
+### 13. Skin that lets light through (engine: SKIN_WRAP)
+
+"Subsurface scattering - only if it is not heavy." A character's material
+says `extras.subsurface` (0..1) and its base picture's alpha says how much,
+texel by texel (the capture tool writes 1 on face, neck, ears and hands, 0
+on clothes; glTF's OPAQUE ignores alpha). The shader reads it only for
+those (`uSubsurface`), sets the alpha back to 1, and for each light lets the
+diffuse wrap past where the skin turns away from it, red furthest (0.45,
+0.2, 0.12 of a quarter turn, energy kept: (n.l + w) / (1 + w)^2), with the
+shadow looked up through that band. A few sums per light on skin pixels,
+nothing anywhere else, no extra pass: the warm soft edge of lit skin
+instead of a plastic one's hard line. Skin roughness went to 0.58 at the
+same time (0.5 still read glossy).

@@ -1770,6 +1770,7 @@ uniform float uSkinOwn;       // 1: the frame is the mesh's own (drawn with othe
 uniform float uSkinRelief;    // > 0: the skin's alpha is how high its paint stands, this many metres at 1 - the surface bent by it
 uniform vec4  uUVRect;        // a cell of the picture: its corner, its size (unused while its size is 0)
 uniform float uCutout;        // > 0: pixels clearer than this are not drawn (a sprite at 0.5; a thing's `cutout` - a leaf on a card)
+uniform float uSubsurface;    // > 0: skin - light through it, scattered (a character's `subsurface`; how much, texel by texel, its picture's alpha)
 uniform float uTwoSided;      // 1: thin, seen from either side - lit on the side it is seen from (`two_sided`)
 uniform float uTranslucent;   // and how much of a lamp's light behind it comes through (`translucent`: a leaf)
 uniform float uGlow;          // extra emission for an active interface
@@ -3234,6 +3235,7 @@ void main() {
     vec2 height_steps = vec2(0.0); // ... as its height's change across the screen (skin_height_steps)
     bool uv_mapped = false;        // its own normal map, read through its uv, says so instead:
     vec3 uv_normal = vec3(0.0, 0.0, 1.0);  // ... which way it faces, along its u and v and out
+    float scatter = 0.0;                   // how much light this skin lets through and spreads (uSubsurface)
     vec2 uv_here = vUV, uv_dx = vec2(0.0), uv_dy = vec2(0.0);
     if (uTexMix > 0.0) {
         vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
@@ -3246,6 +3248,7 @@ void main() {
         // (A model's own picture, or a screen's - but a screen keeps its pixels.)
         if (!framed_skin && uTexels > 0.0 && uScreenUV < 0.5 && uCRT < 0.5) uv = texel_snap(uv, min(uTexels * 2.0, float(textureSize(uTex, 0).y)));
         vec4 texel = framed_skin ? skin_texel(uTex) : tiled(uTex, uv);
+        if (uSubsurface > 0.0) scatter = uSubsurface * texel.a, texel.a = 1.0;
         // (A land's ground, its tone moving slowly across it.)
         if (uTileBreak > 0.0 && uSkin > 1.5 && uSkin < 2.5)
             texel.rgb *= mix(1.0, 0.86 + 0.28 * noise(vRoom.xz * 0.013 + 4.1) * (0.7 + 0.3 * noise(vRoom.xz * 0.061)), uTileBreak);
@@ -3765,8 +3768,9 @@ void main() {
         float reach = light_reach(i, vLit, l);
         // A lamp that gives this point nothing - behind it, outside its cone,
         // too far - costs it nothing either.
-        if (reach <= 1e-5 || (dot(n, l) <= 0.0 && uTranslucent <= 0.0)) continue;
-        if (dot(n, l) <= 0.0) {
+        // (Skin takes light a little past where it turns away: SKIN_WRAP below.)
+        if (reach <= 1e-5 || (dot(n, l) <= 0.0 && uTranslucent <= 0.0 && dot(n, l) <= -0.45 * scatter)) continue;
+        if (dot(n, l) <= 0.0 && uTranslucent > 0.0) {
             // A leaf lit from behind: as much of it as comes through, scattered
             // - shadowed as its far side is.
             float through = -dot(n, l) * uTranslucent;
@@ -3797,7 +3801,7 @@ void main() {
             shadow = texelFetch(uTraceLamps, trace_px, 0)[traced_lamp(i)];
         } else
 #endif
-        if (ndl > 0.0 && i < uShadowCount && uLightD[i].y > -0.5 && !let_in) {
+        if ((ndl > 0.0 || scatter > 0.0) && i < uShadowCount && uLightD[i].y > -0.5 && !let_in) {
             float fl = uLightB[i].x < 0.0 ? uShadowFloor : uLightB[i].x;
             shadow = shadow_cascade(i, n, l, fl);
         }
@@ -3839,12 +3843,22 @@ void main() {
         float vis = 0.5 / mix(2.0 * ndl * ndv, ndl + ndv, sqrt(a2));
         vec3 f = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
         vec3 lobe = diffuse * (1.0 - f) * grains(n, l, v, ndl, ndv) + d * vis * f * spec_k;
+        vec3 lit = lobe * ndl;
+        // SKIN_WRAP: skin's diffuse light wraps past the line where it turns
+        // from the light, red furthest (light under the skin, scattered: the
+        // soft warm edge of a lit face instead of a plastic one's hard line) -
+        // a few sums on skin alone, nothing elsewhere.
+        if (scatter > 0.0) {
+            vec3 w = scatter * vec3(0.45, 0.2, 0.12);
+            vec3 wrapped = clamp((dot(n, l) + w) / ((1.0 + w) * (1.0 + w)), 0.0, 1.0);
+            lit = diffuse * (1.0 - f) * grains(n, l, v, ndl, ndv) * wrapped + d * vis * f * spec_k * ndl;
+        }
 
         // (Light standing in for bounce is the probes' where they hold: their
         // bake saw the bounce itself, and it would count twice.)
         if (uLightB[i].y > 0.5)
             bounced += diffuse * ndl * uLightColor[i] * reach * shadow * (1.0 - (uLightB[i].y > 0.8 ? bounce_cover : 0.0));
-        else direct += lobe * ndl * uLightColor[i] * reach * shadow;
+        else direct += lit * uLightColor[i] * reach * shadow;
     }
 
     // Light from all round: the sky's colour from above, the floor's bounce
