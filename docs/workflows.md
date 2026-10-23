@@ -760,7 +760,19 @@ Errors met:
   needs a rigid subject. The fit's cameras, corrected by the matches
   through the surface, are the ones used.
 
-### 10. His walk, from his own video (`--walk`)
+### 10. His walk (`--walk`)
+
+Best: captured motion. `--walk Neutral_FW.bvh` (any of 100STYLE's 100
+walking styles - Neutral, Depressed, Old, Heavyset, HandsInPockets... - kept
+whole in `~/stategine/downloads/100style`, CC BY 4.0: credit "100STYLE,
+Mason, Starke & Komura 2022" in the game). `capture/mocap.py` reads the BVH,
+takes the period from the left foot's own rhythm (the whole pose nearly
+repeats every step: matching that cut half a cycle), the straightest,
+steadiest stretch of that length, turns it to face +z, and fits MHR's own
+pose to it by bone directions (the actor's proportions are not his):
+0.6 degrees off. No reading of a video could look as natural.
+
+From a video of him walking (rougher):
 
 `--walk walk.mp4` (him walking in place, the camera with him): SAM 3D Body
 reads MHR from every frame, so the motion is his own skeleton's - no
