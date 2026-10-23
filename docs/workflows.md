@@ -803,8 +803,10 @@ headless):
    actor's hips' speed at his leg length) and its rate.
 
 By hand: the `.blend` kept beside the clip (`<name>_walk.blend`: textures
-packed, the walk keyed and looping, the actor beside him) is opened in
-Blender and adjusted - the hands, say - and given back in place of the
+packed, the walk keyed and looping, the actor's take cut to the cycle and
+playing beside him; `<name>_walk_edit.blend` the same at 9 MB rather than
+57 - no textures, hair cards or face shapes, the 73 face shapes on 75k
+vertices were most of it) is opened in Blender and adjusted - the hands, say - and given back in place of the
 BVH: `tools/mocap_to_walk.py <name>_walk.blend <name>.glb fit_hands.pkl
 <name>_walk.glb` reads every frame as it now is
 (`tools/blender/blend_to_walk.py`) and writes the clip again.
