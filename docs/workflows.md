@@ -778,7 +778,11 @@ headless):
 2. His thighs lean out by what makes up the hips' difference: MHR's hip
    joints are 13 cm apart, 100STYLE's 21.5 - on the actor's turns alone
    his feet came in and his knees nearly met. atan(half the difference /
-   leg length): 2.7 degrees.
+   leg length): 2.7 degrees. On top, what his own build asks, as leans
+   of the whole limb in the T: feet 2 cm further out each side as he walks
+   (`WALK_STEP_OUT`), arms 7 degrees out (`WALK_ARM_OUT`: on the actor's
+   turns his hands brushed his thighs through most of the stride - the
+   actor is slimmer than him in his jacket; now 3-6 cm clear).
 3. Each frame, each mapped bone is given the actor's whole turn from his
    T (`R = R_actor A_rest^-1 T_char`, world space, parents first) on
    Blender's free bones - roll included, no MHR limits; the pelvis carries
@@ -788,17 +792,20 @@ headless):
    degrees - his Toe joint straight ahead of his ankle at rest) and his
    shins roll in as each foot takes the weight; on the character that read
    as pigeon toes and a knee caving in for a moment. Each foot is turned to
-   toe out 7 degrees while it bears weight, and thigh and shin are rolled so
+   point straight ahead while it bears weight (`WALK_TOE_OUT`, 0: 7 degrees
+   out read as a V), and thigh and shin are rolled so
    the knee cap faces the way the knee bends (the foot's way when the leg
    is near straight).
    His hands are posed relaxed (`tools/blender/hand.py`, `RELAXED`):
    MHR rests with a flat hand and 100STYLE has no fingers, so they hung
    straight and looked limp. Each finger bends about the hand's crosswise
    line toward the palm, more toward the little finger (knuckle 22-35,
-   middle 30-40, end 14-18 degrees); the thumb's base brings it out in
-   front of the palm and its two joints curl it across toward the little
-   finger (bent toward the palm like a finger, it stood straight out of
-   it). `hand.pose(char, view_layer, side, angles)` poses any hand for
+   middle 30-40, end 14-18 degrees); resting, the thumb is laid along the
+   index, its tip by the index's middle joint on the palm side (the rest
+   hand's thumb stands off, pointing out); bending (a fist), its base
+   brings it in front of the palm and its joints curl it across toward the
+   little finger (bent toward the palm like a finger, it stood straight
+   out of it). `hand.pose(char, view_layer, side, angles)` poses any hand for
    any animation (`FIST` too); a fist checked the skin: knuckles and the
    thumb's web bend cleanly on MHR's own finger weights.
 5. The loop closed. The cycle is sampled evenly over exactly one period
@@ -808,7 +815,19 @@ headless):
    with its first frame again: the engine's clip is as long as its last
    key, so without it the wrap took no time. (Both together: at the wrap
    the planted foot jumped 8 cm in one frame and the knee dropped.)
-6. `tools/blender_walk_to_glb.py` writes it through the character's own
+6. The feet held on the ground. The body goes at the walk's pace; a foot
+   that is down has to go back under it at exactly that pace or it
+   slides - and as each heel landed and the foot rolled down, the actor's
+   went back at half of it (5 cm of slide a step). A heel point and a
+   ball point are read off each boot's sole; a point is down when it is
+   low (3 cm) and all but still over the ground (by height alone the flat
+   foot was missed: the lowest a point goes is a dip as the foot rolls).
+   While down it is held where it landed - the heel, then the ball as the
+   foot rolls over - and the leg reaches to it (two-bone, the knee bending
+   the way it bent). What the hold moved eases back to nothing through
+   the swing (let go in a frame or two, the right foot's 9 cm came out as
+   a hitch).
+7. `tools/blender_walk_to_glb.py` writes it through the character's own
    rest skeleton, turned so the hips face +z, with its `pace` (the
    actor's hips' speed at his leg length) and its rate.
 
