@@ -535,8 +535,14 @@ the sections named):
    of its own on the same skin, so the game can leave it out of your eye.
 7. The walk (section 10) and the checks (`checks/report.txt`,
    `checks/sheet.png`): loop seam, foot sliding, feet apart and straight,
-   kneecaps, hands clear; hand rig, head, face expressions looked at. Then
-   a corridor video for the user to judge.
+   kneecaps, hands clear, a foot's drift over a stance <= 0.01 H; the rig
+   gate (`capture/rig_gate.py`) on `<name>.glb` and `<name>_me.glb` read
+   back as a game reads them: skin indices, weights summing to 1, every
+   mesh skinned, skin at rest on its bind, l_/r_ on the right sides, no
+   joint scale, finite vertices at sampled times, the walk loop closing
+   (<= 0.5 deg, root <= 0.002 H) - gates after img2threejs/plugin-character,
+   each tried on a spoiled copy and caught. Hand rig, head, face
+   expressions looked at. Then a corridor video for the user to judge.
 
 Into the game (Memory Leak's hotel): copy `<name>_me.glb`, `<name>_me.json`
 and `<name>_walk.glb` to `assets/characters/me.glb`, `me.json`,
