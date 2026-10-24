@@ -7,7 +7,6 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -83,6 +82,7 @@ Format format_of(GLenum internal) {
         case GL_R32F: return Format::r32f;
         case GL_R32UI: return Format::r32ui;
         case GL_RG32UI: return Format::rg32ui;
+        case GL_RGBA8UI: return Format::rgba8ui;
         case GL_COMPRESSED_RGBA_BPTC_UNORM: return Format::bc7;
         case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM: return Format::bc7_srgb;
         case GL_DEPTH_COMPONENT24: case GL_DEPTH_COMPONENT: return Format::d24;
@@ -99,7 +99,7 @@ int channels(Format f) {
     }
 }
 
-bool integer(Format f) { return f == Format::r32ui || f == Format::rg32ui; }
+bool integer(Format f) { return f == Format::r32ui || f == Format::rg32ui || f == Format::rgba8ui; }
 
 int components_of(GLenum format) {
     switch (format) {
@@ -151,6 +151,12 @@ void load_texel(Format f, const std::uint8_t* p, float out[4]) {
         case Format::r32ui: case Format::rg32ui:
             std::memcpy(out, p, static_cast<std::size_t>(channels(f)) * 4);
             break;
+        case Format::rgba8ui:
+            for (int i = 0; i < 4; ++i) {
+                const std::uint32_t u = p[i];
+                std::memcpy(&out[i], &u, 4);  // (an unsigned int's bits, as the other whole-number formats give them)
+            }
+            break;
         default: break;
     }
 }
@@ -170,6 +176,13 @@ void store_texel(Format f, const float in[4], std::uint8_t* p) {
         }
         case Format::rgba32f: case Format::rg32f: case Format::r32f: case Format::r32ui: case Format::rg32ui:
             std::memcpy(p, in, static_cast<std::size_t>(channels(f)) * 4);
+            break;
+        case Format::rgba8ui:
+            for (int i = 0; i < 4; ++i) {
+                std::uint32_t u;
+                std::memcpy(&u, &in[i], 4);
+                p[i] = static_cast<std::uint8_t>(u);
+            }
             break;
         default: break;
     }
@@ -191,6 +204,7 @@ std::vector<std::uint8_t> to_texels(Format f, int w, int h, int d, GLenum format
                       : f == Format::r32f ? (n == 1 && type == GL_FLOAT)
                       : f == Format::r32ui ? (n == 1 && type == GL_UNSIGNED_INT)
                       : f == Format::rg32ui ? (n == 2 && type == GL_UNSIGNED_INT)
+                      : f == Format::rgba8ui ? (n == 4 && type == GL_UNSIGNED_BYTE)
                       : false;
     for (int z = 0; z < d; ++z)
         for (int y = 0; y < h; ++y) {
@@ -734,6 +748,7 @@ void link(ProgObj& p, const char* vs, const char* fs, const char* cs) {
     p.units.assign(p.t.samplers.size(), 0);
     p.locations.clear();
     for (std::size_t i = 0; i < p.t.uniforms.size(); ++i) p.locations[p.t.uniforms[i].name] = static_cast<int>(i);
+
     p.fix = -1;
     if (auto it = p.locations.find(kFixName); it != p.locations.end()) {
         const UniformSlot& u = p.t.uniforms[static_cast<std::size_t>(it->second)];

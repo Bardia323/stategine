@@ -28,6 +28,7 @@ enum class Format : std::uint8_t {
     r32f,
     r32ui,
     rg32ui,
+    rgba8ui,  // (four small whole numbers a texel: an index map - the probe boxes over each floor cell)
     bc7,
     bc7_srgb,
     d24,

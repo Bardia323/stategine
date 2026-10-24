@@ -77,6 +77,7 @@ VkFormat vk_format(Format f, bool d24_ok) {
         case Format::r32f: return VK_FORMAT_R32_SFLOAT;
         case Format::r32ui: return VK_FORMAT_R32_UINT;
         case Format::rg32ui: return VK_FORMAT_R32G32_UINT;
+        case Format::rgba8ui: return VK_FORMAT_R8G8B8A8_UINT;
         case Format::bc7: return VK_FORMAT_BC7_UNORM_BLOCK;
         case Format::bc7_srgb: return VK_FORMAT_BC7_SRGB_BLOCK;
         case Format::d24: return d24_ok ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT;
@@ -113,7 +114,7 @@ VkFormat attachment_format(const Attachment& a) {
 
 // (A picture drawn into whose format is a whole number's blends nothing.)
 bool integer_format(const Attachment& a) {
-    return a.tex && (a.tex->info.format == Format::r32ui || a.tex->info.format == Format::rg32ui);
+    return a.tex && (a.tex->info.format == Format::r32ui || a.tex->info.format == Format::rg32ui || a.tex->info.format == Format::rgba8ui);
 }
 
 class VulkanDevice final : public Device {
