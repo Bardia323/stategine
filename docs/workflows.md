@@ -547,6 +547,14 @@ mirror on the hall's west wall at z 42.6 (`HOTEL_MIRROR_Z`); the lens f/2.5
 at. Look at him at the hotel's own light near a lamp (exposure 1.6-1.8),
 never at exposure 3 (flat).
 
+The PC draws through Vulkan and DLSS (`build-win/hotel.conf`), the server
+through GL: when the PC looks wrong and the server's pictures do not, render
+on the server as the PC does - `HOTEL_CONF=build-win/hotel.conf` (or
+`SG_GPU=vulkan`) - and compare term by term. (2026-10-24: the native layer
+lacked RGBA8UI, the probe index map's format; on the PC no room had light
+from all round - the lamps alone, hard - and the occlusion, which darkens
+only that light, fell as black slits along the curtains' creases.)
+
 Dead ends, so they are not tried again: a walk read from video; fitting
 MHR's parameters to mocap; automating the eyes in code; a near-eye cut in
 the shader to hide the player's head (some pass still drew it: split the
