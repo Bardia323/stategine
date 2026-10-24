@@ -472,92 +472,86 @@ the engine (skin normal and ORM maps, morph targets, skin shading, a
 joint-name map for retarget), that is engine machinery, never a change of
 its ontology. Started 2026-10-22.
 
-### 0. End to end: what to give it, what comes out
+### 0. End to end: what to give it, what comes out (read this first)
 
-    PYTHONPATH=. .venv/bin/python tools/video_to_character.py work/<name>/orbit.mp4 --face face.mp4
+One command; no choices to make. Each stage is cached beside the video and
+skipped when its file is there (delete a file to run that stage again).
 
-Given: the orbit video (section 1; a T pose best) and, optionally, his
-face - a short video or a picture, square on (else the orbit's own front
-view). Nothing else: every stage below runs in turn, each kept beside the
-video and skipped when its file is there (delete a file to run it again).
+    cd ~/stategine/stategine-capture
+    curl -s -X POST http://127.0.0.1:8188/free -d '{"unload_models":true,"free_memory":true}'
+    PYTHONPATH=. .venv/bin/python tools/video_to_character.py work/<name>/orbit.mp4 [--face face.mp4|png]
 
-1. The body fitted (section 5), the face and hands to their landmarks.
-2. The head under the hair from a bald picture of his face, stitched to the
-   body down the neck (section 8).
-3. The texture stitched from the views, not averaged (section 9).
-4. Eyes, hair cards, boots, the glTF: `<name>.glb` (standing in the rig's
-   rest pose when he was filmed in a T); the head's forms given back from
-   its sculpt in Blender (section 8, *The head's forms*).
-   Then three passes for quality (sections 11-12): the face cropped tight
-   in the front views and textured at 4096; the skin's pores and sheen from
-   that texture; the body refined by Hi3D and baked into the normal map.
-5. **The refinement, by hand in Blender** - the stage that makes it good.
-   The tool lays the character out (`<name>_refine.blend`, textures packed,
-   rest pose) and stops there; the fine work is done in it by looking:
-   - the head: its shape where it is still flat or creased, the eyes opened
-     (the skin inside the lids, not into the corners) and eyeballs set on
-     the eye joints;
-   - the hands: bent into a fist and relaxed, fixed where the skin folds
-     wrong;
-   - the rigging: skin weights repainted wherever a joint bends the skin
-     badly (knees, elbows, shoulders, wrists, the neck, the jaw).
-   Rules of the .blend: move vertices, delete faces (never vertices), repaint
-   the joints' vertex groups, add parts as new mesh objects parented to a
-   bone with one image-textured material and the custom property `part=1`;
-   the bones stay as they are (the walk and the engine are made on them).
-   Then `touch work/<name>/<name>_refined` and run the same command again:
-   `capture/refine.py` carries every change over (vertices moved, faces taken
-   out, weights repainted, parts on their bones) and the rest runs on the
-   refined character.
+Give it: the orbit video (section 1; a T pose best, an A pose works) and,
+optionally, his face (a short video or a picture, square on). Needs:
+ComfyUI up (Klein, TRELLIS.2), Blender 5 (`/snap/bin/blender`), Hi3D's venv
+(section 12; without it those steps are skipped). The card is shared: free
+ComfyUI first. A first run takes about an hour.
 
-   The first person's refinement (dad2, 2026-10-23), as it went:
-   - eyes: the opening traced on a straight-on orthographic render of each
-     eye (Blender's matcap with cavity shows the lids' edges; a grid over
-     it to read off), the faces inside it taken out, not into the corners.
-     Growing a selection from the eye's front by the lid's fold failed (the
-     lower lid flows into the eye's surface with no fold), and so did
-     MediaPipe's contour (it sits higher and thinner than the opening in
-     the mesh). The eyeball: a sphere fitted to the skin cut away - MHR's
-     own eye surface, what its lids close over - at 14 mm (free, it fits
-     17: flatter than an eye, why the eyes looked flat), a 0.7 mm cornea,
-     his iris colour read off the painted eye in the texture (a ring round
-     the pupil), glossy (roughness 0.06), on the eye joint. The lids' edges
-     settled 0.2 mm off the ball (they stood up to 1.8 mm off), the corners'
-     skin tucked just under its surface (a jagged edge showed). A blink is
-     expr_12/13 with expr_28/29 (14/15 is a look down): the lids close over
-     the ball, nothing through.
-   - rigging: knee, hip, elbow, shoulder, wrist and neck bent far and looked
-     at in clay; MHR's weights held (smoothing round elbows and knees
-     changed nothing over 0.02).
+What it does, in order (the settings are the ones that won; why each:
+the sections named):
 
-   The rule behind it, from what was learned: **where a person's eye does
-   better than a rule in code - the small things, a face, a hand, how a joint
-   bends the skin - it is done by hand, and the tool only lays it out and
-   carries it over.** Code for the bulk; hands for the finish. (The walk's
-   legs, knees, feet and hands, the eyes' first placement in code: each
-   went right only when looked at and fixed by hand, then kept as a rule.)
-6. The walk, retargeted in Blender with his hands relaxed, feet held and the
-   loop closed: `<name>_walk.glb`, and `<name>_walk.blend` /
-   `_walk_edit.blend` to adjust by hand (section 10).
-7. The checks: `tools/check_character.py work/<name> <name>` (run at the
-   end, and on its own any time) writes `checks/report.txt` and
-   `checks/sheet.png`, and says loudly what is out of bounds. Each bound is
-   something that once went wrong:
+1. Body: masks, SAM 3D Body, MHR fitted to the silhouettes, face and hands
+   to their landmarks (section 5). Hands scaled to 0.105 of his height,
+   wrist to middle fingertip (`hands.in_proportion`: read from the video
+   they came out 16.7 cm on a 1.82 m man and looked small).
+2. Head under the hair: bald picture (Klein, seed 21, 12/12), TRELLIS.2
+   sculpt, SDF clean, MHR wrapped on it, stitched down the neck (section 8);
+   its forms from the sculpt in Blender (`head_forms.py`).
+3. Texture: SIFT-aligned views, graph-cut mosaic at 4096, the face cropped
+   tight in the front views (section 11); skin pores and roughness 0.58,
+   the boots a leather sheen of their own (roughness 0.38: they read as the
+   jeans' cloth), the base alpha saying where the skin is (section 13).
+4. Hi3D (section 12): the body refined against the square-on frame (1536,
+   offload) - its broad forms carried onto the mesh, its detail baked into
+   the normal map on the clothes; the head alone refined against the bald
+   picture (1024) and baked on the head. The million-vertex meshes are
+   working files; the game mesh stays 75,777 vertices.
+5. **The refinement, by hand in Blender** - the first run stops here with
+   `<name>_refine.blend` laid out. Done by looking (the MCP bridge: open
+   it, render clay and colour close, change, look again), in this order -
+   what dad2 needed, and how:
+   - the head onto Hi3D's head: `work/<name>/hi3d_head/aligned_rest.ply`
+     (set by `hi3d.head`: scale from the busts' heights, then rigid on the
+     top 22 cm only - with the hood and a free scale it slid 10 mm off the
+     face), smoothed lightly (Smooth, 6 x 0.5), each head vertex to its
+     nearest point there (within 25 mm), weighted by the head joint's skin
+     weight, the scalp fading past the eyes' level, the ears whole, lips
+     40% held, nostrils and mouth corners held (wrapped, they tore);
+     the moves smoothed 3 passes; expression shapes moved alike. Median
+     move 0.8 mm. (Hi3D's own mesh is not used: its eye area is a single
+     closed surface, its mesh is not his rig's.)
+   - the eyes: openings traced on a straight-on orthographic render (matcap
+     and cavity) and cut inside (not into the corners); an eyeball per eye,
+     12 mm, with a 1.4 mm cornea, its front at Hi3D's cornea apex, then set
+     1.8 mm back (in front of it the upper lid could not cover it: a stare);
+     the lid rims settled 0.2 mm off the ball, the corners' skin tucked
+     under it; iris his colour, 25 degrees across, sclera warm and shaded
+     off, roughness 0.3. A blink: expr_12/13 with 28/29.
+   - the webbing between the thighs (section 12), the boots' hem (the cuff
+     out 3 mm over the boot's top, the boot in 1 mm under it: a step, not
+     one surface), the stride and limbs bent far and looked at in clay.
+   Then `touch work/<name>/<name>_refined` and run the same command again.
+6. The game copy (`<name>_me.glb`, `tools/split_head.py`): the head a mesh
+   of its own on the same skin, so the game can leave it out of your eye.
+7. The walk (section 10) and the checks (`checks/report.txt`,
+   `checks/sheet.png`): loop seam, foot sliding, feet apart and straight,
+   kneecaps, hands clear; hand rig, head, face expressions looked at. Then
+   a corridor video for the user to judge.
 
-   | Check | Bound | What it caught |
-   | --- | --- | --- |
-   | loop seam | wrap step <= 1.5x the usual | the planted knee dropping at the loop |
-   | feet sliding | held foot < 5 cm/s | the heel sliding as it landed |
-   | feet apart | 10-20 cm | knees meeting, then too narrow |
-   | feet straight | < 5 degrees out or in while down | pigeon toes, then a V |
-   | knee caps | within 8 degrees of the foot while down | a knee caving in |
-   | hands clear | >= 2 cm from the body all stride | hands brushing the thighs |
-   | hand rig, head | looked at: relaxed hand, a fist, the head in colour and clay | a limp hand, a thumb standing out |
-   | the face moving | looked at: jaw, blink, smile, brows by its own expression shapes | an iris dragged down by a blink (no eyeball) |
+Into the game (Memory Leak's hotel): copy `<name>_me.glb`, `<name>_me.json`
+and `<name>_walk.glb` to `assets/characters/me.glb`, `me.json`,
+`me_walk.glb`. The hotel plays as him in first person: his body under the
+eye (look down), his head, hair and eyes `unseen` but `mirrored`; a long
+mirror on the hall's west wall at z 42.6 (`HOTEL_MIRROR_Z`); the lens f/2.5
+(`HOTEL_FSTOP`). `HOTEL_CAST=<glb>,x,z,yaw,height` stands someone to look
+at. Look at him at the hotel's own light near a lamp (exposure 1.6-1.8),
+never at exposure 3 (flat).
 
-   The judge of motion is a person: after the checks pass, a corridor
-   video in the hotel (`HOTEL_CAST`, `HOTEL_CAST_WALK`, natural light) is
-   looked at by the user.
+Dead ends, so they are not tried again: a walk read from video; fitting
+MHR's parameters to mocap; automating the eyes in code; a near-eye cut in
+the shader to hide the player's head (some pass still drew it: split the
+mesh instead); Hi3D at 1536 on the head (out of memory on the shared card);
+lifting the crotch straight up or smoothing its folds (tore flaps, holes).
 
 ### 1. The capture asked for
 
