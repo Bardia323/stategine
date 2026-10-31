@@ -718,6 +718,10 @@ if(SG_BUILD_TESTS)
   target_link_libraries(sg_channels PRIVATE stategine_dev)
   add_test(NAME sg_channels COMMAND sg_channels)
   # Rooms made one room (the DSL's `space`): one state, its doorway between them a hole walked and seen through; what cannot be one refused.
+  # Physics as a state of its own: things fall, land and rest, by its own arrows.
+  add_executable(sg_physics_state tests/physics_state.cpp)
+  target_link_libraries(sg_physics_state PRIVATE stategine_dev)
+  add_test(NAME sg_physics_state COMMAND sg_physics_state)
   add_executable(sg_space tests/space.cpp)
   target_link_libraries(sg_space PRIVATE stategine_dev)
   add_test(NAME sg_space COMMAND sg_space)
