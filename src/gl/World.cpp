@@ -26,6 +26,17 @@ namespace sg::render {
 
 void lens_keep_faults(const void* view, const std::vector<std::string>& faults);  // (src/gl/WorldLensSheet.cpp)
 
+GLWorldView::Indirect GLWorldView::indirect(const Mix& m) const {
+    Indirect out;
+    for (const LookMix::Part& p : m.parts) {
+        const double rc = fader_.value(*p.look, passes::composite, Key{"gi.cascades"}, -1.0), ao = fader_.value(*p.look, passes::composite, Key{"ao"}, -1.0);
+        const bool rc_said = rc >= 0.0, ao_said = ao >= 0.0;
+        out.cascades += p.weight * (rc_said ? rc : ao_said ? 0.0 : q_.indirect == GLQuality::indirect_cascades ? 1.0 : 0.0);
+        out.ao += p.weight * (ao_said ? ao : rc_said && rc > 0.0 ? 0.0 : q_.indirect == GLQuality::indirect_ao ? 1.0 : 0.0);
+    }
+    return out;
+}
+
 std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     graph_ = &g;
     ensure_resources();
@@ -1480,8 +1491,12 @@ void main() {
     // the scene, where the eye's look asks (run_cascades): the scene says
     // each pixel's diffuse colour beside it.
     // (`gi.cascades.bounce` 0: what is near shuts out the light, gives none back - no diffuse colour drawn.)
-    cascades_beside_ = !in_part && !root_ && !baking_ && surface_only_ == 0 && setting(post_, passes::composite, "gi.cascades", 0.0) > 0.0;
+    cascades_beside_ = !in_part && !root_ && !baking_ && surface_only_ == 0 && indirect(post_).cascades > 0.0;
     diffuse_wanted_ = cascades_beside_ && setting(post_, passes::composite, "gi.cascades.bounce", 1.0) > 0.0;
+    // (Its picture made before the scene is begun: made in the middle of
+    // it, the first frame's diffuse colour was lost - no bounce, and the eye
+    // settled on a picture without it.)
+    if (diffuse_wanted_ && !scene_ms().has_fourth()) scene_ms().add_fourth(gl::GL_RGBA8);
     draw_world(rooms, drawn_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     if (trace_beside_) trace_after(rooms);
     if (in_part) cut_ = Rect{-1, -1, 1, 1};
@@ -1497,7 +1512,7 @@ void main() {
     if (resolve_part) gl::glDisable(gl::GL_SCISSOR_TEST);
     }
     scene_src_ = &resolve_;
-    const double ao = setting(post_, passes::composite, "ao", 0.0);
+    const double ao = indirect(post_).ao;
     view_ = ViewParams{eye_cam.fov, aspect, kNear, far_of(rooms, placed_camera(eye_cam, rooms.front().pose).eye)};
     // (How fast the view turned, across the screen, since the last frame's
     // way: last frame's middle, where it stands in this frame's picture.)

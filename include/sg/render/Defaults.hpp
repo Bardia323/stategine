@@ -120,6 +120,15 @@ struct Quality {
     // With `dlss`, how few pixels it is drawn at: `quality` (two thirds of
     // the screen's each way), `balanced` (0.58), `performance` (a half),
     // `ultra_performance` (a third), `native` (all of them: DLAA).
+    // The light from all round near each surface, where a look does not
+    // say (`gi.cascades`, `ao`): `cascades` (radiance cascades - what is
+    // near shuts out the light and gives its colour back, worked out whole
+    // each frame: no noise and nothing carried from the frames before, so
+    // nothing trails or crawls), `ao` (only shut out, cheaper: GTAO, made
+    // smooth over frames) or `probes` (the probes' light alone, cheapest).
+    // A machine's choice, as `trace` is; a look that says either takes it.
+    enum Indirect { indirect_probes = 0, indirect_ao = 1, indirect_cascades = 2 };
+    int indirect=indirect_cascades;
     enum DlssMode { dlss_quality = 0, dlss_balanced = 1, dlss_performance = 2, dlss_ultra_performance = 3, dlss_native = 4 };
     int dlss_mode=dlss_quality;
 };

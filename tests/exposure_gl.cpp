@@ -135,6 +135,10 @@ int main() {
     const Picture asked = shot(view);
     const Picture once = shot(fresh);
     check(asked.differs(once) <= 1.0, "settled, a shot is the same picture however it was come to");
+    // (A view's first frame is as its next: its light from all round, the
+    // cascades' bounce with it, is all there from the first - the eye does
+    // not settle on a picture without it.)
+    check(once.differs(shot(fresh)) <= 1.0, "a view's first frame is the same picture as its second");
 
     // A cut (the camera's `shot` changed): the light gone down with it, the
     // eye does not ease open over the frames after - it takes the new

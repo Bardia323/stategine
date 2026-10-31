@@ -748,7 +748,7 @@ void GLWorldView::finish(int fb_w, int fb_h, const Finish& f) {
     const gl::Program* p = finish_program();  // (built: composite asked)
     // Where nothing was drawn is read from the view's depth: resolved already
     // if the occlusion or the air's glow read it this frame, else now.
-    if (f.deband > 0.0f && !fog_depth_ && setting(post_, passes::composite, "ao", 0.0) <= 0.0)
+    if (f.deband > 0.0f && !fog_depth_ && indirect(post_).ao <= 0.0)
         scene_ms().blit_depth_to(depth_);
     if (f.smear)
         for (gl::RenderTarget& h : smear_hist_)

@@ -1501,6 +1501,14 @@ private:
     double setting(const Mix& m, Key pass, const char* name, double fallback) const {
         return fader_.value(m, pass, Key{name}, fallback);
     }
+    // The light from all round near each surface, as the blend on screen
+    // has it: each look's own `gi.cascades` and `ao` where it says one
+    // (saying one, it has not asked for the other), else the machine's
+    // (Quality::indirect).
+    struct Indirect {
+        double cascades = 0.0, ao = 0.0;
+    };
+    Indirect indirect(const Mix& m) const;
     // A world's own weather over what its look says of it: the world's
     // `weather.<name>`, where it says (set by its own laws as its time
     // goes: the clouds, the haze, the air - what the weather is), else its

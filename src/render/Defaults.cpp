@@ -54,6 +54,9 @@ const Setting kSettings[] = {
     {"upscaler", &Quality::upscaler, nullptr, nullptr,
      "who makes the picture whole over frames: taa (the engine's), dlss (NVIDIA's DLSS, drawn at fewer pixels: Vulkan, an NVIDIA card), dlaa (DLSS at the screen's pixels)",
      {"taa", "dlss", "dlaa"}},
+    {"indirect", &Quality::indirect, nullptr, nullptr,
+     "the light from all round near each surface where a look does not say: probes (cheapest), ao (shut out only, over frames), cascades (shut out and given back, whole each frame)",
+     {"probes", "ao", "cascades"}},
     {"dlss_mode", &Quality::dlss_mode, nullptr, nullptr,
      "with dlss, how few pixels it draws: quality (2/3 each way), balanced (0.58), performance (1/2), ultra_performance (1/3), native (all)",
      {"quality", "balanced", "performance", "ultra_performance", "native"}},
@@ -170,6 +173,7 @@ Quality kept_to_bounds(Quality q) {
     q.pixel = std::clamp(q.pixel, 1, 8);
     q.upscaler = std::clamp(q.upscaler, 0, 2);
     q.dlss_mode = std::clamp(q.dlss_mode, 0, 4);
+    q.indirect = std::clamp(q.indirect, 0, 2);
     return q;
 }
 
