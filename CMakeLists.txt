@@ -56,6 +56,12 @@ add_library(stategine STATIC ${_sg_sources})
 add_library(stategine::stategine ALIAS stategine)
 target_include_directories(stategine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(stategine PUBLIC cxx_std_17)
+# Learned models (MotionBricks' motion): ONNX Runtime, opened at run time.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/onnxruntime.cmake)
+set(SG_MOTIONBRICKS_MODEL "" CACHE FILEPATH "MotionBricks' SOMA model (.onnx) a program opens when it says none (SG_MOTIONBRICKS over it)")
+if(SG_MOTIONBRICKS_MODEL)
+  target_compile_definitions(stategine PRIVATE "SG_MOTIONBRICKS_MODEL=\"${SG_MOTIONBRICKS_MODEL}\"")
+endif()
 # The modeller's meshes are kept on disk by what made them (sg/core/Cache.hpp):
 # the recipe, and this - the code that turns a recipe into a mesh.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/StategineDigest.cmake)
@@ -718,6 +724,11 @@ if(SG_BUILD_TESTS)
   target_link_libraries(sg_channels PRIVATE stategine_dev)
   add_test(NAME sg_channels COMMAND sg_channels)
   # Rooms made one room (the DSL's `space`): one state, its doorway between them a hole walked and seen through; what cannot be one refused.
+  # MotionBricks: poses to the model and back, held to its own engine; its motion where the model can run.
+  add_executable(sg_bricks tests/bricks.cpp)
+  target_link_libraries(sg_bricks PRIVATE stategine_dev)
+  target_compile_definitions(sg_bricks PRIVATE SG_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME sg_bricks COMMAND sg_bricks)
   # Physics as a state of its own: things fall, land and rest, by its own arrows.
   add_executable(sg_physics_state tests/physics_state.cpp)
   target_link_libraries(sg_physics_state PRIVATE stategine_dev)
