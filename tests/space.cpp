@@ -1,11 +1,15 @@
 // Rooms made one room (sg::make_space, the DSL's `space`): two rooms glued
 // at a doorway become one local state - their walls, floors and things in
 // one frame, the doorway a hole a walker passes and a ray sees through, the
-// rooms and their seam no more; and what cannot be one is refused, said.
+// rooms kept as its sources through a lens (put writes the one back into
+// each in its own frame), a seam that does not close kept as one of the
+// space to itself; and what cannot be one is refused, said.
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "sg/core/Laws.hpp"
 #include "sg/core/StateGraph.hpp"
 #include "sg/domains/Atlas.hpp"
 #include "sg/domains/Room.hpp"
@@ -18,12 +22,14 @@ void check(bool ok, const std::string& what) {
     if (!ok) ++failures;
 }
 // A room 4 m square with a doorway in its north wall (`north`) or its south.
-sg::Room& room(sg::StateGraph& g, const char* name, bool north) {
+sg::Room& room(sg::StateGraph& g, const char* name, bool north, bool ends = false) {
     auto& r = g.add<sg::Room>(sg::Key{name}, 4.0, 4.0, 3.0);
     double along = 0.0;
     const int wall = r.nearest_wall(2.0, north ? 0.0 : 4.0, along);
     r.params().set("names", std::string(name) + ".");
     r.add_opening("door", wall, along, 1.0, 2.2, 0.0, true);
+    if (ends)  // (a doorway in its west wall and one in its east)
+        for (const auto& [end, x] : {std::pair{"west", 0.0}, std::pair{"east", 4.0}}) r.add_opening(end, r.nearest_wall(x, 2.0, along), along, 1.0, 2.2, 0.0, true);
     r.lay_walls();
     r.params().set("enclosed", 0.0);  // (as a room that lays its own says)
     r.fixture(sg::Key{std::string(name) + ".chair"}, 1.0, 0.0, 2.0).params.set(sg::keys::sx, 0.5).set(sg::keys::sy, 0.9).set(sg::keys::sz, 0.5);
@@ -42,7 +48,10 @@ int main() {
         std::vector<std::string> why;
         const bool made = make_space(g, one.id(), {a.id(), b.id()}, &why);
         check(made, "two rooms glued at a doorway made one room" + (why.empty() ? std::string() : ": " + why.front()));
-        check(!g.find(Key{"a"}) && !g.find(Key{"b"}) && !g.seam(Key{"ab"}), "the rooms and their seam are no more");
+        check(g.find(Key{"a"}) && g.find(Key{"b"}) && !g.seam(Key{"ab"}), "the rooms stay, their seam is no more");
+        check(g.functor(Key{"ab1.of.a"}) && g.functor(Key{"ab1.to.b"}) && g.lenses().size() == 2 && g.kept().size() == 2,
+              "each room the one's through a lens, its put kept");
+        check(g.validate().empty(), "the graph is whole (the rooms reached through their lenses)" + (g.validate().empty() ? std::string() : ": " + g.validate().front()));
         check(one.find(Key{"a.chair"}) && one.find(Key{"b.chair"}), "what each was made of is the one room's");
         check(one.params().num(Key{"regions"}) == 2.0, "the floor each covered kept: two regions");
         check(one.params().num(Key{"room_d"}) > 7.5 && one.params().num(Key{"room_w"}) > 3.5, "its floor plan theirs together, from its origin");
@@ -60,6 +69,31 @@ int main() {
         const Vec3d from{xa, 1.0, (a_first ? z0 : z1) + 2.0};
         const bool hits = ray(one, from, {0.0, 0.0, a_first ? -1.0 : 1.0}, 20.0, hit, normal, &dist);
         check(hits && dist > 5.5, "a ray through the hole sees the far room's far wall (" + std::to_string(dist) + " m)");
+        // Moved in the one, the chair is moved in its room - in the room's frame.
+        Element& moved = one.element(Key{"b.chair"});
+        moved.params.set(keys::x, moved.params.num(keys::x) + 0.5);
+        g.functor(Key{"ab1.to.b"})->apply(one, b);
+        const Element& there = *b.find(Key{"b.chair"});
+        const double moved_by = std::hypot(there.params.num(keys::x) - 1.0, there.params.num(keys::z) - 2.0);
+        check(std::fabs(moved_by - 0.5) < 1e-9, "put: the chair moved 0.5 m in the one is moved 0.5 m in b, in b's frame (" + std::to_string(moved_by) + ")");
+        const auto broken = laws::lenses(g, {});
+        check(broken.empty(), "the lenses keep their laws" + (broken.empty() ? std::string() : ": " + broken.front().law + " " + broken.front().detail));
+    }
+    {
+        // A room whose two ends are one (a seam of it to itself, that wraps),
+        // made one with another: the wrap stays, a seam of the one to itself.
+        StateGraph g;
+        auto& a = room(g, "a", true, true);
+        auto& b = room(g, "b", false);
+        glue_doorway(g, Key{"ab"}, a.id(), Key{"a.door"}, b.id(), Key{"b.door"});
+        walkway(g, Key{"loop"}, a.id(), Key{"a.east"}, a.id(), Key{"a.west"}, {}, true);
+        auto& one = g.add<Room>(Key{"ab1"}, 1.0, 1.0, 3.0);
+        std::vector<std::string> why;
+        const bool made = make_space(g, one.id(), {a.id(), b.id()}, &why);
+        check(made, "a room that wraps made one with another" + (why.empty() ? std::string() : ": " + why.front()));
+        const Seam* loop = g.seam(Key{"loop"});
+        check(loop && loop->a == one.id() && loop->b == one.id() && loop->wraps, "its wrap a seam of the one to itself, wrapping");
+        check(one.find(Key{"a.east"}) && one.find(Key{"a.east"})->kind == kinds::portal, "its ends doorways still, not holes");
     }
     {
         StateGraph g;

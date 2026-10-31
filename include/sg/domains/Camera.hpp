@@ -11,6 +11,7 @@
 // Arrows:   lens --aim-->  lens   stand and look somewhere else  {x, y, z, yaw, pitch, roll, fov}
 //           lens --zoom--> lens   a wider or narrower view       {fov}
 //           lens --roll--> lens   running, or not                {on}
+//           lens --mount--> lens  another lens on it (Lens.hpp)  {lens, fov, focal, fstop, barrel, ...}
 //
 // It sees a world by filming it (sg::film): the world embedded in the lens.
 // The renderer draws an open embedding in an `eye` portal from the portal's
@@ -41,6 +42,7 @@ public:
     static Key lens_id() { return Key{"lens"}; }
     static Key aim_event() { return Key{"camera.aim"}; }
     static Key zoom_event() { return Key{"camera.zoom"}; }
+    static Key mount_event() { return Key{"camera.mount"}; }
 
     explicit Camera(Key id, double fov = 60.0, int w = 640, int h = 480);
 

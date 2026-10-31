@@ -80,6 +80,7 @@ std::vector<std::string> taken_faults(const State& space);
 // camera's `step` (0.36 unless it says, as sg::walk), or `step` given - is a fault, unless it says `climb` or
 // `walk`. And a walker that says a step higher than 0.36 m (a riser and more) is one.
 std::vector<std::string> climb_faults(const State& space, double step = -1.0);
+// (guard_faults also walks the space's own walker into every solid thing: sg::walked_onto, Walk.hpp.)
 
 // All of them, each fault said with the space's name.
 std::vector<std::string> guard_faults(const State& space, const StateGraph* graph = nullptr);

@@ -479,6 +479,38 @@ until it is mended; `unguarded` 1 with no reason is itself a fault).
 `SG_GUARD=1` guards even those: a laws pass run so lists what is left to mend.
 Nothing new starts unguarded.
 
+**The inspector, first** (`sg/render/Inspect.hpp`, `sg_inspect`). The guards
+read things' boxes; what is wrong is often in the triangles - a door's leaf
+set into its wall shows its frame and the wall's paper through it, a lamp's
+fitting stands 25 cm into the ceiling, three boards given back hang one
+above another, a page sits a centimetre over its table. `inspect` takes
+every drawn thing as the renderer draws it (its model's corners, a box, a
+panel, a skin as posed now) by the renderer's own `box_transform`, on the
+processor, in about half a second for a room of 180,000 triangles:
+
+- *floating* - things joined by touching (within 6 mm), their names, groups
+  and what they hang on; any whole that touches nothing down to the building
+  (walls, what is laid, what says `building`) is named, with its gap and the
+  thing it is nearest (what it was meant to touch).
+- *sunk* - a thing's corners inside another closed thing, deeper than 2.5 cm.
+- *fighting* - two faces looking one way, overlapping, with the vertex
+  stage's nudge weighed as it draws them (the smaller nearer, by a share of
+  the distance a rank): one size in one plane fights from anywhere; a face a
+  millimetre behind another, drawn nearer by its size, ties with it from
+  `g / (rank share)` metres on - a flicker that comes and goes as one walks.
+  Only what an eye sees counts: not inside a third solid, not the building's
+  own faces looking out of it.
+
+`inspect(space, {out = dir})` also draws `dir/<space>.png`: a plan cut
+under the ceiling and every wall square on in 2.5 m slabs, each thing its
+own colour shaded by how it faces, outlines where things meet - every fault
+boxed and numbered as `dir/<space>.txt` lists it. It is the first look at a
+place: before any frame is drawn, and after every change. UNLIT runs it with
+`UNLIT_INSPECT=<dir>` (no window), and mid-play with `UNLIT_INSPECT_AT=<s>`
+(the body as posed then). `sg::walked_onto` is the walker's own answer to
+climbing (a ball for feet rides over a table's edge that the boxes say is
+out of a step's reach). Set things down with `drawn_hit` / `drawn_hits`.
+
 | Class | The law (Guard.hpp) | What a thing says when the law cannot know |
 | --- | --- | --- |
 | a sconce sunk in its wall, a switch off it; a wardrobe hovering, a chest sunk in the floor | `mount`: what hangs on a wall touches the nearest wall's face (off it > 1.5 cm floats; into it more than half its depth is sunk); a thing of furniture's size has the floor, or something lower it touches, at its foot | `mount` wall / floor / ceiling / free; unsaid, a thing named sconce / switch / socket / outlet is on a wall |
@@ -630,6 +662,62 @@ MHR's parameters to mocap; automating the eyes in code; a near-eye cut in
 the shader to hide the player's head (some pass still drew it: split the
 mesh instead); Hi3D at 1536 on the head (out of memory on the shared card);
 lifting the crotch straight up or smoothing its folds (tore flaps, holes).
+
+### 0a. A Tripo model: three roads (2026-10-24)
+
+Tripo (tripo3d.ai, hosted) makes the best-looking person of any generator
+tried - natural skin, real hair, clothes - but paints its texture apart from
+its shape: the painted eyes and buttons land 1-11 mm off the modelled ones.
+Its export is a glb (often meshopt-compressed: Blender reads it, numpy does
+not). Make it from his square-on frame. Then one of:
+
+1. **A video alone** - section 0, as ever.
+2. **A video and a Tripo export of him** - his shape and rig from the video,
+   his colour from Tripo:
+
+       PYTHONPATH=. .venv/bin/python tools/video_to_character.py work/<name>/orbit.mp4 [--face ...] --paint tripo.glb
+
+   Give the export as downloaded; its paint is slid onto its own shape first
+   (road 3, ~10 min, kept in `<work>/paint/`). Then (`capture/paint.py`):
+   the model set on him - the body from eight starting turns about the
+   vertical, scale from the heights, rigid, the best scored both ways; the
+   face by the face alone (its front 7 cm), the scale **held** (free, it
+   shrank the face 40% into his); its base colour baked unlit onto his UVs
+   (`tools/blender/bake_paint.py`: near rays, 2.5/4 cm, then far, 6/12 cm,
+   for what they missed; the rest filled from round it); his scalp (its
+   hairline is not his: its skin showed between his hair cards as stripes),
+   hands (posed apart) and the mouth's inside his own; slid again onto his
+   face (`tex_onto_shape.character`: his lids and lips); his own eyes and
+   mouth (the video's paint, on his own lids and lips) toned to it; the
+   creases' shade baked (`tools/blender/bake_ao.py`, 2 cm) and laid on the
+   head at half; the normal map made again from the new paint (from the
+   video's paint its pores were the old face's), Hi3D's relief everywhere
+   but the nose (it broke the tip up: the nose reads right smooth). The
+   pictures in `<work>/paint/` (`base.png`, `base_slid.png`, `base_final.png`).
+3. **A Tripo export alone** - its paint slid onto its own shape, a model to
+   stand somewhere (not rigged):
+
+       .venv/bin/python tools/tex_onto_shape.py tripo.glb tripo_fixed.glb [--height 1.8]
+
+   Seen from 24 views round the body (eight sides, three heights each, 4096)
+   and five round the face (3072), its front found from the body (shoulders
+   across, toes ahead - generators face any way); in each, the shape's lines
+   (a cavity render) and the paint's (dark lines of the base colour, the
+   faint weave dropped) give an optical flow (Farneback, three levels: more
+   chased the cloth's weave 10 cm off), kept only where a line meets a line
+   and spread from there, at most 6 mm; a move that crosses to another
+   surface (the position pass) refused; each texel takes the paint the flow
+   points to from the views that see it squarest and closest (a weighted
+   mean), sampled from the rendered paint (never the gaps between the
+   atlas's islands); colour and roughness move, the normal map stays. Check
+   it from angles the tool never used, the shape's edges drawn over it.
+
+Errors met: a UV pass rendered with Cycles' denoiser on (it blends UVs as
+colours: pixels 27 texels off) - off; MediaPipe's landmarks on a clay face
+(no eyes to find: it squeezed an eye shut) - lines, not landmarks; Tripo's
+own shape baked as his normal detail (`--detail`, tried and dropped): its
+nose and lids are not his and their edges came out as streaks down his
+cheeks, even high-passed. Pixal3D (TencentARC) was tried and removed.
 
 ### 1. The capture asked for
 

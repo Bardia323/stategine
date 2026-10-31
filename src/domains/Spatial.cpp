@@ -2,6 +2,7 @@
 #include <cmath>
 #include "sg/domains/Spatial.hpp"
 #include "sg/domains/Guard.hpp"
+#include "sg/domains/Lens.hpp"
 #include <cstdlib>
 
 #include <algorithm>
@@ -199,6 +200,8 @@ Spatial3D::Spatial3D(Key id) : SpatialState(id, 3) {
              c.params.set(keys::yaw, c.params.num(keys::yaw) + ev.args.num(Key{"dyaw"}));
              c.params.set(keys::pitch, c.params.num(keys::pitch) + ev.args.num(Key{"dpitch"}));
          });
+    // camera --mount--> camera: the eye's lens changed (sg/domains/Lens.hpp)
+    loop(Key{"mount"}, camera_id(), Key{"space3.mount"}, [](State&, Element& c, Element*, const Event& ev) { mount(c, ev); });
 }
 
 Element& Spatial3D::mesh(Key id, double x, double y, double z, char glyph) {
@@ -277,6 +280,9 @@ Element& Spatial3D::portal(Key id, Vec3d pos, double width, double height, doubl
 }
 
 std::vector<std::string> Spatial3D::faults() const {
+    // (A room made part of a space - its source, sg::make_space - is
+    // checked as the space, where everything of it now stands.)
+    if (!params().get_or<std::string>(Key{"source_of"}, "").empty()) return {};
     std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this), wear = wear_faults(*this);
     out.insert(out.end(), fogs.begin(), fogs.end());
     out.insert(out.end(), wear.begin(), wear.end());

@@ -1192,6 +1192,22 @@ edges (`uFringe`). It is the eye's, laid once on the whole picture: a world
 seen through a window in its own look is developed in that look - its grade,
 its glow - but not bowed or fringed again inside the eye's picture (`sg_deep_views_gl`).
 
+A camera may mount a lens instead (`sg/domains/Lens.hpp`): a kind of glass
+kept as data, its focal length and what it does to the picture - a `.lens`
+file, `key = value` a line (`focal` mm, `fstop`, `barrel`, `fringe`,
+`vignette`, `corner_soft`, `edge_smear`). Its own arrow mounts it
+(`camera.mount` on a Camera's lens, `space3.mount` on a world's eye;
+`sg::mount_event(event, lens, film_mm)` makes the event): the view its focal
+length gives over the film's height (24 mm, a full frame held level; 36 held
+upright for a tall picture), its aperture, and its glass, which the eye's
+picture is then drawn through in place of its look's - a long lens bows
+nothing however wide the look's is. Another mounted takes the first's place
+whole: nothing of it stays. A director's hung cameras each keep their own,
+and a cut to one sees through it. Built in: `camcorder` (18 mm, P.T.'s wide
+cheap zoom), `wide24`, `normal50`, `portrait85` (f/1.8), `tele135` (f/2.8); a
+project's are files in `SG_LENSES`, then `lenses/` beside the program
+(`sg_lens`).
+
 ### Styles
 
 A world's look is its grade and its effects, a state of the world, fading

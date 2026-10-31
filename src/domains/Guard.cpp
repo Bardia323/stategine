@@ -518,8 +518,10 @@ std::vector<std::string> climb_faults(const State& space, double step) {
             if (reach[j]) continue;
             const Vec3d g = gaps(all[i], all[j]);
             if (g.x > 0.3 || g.z > 0.3) continue;  // (a stride from its edge)
+            // (Up a step, or down any way: from a stair's landing a walker steps down onto a chest's top beside it as
+            // readily as up onto a stool - and stands on it.)
             const double rise = all[j].hi.y - all[i].hi.y;
-            if (rise > 0.03 && rise <= step) reach[j] = 1, frontier.push_back(j);
+            if (std::fabs(rise) > 0.03 && rise <= step) reach[j] = 1, frontier.push_back(j);
         }
     }
     int told = 0;
@@ -551,6 +553,8 @@ std::vector<std::string> guard_faults(const State& space, const StateGraph* grap
     add("pad", pad_faults(space));
     add("taken", taken_faults(space));
     add("climb", climb_faults(space));
+    // (And what its own walker climbs, walked: sg::walked_onto - what the boxes miss.)
+    if (const Element* cam = space.find(SpatialState::camera_id())) add("climbed", walked_onto(space, *cam));
     return out;
 }
 

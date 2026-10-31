@@ -84,7 +84,7 @@ state realm : spatial3d {
     element globe : mesh {
         x = 0.0
         y = 2.0
-        z = 0.0
+        z = 0.05
         sx = 3.0
         sy = 2.0
         sz = 0.1
@@ -95,7 +95,7 @@ state realm : spatial3d {
     element globe_view : portal {
         x = 0.0
         y = 2.0
-        z = 0.1
+        z = 0.15
         w = 2.5
         h = 1.5
         yaw = 1.5707963267948966

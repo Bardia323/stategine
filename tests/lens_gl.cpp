@@ -125,9 +125,9 @@ int main() {
     // The posts, looked at from x = 0 along +x (+z to the right): near, at
     // the focus, beyond it.
     const double s = 3.0, near = 1.5, far = 8.0;
-    box("near", near, 0.0, 0.22, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45);
-    box("focused", s, 0.0, 0.0, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45);
-    box("far", far, 0.0, -1.2, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45);
+    box("near", near, 0.0, 0.22, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45).set("inspect_ok", std::string("a focus target, stood through the ground"));
+    box("focused", s, 0.0, 0.0, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45).set("inspect_ok", std::string("a focus target, stood through the ground"));
+    box("far", far, 0.0, -1.2, 0.06, 3.0, 0.06, 0.9).params.set("emissive", 0.45).set("inspect_ok", std::string("a focus target, stood through the ground"));
     // Small bright lamps on the far wall.
     for (int i = 0; i < 5; ++i) {
         sg::Element& lamp = box(("lamp" + std::to_string(i)).c_str(), 39.6, 2.5 + 0.6 * (i % 2), -4.0 + 2.0 * i, 0.1, 0.1, 0.1, 1.0);

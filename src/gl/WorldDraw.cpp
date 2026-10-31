@@ -1037,7 +1037,17 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // world's time) carry it as the view moving does: still while that
         // world is, it rests.
         const bool drifted = sky && sky->cloudy && a.cloud_time != sky->dome_time;
-        const bool moved = a.gathered > 0 && (std::memcmp(a.seen_vp.m, view_proj.m, sizeof view_proj.m) != 0 || drifted);
+        // Someone moving under a lamp the air glows by: his shadow in the
+        // air goes with him - gathered again as he moves, as it is when the
+        // view moves. (Not keyed in `of`: from nothing each frame, the air
+        // would be noise. And never left standing: gathered once as he
+        // passed and then kept, his shadow stood where he had been, and he
+        // walked on through it in blotches.)
+        uint64_t movers_lit = 0;
+        for (std::size_t i = 0; i < layers; ++i)
+            if (maps.movers[i] != 0 && in_use[i] && lights[layer_light[i]].scatter > 0.0f) movers_lit = fnv(fnv(movers_lit, i + 1), maps.movers[i]);
+        const bool moved = a.gathered > 0 && (std::memcmp(a.seen_vp.m, view_proj.m, sizeof view_proj.m) != 0 || drifted || movers_lit != a.movers);
+        a.movers = movers_lit;
         if (moved) a.gathered = std::min(a.gathered, kAirCarry - 1);
         if (a.gathered < kAirGatherings || moved) {
             a.of = of;

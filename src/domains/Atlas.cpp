@@ -485,11 +485,28 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
         if (k == space) return no("is made of itself");
     }
     // Placed from the first named, through the seams between them, room by
-    // room: each where the seam puts it; reached again another way, it must
-    // stand where it stood (a ring that closes) - or the rooms are not one.
+    // room: each where the seam puts it; reached again another way, where
+    // it stood (a ring that closes) - or that seam is kept, below.
     out.push_back(Placed{static_cast<Spatial3D*>(g.find(rooms[0])), Pose{}, {}});
     const auto member = [&](Key k) { return std::find(rooms.begin(), rooms.end(), k) != rooms.end(); };
-    std::vector<Key> seams;
+    // A seam among them that does not close - a ring that comes back turned
+    // or moved (a holonomy), a room that wraps onto itself - is not made
+    // flat: it stays a seam, of the one to itself, carried by its transform
+    // (walkers, things thrown, the eye), as Room 2's corridor is.
+    struct Kept {
+        Key name;
+        Key a, b;  // the rooms it joined
+        Key pa, pb;
+        std::vector<std::pair<Key, Key>> also;
+    };
+    std::vector<Kept> closing;
+    const auto keep_closing = [&](const Seam& sm) {
+        if (std::none_of(closing.begin(), closing.end(), [&](const Kept& c) { return c.name == sm.name; })) {
+            Kept c{sm.name, sm.a, sm.b, sm.boundary_a[0], sm.boundary_b[0], {}};
+            for (std::size_t i = 1; i < sm.boundary_a.size() && i < sm.boundary_b.size(); ++i) c.also.push_back({sm.boundary_a[i], sm.boundary_b[i]});
+            closing.push_back(std::move(c));
+        }
+    };
     for (std::size_t i = 0; i < out.size(); ++i) {
         const Spatial3D& here = *out[i].room;
         for (const Seam& sm : g.seams()) {
@@ -498,7 +515,10 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
             if (!forward && sm.b != here.id()) continue;
             const Key other = forward ? sm.b : sm.a;
             if (!member(other)) continue;
-            if (sm.wraps || other == here.id()) return no("seam " + sm.name.str() + " wraps " + here.id().str() + " onto itself: a space that wraps is not made one room by room");
+            if (sm.wraps || other == here.id()) {
+                keep_closing(sm);
+                continue;
+            }
             auto* there = static_cast<Spatial3D*>(g.find(other));
             const Element* hp = here.find(forward ? sm.boundary_a[0] : sm.boundary_b[0]);
             const Element* tp = there->find(forward ? sm.boundary_b[0] : sm.boundary_a[0]);
@@ -506,7 +526,6 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
             if (!hp || !tp || !sheafable(here, *hp, *there, *tp, across, true))
                 return no("seam " + sm.name.str() + " does not join " + here.id().str() + " and " + other.str() +
                           " as one kind of space (a plain walked opening, one scale, both walled or both under a sky, nothing said to differ)");
-            if (std::find(seams.begin(), seams.end(), sm.name) == seams.end()) seams.push_back(sm.name);
             Pose placed = compose_pose(out[i].pose, across);
             placed.yaw = std::remainder(placed.yaw, 6.283185307179586);
             const auto add_inner = [](Placed& p, Key d) {
@@ -514,8 +533,10 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
             };
             const auto known = std::find_if(out.begin(), out.end(), [&](const Placed& p) { return p.room == there; });
             if (known != out.end()) {
-                if (!same_pose(known->pose, placed))
-                    return no(other.str() + " stands in two places - through seam " + sm.name.str() + " and another way: its rooms do not close into one space (a holonomy)");
+                if (!same_pose(known->pose, placed)) {
+                    keep_closing(sm);
+                    continue;
+                }
                 add_inner(out[i], hp->id), add_inner(*known, tp->id);
                 continue;
             }
@@ -610,7 +631,15 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
             if (const Spatial3D::Picture* pic = p.room->picture(Key{*f}); pic && pic->w > 0 && pic->h > 0)
                 fields.push_back({*pic, rp.num(Key{"wear_x"}, 0.0), rp.num(Key{"wear_z"}, 0.0), rp.num(Key{"wear_w"}, 1.0), rp.num(Key{"wear_d"}, 1.0), p.pose});
     }
+    // What each room gives the one: everything it has but its eye and the
+    // doorways it is joined at (holes in the one, no more its own) - what
+    // the lens between them carries each way.
+    std::vector<std::vector<std::pair<Key, Key>>> given;
     for (Placed& p : out) {
+        given.emplace_back();
+        for (const Element& e : p.room->elements())
+            if (e.id != SpatialState::camera_id() && !made->find(e.id) && std::find(p.inner.begin(), p.inner.end(), e.id) == p.inner.end())
+                given.back().push_back({e.id, e.id});
         for (const std::string& w : made->absorb(*p.room, p.pose)) no(w);
         for (Key d : p.inner)
             if (const Element* door = made->find(d)) {
@@ -699,9 +728,63 @@ bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::ve
     // (Where the world began, if in one of them, it begins in the one.)
     for (const Placed& p : out)
         if (g.initial() == p.room->id()) g.set_initial(space);
-    // The rooms were; the one is. (Their seams with each other with them.)
-    for (Key sm : seams) g.remove(g.removal_of_seam(sm));
-    for (const Placed& p : out) g.remove(g.removal(p.room->id()));
+    // The seams that leave them for rooms not of the one, and those among
+    // them that do not close: laid again on the one, after their rooms'.
+    std::vector<std::pair<Kept, bool>> again;  // (true: wraps)
+    for (const Kept& c : closing) again.push_back({c, true});
+    for (const Seam& sm : g.seams()) {
+        if (sm.boundary_a.empty() || sm.boundary_b.empty() || member(sm.a) == member(sm.b)) continue;
+        Kept c{sm.name, sm.a, sm.b, sm.boundary_a[0], sm.boundary_b[0], {}};
+        for (std::size_t i = 1; i < sm.boundary_a.size() && i < sm.boundary_b.size(); ++i) c.also.push_back({sm.boundary_a[i], sm.boundary_b[i]});
+        again.push_back({std::move(c), sm.wraps});
+    }
+    // The rooms stay, each the source of its part of the one; what they were
+    // joined by goes - their seams, their arrows to and from others, what
+    // they hosted (moved to the one above) - and each is the one's through a
+    // lens: `get` lays the room in the one where it stands, `put` writes the
+    // one back into the room in its own frame, kept (a book moved in the
+    // one is moved in its room). The one is made from them; nothing of
+    // theirs is lost.
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const Key room = out[i].room->id();
+        Removal r = g.removal(room);
+        r.state = Key{};
+        if (!r.ok()) {
+            no(room.str() + " keeps what joins it to the rest: " + r.refused.front());
+            continue;
+        }
+        g.remove(r);
+        const Pose at = out[i].pose, back = inverse(at);
+        const auto carry = [](Pose by) {
+            return [by](const Element& src, Element& dst) {
+                dst.params = src.params;
+                const std::string* parent = src.params.text(keys::parent);
+                if (parent && !parent->empty()) return;  // (it hangs where what it hangs off is)
+                const Pose p = compose_pose(by, local_pose(src));
+                dst.params.set(keys::x, p.position.x).set(keys::y, p.position.y).set(keys::z, p.position.z);
+                dst.params.set(keys::yaw, std::remainder(p.yaw, 6.283185307179586)).set(keys::pitch, p.pitch).set(keys::roll, p.roll);
+            };
+        };
+        const Key get{space.str() + ".of." + room.str()}, put{space.str() + ".to." + room.str()};
+        g.add_lens(get, put, room, space, given[i], carry(at), carry(back));
+        g.lens(get, put);
+        g.keep(put);
+        out[i].room->params().set(Key{"source_of"}, space.str());
+    }
+    {
+        std::string names;
+        for (const Placed& p : out) names += (names.empty() ? "" : " ") + p.room->id().str();
+        mp.set(Key{"sources"}, names);
+    }
+    const auto on_one = [&](Key k) { return member(k) ? space : k; };
+    for (const auto& [c, wraps] : again) {
+        const Key a = on_one(c.a), b = on_one(c.b);
+        if (!g.find(a) || !g.find(b) || !g.find(a)->find(c.pa) || !g.find(b)->find(c.pb)) {
+            no("seam " + c.name.str() + " is not laid again on " + space.str() + ": a side of it is gone");
+            continue;
+        }
+        walkway(g, c.name, a, c.pa, b, c.pb, c.also, wraps || a == b);
+    }
     return true;
 }
 

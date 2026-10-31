@@ -184,17 +184,30 @@ std::vector<PlacedRoom> sheafify(const StateGraph& g, Key root, std::size_t most
 // whatever theirs make together - and nothing above it: it is a room like
 // any, embedded in, joined by doorways to others. The rooms must be one kind
 // of space (sheafable at every seam between them), reached from the first
-// through those seams, and close: a room two ways reach stands in one place
-// (no holonomy), and no two stand in each other. Then everything each is
-// made of is taken into `space` (a state of three dimensions, made
+// through those seams, and no two may stand in each other. Then everything
+// each is made of is taken into `space` (a state of three dimensions, made
 // beforehand, empty but its eye) where the seams put it, the first where
 // the space's frame is: their walls, floors, things and lamps; what they
 // wear, worn by it; the floor each covered kept as its `regions` (what the
 // light from all round is laid over). Each doorway between them is a hole
-// in its walls (kind `hole`) - no view, no crossing. The rooms and their
-// seams with each other are gone; arrows of theirs went with them (the
-// space's own behaviour is its own, made on it). What is wrong is said in
-// `problems`, and nothing is made.
+// in its walls (kind `hole`) - no view, no crossing. So it is drawn, lit,
+// walked and has its physics as one room: crossing among them changes
+// nothing.
+//
+// A seam among them that does not close - a ring that comes back turned or
+// moved (a holonomy), a room that wraps onto itself - is not flattened: it
+// stays, a seam of the space to itself that wraps, carried by its
+// transform. A seam that left one of them for a room not of the space is
+// laid again on the space's doorway.
+//
+// The rooms stay, each the source of its part: a lens `<space>.of.<room>`
+// (get: the room laid where it stands) / `<space>.to.<room>` (put: the
+// space written back into the room, in the room's frame; kept, so the room
+// follows), held to the lens laws by sg::verify. What else joined the rooms
+// (their seams with each other, their arrows) goes; the space's own
+// behaviour is its own, made on it. The space says its rooms (`sources`),
+// each room the space it is of (`source_of`). What is wrong is said in
+// `problems`; refused, nothing is made.
 bool make_space(StateGraph& g, Key space, const std::vector<Key>& rooms, std::vector<std::string>* problems = nullptr);
 
 

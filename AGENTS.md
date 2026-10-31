@@ -640,6 +640,27 @@ by what made it (`sg::cache`): key it on every input and on its code's digest
   (`mount`, `in_opening`, `blind`, `climb`, `bare`); never excuse it in the
   check. Every place is guarded by default; `unguarded` needs a reason in
   words, and nothing new starts unguarded.
+- **The inspector: what is drawn, measured - mandatory, and on by itself.**
+  `sg::render::inspect_faults(space)` (`sg/render/Inspect.hpp`) is empty for
+  every place: nothing floating (a thing, and all it touches, touching
+  nothing that comes down to the building - a door in mid air, planks over a
+  floor, a page a centimetre over its table), nothing sunk in another (a
+  lamp through its wall, a chandelier into the ceiling), no two faces the
+  depth test cannot part from where an eye stands (one plane, one size; or a
+  hair apart, the smaller drawn nearer by enough to tie a few metres off),
+  measured on the triangles the renderer draws - not the things' boxes -
+  in a second, with no window. `prepare` says them for every world it draws
+  (kept on disk by the drawn triangles: an unchanged room costs nothing); a
+  project's laws must fail on them. `inspect(space, {out = dir})` draws the
+  sheet: a plan and every wall square on, each thing its own colour, every
+  fault outlined and numbered - look at it after building a place, before
+  any picture. And `sg::walked_onto(space, walker)` (in `guard_faults`):
+  the place's own walker pushed into every solid thing from eight ways - a
+  thing it ends up standing on is climbed. Set things down by what is
+  drawn (`sg::render::drawn_hit`, `drawn_hits`), never a typed height or a
+  solid box's top. Fix the place; never excuse it in the check (`mount`
+  "free" for what hangs by a simulation, `inspect_ok` with a reason for what
+  is meant).
 - **The lens, before and after every placement - mandatory.** Nine eyes round
   what you placed, a still eye measured (black frames, flicker, exposure,
   blank screens), the faults marked where they are (docs/workflows.md

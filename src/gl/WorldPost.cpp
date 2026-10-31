@@ -551,6 +551,10 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         // this one in it - a lens here too would bow it twice, and reach
         // past the part of the screen it was drawn in.)
         if (film_of_viewer_) p.set("uBarrel", 0.0f), p.set("uFringe", 0.0f);
+        // (The glass the eye's camera has mounted, in place of its look's.)
+        else if (lens_.mounted)
+            p.set("uBarrel", lens_.barrel), p.set("uFringe", lens_.fringe), p.set("uVignette", lens_.vignette),
+                p.set("uCornerSoft", lens_.corner_soft), p.set("uEdgeSmear", lens_.edge_smear);
         // (How fast the eye's view turns across the screen: what a rolling
         // shutter skews the picture by - none in a picture inside the eye's.)
         p.set("uTurnRate", film_of_viewer_ ? 0.0f : turn_rate_[0], film_of_viewer_ ? 0.0f : turn_rate_[1]);

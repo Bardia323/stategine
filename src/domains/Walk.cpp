@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 #include "sg/core/StateGraph.hpp"
+#include "sg/core/Work.hpp"
+#include <set>
 #include "sg/spatial/Math.hpp"
 
 namespace sg {
@@ -416,6 +420,70 @@ std::vector<std::string> doorway_faults(const State& space, double radius, doubl
     return out;
 }
 
+std::vector<std::string> walked_onto(const State& space, const Element& walker) {
+    struct Trial {
+        const Element* e;
+        Vec3d from;
+        double yaw;
+    };
+    std::vector<Trial> trials;
+    const double radius = walker.params.num("radius", 0.3), height = walker.params.num("height", 1.65);
+    for (const Element& e : space.elements()) {
+        if (!e.alive || e.kind != kinds::mesh || e.params.num("solid", 1.0) < 0.5 || e.params.has(Key{"laid"}) || e.params.num(Key{"building"}, 0.0) > 0.5 ||
+            e.params.num(Key{"climb"}, 0.0) > 0.5 || e.params.num(Key{"walk"}, 0.0) > 0.5)
+            continue;
+        const std::string n = e.id.str();
+        if (n.find("stair") != std::string::npos || n.find("tread") != std::string::npos || n.find("landing") != std::string::npos) continue;
+        const double sx = e.params.num(keys::sx, 1.0), sy = e.params.num(keys::sy, 1.0), sz = e.params.num(keys::sz, 1.0);
+        const Pose at = world_pose(space, e);
+        if (sx < 0.15 || sz < 0.15 || at.position.y + sy < 0.1 || at.position.y + sy > 2.0 || at.position.y > 0.05) continue;
+        for (const double out : {0.15, 0.5}) {
+            const double reach = 0.5 * std::hypot(sx, sz) + radius + out;
+            for (int k = 0; k < 8; ++k) {
+                const double a = k * 0.7853981633974483;
+                const Vec3d mid = place_in(at, {0.0, 0.0, 0.0});
+                const Vec3d from{mid.x + std::cos(a) * reach, 0.0, mid.z + std::sin(a) * reach};
+                trials.push_back({&e, from, std::atan2(mid.z - from.z, mid.x - from.x)});
+            }
+        }
+    }
+    field::Solver pull;
+    pull.rebuild(fields_of(space));
+    std::vector<std::string> said(trials.size());
+    sg::work::each(trials.size(), [&](std::size_t i) {
+        const Trial& t = trials[i];
+        Element w = walker;
+        // (Where it begins: on what is under it there, clear of everything - a start inside a thing is no trial.)
+        Vec3d hit, n;
+        double floor_y = 0.0;
+        if (ray(space, {t.from.x, 2.0, t.from.z}, {0.0, -1.0, 0.0}, 4.0, hit, n)) floor_y = hit.y;
+        if (floor_y > 0.05) return;
+        set_position(w, {t.from.x, floor_y + height, t.from.z});
+        w.params.set(keys::yaw, t.yaw).set(keys::pitch, 0.0).set(keys::vx, 0.0).set(keys::vy, 0.0).set(keys::vz, 0.0).set("grounded", 1.0);
+        stand_clear(space, w, radius);
+        const Vec3d began = position_of(w);
+        if (std::hypot(began.x - t.from.x, began.z - t.from.z) > 0.4) return;  // (pushed far off by what it began in: no trial)
+        if (std::getenv("SG_SAY_WALKED")) std::fprintf(stderr, "walked %s from %.2f %.2f\n", t.e->id.str().c_str(), t.from.x, t.from.z);
+        Stride in;
+        in.forward = 1.0, in.speed = 1.4;
+        double time = 0.0;
+        for (int k = 0; k < 90; ++k) walk(space, pull, w, in, 1.0 / 60.0, time += 1.0 / 60.0);
+        const Vec3d end = position_of(w);
+        const double up = end.y - height - floor_y;
+        if (up < 0.05) return;
+        Key on;
+        if (!ray(space, end, {0.0, -1.0, 0.0}, height + 0.3, hit, n, nullptr, &on) || on != t.e->id) return;
+        char b[160];
+        std::snprintf(b, sizeof b, ": a walker pushed into it from (%.2f, %.2f) ends standing on it, %.2f m up", t.from.x, t.from.z, up);
+        said[i] = t.e->id.str() + b + " - make it not solid low down, or say `climb` 1 if it may be climbed";
+    });
+    std::vector<std::string> out;
+    std::set<std::string> told;
+    for (std::size_t i = 0; i < said.size(); ++i)
+        if (!said[i].empty() && told.insert(trials[i].e->id.str()).second) out.push_back(said[i]);
+    return out;
+}
+
 void stand_clear(const State& space, Element& walker, double radius) {
     const double height = walker.params.num("height", 1.65);
     const Pose ground = standing(walker);
@@ -609,9 +677,28 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
         // Stopped at the feet by something low, on one's feet: step up onto
         // it, if there is room, and down onto its top - the feet, at once;
         // the eye stays where it was, the walker that much lower (stoop).
+        // (And only onto something: stepped up, its feet rest on a top facing up. The feet are a ball: by a table's edge,
+        // a ball a step higher is clear of it - round, it passes over the corner - and stood there in the air beside a
+        // top twice a step high, the next stride rolled it on: a walker climbing tables, sofas and buckets.)
+        const auto rests = [&](V3 e) {
+            const V3 feet = e - up * (body - r) - up * 0.03;
+            // (In a doorway, up its sill - the feet in the opening itself, not beside it: what bears them past it is the
+            // next room's floor, not this one's.)
+            for (const Opening& o : open) {
+                const Vec3d l = local_of(o.at, vd(feet));
+                if (std::fabs(l.x) < r + 0.05 && std::fabs(l.z) < o.hw - 0.05 && std::fabs(l.y) < o.hh + 0.5) return true;
+            }
+            for (const Solid& d : solids) {
+                V3 n;
+                double depth;
+                if (push_out(d, feet, r, n, depth) && spatial::dot(n, up) > 0.6) return true;
+            }
+            return false;
+        };
         if (stopped_low && (grounded || landed) && clear_at(moved + up * kStep)) {
             V3 top = moved + up * kStep;
             for (double down = 0.0; down < kStep && clear_at(top - up * 0.02); down += 0.02) top = top - up * 0.02;
+            if (!rests(top)) continue;
             const double rise = spatial::dot(top - moved, up), taken = std::min(rise, std::max(0.0, 0.6 * height - stoop));
             stoop += taken, body = height - stoop;
             eye = moved + up * (rise - taken);

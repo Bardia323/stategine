@@ -199,8 +199,11 @@ bool plant_step(Element& g, const Params& self, Vec3d at, const Vec3d& going, do
     if (!down) {
         // Let go: brought back to where its clips have it in a short step,
         // lifted as far as it has to go.
-        // (Carried as its clip carries it, and only how far it is off that let go of.)
-        const double k = 1.0 - ease(dt, 16.0);
+        // (Carried as its clip carries it, and only how far it is off that let go of. Walking, its clip's
+        // foot swings on fast and the foot chases it close; standing - turning on the spot, settling - the
+        // clip's foot stands still under the body and the foot steps to it as a person does, in a fifth of a
+        // second: at the walk's rate it crossed 6 cm a frame and was set down two frames later, a jump.)
+        const double k = 1.0 - ease(dt, travels ? 16.0 : 5.0);
         y += std::min(lift, 0.5 * off + 0.1 * leg * std::fabs(yaw));
         lx = at.x + (lx - (at.x - going.x * dt)) * k, lz = at.z + (lz - (at.z - going.z * dt)) * k;
         yaw *= k;

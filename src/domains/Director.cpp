@@ -1,5 +1,7 @@
 #include "sg/domains/Director.hpp"
 
+#include "sg/domains/Lens.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -347,6 +349,14 @@ bool cover(Spatial3D& room, const std::string& prefix, const Vec3d& feet, double
     if (live->params.num(keys::x) != at.x || live->params.num(keys::y) != at.y || live->params.num(keys::z) != at.z || live->params.num(keys::yaw) != yaw || live->params.num(keys::pitch) != pitch || live->params.num(keys::fov) != fov || pick != was) {
         set_position(*live, at);
         live->params.set(keys::yaw, yaw).set(keys::pitch, pitch).set(keys::fov, fov).set("cam", static_cast<double>(pick));
+    }
+    // (Each camera its own glass: cut to it, the eye sees through its lens.)
+    for (const Key& k : lens_keys()) {
+        if (a.params.has(k)) {
+            if (!live->params.has(k) || !(live->params.get(k) == a.params.get(k))) live->params.set(k, a.params.get(k));
+        } else if (live->params.has(k)) {
+            live->params.erase(k);
+        }
     }
     return true;
 }

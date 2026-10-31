@@ -1768,6 +1768,7 @@ private:
         uint32_t spin = 0;
         int cells_x = 0, cells_y = 0;  // its cells across and up: only ever more
         double cloud_time = -1.0;      // the world's time of the clouds' shadow it was last gathered under
+        uint64_t movers = 0;           // what moved in the maps of lamps it glows by, when last gathered
     };
     static constexpr int kAirGatherings = 16;  // averaged, while nothing it is made from moves
     // While its view moves: a cell's points lit over this many frames, what
@@ -2333,6 +2334,9 @@ private:
         float focal = 0.0f;     // metres
         float focus = 0.0f;     // metres; 0: on what is in the middle of the picture
         float shutter = 0.0f;   // the shutter's time open over the frame's; 0: no motion blur
+        // The glass the camera has mounted (sg/domains/Lens.hpp), in place of its look's.
+        bool mounted = false;
+        float barrel = 0.0f, fringe = 0.0f, vignette = 0.0f, corner_soft = 0.0f, edge_smear = 0.0f;
         bool on() const { return aperture > 0.0f || shutter > 0.0f; }
     } lens_;
     static constexpr int kLensTile = 16;  // pixels of the picture a square of its tiles holds

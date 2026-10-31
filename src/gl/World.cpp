@@ -1,6 +1,7 @@
 #include "sg/domains/Wear.hpp"
 #include "sg/gl/World.hpp"
 #include "sg/render/Geometry.hpp"
+#include "sg/render/Inspect.hpp"
 #include "sg/domains/Texture.hpp"
 #include <set>
 #include <typeinfo>
@@ -32,6 +33,11 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     std::set<Key> reach = g.reachable();
     if (reach.empty())
         for (Key id : g.ids()) reach.insert(id);
+    // (A room made part of a space - its source, sg::make_space - is drawn,
+    // and so looked at, as the space: not twice.)
+    for (auto it = reach.begin(); it != reach.end();)
+        if (const State* s = g.find(*it); s && !s->params().get_or<std::string>(Key{"source_of"}, "").empty()) it = reach.erase(it);
+        else ++it;
     preparing_ = true;
     for (Key id : reach)
         if (const auto* look = dynamic_cast<const LookState*>(g.find(id))) {
@@ -155,6 +161,14 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     for (Key id : reach)
         if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
             for (const std::string& p : guard_faults(*room, &g)) out.push_back("state " + id.str() + ": " + p);
+    // What is drawn, measured (sg/render/Inspect.hpp): nothing floating -
+    // touching nothing that comes down to the building - nothing sunk in
+    // another, no faces the depth test cannot part from where an eye stands.
+    // Kept on disk by the drawn triangles: a room unchanged costs nothing.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+            if (room->params().get_or<std::string>(Key{"unguarded"}, "").empty() || room->params().get_or<std::string>(Key{"unguarded"}, "") == "0")
+                for (const std::string& p : inspect_faults(*room)) out.push_back("state " + id.str() + ": " + p);
     // Lamps that light nothing: shut in what casts, or every one a fill.
     for (Key id : reach)
         if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
@@ -1403,8 +1417,13 @@ void main() {
         const gl::GLuint gate = gate_of(path);
         gate_now_ = gate;
         // (A doorway's view at the scale asked of views - a screen's or a glass ball's as the screen.)
+        // (As sharp as the screen where it fills much of it: a doorway one stands in - the room behind, just walked out
+        // of - is half the picture, and drawn at the scale asked of far doorways it went soft for as long as one stood
+        // by it. Eased between a twelfth and a third of the screen, so it never pops.)
         const bool scaled = !screen && !e.params.has(Key{"ball"}) && q_.view_scale < 0.999f;
-        view_scale_ = scaled ? q_.view_scale : 1.0f;
+        const float fills = std::clamp((shown.x1 - shown.x0) * (shown.y1 - shown.y0) * 0.25f, 0.0f, 1.0f);
+        const float k = std::clamp((fills - 0.08f) / (0.3f - 0.08f), 0.0f, 1.0f), sharp = k * k * (3.0f - 2.0f * k);
+        view_scale_ = scaled ? q_.view_scale + (1.0f - q_.view_scale) * sharp : 1.0f;
         draw_world(seen(*wp.world), guest_cam, aspect, scene_ms(),
                    /*depth=*/1, way.znear, back ? back->id.key() : Key{}, clips);
         view_scale_ = 1.0f;

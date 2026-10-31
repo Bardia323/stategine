@@ -63,7 +63,7 @@ int main() {
     // A board in the cone, off to one side of it: its shadow falls through
     // the glowing air below it.
     sg::Element& board = room.fixture("board", 4.3, 2.8, 4.0);
-    board.params.set(sg::keys::sx, 0.6).set(sg::keys::sy, 0.04).set(sg::keys::sz, 1.6);
+    board.params.set("mount", std::string("free")).set(sg::keys::sx, 0.6).set(sg::keys::sy, 0.04).set(sg::keys::sz, 1.6);
     sg::Element& eye = room.camera();
     eye.params.set(sg::keys::x, 4.0).set(sg::keys::y, 1.8).set(sg::keys::z, 7.6).set(sg::keys::yaw, -1.5707963).set(sg::keys::pitch, 0.1);
 

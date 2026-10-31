@@ -181,8 +181,9 @@ std::vector<DrawInstance> enclosure(const Spatial3D &world) {
     const Vec3 trim{0.20f, 0.18f, 0.17f};
     add(Mat4::translate({w / 2, sh / 2, 0.06f}) * Mat4::scale({w, sh, 0.12f}), trim, 0.7f, 0.0f);
     add(Mat4::translate({w / 2, sh / 2, d - 0.06f}) * Mat4::scale({w, sh, 0.12f}), trim, 0.7f, 0.0f);
-    add(Mat4::translate({0.06f, sh / 2, d / 2}) * Mat4::scale({0.12f, sh, d}), trim, 0.7f, 0.0f);
-    add(Mat4::translate({w - 0.06f, sh / 2, d / 2}) * Mat4::scale({0.12f, sh, d}), trim, 0.7f, 0.0f);
+    // (The two along z between the two along x, not over them: overlapped at the corners, their tops fought - sg::render::inspect.)
+    add(Mat4::translate({0.06f, sh / 2, d / 2}) * Mat4::scale({0.12f, sh, d - 0.24f}), trim, 0.7f, 0.0f);
+    add(Mat4::translate({w - 0.06f, sh / 2, d / 2}) * Mat4::scale({0.12f, sh, d - 0.24f}), trim, 0.7f, 0.0f);
     return out;
 }
 

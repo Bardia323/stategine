@@ -18,6 +18,16 @@ void GLWorldView::lens_of(const Spatial3D& world, const Camera& eye, float aspec
     const Element* cam = eye_override_ ? eye_override_ : (world.find(world.camera_id()) ? &world.camera() : nullptr);
     if (!cam) return;
     const Params& p = cam->params;
+    // The glass it has mounted, if any (sg/domains/Lens.hpp): seen through
+    // that, not its look's - a long lens bows nothing however the look's does.
+    if (p.text(Key{"lens"})) {
+        lens_.mounted = true;
+        lens_.barrel = static_cast<float>(p.num(Key{"barrel"}, 0.0));
+        lens_.fringe = static_cast<float>(p.num(Key{"fringe"}, 0.0));
+        lens_.vignette = static_cast<float>(p.num(Key{"vignette"}, 0.0));
+        lens_.corner_soft = static_cast<float>(p.num(Key{"corner_soft"}, 0.0));
+        lens_.edge_smear = static_cast<float>(p.num(Key{"edge_smear"}, 0.0));
+    }
     // The depth of field: a thin lens at `fstop` (its f-number). Its focal
     // length is the camera's `focal` (mm) - its sensor then as big as that
     // and the view's fov make it - or what the fov makes of a sensor

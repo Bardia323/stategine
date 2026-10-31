@@ -1,5 +1,7 @@
 #include "sg/domains/Camera.hpp"
 
+#include "sg/domains/Lens.hpp"
+
 namespace sg {
 
 Camera::Camera(Key id, double fov, int w, int h) : State(id) {
@@ -27,6 +29,9 @@ Camera::Camera(Key id, double fov, int w, int h) : State(id) {
         if (!ev.args.has(keys::fov)) return;
         e.params.set(keys::fov, std::clamp(ev.args.num(keys::fov), 5.0, 150.0));
     });
+    // lens --mount--> lens: another glass on it (sg/domains/Lens.hpp) - its
+    // focal length's view and what it does to the picture.
+    loop(Key{"mount"}, lens_id(), mount_event(), [](State&, Element& e, Element*, const Event& ev) { mount(e, ev); });
 }
 
 Key film(StateGraph& g, Key camera, Key world, Key rig) {

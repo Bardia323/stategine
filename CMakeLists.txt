@@ -725,6 +725,11 @@ if(SG_BUILD_TESTS)
   add_executable(sg_guard tests/guard.cpp)
   target_link_libraries(sg_guard PRIVATE stategine_dev)
   add_test(NAME sg_guard COMMAND sg_guard)
+  # The inspector (sg/render/Inspect.hpp) and the walker tried (sg::walked_onto): what floats, is sunk, fights or is climbed,
+  # measured on what is drawn and walked - each fault a tiny place that shows it, and mended.
+  add_executable(sg_inspect tests/inspect.cpp)
+  target_link_libraries(sg_inspect PRIVATE stategine_dev)
+  add_test(NAME sg_inspect COMMAND sg_inspect)
   # Every shader's light-from-all-round arrays as many as the engine hands it (gl::kShaderProbes).
   # (The native GL shaders' own: the browser draws through WebGPU, with none of them.)
   if(NOT EMSCRIPTEN)
@@ -758,6 +763,10 @@ if(SG_BUILD_TESTS)
   add_executable(sg_director tests/test_director.cpp)
   target_link_libraries(sg_director PRIVATE stategine_dev)
   add_test(NAME sg_director COMMAND sg_director)
+  # A lens: kept as data, mounted by a camera's arrow, another in its place.
+  add_executable(sg_lens tests/test_lens.cpp)
+  target_link_libraries(sg_lens PRIVATE stategine_dev)
+  add_test(NAME sg_lens COMMAND sg_lens)
   # People and what they meet: a conversation of any number of speakers,
   # the face that speaks with it, a door between two rooms.
   add_executable(sg_people tests/test_people.cpp)

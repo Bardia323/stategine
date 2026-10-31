@@ -34,7 +34,7 @@ int main() {
     engine.fire({"host.aim",sg::Params{}.set("target_x",0.0)}); engine.fire(sg::Key{"host.project"}); engine.tick(1.0/60);
 #ifdef SG_PROJECTED_GL
     sg::gl::Window window(320,180,"projected portal and embedded worlds");
-    sg::render::GLWorldView view; check(view.prepare(graph).empty(),"all declared views prepare without look problems");
+    sg::render::GLWorldView view; const auto said=view.prepare(graph); for(const auto& p:said) std::printf("  ! %s\n",p.c_str()); check(said.empty(),"all declared views prepare without look problems");
     const auto snapshot=sg::to_text(host);
     const auto realm=sg::to_text(graph.state("realm"));
     const auto inside=sg::to_text(graph.state("inside"));

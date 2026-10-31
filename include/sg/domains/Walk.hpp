@@ -96,6 +96,15 @@ std::vector<std::string> space_faults(const State& space, double radius = 0.3, d
 // plane - stopped by something solid before it is a fault, said with where.
 std::vector<std::string> doorway_faults(const State& space, double radius = 0.3, double height = 1.65);
 
+// What a walker climbs, tried rather than reckoned: a copy of `walker` set
+// down on the floor a pace from each solid thing a walker could stand on
+// (not the building, a stair or what says `climb` or `walk`), from eight
+// ways round it, and walked into it for a second and a half by `walk` itself -
+// standing at the end more than 5 cm over the floor it began on, on that
+// thing, is a fault: it climbs it. What the boxes say (sg::climb_faults)
+// misses what a walker's balls ride up over; this is the walker's own answer.
+std::vector<std::string> walked_onto(const State& space, const Element& walker);
+
 // One step of `walker` through `space`, pulled by `pull` (fields_of(space),
 // solved), `dt` long, ending at `time`. It reads and writes the walker's
 // params only: x y z (its eye), vx vy vz, its ground (stand_*), yaw and pitch
