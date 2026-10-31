@@ -141,6 +141,41 @@ const Skeleton& Skeleton::soma() {
     return s;
 }
 
+namespace {
+// The shortest turn from direction `a` to `b`.
+Quat between(const Vec3d& a0, const Vec3d& b0) {
+    const Vec3d a = unit(a0), b = unit(b0);
+    const double d = dot(a, b);
+    if (d < -0.999999) return {0.0, 0.0, 0.0, 1.0};
+    const Vec3d c = cross(a, b);
+    return normalized({1.0 + d, c.x, c.y, c.z});
+}
+}  // namespace
+
+const Pose& at_ease() {
+    static const Pose p = [] {
+        const Skeleton& sk = Skeleton::soma();
+        Pose pose = sk.reference;
+        // Each arm turned (in the world) from where it points to down its
+        // side, a little ahead and out; each forearm then a little bent.
+        const auto lay = [&](const char* joint, const char* child, const Vec3d& want) {
+            const int j = sk.index(joint), c = sk.index(child);
+            const std::vector<Xf> w = world_of(sk, pose);
+            const Vec3d have = w[static_cast<std::size_t>(c)].p - w[static_cast<std::size_t>(j)].p;
+            const Quat turned = normalized(mul(between(have, want), w[static_cast<std::size_t>(j)].q));
+            const int parent = sk.parents[static_cast<std::size_t>(j)];
+            pose[static_cast<std::size_t>(j)].q = normalized(mul(conj(w[static_cast<std::size_t>(parent)].q), turned));
+        };
+        // (SOMA faces +z, its left to +x.)
+        lay("LeftArm", "LeftForeArm", {0.12, -1.0, -0.02});
+        lay("RightArm", "RightForeArm", {-0.12, -1.0, -0.02});
+        lay("LeftForeArm", "LeftHand", {0.06, -1.0, 0.18});
+        lay("RightForeArm", "RightHand", {-0.06, -1.0, 0.18});
+        return pose;
+    }();
+    return p;
+}
+
 const std::vector<std::string>& model_joints() {
     static const std::vector<std::string> n = {"Hips", "Spine1", "Spine2", "Chest", "Neck1", "Neck2", "Head", "Jaw",
                                                "LeftEye", "RightEye", "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",

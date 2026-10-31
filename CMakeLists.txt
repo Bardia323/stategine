@@ -729,6 +729,10 @@ if(SG_BUILD_TESTS)
   target_link_libraries(sg_bricks PRIVATE stategine_dev)
   target_compile_definitions(sg_bricks PRIVATE SG_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME sg_bricks COMMAND sg_bricks)
+  # A mover: steered by MotionBricks' bricks to where it is told; a body led by it.
+  add_executable(sg_mover tests/mover.cpp)
+  target_link_libraries(sg_mover PRIVATE stategine_dev)
+  add_test(NAME sg_mover COMMAND sg_mover)
   # Physics as a state of its own: things fall, land and rest, by its own arrows.
   add_executable(sg_physics_state tests/physics_state.cpp)
   target_link_libraries(sg_physics_state PRIVATE stategine_dev)

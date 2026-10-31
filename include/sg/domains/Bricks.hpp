@@ -71,6 +71,11 @@ struct Skeleton {
     // The SOMA skeleton, 77 joints (MotionBricks' assets/human).
     static const Skeleton& soma();
 };
+// SOMA standing at ease: its reference (arms held out level) with the arms
+// down by its sides, elbows a little bent - what a body is asked to come to
+// when it stops, and to pass through on its way (a target in a T stands
+// the motion's arms up as it nears it).
+const Pose& at_ease();
 // Each joint's place and turn in the world, from its pose.
 std::vector<Xf> world_of(const Skeleton& sk, const Pose& pose);
 // The model's own 30 joints, in its order.

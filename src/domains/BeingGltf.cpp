@@ -15,6 +15,8 @@
 #include "SG_BEING_CLIP_CODE.hpp"
 #include "sg/core/Cache.hpp"
 #include "sg/domains/Being.hpp"
+#include <filesystem>
+#include <fstream>
 #include "sg/domains/Shapes.hpp"
 
 namespace sg {
@@ -306,7 +308,25 @@ std::string node_name(const J& doc, int n) {
 }  // namespace
 
 Being::Files& Being::files() {
-    static Files f;
+    // (Files on disk as they are, unless the program says otherwise - a
+    // package, the web; pictures decoded only where it gives a decoder.)
+    static Files f = [] {
+        Files d;
+        d.read = [](const std::string& path, std::string& bytes) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) return false;
+            std::ostringstream s;
+            s << in.rdbuf();
+            bytes = s.str();
+            return true;
+        };
+        d.stamp = [](const std::string& path) -> long long {
+            std::error_code ec;
+            const auto t = std::filesystem::last_write_time(path, ec);
+            return ec ? 0 : static_cast<long long>(t.time_since_epoch().count());
+        };
+        return d;
+    }();
     return f;
 }
 

@@ -1,4 +1,5 @@
 #include "sg/domains/Cast.hpp"
+#include "sg/domains/Mover.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -53,12 +54,13 @@ Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Castin
     std::string err;
     if (!b.import_gltf(how.glb, "", &err)) {
         if (why) *why = err;
+        g.remove(g.removal(name));  // (nothing of it left behind)
         return {};
     }
     // (Its first clip: what it does standing.)
     const std::vector<std::string> own = clips_of(b);
     const std::string stand = own.empty() ? std::string() : own.front();
-    const std::string stride = read_walk(b, how.walk, why);
+    const std::string stride = how.moved ? std::string() : read_walk(b, how.walk, why);
     fit_to(b, how.height);
     // Where it stands: an element of the place its body rides.
     Element& spot = host.portal(spot_of(host, b.id()), how.at, 0.6, how.height, how.yaw);
@@ -70,8 +72,20 @@ Key cast(StateGraph& g, Spatial3D& host, Temporal& clock, Key name, const Castin
     if (!stand.empty()) self.set("stand_clip", stand);
     // Its feet set down on the ground (whatever its skeleton: by its shape),
     // so they stay where they are put as it goes on over them.
-    if (how.plant)
+    if (how.plant && !how.moved)
         for (Key ankle : b.ankles()) b.plant(ankle.str());
+    // Moved by MotionBricks: its mover on the same clock, its body and spot carried from it.
+    if (how.moved) {
+        auto& mv = g.add<Mover>(mover_of(b.id()), how.at.x, how.at.z, how.yaw);
+        drive(g, clock, mv.id(), mv.live_event(), false, how.always ? Keeps::Always : Keeps::WhileActive);
+        g.port(mv.id(), mv.go_event());
+        g.port(mv.id(), mv.stand_event());
+        move_body(g, mv, b);
+        move_spot(g, mv, host, spot.id);
+        // (Held in its spot beside its body: reached from the place, as the body is.)
+        host.element(spot.id).params.set(shared_key(), 1.0);
+        g.set_focus(g.embed(Key{name.str() + ".moves"}, host.id(), spot.id, mv.id(), Key{}, Key{}).name, false);
+    }
     // How fast its walk goes as made: as said, else as its own feet say it.
     // (How fast: as told; else as its walk says it was made - captured motion
     // knows; else as its feet seem to go, a guess: on MHR's five-jointed feet

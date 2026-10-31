@@ -32,10 +32,17 @@ struct Casting {
     Vec3d at;             // its feet
     double yaw = 0;
     bool always = false;  // lives whether its place is entered or not (Keeps::Always)
+    // Its motion made by MotionBricks as it is steered (sg/domains/Mover.hpp):
+    // a mover of its own, `<name>.mover`, on the same clock, leading its body
+    // and carrying its spot - told where to go at its ports (`go`, `stand`).
+    // Its walk clip and its feet's planting are not used.
+    bool moved = false;
 };
 
 // Where `being` stands in `host`.
 Key spot_of(const Spatial3D& host, Key being);
+// The mover of a person cast `moved`.
+inline Key mover_of(Key being) { return Key{being.str() + ".mover"}; }
 
 // A person: read, fitted, stood at its spot, shown, its spirit driven on
 // `clock`, playing its first clip. If it walks (`walk` read beside its own
