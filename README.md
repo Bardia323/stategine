@@ -1113,6 +1113,7 @@ mid grey. The look's `uExposure` stays, on top, as a bias.
 | `exposure.key` | the brightness the scene is brought to | 0.18 |
 | `exposure.min`, `exposure.max` | the most the eye closes and opens, in stops | -8, 8 |
 | `exposure.rate` | how fast it adjusts, in stops a second of the interval handed in | 1.5 |
+| `exposure.rate.up`, `exposure.rate.down` | how fast it opens up in the dark, and stops down in the light (a camera: slow up, quick down) | `exposure.rate` |
 
 It is how the eye is, not how the world is - nothing of it is written into
 a state or its time - and eased by the transient interval as fades are
@@ -1391,6 +1392,42 @@ The laws (`probe_faults`, a Spatial3D's `faults`): a probe's box lies in its
 room, its sets are 27 numbers each, every lamp it holds a set for is there,
 and it was baked from the room as it is - its shell, its lamps' places and
 cones (`probe_digest`); moving a chair does not make it stale.
+
+### Light from all round gathered in cascades
+
+A look may ask for the light from all round near each surface to be
+gathered in radiance cascades over the picture's depth (`gi.cascades`, the
+composite's: how much of what is near's own light is given back, 1 as it
+is; `src/gl/WorldCascades.cpp`), in place of the occlusion (`ao`). What
+each point sees all round is cut by distance into intervals (Sannikov's
+radiance cascades; their 3D setting from Freeman, Sannikov and
+Pitt-Francis, "Split Radiance Cascades", 2026): the nearest gathered by
+probes a half-pixel apart in eight ways round the screen, each farther one
+four times as long, its probes twice as far apart and its ways twice as
+many - so each is as fine where it matters as it needs to be, and all of
+them together cost about what one does. An interval holds how high what
+stands in it rises, seen from its probe (a slice's horizon, as GTAO's), and
+the light of what raised it; they are merged back to front, each over the
+next, and what rises over none of them is the room's own light from all
+round - its probes', the last cascade, the world's. So what is near shuts
+out the probes' light the way it stands (weighed by each surface's own
+normal), and gives its own back in its place: a lamp's pool on a wall onto
+the floor under it, the runner's red onto the skirting. The scene says
+each pixel's diffuse colour beside it for that (`GLWorldView::diffuse_of`,
+`gl::RenderTarget::add_fourth`).
+
+Nothing is drawn at random and nothing is carried between frames: a still
+picture is still, nothing lags behind a light that changes, nothing
+ghosts. What is near is bounded in metres (`gi.cascades.reach`, 1):
+beyond it, and wherever the screen does not see, the probes' light is the
+light. `gi.cascades.show` 1 shows how open each pixel is, 2 the light
+given back, 3 the diffuse colour; `gi.cascades.jitter` 1 sets each probe's
+steps apart from its neighbours' (a fine grain in place of banding; 0
+unless said: every probe's alike, steadier, and in the hotel no banding
+showed). `SG_CASCADES=0` draws the occlusion as before, whatever the look
+says, to compare. Five passes at half the pixels and one at all of
+them: about what the occlusion costs (in the hotel at 1080p, within the
+card's noise of it).
 
 ### Reflections
 

@@ -2,10 +2,13 @@
 // the same floor - a model made anywhere, in any units, facing any way, put
 // where a reference body (the engine's own humanoid, say) would be.
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
+#include <set>
 #include <sstream>
 
 #include "sg/domains/Being.hpp"
@@ -105,13 +108,36 @@ std::vector<Key> Being::ankles() const {
         const Element* u = find(Key{j.params.get_or<std::string>("parent_joint", "")});
         return u && u->kind == kJoint ? u : nullptr;
     };
+    // One a shin: a rig's helpers hang low off the shin too (MHR's
+    // `l_lowleg_twist1..4_proc`, leaves beside its foot) - never one of them
+    // (a twist, or a `_proc` joint), and of the rest the one whose own chain
+    // goes on down to the foot's end (talocrural, ball, toes) before a leaf;
+    // then the lowest. Planted, a helper fights the ankle for the same leg.
+    const auto helper = [](const std::string& n) {
+        std::string l = n;
+        for (char& c : l) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return l.find("twist") != std::string::npos || l.find("_proc") != std::string::npos;
+    };
+    std::set<std::string> parents;  // every joint that is some joint's parent
+    for (const Element& j : elements())
+        if (j.kind == kJoint) parents.insert(j.params.get_or<std::string>("parent_joint", ""));
+    std::map<Key, const Element*> by_shin;
+    std::vector<Key> shins;  // in the order first met
     for (const Element& j : elements()) {
-        if (j.kind != kJoint || j.params.num("py") > low + 0.15 * h) continue;
+        if (j.kind != kJoint || j.params.num("py") > low + 0.15 * h || helper(j.id.str())) continue;
         const Element* knee = up_of(j);
         const Element* hip = knee ? up_of(*knee) : nullptr;
         if (!hip || knee->params.num("py") < j.params.num("py") + 0.12 * h || hip->params.num("py") < knee->params.num("py") + 0.12 * h) continue;
-        out.push_back(j.id);
+        auto [it, fresh] = by_shin.emplace(knee->id, &j);
+        if (fresh) {
+            shins.push_back(knee->id);
+            continue;
+        }
+        const Element* had = it->second;
+        const bool goes_on = parents.count(j.id.str()) > 0, had_goes_on = parents.count(had->id.str()) > 0;
+        if (goes_on != had_goes_on ? goes_on : j.params.num("py") < had->params.num("py")) it->second = &j;
     }
+    for (Key shin : shins) out.push_back(by_shin[shin]->id);
     return out;
 }
 

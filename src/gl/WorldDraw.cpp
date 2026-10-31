@@ -320,8 +320,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
     const gl::Mat4 narrow = part ? gl::Mat4::scale({1.0f / hx, 1.0f / hy, 1.0f}) * gl::Mat4::translate({-(sub_.x0 + sub_.x1) * 0.5f, -(sub_.y0 + sub_.y1) * 0.5f, 0.0f})
                                  : gl::Mat4::identity();
     // (The screen's pixels: a part's picture need only be as big as the part.)
-    vp_w_ = part ? std::round(static_cast<float>(target_w_) * hx) : static_cast<float>(target.width());
-    vp_h_ = part ? std::round(static_cast<float>(target_h_) * hy) : static_cast<float>(target.height());
+    // (A view through a doorway asked at less - view_scale - the same picture in fewer pixels, from its corner.)
+    const float shrink = !part && depth == 1 && view_scale_ < 0.999f ? std::clamp(view_scale_, 0.4f, 1.0f) : 1.0f;
+    vp_w_ = part ? std::round(static_cast<float>(target_w_) * hx) : std::round(static_cast<float>(target.width()) * shrink);
+    vp_h_ = part ? std::round(static_cast<float>(target_h_) * hy) : std::round(static_cast<float>(target.height()) * shrink);
     const gl::Mat4 lens = projection_of(cam, aspect, znear, zfar), looking = gl::Mat4::look_at(cam.eye, cam.eye + cam.forward, cam.up);
     const gl::Mat4 view_proj = narrow * lens * looking;
     // As drawn: with its depth reversed, where it may be (near 1, far 0, in
@@ -1140,6 +1142,13 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         gl::glViewport(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
         gl::glScissor(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
         gl::glEnable(gl::GL_SCISSOR_TEST);
+    } else if (shrink < 1.0f) {
+        gl::glViewport(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
+        if (!scissor_to(cut_, static_cast<int>(vp_w_), static_cast<int>(vp_h_))) {
+            gl::glScissor(0, 0, static_cast<int>(vp_w_), static_cast<int>(vp_h_));
+            gl::glEnable(gl::GL_SCISSOR_TEST);
+        }
+        cut = true;
     } else {
         cut = scissor_to(cut_, target.width(), target.height());
     }
@@ -1203,6 +1212,29 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         target.third(true);
         motion_pass_ = true;
         moved_now_.clear();
+    }
+    // Each pixel's diffuse colour, drawn beside the scene where the light
+    // from all round is gathered in cascades after it (run_cascades): the
+    // eye's own view, cleared to none.
+    const bool diffuse_beside = diffuse_wanted_ && depth == 0 && eye_view() && !mirroring_ && !traced_surfaces && surface_only_ == 0;
+    struct DiffusePass {
+        bool& on;
+        const gl::RenderTarget& t;
+        bool was, mine;
+        ~DiffusePass() {
+            if (mine) t.fourth(false);
+            on = was;
+        }
+    } diffuse_pass{diffuse_pass_, target, diffuse_pass_, diffuse_beside};
+    diffuse_pass_ = false;
+    if (diffuse_beside) {
+        if (!target.has_fourth()) target.add_fourth(gl::GL_RGBA8);
+        const gl::GLenum fourth[4] = {gl::GL_NONE, gl::GL_NONE, gl::GL_NONE, gl::GL_COLOR_ATTACHMENT0 + 3};
+        gl::glDrawBuffers(4, fourth);
+        gl::glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+        target.fourth(true);
+        diffuse_pass_ = true;
     }
     gl::glEnable(gl::GL_DEPTH_TEST);
     gl::glDepthFunc(reversed ? gl::GL_GREATER : gl::GL_LESS);
@@ -1383,6 +1415,9 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // (And one that says how each pixel moved, where that is asked.)
         if (program && motion_pass_)
             if (const gl::Program* m = moving_of(*program)) program = m;
+        // (And one that says each pixel's diffuse colour, for the cascades.)
+        if (program && diffuse_pass_)
+            if (const gl::Program* d = diffuse_of(*program)) program = d;
         if (program != scene_) {
             scene_ = program;
             scene_->use();

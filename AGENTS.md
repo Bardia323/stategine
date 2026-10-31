@@ -632,6 +632,31 @@ Derived data a program makes again each start (meshes, paint) is kept on disk
 by what made it (`sg::cache`): key it on every input and on its code's digest
 (`stategine_code_digest`), so a cold cache and a warm one show the same.
 - `graph.validate()` empty and `sg::verify(graph)` ok on every graph you touched.
+- `sg::guard_faults(space, &graph)` empty for every place you built or moved a
+  thing in (what prepare prints: a sconce off its wall, a wardrobe hovering, a
+  skirting through a doorway, a door to nowhere, faces that fight, a thing
+  inside a solid, a pad with nothing drawn, a taken thing still there, a
+  table a walker climbs) - fix the place, or have the thing say what it is
+  (`mount`, `in_opening`, `blind`, `climb`, `bare`); never excuse it in the
+  check. Every place is guarded by default; `unguarded` needs a reason in
+  words, and nothing new starts unguarded.
+- **The lens, before and after every placement - mandatory.** Nine eyes round
+  what you placed, a still eye measured (black frames, flicker, exposure,
+  blank screens), the faults marked where they are (docs/workflows.md
+  section 14): `python3 tools/sg_lens.py --out /tmp/look --thing <id> --bright 4 -- <program> 20 none.png 960 540`.
+  Its verdict says `steady`. (Where agents share a card, put the request in
+  the queue the coordinator names instead of running it.)
+- One sound for one action: a game's own sound system calls
+  `sg::audio::note_cue(state, cue, t)` for every cue it starts; `cue_faults()`
+  empty after a scripted run.
+- **Portable to the browser.** Almost everything made with the engine is
+  remade for WebAssembly: rendering features go through the view plan
+  (`sg/render/ViewPlan.hpp`) or computations shared by both backends, with a
+  WebGPU path (`sg/web/WebGPU`) as well as the GL one - never GL-only
+  machinery a world depends on. Native-only code stays out of the Emscripten
+  build (docs/browser.md). `ctest -C full` runs `sg_wasm_portable`
+  (`tools/wasm_check.sh`: the engine built with Emscripten, its tests run):
+  a change that will not build or pass there fails.
 - No new state without an interface to it; no game-loop code writing into a state it does not own.
 - No module including what uses it.
 - Frame time and law-check time not worse (see *Performance* in README.md).

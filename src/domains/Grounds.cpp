@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
-#include <thread>
 
 #include "sg/core/Cache.hpp"
+#include "sg/core/Work.hpp"
 #include "sg/domains/Distribution.hpp"
 #include "sg/domains/Texture.hpp"
 
@@ -437,24 +437,23 @@ TileMaps tile_maps(const std::string& material, const Params& params, int px) {
     t.albedo.assign(n * 4, 255), t.normal.assign(n * 4, 255), t.surface.assign(n * 4, 255), t.height.assign(n * 4, 255);
     const auto byte = [](double v) { return static_cast<unsigned char>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); };
     // (Rows from the top: the first row is v nearest 1, as a picture is read.)
-    const auto rows = [&](int from, int step) {
-        for (int y = from; y < px; y += step)
-            for (int x = 0; x < px; ++x) {
-                const Texture::Channels c = m(params, 0, (x + 0.5) / px, 1.0 - (y + 0.5) / px);
-                const std::size_t i = static_cast<std::size_t>(y) * px + x;
-                h[i] = c.height;
-                unsigned char* a = &t.albedo[i * 4];
-                a[0] = byte(c.r), a[1] = byte(c.g), a[2] = byte(c.b);
-                unsigned char* s = &t.surface[i * 4];
-                s[0] = byte(c.occlusion), s[1] = byte(c.roughness), s[2] = byte(c.metal);
-                unsigned char* g = &t.height[i * 4];
-                g[0] = g[1] = g[2] = byte(c.height);
-            }
+    // (A row a piece, on the program's one set of hands - sg::work: each row
+    // writes only its own pixels.)
+    const auto row = [&](std::size_t yy) {
+        const int y = static_cast<int>(yy);
+        for (int x = 0; x < px; ++x) {
+            const Texture::Channels c = m(params, 0, (x + 0.5) / px, 1.0 - (y + 0.5) / px);
+            const std::size_t i = static_cast<std::size_t>(y) * px + x;
+            h[i] = c.height;
+            unsigned char* a = &t.albedo[i * 4];
+            a[0] = byte(c.r), a[1] = byte(c.g), a[2] = byte(c.b);
+            unsigned char* s = &t.surface[i * 4];
+            s[0] = byte(c.occlusion), s[1] = byte(c.roughness), s[2] = byte(c.metal);
+            unsigned char* g = &t.height[i * 4];
+            g[0] = g[1] = g[2] = byte(c.height);
+        }
     };
-    const int threads = static_cast<int>(std::max(1u, std::min(32u, std::thread::hardware_concurrency())));
-    std::vector<std::thread> pool;
-    for (int k = 0; k < threads; ++k) pool.emplace_back(rows, k, threads);
-    for (auto& th : pool) th.join();
+    work::each(static_cast<std::size_t>(px), row);
     // How open each point is to the sky: how far it lies under the ground
     // round it, a centimetre and four round (the height blurred, the tile
     // wrapping) - its hollows, the gaps between stones and blades, shut.

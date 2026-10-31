@@ -44,6 +44,7 @@ static int child(const std::string& dir, const std::string& recipe) {
     return same ? 0 : 3;
 }
 
+#if !defined(__EMSCRIPTEN__)
 static std::string run_child(const std::string& self, const std::string& dir, const std::string& which) {
     const std::string out = dir + "/child.txt";
     const std::string cmd = "\"\"" + self + "\" child \"" + dir + "\" " + which + " > \"" + out + "\"\"";
@@ -58,6 +59,7 @@ static std::string run_child(const std::string& self, const std::string& dir, co
     std::getline(in, line);
     return (rc == 0 ? "" : "bad ") + line;
 }
+#endif
 
 int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "child") return child(argv[2], std::string(argv[3]) == "other" ? kOther : kRecipe);
@@ -100,6 +102,11 @@ int main(int argc, char** argv) {
     check(!loose, "and nothing is left half-written beside it");
 
     // --- the modeller's meshes, between two programs ----------------------------------------
+#if defined(__EMSCRIPTEN__)
+    // (A Wasm program cannot start another: Node starts the two, tests/cache_programs.js.)
+    (void)argv;
+    std::printf("(between two programs: sg_cache_programs)\n");
+#else
     const std::string self = fs::absolute(argv[0]).string();
     std::string said = run_child(self, d, "this");
     check(said.find("bad") == std::string::npos && said.find("stored=1") != std::string::npos,
@@ -120,6 +127,7 @@ int main(int argc, char** argv) {
           "a damaged mesh is refused, made again as it should be, and kept again: " + said);
     said = run_child(self, d, "this");
     check(said.find("bad") == std::string::npos && said.find("hits=1") != std::string::npos, "and is read back after: " + said);
+#endif
 
     sg::cache::set_folder("");
     std::error_code ec;

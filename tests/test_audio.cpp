@@ -205,6 +205,19 @@ int main() {
     bool rang = false;
     for (const Voice& s : mixer.voices()) rang = rang || (s.kind == Voice::Kind::Shot && s.take == ding_take);
     check(rang, "what a state says it sounds as is heard, where it says");
+    check(mixer.faults().empty(), "one ring, one sound: nothing heard wrong");
+    // One action, eight sounds (a door's every part saying its creak): named.
+    for (int k = 0; k < 8; ++k)
+        bell.emit(Event{Key{"bell.ring"}, Params{}.set("sound", std::string("ding")).set("place", std::string("a"))});
+    bell.dispatch_pending();
+    mixer.read(g, in_a, 0.05);
+    check(mixer.faults().size() == 1 && mixer.faults().front().find("times at once") != std::string::npos,
+          "a one-shot said eight times at once is named, once");
+    // A game's own sound system reports through note_cue: one cue a push is let be; three in 0.2 s named.
+    audio::forget_cues();
+    check(audio::note_cue(Key{"hall0"}, "creak", 1.0) && audio::note_cue(Key{"hall0"}, "creak", 2.0), "note_cue: one creak a push, a second apart, let be");
+    audio::note_cue(Key{"hall0"}, "creak", 2.1);
+    check(!audio::note_cue(Key{"hall0"}, "creak", 2.2) && audio::cue_faults().size() == 1, "note_cue: three creaks within 0.3 s named");
 
     std::vector<float> out(2 * 512);
     bool finite = true, any = false;

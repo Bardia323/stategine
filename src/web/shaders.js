@@ -4,7 +4,7 @@ sgWGSL.frame=`
 diagnostic(off, derivative_uniformity);
 struct Light { position:vec4f, colour:vec4f, direction:vec4f };
 struct Door { at:vec4f, axis:vec4f, inward:vec4f, sky:vec4f, ground:vec4f };
-struct Frame { vp:mat4x4f, eye:vec4f, clock:vec4f, look:array<vec4f,8>, clips:array<vec4f,8>, lights:array<Light,24>, shadow:mat4x4f, extra:array<vec4f,24>, controls:array<vec4f,24>, gates:array<vec4f,24>, axes:array<vec4f,24>, shadows:array<mat4x4f,8>, bias:array<vec4f,8>, caster:array<vec4f,8>, doors:array<Door,4> };
+struct Frame { vp:mat4x4f, eye:vec4f, clock:vec4f, look:array<vec4f,8>, clips:array<vec4f,8>, lights:array<Light,24>, shadow:mat4x4f, extra:array<vec4f,24>, controls:array<vec4f,24>, gates:array<vec4f,24>, axes:array<vec4f,24>, shadows:array<mat4x4f,24>, bias:array<vec4f,24>, caster:array<vec4f,24>, doors:array<Door,4>, shadowOf:array<vec4f,24> };
 @group(0) @binding(0) var<uniform> f:Frame;
 `;
 sgWGSL.scene=sgWGSL.frame+`
@@ -59,6 +59,9 @@ fn material(v:Vary)->Material {
 fn through_gate(i:u32,p:vec3f,way:vec3f,parallel:bool)->f32{
  let g=f.axes[i];if(g.w<.5){return 1;}let at=f.gates[i];let a=vec3f(g.x,0,g.y);let n=vec3f(-a.z,0,a.x);let dn=dot(way,n);if(abs(dn)<.00001){return 0;}let t=dot(at.xyz-p,n)/dn;if(t<0||(!parallel&&t>1)){return 0;}let q=p+way*t;let soft=.02+.04*t*length(way);return (1-smoothstep(at.w-soft,at.w+soft,abs(dot(q-at.xyz,a))))*(1-smoothstep(g.z-soft,g.z+soft,abs(q.y-at.y)));
 }
+// A bulb's shadow is a cube of six maps round it: the face the way from it goes out through, the greatest of its three
+// coordinates (+x -x +y -y +z -z: ViewPlan's shadow_face).
+fn cube_face(d:vec3f)->u32{let a=abs(d);if(a.x>=a.y&&a.x>=a.z){return select(1u,0u,d.x>0);}if(a.y>=a.z){return select(3u,2u,d.y>0);}return select(5u,4u,d.z>0);}
 fn shadow_factor(i:u32,v:Vary,n:vec3f,l:vec3f,fl:f32)->f32{
  let p=f.shadows[i]*vec4f(v.world,1);let q=p.xyz/max(p.w,.00001);let uv=vec2f(q.x*.5+.5,.5-q.y*.5);if(q.z>1||any(uv<vec2f(0))||any(uv>vec2f(1))){return 1;}
  let spread=max(f.extra[0].w,.5);let bias=max(.0016*(1-dot(n,l)),.0006)*f.bias[i].x*(.6+.4*spread);let turn=fract(52.9829189*fract(dot(v.position.xy,vec2f(.06711056,.00583715))))*6.2831853;var sum=0.0;
@@ -93,7 +96,7 @@ struct Fragment { @location(0) hdr:vec4f,@location(1) normal:vec4f };
    let ndv=clamp(dot(n,view),.001,1);let dx=dpdx(n);let dy=dpdy(n);let a2=clamp(pow(roughness,4)+min(.5*(dot(dx,dx)+dot(dy,dy)),.25),0,1);var direct=vec3f(0);var bounced=vec3f(0);
    for(var i=0u;i<u32(f.clock.z);i++){let light=f.lights[i];let ctl=f.controls[i];let delta=light.position.xyz-v.world;let distance=max(length(delta),.0001);let l=select(delta/distance,normalize(-light.direction.xyz),light.position.w>.5);var cone=1.0;var atten=light.colour.w;
      if(light.position.w<.5){cone=clamp((dot(-l,normalize(light.direction.xyz))-light.direction.w)/max(ctl.x-light.direction.w,.0001),0,1);cone*=cone;atten*=mix(1/(1+.22*distance+.14*distance*distance),1/(1+2*distance*distance),ctl.z)*through_gate(i,v.world,delta,false);}else{atten*=through_gate(i,v.world,l,true);}
-     let ndl=max(dot(n,l),0);var visibility=1.0;if(ndl>0&&i<u32(f.extra[12].z)){visibility=shadow_factor(i,v,n,l,select(ctl.y,f.look[1].w,ctl.y<0));}
+     let ndl=max(dot(n,l),0);var visibility=1.0;let maps=f.shadowOf[i];if(ndl>0&&maps.y>.5){var layer=u32(maps.x);if(maps.y>5.5){layer+=cube_face(v.world-light.position.xyz);}visibility=shadow_factor(layer,v,n,l,select(ctl.y,f.look[1].w,ctl.y<0));}
      let h=normalize(l+view);let ndh=max(dot(n,h),0);let vdh=clamp(dot(view,h),0,1);let denom=ndh*ndh*(a2-1)+1;let distribution=a2/(denom*denom+.0000001);let vis=.5/max(mix(2*ndl*ndv,ndl+ndv,sqrt(a2)),.000001);let fresnel=f0+(1-f0)*pow(1-vdh,5);let lobe=diffuse*(1-fresnel)+distribution*vis*fresnel;
      if(ctl.w>.5){bounced+=diffuse*ndl*light.colour.xyz*atten*cone*visibility;}else{direct+=lobe*ndl*light.colour.xyz*atten*cone*visibility;}
    }
@@ -135,7 +138,9 @@ fn view_at(uv:vec2f)->vec3f{let z=linear(depth_at(uv));let ndc=uv*2-1;return vec
 }
 @fragment fn ao_blur(v:Full)->@location(0) vec4f{let texel=1/vec2f(textureDimensions(depth));let zc=linear(depth_at(v.uv));var sum=0.0;var weight=0.0;for(var y=-2;y<2;y++){for(var x=-2;x<2;x++){let uv=v.uv+vec2f(f32(x),f32(y))*texel;let z=linear(depth_at(uv));let w=select(0.0,1.0,abs(z-zc)<zc*.04);sum+=read(uv).x*w;weight+=w;}}return vec4f(vec3f(sum/max(weight,.0001)),1);}
 @fragment fn ao_apply(v:Full)->@location(0) vec4f{let s=textureSampleLevel(scene,linearSampler,v.uv,0);var a=textureSampleLevel(bloom,linearSampler,v.uv,0).x;let zc=linear(depth_at(v.uv));let texel=1/vec2f(textureDimensions(depth));var edge=0.0;for(var i=0;i<4;i++){let d=array<vec2f,4>(vec2f(1,0),vec2f(-1,0),vec2f(0,1),vec2f(0,-1));edge=max(edge,abs(linear(depth_at(v.uv+d[i]*texel))-zc)/max(zc,.0001));}if(edge>.02){for(var y=-1;y<=1;y++){for(var x=-1;x<=1;x++){a=max(a,textureSampleLevel(bloom,linearSampler,v.uv+vec2f(f32(x),f32(y))*texel,0).x);}}}return vec4f(s.xyz*mix(1,pow(a,1.6),f.look[3].w*s.w),1);}
-@fragment fn bright(v:Full)->@location(0) vec4f{let c=read(v.uv);let l=dot(c,vec3f(.2126,.7152,.0722));return vec4f(c*max(l-f.look[2].x,0)/max(l,.0001),1);}
+// (bright: four pixels round, Karis-weighed, as the GL bright_fs - one lone hot pixel glows no star)
+fn over(c:vec3f)->vec3f{let l=dot(c,vec3f(.2126,.7152,.0722));return c*max(l-f.look[2].x,0)/max(l,.0001);}
+@fragment fn bright(v:Full)->@location(0) vec4f{let t=.5/vec2f(textureDimensions(scene));var s=vec3f(0);var ws=0.0;for(var i=0;i<4;i++){let o=array<vec2f,4>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(1,1));let c=over(read(v.uv+o[i]*t));let w=bloom_weight(c);s+=c*w;ws+=w;}return vec4f(s/ws,1);}
 @fragment fn blur(v:Full)->@location(0) vec4f{let d=f.look[7].xy/vec2f(textureDimensions(scene));var c=read(v.uv)*0.227027;c+=(read(v.uv+d*1.384615)+read(v.uv-d*1.384615))*0.316216;c+=(read(v.uv+d*3.230769)+read(v.uv-d*3.230769))*0.070270;return vec4f(c,1);}
 fn bloom_weight(c:vec3f)->f32{return 1/(1+dot(c,vec3f(.2126,.7152,.0722)));}
 @fragment fn bloom_down(v:Full)->@location(0) vec4f {

@@ -539,6 +539,8 @@ private:
         gl::Texture dirt_map, damp_map, moss_map;
         uint64_t dirt_revision = ~uint64_t{0}, damp_revision = ~uint64_t{0}, moss_revision = ~uint64_t{0};
     };
+    // The card's one copy of each photograph of wear (a texture's dirt, its damp), by what it is made of.
+    std::unordered_map<std::string, gl::Texture> wear_cards_;
     // The card's one copy of a packed picture, made the first time it is asked for.
     const gl::Texture& on_card(const std::shared_ptr<render::Packed>& packed);
     // `own` shows `card` from now on (its own texture, if it had one, let go),
@@ -598,6 +600,7 @@ private:
         // target it fills (a ball onto a world is drawn only where it is).
         Rect seen{-1, -1, 1, 1};
         float fx = 1.0f, fy = 1.0f;
+        float laid_fx = 1.0f, laid_fy = 1.0f;     // (of the screen its picture fills each way: < 1 drawn at view_scale)
         // A glass's reflection: the room seen every way from its middle,
         // a face of it drawn again each frame in turn (capture_glass).
         gl::CubeMap env;
@@ -896,6 +899,8 @@ private:
     struct RoomLight {
         uint64_t structure = ~uint64_t{0};
         std::vector<uint64_t> stamps;   // each thing's params, as last seen
+        std::vector<uint64_t> seen_as;  // and a digest of what of them the probes see (all but `reflects`)
+        std::unordered_set<Key> holding;  // the anchors drawn things hang from (an anchor of none is not seen)
         std::vector<uint32_t> still;    // for how many relights it has not moved
         std::unordered_map<Key, std::size_t> index;
         std::unordered_set<Key> hidden;  // what moves, and what hangs from it: not seen by the probes
@@ -903,6 +908,7 @@ private:
         uint32_t quiet = 0;              // relights since anything started moving or came to rest
         Digest shell;
         bool shell_known = false;
+        Digest first_shell;              // the shell it was first seen as: the one kept on disk (only it is ever read back)
         int size = 0, bounces = 0;
         std::vector<ProbeBox> boxes;
         bool open = false;  // an open land's boxes round the eye (open_grid_of), not a room's
@@ -1424,6 +1430,12 @@ private:
     // Occlusion, at full resolution: the depth resolved, the occlusion
     // found and blurred along surfaces, and laid over the scene into `lit_`.
     void run_ao(float strength, float radius);
+    // The light from all round near each surface, gathered in radiance
+    // cascades over the depth (src/gl/WorldCascades.cpp; the composite's
+    // `gi.cascades`): in place of the occlusion above - what stands near
+    // shuts out the room's light, as the probes hold it, the way it stands,
+    // and gives back its own; laid over the scene into `lit_`.
+    void run_cascades(float strength);
 
     void run_bloom();
 
@@ -2036,6 +2048,8 @@ private:
     double shot_ = 0.0;
     bool shot_known_ = false;
     float jitter_x_ = 0.0f, jitter_y_ = 0.0f;
+    // (The scale the doorway view being drawn is drawn at - q_.view_scale while one is, else 1: draw_world.)
+    float view_scale_ = 1.0f;
     gl::Mat4 taa_vp_ = gl::Mat4::identity(), taa_last_vp_ = gl::Mat4::identity();
     const void* taa_world_ = nullptr;
     // Where each room drawn this frame and the last stood (the frame each was
@@ -2101,6 +2115,13 @@ private:
     // A scene program's twin that says how each pixel moved (SG_VELOCITY).
     std::unordered_map<const gl::Program*, const gl::Program*> moving_twin_;
     const gl::Program* moving_of(const gl::Program& p);
+    // And one that says each pixel's diffuse colour (SG_DIFFUSE), for the
+    // cascades' bounce: drawn while `diffuse_pass_` says.
+    bool cascades_beside_ = false;  // the eye's view this frame gathers its light from all round in cascades
+    bool diffuse_pass_ = false;
+    bool diffuse_wanted_ = false;   // and says each pixel's diffuse colour beside it, for the bounce
+    std::unordered_map<const gl::Program*, const gl::Program*> diffuse_twin_;
+    const gl::Program* diffuse_of(const gl::Program& p);
     void run_motion();
     void keep_motion();
     // How a pixel of this frame's view is found in a last one (its view, its
@@ -2215,6 +2236,10 @@ private:
     gl::RenderTarget pixel_out_;
     std::unique_ptr<gl::Program> pixel_prog_;
     const Element* eye_override_ = nullptr;  // drawn from this eye, not the world's camera (a doorway's own look)
+    // The agent's lens (SG_LENS, src/gl/WorldLensSheet.cpp): this frame drawn from one of its eyes, read back; false when no lens is asked.
+    bool lens_frame(const std::vector<PlacedRoom>& requested, int fb_w, int fb_h);
+    float lens_gain_ = 1.0f;   // its `bright`: the picture's exposure times this while it looks
+    bool lens_clean_ = false;  // its `clean`: no grain, readout or dither while it looks
     // Seen through a window or doorway by another view: its film is the
     // viewer's, laid over the whole picture - its own grain would be a second
     // layer, and a still one wherever the world beyond keeps its time still.
@@ -2364,6 +2389,12 @@ private:
     bool smear_look_cuts_ = false;
     const gl::RenderTarget* scene_src_ = &resolve_;
     std::unique_ptr<gl::Program> ao_prog_, ao_blur_prog_, ao_apply_prog_;
+    // The cascades' programs and pictures: the depth and light at half the
+    // pixels, each cascade's intervals (merged with those above it), the
+    // diffuse colour resolved, and what the gather gives each pixel.
+    std::unique_ptr<gl::Program> rc_prep_prog_, rc_trace_prog_, rc_gather_prog_, rc_blur_prog_, rc_apply_prog_;
+    static constexpr int kCascades = 5;
+    gl::RenderTarget rc_prep_, rc_level_[kCascades], rc_diffuse_;
     struct ViewParams {
         float fov = 1.2f, aspect = 1.0f, znear = 0.05f, zfar = 120.0f;
     } view_;

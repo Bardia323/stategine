@@ -153,6 +153,10 @@ public:
     bool has_wear(const std::string& name) const;
     const std::vector<unsigned char>& wear_raster(const std::string& name, int& w, int& h);
     uint64_t wear_revision(const std::string& name) const;
+    // What that photograph is made from (its picture and its height's, as
+    // named): two textures that say the same wear the same picture - what a
+    // renderer keeps one copy of.
+    std::string wear_of(const std::string& name) const;
 
     // Whether it has a normal map: it says `normals`, or a `normal_layer`.
     bool has_normals() const;

@@ -462,7 +462,7 @@ vec3 slice_light(vec3 dir, vec2 uv, float k, float down) {
     uvec2 cell = lamp_cell(uv, at);
     // (More of it scattered where fog pools: its shape as it stands, not its
     // drift - air gathered again each frame it drifts would never rest.)
-    float pooled = uFogCount > 0 ? 1.0 + uFogGlow * fog_volume_at(p, false) : 1.0;
+    float pooled = uFogCount > 0 ? (1.0 + uFogGlow * fog_volume_at(p, false)) * exp(-2.0 * dark_at(p)) : 1.0;
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         if (i >= uLightCount) break;
         // Light standing in for what bounces about lights no air of its own;
@@ -753,10 +753,9 @@ void main() {
     ivec2 cells = ivec2(uAirCells), at = ivec2(gl_FragCoord.xy);
     vec3 sum = vec3(0.0);
     for (int k = 0; k < uAirGroup; ++k) sum += slice_of(at, cells, k);
-    for (int j = 0; j < 8; ++j) {
-        sum += slice_of(at, cells, uAirGroup + j);
-        Slice[j] = vec4(sum, 1.0);
-    }
+    // (Each output by a constant index: GLSL ES takes no other.)
+#define SG_SLICE(j) sum += slice_of(at, cells, uAirGroup + j); Slice[j] = vec4(sum, 1.0);
+    SG_SLICE(0) SG_SLICE(1) SG_SLICE(2) SG_SLICE(3) SG_SLICE(4) SG_SLICE(5) SG_SLICE(6) SG_SLICE(7)
 }
 )";
 }
@@ -1015,7 +1014,7 @@ uniform int   uFogCount;
 uniform vec4  uFogAt[MAX_FOGS];    // its base's middle (the world), its yaw
 uniform vec4  uFogSize[MAX_FOGS];  // half its width, its height, half its depth; how dense it is (a metre's depth of it)
 uniform vec4  uFogMake[MAX_FOGS];  // how soft its sides and top (metres), how much thinner a metre up, how much it drifts (0..1), its wisps' size
-uniform vec4  uFogTint[MAX_FOGS];  // its own colour, and whether it has one (else its look's fog's)
+uniform vec4  uFogTint[MAX_FOGS];  // its own colour, and whether it has one (else its look's fog's); over 1, a fog that takes light (dark: 1 + how much); the dark's r g: its breath and how fast
 uniform float uFogTime[MAX_FOGS];  // the time of the world it is in, which its wisps move with
 float fog_hash(vec3 c) { return fract(sin(dot(c, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 float fog_noise(vec3 p) {
@@ -1034,6 +1033,28 @@ vec3 fog_local(int k, vec3 p) {
 // wisps where its world's time has carried them.
 float fog_in(int k, vec3 q, bool drift) {
     vec3 h = uFogSize[k].xyz;
+    if (uFogTint[k].w > 1.0) {
+        // The dark is no box of air, and no figure either: a ragged column
+        // of black as tall as its box, round in plan, thinning at its foot
+        // and its top - an absence, never a body with a head. Its edges are
+        // eaten by its wisps, moving with its world's time.
+        // It breathes: its edge drawn in and let out, a slow swell climbing
+        // it (`breath` how far, its colour's r; `breath_rate`, its g), on
+        // its world's time as its wisps are.
+        float hy = max(h.y, 1e-3);
+        float swell = 1.0 + uFogTint[k].r * sin(uFogTime[k] * uFogTint[k].g - q.y * 2.4);
+        float plan = 1.0 - length(vec2(q.x / max(h.x * swell, 1e-3), q.z / max(h.z * swell, 1e-3)));
+        float tall = 1.0 - abs(q.y - 0.5 * hy) / (0.5 * hy);
+        float inside = min(plan, tall * 0.8);
+        // (Well outside it, nothing its wisps could bring in: no noise asked -
+        // every lit thing in the room asks this.)
+        if (inside < -0.65 * (drift ? uFogMake[k].z : 0.0)) return 0.0;
+        if (drift && uFogMake[k].z > 0.0) {
+            vec3 r = q / max(uFogMake[k].w, 0.05) + vec3(0.07, 0.31, 0.05) * uFogTime[k];
+            inside += (0.65 * fog_noise(r) + 0.35 * fog_noise(r * 2.7 + 3.1) - 0.5) * 1.3 * uFogMake[k].z;
+        }
+        return smoothstep(0.0, max(uFogMake[k].x, 0.02), inside) * uFogSize[k].w;
+    }
     float soft = max(uFogMake[k].x, 1e-3);
     float edge = min(min(h.x - abs(q.x), h.z - abs(q.z)), h.y - q.y);
     if (q.y < 0.0 || edge <= -soft) return 0.0;
@@ -1044,14 +1065,66 @@ float fog_in(int k, vec3 q, bool drift) {
     }
     return w * uFogSize[k].w;
 }
-// How thick the fogs are at `p` (the world), all together.
+// How thick the fogs are at `p` (the world), all together - those that are
+// air (a fog that takes light, the dark, is no air to scatter in).
 float fog_volume_at(vec3 p, bool drift) {
     float d = 0.0;
     for (int k = 0; k < MAX_FOGS; ++k) {
         if (k >= uFogCount) break;
+        if (uFogTint[k].w > 1.0) continue;
         d += fog_in(k, fog_local(k, p), drift);
     }
     return d;
+}
+// How much light the dark takes at `p` (the world): a fog that takes light
+// (`takes`), as thick as it is there, times how much it takes.
+// Round it, what stands near it is lit the less too: the light it drinks
+// from the floor and walls beside it, falling off over about twice its
+// width outward - no noise, one length a lamp-lit point (a hollow in the
+// light, seen at a glance even where it stands against the dark).
+float dark_halo(int k, vec3 q) {
+    vec3 h = uFogSize[k].xyz;
+    float hy = max(h.y, 1e-3);
+    float r = length(vec2(q.x / max(h.x, 1e-3), q.z / max(h.z, 1e-3)));
+    float up = clamp((q.y + 0.3) / 0.5, 0.0, 1.0) * clamp((hy + 0.4 - q.y) / 0.8, 0.0, 1.0);
+    return exp(-0.9 * max(r - 1.0, 0.0)) * up * 0.3 * uFogSize[k].w;
+}
+float dark_at(vec3 p) {
+    float d = 0.0;
+    for (int k = 0; k < MAX_FOGS; ++k) {
+        if (k >= uFogCount) break;
+        if (uFogTint[k].w <= 1.0) continue;
+        vec3 q = fog_local(k, p);
+        d += max(fog_in(k, q, true), dark_halo(k, q)) * (uFogTint[k].w - 1.0);
+    }
+    return d;
+}
+// The box of fog `k` along the way from `a`, `d` (its own frame), up to
+// `len`: where the way goes in and where it comes out (none if out <= in).
+vec2 fog_crossing(int k, vec3 qa, vec3 d, float len) {
+    float soft = uFogMake[k].x;
+    vec3 lo = vec3(-uFogSize[k].x - soft, 0.0, -uFogSize[k].z - soft), hi = uFogSize[k].xyz + soft;
+    vec3 inv = 1.0 / mix(d, vec3(1e-6), lessThan(abs(d), vec3(1e-6)));
+    vec3 t0 = (lo - qa) * inv, t1 = (hi - qa) * inv;
+    vec3 tn = min(t0, t1), tf = max(t0, t1);
+    return vec2(max(max(tn.x, tn.y), max(tn.z, 0.0)), min(min(tf.x, tf.y), min(tf.z, len)));
+}
+// How much light the dark takes along the way from `a` to `b` (the world):
+// what is seen through it, and the air's light on the way, darkened by it.
+float dark_depth(vec3 a, vec3 b) {
+    float len = length(b - a), depth = 0.0;
+    if (uFogCount == 0 || len < 1e-4) return 0.0;
+    for (int k = 0; k < MAX_FOGS; ++k) {
+        if (k >= uFogCount) break;
+        if (uFogTint[k].w <= 1.0) continue;
+        vec3 qa = fog_local(k, a), d = (fog_local(k, b) - qa) / len;
+        vec2 io = fog_crossing(k, qa, d, len);
+        if (io.y <= io.x) continue;
+        float sum = 0.0;
+        for (int i = 0; i < 8; ++i) sum += fog_in(k, qa + d * mix(io.x, io.y, (float(i) + 0.5) / 8.0), true);
+        depth += sum / 8.0 * (io.y - io.x) * (uFogTint[k].w - 1.0);
+    }
+    return depth;
 }
 // Their depth along the way from `a` to `b` (the world): each box the way
 // crosses sampled across where it crosses it. In `own`, how much of that is
@@ -1062,6 +1135,7 @@ float fog_volume_depth(vec3 a, vec3 b, out vec4 own) {
     if (uFogCount == 0 || len < 1e-4) return 0.0;
     for (int k = 0; k < MAX_FOGS; ++k) {
         if (k >= uFogCount) break;
+        if (uFogTint[k].w > 1.0) continue;
         vec3 qa = fog_local(k, a), d = (fog_local(k, b) - qa) / len;
         float soft = uFogMake[k].x;
         vec3 lo = vec3(-uFogSize[k].x - soft, 0.0, -uFogSize[k].z - soft), hi = uFogSize[k].xyz + soft;
@@ -1677,6 +1751,15 @@ vec4 TraceSurf;
 // all else written as not known (1e4), for the view's own motion to be
 // found from depth after (GLWorldView::run_motion). Only in the program for
 // a view whose motion is asked for (SG_VELOCITY: GLWorldView::moving_of).
+// Each pixel's diffuse colour, as much of it as the light from all round
+// reaches (its own hollows, its air, its dimming), for the light the
+// cascades find bounced onto it from what is near (GLWorldView::run_cascades).
+// Only in the program for a view that asks (SG_DIFFUSE: GLWorldView::diffuse_of).
+#ifdef SG_DIFFUSE
+layout(location = 3) out vec4 Diffuse;
+#else
+vec4 Diffuse;
+#endif
 #ifdef SG_VELOCITY
 layout(location = 2) out vec4 Motion;
 in vec4 vNowClip;
@@ -3175,6 +3258,7 @@ vec3 surface_albedo(out float rough_mod) {
 
 void main() {
     TraceSurf = vec4(0.0);
+    Diffuse = vec4(0.0);
 #ifdef SG_VELOCITY
     Motion = vec4(1e4, 1e4, 0.0, 0.0);
     if (uMoving > 0.5 && vNowClip.w > 1e-6 && vWasClip.w > 1e-6)
@@ -3234,6 +3318,7 @@ void main() {
     vec2 height_steps = vec2(0.0); // ... as its height's change across the screen (skin_height_steps)
     bool uv_mapped = false;        // its own normal map, read through its uv, says so instead:
     vec3 uv_normal = vec3(0.0, 0.0, 1.0);  // ... which way it faces, along its u and v and out
+    float map_spread = 0.0;        // ... and how far its normals part within the pixel (Toksvig)
     vec2 uv_here = vUV, uv_dx = vec2(0.0), uv_dy = vec2(0.0);
     if (uTexMix > 0.0) {
         vec4 seen_at = uSeenFromVP * vec4(vWorld, 1.0);
@@ -3256,6 +3341,16 @@ void main() {
             if (uSurfaceMapOn > 0.5) surface_at = tiled(uSurfaceMap, uv);
             if (uNormalMapOn > 0.5) {
                 uv_normal = tiled(uNormalMap, uv).xyz * 2.0 - 1.0;
+                // (Read from afar, a mipmap averages the normals of many
+                // texels, and the average is shorter the more they part:
+                // normalised, the bumps' spread would be lost and a glossy
+                // relief seen far off would keep a mirror's highlight,
+                // caught by a lone texel - a glint with no light to give
+                // it, flashing as the eye moves. The spread widens the
+                // highlight instead (Toksvig); an 8-bit map's own rounding
+                // is not spread.)
+                float map_len = length(uv_normal);
+                map_spread = max(1.0 - map_len - 0.01, 0.0) / max(map_len, 0.1) * uNormalStrength * uNormalStrength;
                 uv_normal.y *= uNormalFlipY;
                 uv_normal.xy *= uNormalStrength;
                 uv_mapped = true;
@@ -3683,7 +3778,7 @@ void main() {
     // widened by as much, or it flickers from pixel to pixel and steps.
     vec3 dndx = dFdx(n), dndy = dFdy(n);
     float variance = 0.25 * (dot(dndx, dndx) + dot(dndy, dndy));
-    a2 = clamp(a2 + min(2.0 * variance, 0.25), 0.0, 1.0);
+    a2 = clamp(a2 + min(2.0 * variance, 0.25) + min(2.0 * map_spread, 0.5), 0.0, 1.0);
 #ifdef SG_TRACED
     {
         vec3 o = n / (abs(n.x) + abs(n.y) + abs(n.z));
@@ -3946,6 +4041,8 @@ void main() {
     ambient *= occlusion;
 
     vec3 color = (ambient + direct) * (1.0 - uUnlit) + albedo * (mEmissive + uGlow) * (1.0 - uDark);
+    // Where the dark stands (a fog that takes light), the light on what is in it is taken.
+    if (uFogCount > 0) color *= exp(-3.0 * dark_at(vLit));
     // How much of what is seen here is light from all round - the only part
     // occlusion takes away (ao_apply_fs): a corner in lamplight stays lit.
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
@@ -3997,6 +4094,9 @@ void main() {
     // And the light of this world's lamps that its air scatters towards the
     // eye on the way (air_light: none unless its look says the air scatters).
     color += air_light(len);
+    // And seen through the dark, all of it taken as much as the dark is deep
+    // on the way: a hole in the light, black against what is lit behind it.
+    if (uFogCount > 0) color *= exp(-dark_depth(uViewPos + to_frag * (t / max(len, 1e-5)), vWorld));
     // And the planet's air on the way, as much of it as the look says.
     if (uAtmo > 0.0) color = atmo_between(color, to_frag / max(len, 1e-5), len);
     if (uHostFog.w > 0.5) color = mix(color, uHostFogColor, clamp(1.0 - exp(-uHostFog.x * max(t - uHostFog.y, 0.0)), 0.0, mix(0.85, 1.0, uHostFog.z)));
@@ -4016,6 +4116,9 @@ void main() {
     // (Dimmed round a screen leaned in to, or round what is held up to read
     // - but not what it is: a screen, a page that says `undim`.)
     FragColor = vec4(color * (uCRT > 0.0 ? 1.0 : (1.0 - max(uDim, uDimNear) * (1.0 - uUndim))), indirect * (1.0 - fog));
+    // (Light added over what is behind takes none: its diffuse is nothing.)
+    if (uAdd < 0.5)
+        Diffuse = vec4(diffuse * occlusion * (1.0 - uFillCut) * (1.0 - uUnlit) * (1.0 - fog) * (uCRT > 0.0 ? 1.0 : (1.0 - max(uDim, uDimNear) * (1.0 - uUndim))), 1.0);
 })";
     return source.c_str();
 }

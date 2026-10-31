@@ -379,7 +379,8 @@ void GLWorldView::draw_portal(const State& st, const Element& e, int depth, cons
         scene_->set("uGlow", 0.0f);
         scene_->set("uScreenUV", 1.0f);
         if (deeper) sample_screen(deeper->rect, deeper->fx, deeper->fy);
-        else sample_screen(Rect{-1, -1, 1, 1}, 1.0f, 1.0f);
+        // (Drawn at view_scale: its picture fills that much of its target - read there, laid in at the screen's size.)
+        else sample_screen(Rect{-1, -1, 1, 1}, own ? 1.0f : wp.laid_fx, own ? 1.0f : wp.laid_fy);
         // `undim`: a doorway that is part of a screen the room dims round
         // (leaned in to it) is not dimmed with the room.
         const bool undim = e.params.num(Key{"undim"}, 0.0) > 0.5;

@@ -8,6 +8,7 @@
 // of the world it is in: standing still while that does, the picture rests;
 // moved when it goes on; and at a world time what a fresh view draws. Lit
 // air (a look's `scatter`) scatters more of a lamp's light where it pools.
+// The dark (a fog that `takes` light) is a hole in a lit wall seen through it.
 // And a fog's laws: one thinner than none, or drifting past the most, is a
 // fault of its world.
 #include <cmath>
@@ -192,6 +193,25 @@ int main() {
     check(std::abs(level_low.sum() - level_high.sum()) < 25.0 && thin_high.sum() < thin_low.sum() - 40.0 && thin_low.sum() > in_clear.sum() + 20.0,
           "the look's air thinning as it rises: the wall high up less fogged than low down");
     look.uniform(sg::passes::scene, "uFogDensity", 0.0).uniform(sg::passes::scene, "uFogFalloff", 0.0).uniform(sg::passes::scene, "uFogFloor", 0.0);
+
+    // The dark (a fog that `takes` light): before a lit wall it is a hole in
+    // the light - what is seen through it darker, never the haze's grey -
+    // and what is beside it as it was.
+    el("mist").set("density", 0.0);
+    el("wall").set("r", 0.8).set("g", 0.8).set("b", 0.8);
+    shot(view);
+    const Rgb lit_in = at(in_x, 0.45), lit_past = at(1.0 - in_x, 0.45);
+    sg::add_fog(field, sg::Key{"dark"}, {-7.0, 0.0, 10.0}, {3.0, 3.0, 3.0}, 3.0, 0.3);
+    el("dark").set("takes", 1.0);
+    shot(view);
+    const Rgb dark_in = at(in_x, 0.45), dark_past = at(1.0 - in_x, 0.45);
+    say("a lit wall", lit_in), say("the same through the dark", dark_in);
+    check(dark_in.sum() < lit_in.sum() * 0.5, "the dark takes the light of what is seen through it (" + std::to_string(dark_in.sum()) + " of " + std::to_string(lit_in.sum()) + ")");
+    check(std::abs(dark_past.sum() - lit_past.sum()) < 3.0, "what is beside the dark is as it was");
+    el("dark").set("takes", 2.0);
+    check(!sg::fog_faults(field).empty(), "a fog that takes more than all the light is a fault of its world");
+    field.remove_element(sg::Key{"dark"});
+    el("wall").set("r", 0.05).set("g", 0.05).set("b", 0.05);
 
     // A world with no fog draws as it did.
     field.remove_element(sg::Key{"mist"});

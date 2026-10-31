@@ -50,6 +50,17 @@ struct Stride {
 bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal, double* dist = nullptr,
          Key* what = nullptr);
 
+// A ray as an eye sees along it: through the doorways a seam glues to
+// another room (or to elsewhere in its own), on into the room beyond, as far
+// as `reach` all told - so a lens focused by it, looking through an open door,
+// is focused on what is past it, not on the doorway's plane or the wall a
+// doorway hangs on. A doorway is a `portal` that is walked (`walk`); one no
+// seam glues is a hole like any other. `where` is the state it stopped in;
+// `dist` is the whole way, every hop added. At most `hops` doorways.
+class StateGraph;
+bool ray_seen(const StateGraph& graph, const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal,
+              double* dist = nullptr, Key* what = nullptr, const State** where = nullptr, int hops = 4);
+
 // Many rays at once: what stops them gathered once for all of them, each
 // answered as `ray` answers it alone, in the order asked. A wide batch goes
 // across the cores, each ray on its own - the same answers whatever ran
@@ -80,6 +91,10 @@ void stand_clear(const State& space, Element& walker, double radius = 0.3);
 // pace on the other - stopped by something solid across it (a thing's box
 // over the opening, a wall left closed there) is a fault, said with where.
 std::vector<std::string> space_faults(const State& space, double radius = 0.3, double height = 1.65);
+// And every doorway walked through (a portal that says `walk`, not `blind`):
+// a walker steered at its middle from a pace inside the room reaches its
+// plane - stopped by something solid before it is a fault, said with where.
+std::vector<std::string> doorway_faults(const State& space, double radius = 0.3, double height = 1.65);
 
 // One step of `walker` through `space`, pulled by `pull` (fields_of(space),
 // solved), `dt` long, ending at `time`. It reads and writes the walker's

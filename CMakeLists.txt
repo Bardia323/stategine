@@ -33,10 +33,12 @@ option(SG_BUILD_TESTS "Build the tests, law checks and compile-fail cases" ${SG_
 option(SG_BUILD_GL "Build the OpenGL room example (downloads GLFW)" ${SG_TOP_LEVEL})
 option(SG_BUILD_NET_BENCH "Build the standalone networking benchmark" OFF)
 if(EMSCRIPTEN)
-  # Driver probing is native only; validation and rollback retain exceptions.
+  # Driver probing is native only; validation and rollback retain exceptions -
+  # WebAssembly's own (-fwasm-exceptions): JavaScript's way puts every call that
+  # may throw through a trampoline into JS and back, half a frame's plan's cost.
   set(SG_BUILD_GL OFF)
-  add_compile_options(-fexceptions)
-  add_link_options(-fexceptions -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1)
+  add_compile_options(-fwasm-exceptions)
+  add_link_options(-fwasm-exceptions -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1)
 endif()
 
 # --- the library ---------------------------------------------------------------
@@ -101,18 +103,29 @@ target_link_libraries(stategine_render PUBLIC stategine)
 # pixels and by this - the code that packs it.
 stategine_code_digest(stategine_render SG_PACK_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/render/Pack.cpp
                       ${CMAKE_CURRENT_SOURCE_DIR}/include/sg/render/Pack.hpp)
+# What a look is made of that calls nothing on the card: the styles
+# (sg/gl/Style.hpp) and the shaders' GLSL, kept as text. Built for every
+# target, the browser's too, so a game's looks build wherever the game does
+# (a browser draws them with its own WGSL twins: docs/browser.md).
+set(_sg_looks_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Style.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Shaders.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/LensShaders.cpp)
+add_library(stategine_looks STATIC ${_sg_looks_sources})
+add_library(stategine::looks ALIAS stategine_looks)
+target_link_libraries(stategine_looks PUBLIC stategine)
 if(NOT EMSCRIPTEN)
   file(GLOB _sg_gl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/trace/*.cpp)  # rays traced through the world (docs/trace.md)
+  list(REMOVE_ITEM _sg_gl_sources ${_sg_looks_sources})
   add_library(stategine_gl STATIC ${_sg_gl_sources})
   add_library(stategine::gl ALIAS stategine_gl)
-  target_link_libraries(stategine_gl PUBLIC stategine_render)
+  target_link_libraries(stategine_gl PUBLIC stategine_render stategine_looks)
   # A room's light probes baked are kept on disk by the room and by this - the
   # code that bakes them and draws what they are baked from.
   stategine_code_digest(stategine_gl SG_PROBE_CODE ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Probes.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/World.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldBatches.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldDraw.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldHash.hpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldLights.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldLooks.cpp
+                        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldCascades.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldPost.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldShadows.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldShapes.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldTargets.cpp
                         ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldThings.cpp ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/WorldViews.cpp
@@ -622,6 +635,13 @@ if(SG_BUILD_TESTS)
   add_executable(sg_cache tests/test_cache.cpp)
   target_link_libraries(sg_cache PRIVATE stategine_dev)
   add_test(NAME sg_cache COMMAND sg_cache)
+  if(EMSCRIPTEN)
+    # (Two programs over one folder on the real disk: Node starts them, as a
+    # Wasm program cannot.)
+    target_link_options(sg_cache PRIVATE -sNODERAWFS=1)
+    add_test(NAME sg_cache_programs COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR}
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/cache_programs.js $<TARGET_FILE:sg_cache>)
+  endif()
   # Sound as declared state (sg/audio): curves as data, ramps in dB, ways
   # through doorways, a room's reverb from its shape, the laws, the mixer.
   add_executable(sg_audio tests/test_audio.cpp)
@@ -701,10 +721,17 @@ if(SG_BUILD_TESTS)
   add_executable(sg_space tests/space.cpp)
   target_link_libraries(sg_space PRIVATE stategine_dev)
   add_test(NAME sg_space COMMAND sg_space)
+  # The guardrails (sg/domains/Guard.hpp): each mistake a built place was found with, a tiny place that shows it named, and mended let be.
+  add_executable(sg_guard tests/guard.cpp)
+  target_link_libraries(sg_guard PRIVATE stategine_dev)
+  add_test(NAME sg_guard COMMAND sg_guard)
   # Every shader's light-from-all-round arrays as many as the engine hands it (gl::kShaderProbes).
-  add_executable(sg_shader_counts tests/shader_counts.cpp)
-  target_link_libraries(sg_shader_counts PRIVATE stategine_dev)
-  add_test(NAME sg_shader_counts COMMAND sg_shader_counts)
+  # (The native GL shaders' own: the browser draws through WebGPU, with none of them.)
+  if(NOT EMSCRIPTEN)
+    add_executable(sg_shader_counts tests/shader_counts.cpp)
+    target_link_libraries(sg_shader_counts PRIVATE stategine_dev)
+    add_test(NAME sg_shader_counts COMMAND sg_shader_counts)
+  endif()
   # The rigid world's laws: a step tried again from the same bodies and the
   # same cache (contacts, joints, islands) is the same to the last bit; a
   # stack asleep wakes whole; casts and rays through the index meet what
@@ -999,8 +1026,15 @@ endif()
 # runs across separate processes (pong, verified and plain peers), which
 # guard only that path and take most of the time: run them when it changes,
 # and before a release. Labels say which is which (`-L fast`, `-L full`).
+# Portable to the browser: the engine built with Emscripten and its tests run
+# there (tools/wasm_check.sh, docs/browser.md). Full tier: it builds everything again.
+if(SG_BUILD_TESTS AND NOT EMSCRIPTEN AND UNIX AND SG_BUILD_SGC)
+  add_test(NAME sg_wasm_portable CONFIGURATIONS full COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/wasm_check.sh ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+  set_tests_properties(sg_wasm_portable PROPERTIES TIMEOUT 3600)
+endif()
+
 if(SG_BUILD_TESTS)
-  set(_sg_full_tests sg_net_processes sg_net_verified_processes sg_net_pong sg_modeler_libraries)
+  set(_sg_full_tests sg_net_processes sg_net_verified_processes sg_net_pong sg_modeler_libraries sg_wasm_portable)
   get_property(_sg_all_tests DIRECTORY PROPERTY TESTS)
   foreach(_t IN LISTS _sg_all_tests)
     if(_t IN_LIST _sg_full_tests)

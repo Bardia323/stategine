@@ -34,6 +34,7 @@ bool GLWorldView::bind_picture(const State& st, const std::string& name, bool da
     GLWorldView& home = pictures_home();
     PictureTexture& t = (data ? home.data_textures_ : home.picture_textures_)[pic];
     if (!t.texture.valid() || t.texture.width() != pic->w || t.texture.height() != pic->h) {
+        gl::Texture::making = "a thing's picture (data)";
         t.texture.create(pic->w, pic->h, /*mipmaps=*/false, /*srgb=*/!data, /*pixel=*/!data);
         t.revision = ~uint64_t{0};
     }
@@ -54,8 +55,9 @@ bool GLWorldView::bind_worn(const State& st, const std::string& name, bool srgb,
         // Packed where the quality packs (and the card takes it), kept on
         // disk by its pixels: a photograph is a quarter of the memory so.
         if (q_.pack && gl::Texture::packs() && render::packable(pic->w, pic->h)) {
-            t.texture.create_packed(render::pack_kept(pic->rgba.data(), pic->w, pic->h, srgb), q_.stream_textures);
+            t.texture.create_packed(render::pack_kept(pic->rgba.data(), pic->w, pic->h, srgb), q_.stream_textures, q_.texture_most);
         } else {
+            gl::Texture::making = "a thing's picture, unpacked";
             t.texture.create(pic->w, pic->h, /*mipmaps=*/true, srgb, /*pixel=*/false);
             t.texture.upload(pic->rgba);
         }
@@ -155,7 +157,7 @@ void GLWorldView::ready_worn(const std::vector<Spatial3D*>& worlds) {
     for (Job& j : jobs) {
         PictureTexture& t = pictures_home().worn_textures_[{j.pic, j.srgb}];
         if (!j.packed.levels.empty()) {
-            t.texture.create_packed(j.packed, q_.stream_textures);
+            t.texture.create_packed(j.packed, q_.stream_textures, q_.texture_most);
             t.texture.repeat();
             t.revision = j.pic->revision;
         } else {

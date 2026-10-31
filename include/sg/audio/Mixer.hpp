@@ -88,6 +88,17 @@ struct Echo {
     Bands bands;
 };
 
+// One action, one sound - for any sound system, the engine's or a game's own:
+// call once for every one-shot it starts, with who started it, the cue's
+// name and the starter's own time (its line on its Temporal). A cue started
+// again at the same time, or a third time within 0.3 s, by the same state is
+// a fault (the door's creak played eight times for one push): said once, to
+// stderr, and kept for cue_faults(). Returns false for such a repeat (a
+// sound system may then leave it unplayed). Thread-safe.
+bool note_cue(Key state, const std::string& cue, double t);
+std::vector<std::string> cue_faults();
+void forget_cues();  // (a test, or a run started again)
+
 class Mixer {
 public:
     explicit Mixer(Samples samples, int voices = 32);
@@ -115,6 +126,11 @@ public:
     const std::vector<Voice>& voices() const;
     const std::vector<Echo>& echoes() const;
     double bus_db(Bus b) const;
+    // What was heard wrong: a one-shot started more than once in one frame,
+    // or three times within 0.3 s, by one state - one action, one sound.
+    // Each said once (and to stderr as it is first heard). The mixer's own
+    // one-shots and every cue noted by note_cue (below) alike: cue_faults().
+    std::vector<std::string> faults() const;
 
     // --- the sound thread ----------------------------------------------------------
     void render(float* lr, int frames);

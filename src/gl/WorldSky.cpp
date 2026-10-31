@@ -328,7 +328,8 @@ auto GLWorldView::pooled_fog(const std::vector<PlacedRoom>& rooms, const gl::Vec
     for (const PlacedRoom& placed : rooms) {
         if (!placed.room) continue;
         for (const Element* e : index_of(*placed.room).fogs) {
-            if (!e->alive) continue;
+            // (None thick: nothing - a dark gone elsewhere costs no pixel.)
+            if (!e->alive || e->params.num(Key{"density"}, 0.3) <= 0.0) continue;
             const Pose at = compose_pose(placed.pose, pose_of(*placed.room, *e));
             const double hx = 0.5 * e->params.num(keys::sx, 1.0), hy = 0.5 * e->params.num(keys::sy, 1.0), hz = 0.5 * e->params.num(keys::sz, 1.0);
             const double dx = at.position.x - eye.x, dy = at.position.y + hy - eye.y, dz = at.position.z - eye.z;
@@ -349,7 +350,12 @@ auto GLWorldView::pooled_fog(const std::vector<PlacedRoom>& rooms, const gl::Vec
                                static_cast<float>(std::max(p.num(Key{"density"}, 0.3), 0.0))};
         const float make[4] = {static_cast<float>(std::max(p.num(Key{"soft"}, 0.5), 0.0)), static_cast<float>(std::max(p.num(Key{"fall"}, 0.0), 0.0)),
                                static_cast<float>(std::clamp(p.num(Key{"drift"}, 0.0), 0.0, 1.0)), static_cast<float>(std::max(p.num(Key{"wisp"}, 2.0), 0.1))};
-        const float tint[4] = {static_cast<float>(p.num(keys::r, 0.0)), static_cast<float>(p.num(keys::g, 0.0)), static_cast<float>(p.num(keys::b, 0.0)), own ? 1.0f : 0.0f};
+        // (A fog that takes light - the dark - says how much: its colour none, its `w` over 1.)
+        const double takes = std::clamp(p.num(Key{"takes"}, 0.0), 0.0, 1.0);
+        // (The dark has no colour: its r and g carry its breath - how far its edge swells - and how fast.)
+        const float tint[4] = {static_cast<float>(takes > 0.0 ? std::clamp(p.num(Key{"breath"}, 0.0), 0.0, 0.5) : p.num(keys::r, 0.0)),
+                               static_cast<float>(takes > 0.0 ? p.num(Key{"breath_rate"}, 1.3) : p.num(keys::g, 0.0)), static_cast<float>(p.num(keys::b, 0.0)),
+                               takes > 0.0 ? static_cast<float>(1.0 + takes) : own ? 1.0f : 0.0f};
         for (int i = 0; i < 4; ++i) {
             f.at[k][i] = at[i], f.size[k][i] = size[i], f.make[k][i] = make[i], f.tint[k][i] = tint[i];
             of = mix_bits(mix_bits(mix_bits(mix_bits(of, at[i]), size[i]), make[i]), tint[i]);

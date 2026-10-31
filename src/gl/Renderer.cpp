@@ -2,13 +2,33 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
 
 namespace sg::gl {
 
-GLuint compile(GLenum type, const char* src, const char* tag) {
+namespace {
+
+// A compile log's first "0:LINE:" (or "LINE:" / "(LINE)"), and that line of the source, quoted.
+std::string quote_line(const char* src, const char* log) {
+    const char* p = std::strstr(log, "0:");
+    int line = p ? std::atoi(p + 2) : 0;
+    if (line <= 0) return {};
+    const char* at = src;
+    for (int i = 1; i < line && at; ++i) {
+        at = std::strchr(at, '\n');
+        if (at) ++at;
+    }
+    if (!at) return {};
+    const char* end = std::strchr(at, '\n');
+    std::string text(at, end ? static_cast<std::size_t>(end - at) : std::strlen(at));
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.erase(0, 1);
+    return "\n    line " + std::to_string(line) + ": " + text;
+}
+
+GLuint compile_stage(GLenum type, const char* src, const char* tag) {
     GLuint id = glCreateShader(type);
     glShaderSource(id, 1, &src, nullptr);
     glCompileShader(id);
@@ -17,14 +37,27 @@ GLuint compile(GLenum type, const char* src, const char* tag) {
     if (!ok) {
         char log[2048] = {};
         glGetShaderInfoLog(id, sizeof(log), nullptr, log);
-        throw std::runtime_error(std::string("shader ") + tag + ": " + log);
+        glDeleteShader(id);
+        // The shader, its stage, the line refused and what it says.
+        throw std::runtime_error(std::string("shader ") + tag + (type == GL_FRAGMENT_SHADER ? " (fragment)" : type == GL_VERTEX_SHADER ? " (vertex)" : "") +
+                                 ": " + log + quote_line(src, log));
     }
     return id;
 }
 
+}  // namespace
+
+GLuint compile(GLenum type, const char* src, const char* tag) { return compile_stage(type, src, tag); }
+
 Program::Program(const char* vs, const char* fs, const char* tag) {
-    const GLuint v = compile(GL_VERTEX_SHADER, vs, tag);
-    const GLuint f = compile(GL_FRAGMENT_SHADER, fs, tag);
+    const GLuint v = compile_stage(GL_VERTEX_SHADER, vs, tag);
+    GLuint f = 0;
+    try {
+        f = compile_stage(GL_FRAGMENT_SHADER, fs, tag);
+    } catch (...) {
+        glDeleteShader(v);
+        throw;
+    }
     id_ = glCreateProgram();
     glAttachShader(id_, v);
     glAttachShader(id_, f);
@@ -34,6 +67,10 @@ Program::Program(const char* vs, const char* fs, const char* tag) {
     if (!ok) {
         char log[2048] = {};
         glGetProgramInfoLog(id_, sizeof(log), nullptr, log);
+        glDeleteShader(v);
+        glDeleteShader(f);
+        glDeleteProgram(id_);
+        id_ = 0;
         throw std::runtime_error(std::string("link ") + tag + ": " + log);
     }
     glDeleteShader(v);
@@ -51,6 +88,7 @@ Program::Program(const char* vs, const char* fs, const char* tag) {
 }
 
 GLint Program::uniform(const char* name) const {
+    if (!id_) return -1;  // (no program: one that did not build)
     const uint64_t h = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(name)) * 0x9E3779B97F4A7C15ULL;
     Recent& recent = recent_[static_cast<std::size_t>(h >> 55)];
     if (recent.at == name && std::strcmp(recent.name, name) == 0) return recent.location;
@@ -100,8 +138,30 @@ void Program::set(const char* n, int i) const {
     glUniform1i(at, i);
 }
 
+namespace {
+std::atomic<long long> held_textures{0}, held_packed{0}, held_meshes{0}, held_targets{0}, held_layers{0}, held_pictures{0}, held_cubes{0};
+// Bytes a pixel of a target's format holds (a guess where it is not one of these).
+long long pixel_bytes(GLenum f) {
+    switch (f) {
+        case GL_RGBA32F: return 16;
+        case GL_RGBA16F: return 8;
+        case GL_RGBA8: case GL_SRGB8_ALPHA8: case GL_RG16F: case GL_R32F: return 4;
+        default: return 8;
+    }
+}
+}  // namespace
+
+CardHeld card_held() {
+    return CardHeld{held_textures.load(), held_packed.load(), held_meshes.load(), held_targets.load(), held_layers.load(), held_pictures.load(), held_cubes.load()};
+}
+
 void Texture::create(int w, int h, bool mipmaps, bool srgb, bool pixel) {
     if (id_) glDeleteTextures(1, &id_);  // made again, at a new size
+    (packed_ ? held_packed : held_textures) -= held_;
+    held_ = static_cast<long long>(w) * h * 4 * (mipmaps ? 4 : 3) / 3;
+    held_textures += held_;
+    if (std::getenv("SG_SAY_TEXTURES")) std::fprintf(stderr, "texture %dx%d%s for %s (%.1f MB; %.0f MB in all)\n", w, h, mipmaps ? " mipmapped" : "", making, held_ / 1048576.0, held_textures.load() / 1048576.0);
+    making = "a picture";
     w_ = w;
     h_ = h;
     mipmaps_ = mipmaps;
@@ -162,8 +222,9 @@ void Texture::upload(const std::vector<unsigned char>& rgba) {
     glGenerateMipmap(GL_TEXTURE_2D);
 }
 
-void Texture::create_packed(const render::Packed& p, bool streamed) {
+void Texture::create_packed(const render::Packed& p, bool streamed, int most) {
     if (id_) glDeleteTextures(1, &id_);
+    (packed_ ? held_packed : held_textures) -= held_;
     w_ = p.w;
     h_ = p.h;
     mipmaps_ = true;
@@ -173,12 +234,20 @@ void Texture::create_packed(const render::Packed& p, bool streamed) {
     const GLenum format = p.srgb ? GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM : GL_COMPRESSED_RGBA_BPTC_UNORM;
     // (Streamed: from the first level of 256 pixels or less; the finer kept to send.)
     std::size_t from = 0;
+    // (Never finer than `most`: those levels are not the card's to hold.)
+    if (most > 0)
+        while (from + 1 < p.levels.size() && std::max(p.levels[from].w, p.levels[from].h) > most) ++from;
+    const std::size_t finest = from;
     if (streamed)
         while (from + 1 < p.levels.size() && std::max(p.levels[from].w, p.levels[from].h) > 256) ++from;
     sent_from_ = static_cast<int>(from);
-    pending_ = from > 0 ? std::make_shared<render::Packed>(p) : nullptr;
+    finest_ = static_cast<int>(finest);
+    pending_ = from > finest ? std::make_shared<render::Packed>(p) : nullptr;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, static_cast<GLint>(from));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(p.levels.size()) - 1);
+    held_ = 0;
+    for (std::size_t level = from; level < p.levels.size(); ++level) held_ += static_cast<long long>(p.levels[level].size);
+    held_packed += held_;
     for (std::size_t level = from; level < p.levels.size(); ++level) {
         const render::Packed::Level& l = p.levels[level];
         glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), format, l.w, l.h, 0, static_cast<GLsizei>(l.size),
@@ -221,10 +290,11 @@ bool Texture::packs() {
 void Texture::send_finer() const {
     // Each finer level while the frame may send it: sampled from it at once.
     const GLenum format = pending_->srgb ? GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM : GL_COMPRESSED_RGBA_BPTC_UNORM;
-    while (sent_from_ > 0) {
+    while (sent_from_ > finest_) {
         const render::Packed::Level& l = pending_->levels[static_cast<std::size_t>(sent_from_ - 1)];
         if (l.size > stream_budget) return;
         stream_budget -= l.size;
+        held_packed += static_cast<long long>(l.size), held_ += static_cast<long long>(l.size);
         --sent_from_;
         glCompressedTexImage2D(GL_TEXTURE_2D, sent_from_, format, l.w, l.h, 0, static_cast<GLsizei>(l.size), pending_->bytes.data() + l.at);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, sent_from_);
@@ -252,6 +322,7 @@ void Mesh::create(const std::vector<float>& verts) {
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                  verts.data(), GL_STATIC_DRAW);
+    held_meshes += static_cast<long long>(verts.size() * sizeof(float));
     const GLsizei stride = 8 * sizeof(float);
     glVertexAttribPointer(0, 3, GL_FLOAT, 0, stride, reinterpret_cast<void*>(0));
     glEnableVertexAttribArray(0);
@@ -272,6 +343,7 @@ void Mesh::create_bound(const std::vector<float>& verts) {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)), verts.data(), GL_STATIC_DRAW);
+    held_meshes += static_cast<long long>(verts.size() * sizeof(float));  // (made again: the last making not taken off - a guess high)
     const GLsizei stride = k * sizeof(float);
     const struct {
         GLuint at;
@@ -297,6 +369,7 @@ void Mesh::create_merged(const std::vector<float>& verts) {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(verts.size() * sizeof(float)), verts.data(), GL_STATIC_DRAW);
+    held_meshes += static_cast<long long>(verts.size() * sizeof(float));  // (made again: the last making not taken off - a guess high)
     const GLsizei stride = static_cast<GLsizei>(k * sizeof(float));
     const struct {
         GLuint at;
@@ -407,6 +480,8 @@ void RenderTarget::mipmap() {
 
 void RenderTarget::create(int w, int h, GLenum internal_format, int samples, bool with_depth, bool depth_texture) {
     destroy();
+    held_ = static_cast<long long>(w) * h * std::max(samples, 1) * (pixel_bytes(internal_format) + (with_depth ? 4 : 0));
+    held_targets += held_;
     mipmapped_ = false;
     w_ = w;
     h_ = h;
@@ -461,6 +536,7 @@ void RenderTarget::create(int w, int h, GLenum internal_format, int samples, boo
 void CubeMap::create(int size) {
     if (tex_ && size == size_) return;
     if (!tex_) glGenTextures(1, &tex_), glGenFramebuffers(1, &fbo_);
+    held_cubes += static_cast<long long>(size) * size * 6 * 8;
     size_ = size;
     glBindTexture(GL_TEXTURE_CUBE_MAP, tex_);
     for (int i = 0; i < 6; ++i)
@@ -488,7 +564,8 @@ void CubeMap::bind(int unit) const {
 void RenderTarget::blit_to(const RenderTarget& dst) const {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
-    glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    // (From a multisampled target a resolve, the same size: NEAREST - ES refuses LINEAR there.)
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_COLOR_BUFFER_BIT, samples_ > 0 ? GL_NEAREST : GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -518,6 +595,10 @@ void RenderTarget::bind_color(int unit) const {
 }
 
 void RenderTarget::add_beside(int at, GLenum internal_format, GLuint& tex, GLuint& rb) {
+    {
+        const long long more = static_cast<long long>(w_) * h_ * std::max(samples_, 1) * pixel_bytes(internal_format);
+        held_ += more, held_targets += more;
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     const GLenum attachment = GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(at);
     if (samples_ > 0) {
@@ -548,10 +629,31 @@ void RenderTarget::add_third(GLenum internal_format) {
     add_beside(2, internal_format, third_tex_, third_rb_);
 }
 
+void RenderTarget::add_fourth(GLenum internal_format) {
+    if (!fbo_ || has_fourth()) return;
+    add_beside(3, internal_format, fourth_tex_, fourth_rb_);
+}
+
 void RenderTarget::draw_buffers() const {
-    const GLenum which[3] = {GL_COLOR_ATTACHMENT0, second_on_ && has_second() ? GL_COLOR_ATTACHMENT0 + 1 : GL_NONE,
-                             third_on_ && has_third() ? GL_COLOR_ATTACHMENT0 + 2 : GL_NONE};
-    glDrawBuffers(which[2] != GL_NONE ? 3 : which[1] != GL_NONE ? 2 : 1, which);
+    const GLenum which[4] = {GL_COLOR_ATTACHMENT0, second_on_ && has_second() ? GL_COLOR_ATTACHMENT0 + 1 : GL_NONE,
+                             third_on_ && has_third() ? GL_COLOR_ATTACHMENT0 + 2 : GL_NONE,
+                             fourth_on_ && has_fourth() ? GL_COLOR_ATTACHMENT0 + 3 : GL_NONE};
+    glDrawBuffers(which[3] != GL_NONE ? 4 : which[2] != GL_NONE ? 3 : which[1] != GL_NONE ? 2 : 1, which);
+}
+
+void RenderTarget::fourth(bool drawn) const {
+    fourth_on_ = drawn;
+    draw_buffers();
+}
+
+void RenderTarget::fourth_to(const RenderTarget& dst) const {
+    if (!has_fourth()) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_);
+    glReadBuffer(GL_COLOR_ATTACHMENT0 + 3);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst.fbo_);
+    glBlitFramebuffer(0, 0, w_, h_, 0, 0, dst.w_, dst.h_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void RenderTarget::second(bool drawn) const {
@@ -585,12 +687,16 @@ void RenderTarget::third_to(const RenderTarget& dst) const {
 }
 
 void RenderTarget::destroy() {
+    held_targets -= held_;
+    held_ = 0;
     if (second_tex_) glDeleteTextures(1, &second_tex_);
     if (second_rb_) glDeleteRenderbuffers(1, &second_rb_);
     if (third_tex_) glDeleteTextures(1, &third_tex_);
     if (third_rb_) glDeleteRenderbuffers(1, &third_rb_);
-    second_tex_ = second_rb_ = third_tex_ = third_rb_ = 0;
-    second_on_ = third_on_ = false;
+    if (fourth_tex_) glDeleteTextures(1, &fourth_tex_);
+    if (fourth_rb_) glDeleteRenderbuffers(1, &fourth_rb_);
+    second_tex_ = second_rb_ = third_tex_ = third_rb_ = fourth_tex_ = fourth_rb_ = 0;
+    second_on_ = third_on_ = fourth_on_ = false;
     if (fbo_) glDeleteFramebuffers(1, &fbo_);
     if (color_tex_) glDeleteTextures(1, &color_tex_);
     if (color_rb_) glDeleteRenderbuffers(1, &color_rb_);
@@ -703,6 +809,7 @@ bool LayerArray::ensure(int w, int h, int layers, bool volume, bool tiles) {
     if (tex_ != 0 && w == w_ && h == h_ && layers == layers_ && target == target_ && tiles == tiles_) return false;
     release();
     w_ = w, h_ = h, layers_ = layers, target_ = target, tiles_ = tiles;
+    held_layers += static_cast<long long>(w) * h * layers * 8;
     glGenTextures(1, &tex_);
     glBindTexture(target, tex_);
     glTexImage3D(target, 0, static_cast<GLint>(GL_RGBA16F), w, h, layers, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
@@ -739,6 +846,7 @@ void LayerArray::bind_color(int unit) const {
 
 void PictureArray::create(int size, int layers, const std::vector<unsigned char>& rgba, bool srgb) {
     release();
+    held_pictures += static_cast<long long>(size) * size * layers * 4 * 4 / 3;
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D_ARRAY, tex_);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, static_cast<GLint>(srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8), size, size, layers, 0, GL_RGBA, GL_UNSIGNED_BYTE,
@@ -766,7 +874,7 @@ void LayerArray::release() {
     for (GLuint f : fbos_)
         if (f) glDeleteFramebuffers(1, &f);
     fbos_.clear();
-    if (tex_) glDeleteTextures(1, &tex_);
+    if (tex_) glDeleteTextures(1, &tex_), held_layers -= static_cast<long long>(w_) * h_ * layers_ * 8;
     tex_ = 0;
     w_ = h_ = layers_ = 0;
 }

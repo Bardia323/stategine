@@ -2,6 +2,7 @@
 #include "sg/core/Temporal.hpp"
 #include "sg/domains/Atlas.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -32,6 +33,50 @@ ViewCamera view_camera(const Element &c) {
     }
     return out;
 }
+bool portal_in_view(const State &world, const Element &portal, const ViewCamera &camera, double aspect) {
+    using spatial::projection::Mat4;
+    using spatial::projection::Vec3;
+    const Pose p = world_pose(world, portal);
+    const double far = world.params().num(Key{"far"}, 120.0);
+    const auto f3 = [](const Vec3d &v) { return Vec3{static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)}; };
+    const auto sees = [&] {
+        const Mat4 vp = Mat4::perspective(static_cast<float>(camera.fov * 3.141592653589793 / 180), static_cast<float>(aspect > 0 ? aspect : 1),
+                                          static_cast<float>(camera.near_plane), static_cast<float>(far)) *
+                        Mat4::look_at(f3(camera.eye), f3(camera.eye + camera.forward), f3(camera.up));
+        std::array<double, 16> m{};
+        for (int i = 0; i < 16; ++i) m[static_cast<std::size_t>(i)] = vp.m[i];
+        return spatial::ConvexVolume::clip(m);
+    };
+    const spatial::V3 c{p.position.x, p.position.y, p.position.z};
+    // A ball: whether any of it is before the eye and in what it sees.
+    if (const double r = portal.params.num(Key{"ball"}, 0.0); r > 0.0) return sees().intersects_sphere(c, r);
+    const double w = portal.params.num(keys::w, 3.0) * 0.5 + 0.3, h = portal.params.num(keys::h, 2.0) * 0.5 + 0.3;
+    const Vec3d side = across_of(p), up = up_of(p), forward = unit(camera.forward);
+    bool ahead = false;
+    for (double a : {-1.0, 1.0})
+        for (double b : {-1.0, 1.0}) {
+            const double along = dot(p.position + side * (a * w) + up * (b * h) - camera.eye, forward);
+            ahead = ahead || (along > 0.0 && along < far);
+        }
+    if (!ahead) return false;
+    // And inside what the eye sees, not only in front of it: a doorway well off to one side is not looked through.
+    if (aspect <= 0.0) return true;
+    return sees().intersects_sphere(c, std::sqrt(w * w + h * h));
+}
+
+double portal_slab(const Element &portal) {
+    // (The near plane cuts a leaf the eye comes within a few centimetres of: 5 cm, twice.)
+    return std::max(portal.params.num(Key{"depth"}, 0.34), 0.2) + 2.0 * 0.05;
+}
+
+bool portal_shut_to(const Element &portal, const Vec3d &eye) {
+    if (portal.params.num(Key{"closed"}, 0.0) < 0.5) return false;
+    // (Measured as opens_from measures which side the eye is on.)
+    const Pose p = local_pose(portal);
+    const Vec3d face = upright(p) ? heading(p.yaw) : facing(p);
+    return std::fabs(dot(eye - p.position, face)) > portal_slab(portal);
+}
+
 HalfSpace portal_clip(const State &host, const Element &portal, const Element &hc, const Element &gc) {
     const Pose p = world_pose(host, portal);
     if (!upright(p) || hc.params.has(Key{"stand_w"}) || gc.params.has(Key{"stand_w"})) {
@@ -175,6 +220,7 @@ DrawLight light_of(const State &room, const Element &e, const Pose &pose) {
     l.frame_h = static_cast<float>(std::max(e.params.num("frame_h", 0), 0.0));
     l.frame_soft = static_cast<float>(std::clamp(e.params.num("frame_soft", 0.08), 0.001, 1.0));
     l.range = l.sun ? 0.0f : static_cast<float>(std::max(e.params.num("range", 0), 0.0));
+    l.shadow_near = static_cast<float>(std::clamp(e.params.num("shadow_near", 0.1), 0.005, 1.0));
     l.size = l.sun ? static_cast<float>(std::tan(std::clamp(e.params.num("size", 0.53), 0.0, 30.0) * 0.5 * 3.14159265358979 / 180.0))
                    : static_cast<float>(std::max(e.params.num("size", 0), 0.0));
     return l;
@@ -322,7 +368,7 @@ spatial::projection::Mat4 shadow_projection(const DrawLight &l, const ViewCamera
         const float fov = std::min(l.outer * 2.05f, 2.7f);
         // Its map goes as far as its light does; with no range, 40 m.
         const float depth_end = l.range > 0.0f ? std::max(l.range, 0.5f) : 40.0f;
-        result = spatial::projection::Mat4::perspective(fov, 1.0f, 0.1f, depth_end) *
+        result = spatial::projection::Mat4::perspective(fov, 1.0f, l.shadow_near, depth_end) *
                  spatial::projection::Mat4::look_at(l.pos, l.pos + l.dir,
                                                     std::fabs(l.dir.y) > 0.99f ? spatial::projection::Vec3{0, 0, 1}
                                                                                : spatial::projection::Vec3{0, 1, 0});
@@ -365,7 +411,7 @@ spatial::projection::Mat4 shadow_face(const DrawLight &l, int face) {
     const int f = std::clamp(face, 0, 5);
     // Each map goes as far as the lamp's light does (as a cone's); with no range, 40 m.
     const float depth_end = l.range > 0.0f ? std::max(l.range, 0.5f) : 40.0f;
-    return spatial::projection::Mat4::perspective(2.0f * std::atan(kCubeFaceSpread), 1.0f, 0.1f, depth_end) *
+    return spatial::projection::Mat4::perspective(2.0f * std::atan(kCubeFaceSpread), 1.0f, l.shadow_near, depth_end) *
            spatial::projection::Mat4::look_at(l.pos, l.pos + axis[f], up[f]);
 }
 

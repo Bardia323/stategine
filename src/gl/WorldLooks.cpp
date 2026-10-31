@@ -144,6 +144,16 @@ const gl::Program* GLWorldView::program_for(const LookState& look, Key pass) {
     // A shader that will not build is reported by prepare(); the pass
     // falls back to the built-in rather than drawing nothing.
     if (!slot.program && &look != &standard_) slot.program = program_for(standard_, pass);
+    // Not even the built-in builds (a driver that refuses it): said once, and
+    // the pass draws nothing - an empty program, every uniform of it absent -
+    // rather than the view stopping.
+    if (!slot.program) {
+        static const gl::Program none;
+        if (&look == &standard_)
+            std::fprintf(stderr, "render: the built-in %s shader does not build - the pass draws nothing: %s\n", pass.str().c_str(),
+                         slot.error.c_str());
+        slot.program = &none;
+    }
     return slot.program;
 }
 
@@ -212,6 +222,22 @@ const gl::Program* GLWorldView::moving_of(const gl::Program& p) {
         if (!twin) std::fprintf(stderr, "render: the scene shader that says its motion does not build - the view's motion alone: %s\n", error.c_str());
     }
     return moving_twin_[&p] = twin;
+}
+
+const gl::Program* GLWorldView::diffuse_of(const gl::Program& p) {
+    if (auto it = diffuse_twin_.find(&p); it != diffuse_twin_.end()) return it->second;
+    const auto src = sources_of_.find(&p);
+    const gl::Program* twin = nullptr;
+    if (src != sources_of_.end()) {
+        std::string fs = src->second.second;
+        const std::size_t line = fs.find('\n');
+        fs.insert(line == std::string::npos ? 0 : line + 1, "#define SG_DIFFUSE\n");
+        std::string error;
+        twin = shared_program(src->second.first, fs, "diffuse", error);
+        // (Said, once: a twin that does not build leaves the cascades without their bounce.)
+        if (!twin) std::fprintf(stderr, "render: the scene shader that says its diffuse colour does not build - the cascades bounce nothing: %s\n", error.c_str());
+    }
+    return diffuse_twin_[&p] = twin;
 }
 
 const gl::Program* GLWorldView::traced_of(const gl::Program& p) {

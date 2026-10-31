@@ -269,6 +269,28 @@ int main() {
         auto& person = gh.add<sg::Being>(sg::Key{"person"});
         sg::humanoid(person, 1.75);
         check(person.ankles().size() == 2, "and a person's two feet the same");
+        // An MHR rig: low off each shin hang its twist helpers (leaves,
+        // `l_lowleg_twist1..4_proc`) beside the foot, whose own chain goes on
+        // to the ball - its ankle the foot, one a leg, never a helper.
+        {
+            sg::StateGraph gm;
+            auto& mhr = gm.add<sg::Being>(sg::Key{"mhr"});
+            mhr.joint("root", "", {0, 0.95, 0});
+            for (const auto& [side, z] : {std::pair{std::string("l_"), 0.1}, std::pair{std::string("r_"), -0.1}}) {
+                mhr.joint(side + "upleg", "root", {0, -0.05, z});
+                mhr.joint(side + "lowleg", side + "upleg", {0, -0.42, 0});
+                for (int k = 1; k <= 4; ++k) mhr.joint(side + "lowleg_twist" + std::to_string(k) + "_proc", side + "lowleg", {0, -0.09 * k, 0});
+                mhr.joint(side + "foot", side + "lowleg", {0, -0.40, 0});
+                mhr.joint(side + "talocrural", side + "foot", {0, -0.01, 0});
+                mhr.joint(side + "subtalar", side + "talocrural", {0.02, -0.02, 0});
+                mhr.joint(side + "ball", side + "subtalar", {0.14, -0.04, 0});
+            }
+            const std::vector<sg::Key> found = mhr.ankles();
+            std::string said;
+            for (sg::Key k : found) said += " " + k.str();
+            check(found.size() == 2 && std::count(found.begin(), found.end(), sg::Key{"l_foot"}) == 1 && std::count(found.begin(), found.end(), sg::Key{"r_foot"}) == 1,
+                  "an MHR rig's ankles are its feet, not the twist helpers hanging off its shins (found" + said + ")");
+        }
         const double ground = b0.ground_speed("walk"), made = 2 * 0.9 * std::sin(20 * 3.14159265358979 / 180) / 0.5;
         check(std::fabs(ground - made) < 0.15 * made, "a walk in place says how fast its ground goes (" + std::to_string(ground) + " m/s, made " + std::to_string(made) + ")");
         // Gone a fifth faster than its walk: unplanted, its feet slide.

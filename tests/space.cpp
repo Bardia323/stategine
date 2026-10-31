@@ -71,6 +71,41 @@ int main() {
               "rooms no seam joins are not one, said: " + (why.empty() ? std::string() : why.front()));
         check(g.find(Key{"a"}) && g.find(Key{"b"}), "and nothing is made: the rooms stand");
     }
+    {
+        // Two rooms glued at a doorway, each its own: an eye's ray through the
+        // doorway goes on into the other room (ray_seen) - a lens focused by
+        // it is focused on what is past the door, not on the doorway's plane.
+        StateGraph g;
+        auto& a = room(g, "a", true);
+        auto& b = room(g, "b", false);
+        glue_doorway(g, Key{"ab"}, a.id(), Key{"a.door"}, b.id(), Key{"b.door"});
+        const Element* door = a.find(Key{"a.door"});
+        check(door && door->kind == kinds::portal && door->params.num("walk", 0.0) > 0.5, "the doorway is a walked portal");
+        const Pose at = world_pose(a, *door);
+        // From 1 m and 3 m inside a, straight out through the doorway's middle.
+        for (double back : {1.0, 3.0}) {
+            const Vec3d in = place_in(at, {back, 0.0, 0.0}), out = place_in(at, {back - 1.0, 0.0, 0.0});
+            const Vec3d d = out - in;
+            Vec3d hit, normal;
+            double dist = 0.0;
+            Key what;
+            const State* where = nullptr;
+            const bool plain = ray(a, in, d, 30.0, hit, normal, &dist);
+            check(!plain || dist > back - 0.05, "the room's own ray does not stop short of the doorway");
+            const bool seen = ray_seen(g, a, in, d, 30.0, hit, normal, &dist, &what, &where);
+            check(seen && where == &b && dist > back + 3.0 && dist < back + 4.5,
+                  "from " + std::to_string(back) + " m, seen through the doorway: b's far wall at " + std::to_string(dist) + " m (" + what.str() + ")");
+        }
+        // Beside the doorway, the wall it is in: met where it is.
+        {
+            const Vec3d in = place_in(at, {1.0, 0.0, -1.2}), out = place_in(at, {0.0, 0.0, -1.2});
+            Vec3d hit, normal;
+            double dist = 0.0;
+            const State* where = nullptr;
+            const bool met = ray_seen(g, a, in, out - in, 30.0, hit, normal, &dist, nullptr, &where);
+            check(met && where == &a && dist > 0.8 && dist < 1.2, "beside the doorway, its wall is met: " + std::to_string(dist) + " m");
+        }
+    }
     std::printf("%s\n", failures ? "FAILED" : "all ok");
     return failures ? 1 : 0;
 }

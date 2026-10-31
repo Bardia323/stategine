@@ -158,7 +158,7 @@ const gl::Texture& GLWorldView::on_card(const std::shared_ptr<render::Packed>& p
     PackedOnCard& on = packed_on_card_[packed.get()];
     if (!on.texture.valid()) {
         on.keep = packed;
-        on.texture.create_packed(*packed, q_.stream_textures);
+        on.texture.create_packed(*packed, q_.stream_textures, q_.texture_most);
         // Its blocks are the card's now, and never sent again (every
         // surface that shows it shows this texture): not kept twice.
         let_go_.blocks.push_back(std::exchange(on.keep->bytes, {}));
@@ -199,6 +199,7 @@ void GLWorldView::refresh(BoundSurface& bound) {
     if (bound.shared) bound.texture = gl::Texture{}, bound.shared = false;
     if (!bound.texture.valid() || bound.texture.packed() || bound.texture.width() != surf.px_w() ||
         bound.texture.height() != surf.px_h()) {
+        gl::Texture::making = "a surface's picture, unpacked";
         bound.texture.create(surf.px_w(), surf.px_h(), /*mipmaps=*/true, surf.srgb());
         bound.revision = ~uint64_t{0};
     }
@@ -226,7 +227,7 @@ bool GLWorldView::bind_map(BoundSurface& bound, bool normals) {
             if (px.empty()) return false;
             unshare(map, shared);
             if (!map.valid() || map.packed() || map.width() != tex->px_w() || map.height() != tex->px_h())
-                map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
+                gl::Texture::making = normals ? "a normal map, unpacked" : "a surface map, unpacked", map.create(tex->px_w(), tex->px_h(), /*mipmaps=*/true, /*srgb=*/false);
             map.upload(px);
         }
         made = tex->revision();
@@ -242,18 +243,23 @@ void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
     const auto* tex = bound ? dynamic_cast<const Texture*>(bound->surface) : nullptr;
     // Its wear, where it has photographs of it: its dirt gathered, its damp
     // where water has been, as its map says and its room's causes make them.
+    // (One copy on the card of each photograph of wear, however many
+    // textures wear it: a house of four hundred papered and boarded surfaces
+    // wears three or four. Made from what it is made of, never again.)
     const auto worn = [&](const char* name, gl::Texture& map, uint64_t& made, int unit) {
+        (void)map, (void)made;
         if (!tex || !tex->has_wear(name)) return false;
         auto* t = static_cast<Texture*>(bound->surface);
-        int w = 0, h = 0;
-        const std::vector<unsigned char>& px = t->wear_raster(name, w, h);
-        if (px.empty() || w <= 0 || h <= 0) return false;
-        if (made != t->wear_revision(name) || !map.valid()) {
-            map.create(w, h, /*mipmaps=*/true, /*srgb=*/true);
-            map.upload(px);
-            made = t->wear_revision(name);
+        gl::Texture& card = wear_cards_[std::string(name) + "|" + t->wear_of(name)];
+        if (!card.valid()) {
+            int w = 0, h = 0;
+            const std::vector<unsigned char>& px = t->wear_raster(name, w, h);
+            if (px.empty() || w <= 0 || h <= 0) return false;
+            gl::Texture::making = name;
+            card.create(w, h, /*mipmaps=*/true, /*srgb=*/true);
+            card.upload(px);
         }
-        map.bind(unit);
+        card.bind(unit);
         return true;
     };
     // (A pile's sheen, its texture's: none unless it says.)

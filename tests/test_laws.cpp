@@ -1487,6 +1487,7 @@ void test_many_states_are_checked_at_once() {
 // Names, stamps and shared params made on many threads at once: one name is
 // one name on all of them, no two changes share a stamp, and params copied and
 // let go everywhere keep their entries.
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
 void test_threads_share_names_stamps_and_params() {
     const int kThreads = 8, kNames = 4000;
     std::vector<std::vector<const void*>> seen(kThreads);
@@ -1521,6 +1522,7 @@ void test_threads_share_names_stamps_and_params() {
     check(std::adjacent_find(all.begin(), all.end()) == all.end() && sg::last_stamp() >= all.back(), "no two changes share a stamp");
     check(shared.num("kept") == 42.0 && !shared.has("mine") && shared.size() == 2, "params copied and let go on every thread keep their entries");
 }
+#endif
 
 }  // namespace
 
@@ -1561,7 +1563,11 @@ int main() {
     test_arriving_is_heard();
     test_a_kept_functor_follows();
     test_many_states_are_checked_at_once();
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
     test_threads_share_names_stamps_and_params();
+#else
+    std::printf("(names shared between threads: a Wasm build with no threads has one)\n");
+#endif
     std::printf("\n%s\n", failures == 0 ? "all laws hold, and every broken one is named"
                                         : "FAILURES");
     return failures == 0 ? 0 : 1;

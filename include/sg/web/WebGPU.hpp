@@ -16,6 +16,9 @@ public:
     // The eye's room drawn at this part of the canvas's pixels each way
     // (0.5..1; 1, the canvas's own), laid on the whole of it as it is shown.
     void set_render_scale(float scale);
+    // Feeds (a screen showing a world) drawn at most this often, Hz, each keeping its last picture
+    // between (0: every frame) - a machine's choice; a panel's own `feed_rate` may ask for less.
+    void set_feed_rate(float hz);
     void recreate();
 private:
     struct Impl;

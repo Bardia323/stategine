@@ -223,6 +223,11 @@ uint64_t Texture::wear_revision(const std::string& name) const {
     return it == worn_.end() ? 0 : it->second.revision;
 }
 
+std::string Texture::wear_of(const std::string& name) const {
+    const Element& m = map();
+    return m.params.get_or<std::string>(name + "_layer", "") + "|" + m.params.get_or<std::string>(name + "_height_layer", "");
+}
+
 const std::vector<unsigned char>& Texture::wear_raster(const std::string& name, int& w, int& h) {
     const Element& m = map();
     const std::string colour = m.params.get_or<std::string>(name + "_layer", ""), height = m.params.get_or<std::string>(name + "_height_layer", "");

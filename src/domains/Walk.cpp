@@ -4,6 +4,7 @@
 #include <cmath>
 #include <thread>
 
+#include "sg/core/StateGraph.hpp"
 #include "sg/spatial/Math.hpp"
 
 namespace sg {
@@ -286,6 +287,75 @@ bool ray(const State& space, const Vec3d& eye, const Vec3d& dir, double reach, V
     return true;
 }
 
+bool ray_seen(const StateGraph& graph, const State& space, const Vec3d& eye, const Vec3d& dir, double reach, Vec3d& hit, Vec3d& normal,
+              double* dist, Key* what, const State** where, int hops) {
+    const State* here = &space;
+    Vec3d o = eye, d = dir;
+    {
+        const double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (l < 1e-12) return false;
+        d = d * (1.0 / l);
+    }
+    double gone = 0.0, left = reach;
+    for (int hop = 0; hop <= hops && left > 0.0; ++hop) {
+        const RayHit r = rays(*here, {RayAsk{o, d, left}}).front();
+        const double stop = r.hit ? r.dist : left;
+        // The first doorway along it, before what it stops at (a doorway on a
+        // wall: the wall behind it is its own plane, a hair past - the doorway
+        // is met first), whose seam goes on somewhere.
+        double best = 1e300;
+        Pose from_at, to_at;
+        const State* beyond = nullptr;
+        for (std::size_t si : graph.seams_of(here->id())) {
+            const Seam& sm = graph.seams()[si];
+            for (int side = 0; side < 2; ++side) {
+                const Key mine = side == 0 ? sm.a : sm.b, other = side == 0 ? sm.b : sm.a;
+                if (mine != here->id()) continue;
+                const std::vector<Key>& bm = side == 0 ? sm.boundary_a : sm.boundary_b;
+                const std::vector<Key>& bo = side == 0 ? sm.boundary_b : sm.boundary_a;
+                const State* there = graph.contains(other) ? &graph.state(other) : nullptr;
+                if (!there) continue;
+                for (std::size_t i = 0; i < bm.size() && i < bo.size(); ++i) {
+                    const Element* e = here->find(bm[i]);
+                    const Element* f = there->find(bo[i]);
+                    if (!e || !f || !e->alive || e->kind != kinds::portal || e->params.num("walk", 0.0) < 0.5) continue;
+                    const Pose at = world_pose(*here, *e);
+                    // (Its local x is the way into the room it is a doorway of.)
+                    const Vec3d a = local_of(at, o), b = local_of(at, o + d);
+                    const double vx = b.x - a.x;
+                    if (vx >= -1e-9) continue;  // only going out through it
+                    const double t = a.x / -vx;
+                    if (t < 0.0 || t > stop + 0.05 || t >= best) continue;
+                    const Vec3d q = a + (b - a) * t;
+                    if (std::fabs(q.z) > e->params.num(keys::w, 1.0) * 0.5 || std::fabs(q.y) > e->params.num(keys::h, 2.0) * 0.5) continue;
+                    best = t, from_at = at, to_at = world_pose(*there, *f), beyond = there;
+                }
+            }
+        }
+        if (!beyond || hop == hops) {
+            if (!r.hit) return false;
+            hit = r.at, normal = r.normal;
+            if (dist) *dist = gone + r.dist;
+            if (what) *what = r.what;
+            if (where) *where = here;
+            return true;
+        }
+        // Across: the point where it met the doorway, and its way, carried as
+        // a walker is (through_portal), and on from there.
+        const Vec3d p = o + d * best;
+        const Pose pq = through_portal(from_at, to_at, Pose{p, 0.0}), pd = through_portal(from_at, to_at, Pose{p + d, 0.0});
+        o = pq.position;
+        d = pd.position - pq.position;
+        const double l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (l < 1e-12) return false;
+        d = d * (1.0 / l);
+        o = o + d * 1e-3;
+        gone += best, left -= best;
+        here = beyond;
+    }
+    return false;
+}
+
 std::vector<std::string> space_faults(const State& space, double radius, double height) {
     std::vector<std::string> out;
     const std::vector<Opening> open = openings_of(space);
@@ -311,6 +381,36 @@ std::vector<std::string> space_faults(const State& space, double radius, double 
             std::snprintf(b, sizeof b, "%.2f m from its plane", local_of(at, vd(eye)).x);
             out.push_back("hole " + e.id.str() + " of " + space.id().str() + " (where two rooms were made one) cannot be walked through: a walker steered through its middle stops " +
                           b + " - something solid stands across it (a thing's box over the opening, a wall not opened there)");
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> doorway_faults(const State& space, double radius, double height) {
+    std::vector<std::string> out;
+    const std::vector<Opening> open = openings_of(space);
+    for (const Element& e : space.elements()) {
+        if (!e.alive || e.kind != kinds::portal || e.params.num("walk", 0.0) < 0.5 || e.params.num(Key{"blind"}, 0.0) > 0.5) continue;
+        const double hh = e.params.num(keys::h, 2.0) * 0.5;
+        if (hh * 2.0 < height) continue;  // (a hatch, not walked upright)
+        // (Its local x is the way into the room; y up from its middle.) From a
+        // pace inside, steered to its plane.
+        const Pose at = world_pose(space, e);
+        const Vec3d front = place_in(at, {1.0, -hh + height, 0.0}), past = place_in(at, {-0.5, -hh + height, 0.0});
+        const std::vector<Solid> solids = solids_of(space, front, 3.0);
+        V3 eye = v3(front);
+        const V3 up{0, 1, 0}, to = spatial::normalize(v3(past) - eye);
+        bool through = false;
+        for (int i = 0; i < 80 && !through; ++i) {
+            eye = eye + to * (radius * 0.25);
+            clear_pass(solids, open, eye, up, height, radius);
+            through = local_of(at, vd(eye)).x < 0.02;
+        }
+        if (!through) {
+            char b[96];
+            std::snprintf(b, sizeof b, "%.2f m before its plane", local_of(at, vd(eye)).x);
+            out.push_back("doorway " + e.id.str() + " of " + space.id().str() + " cannot be walked to: a walker steered at its middle from a pace inside stops " + b +
+                          " - something solid stands before it (a thing's box, a wall not opened there)");
         }
     }
     return out;
@@ -491,8 +591,10 @@ void walk(const State& space, const field::Solver& pull, Element& walker, const 
             }
         return true;
     };
-    // How high a step it takes in its stride: a stair, a kerb.
-    constexpr double kStep = 0.36;
+    // How high a step it takes in its stride: a stair, a kerb - as high as the
+    // walker says (`step`), 0.36 unless it says. A house's walker says a
+    // stair's rise, so a stool or a case is not climbed onto.
+    const double kStep = std::max(0.0, walker.params.num("step", 0.36));
     for (int i = 0; i < steps; ++i) {
         const V3 moved = eye + travel * (1.0 / steps);
         eye = moved;

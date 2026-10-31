@@ -80,6 +80,9 @@ auto GLWorldView::own_lights(const Spatial3D& room, const Pose& pose) const -> s
         }
         if (l.power <= 0.0f) continue;  // switched off
         l.rank = standing_of(room, e, l);
+        // (A lamp the place needs a shadow from - a puzzle's - says `shadow_first`: ranked
+        // before any by power, so it always has its maps.)
+        if (e.params.num("shadow_first") > 0.5) l.rank += 1.0e6f;
         out.push_back(l);
     }
     return out;

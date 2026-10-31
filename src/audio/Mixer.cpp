@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <mutex>
 #include <set>
@@ -299,6 +300,15 @@ struct Mixer::Impl {
     // --- the game's thread --------------------------------------------------------
     std::shared_ptr<Hearer> hearer = std::make_shared<Hearer>();
     std::vector<Said> told;
+    // One action, one sound: a one-shot said again and again at once (by each
+    // part of a thing, each frame a key is down, each functor that carries
+    // it) - said once a name (Mixer::faults).
+    double heard_clock = 0.0;
+    void count_said(double dt) {
+        heard_clock += dt;
+        for (const Said& s : hearer->said) note_cue(s.state, s.name, heard_clock);
+        for (const Said& s : told) note_cue(Key{"(told)"}, s.name, heard_clock);
+    }
     std::set<std::pair<const void*, const void*>> listening;  // (state, event) heard already
     uint64_t listened = ~uint64_t{0};
     uint64_t indexed = ~uint64_t{0};
@@ -764,6 +774,7 @@ struct Mixer::Impl {
     }
 
     void read_shots(const StateGraph& g, const Ear& ear, double dt) {
+        count_said(dt);
         for (const Said& s : hearer->said) start(g, s);
         hearer->said.clear();
         for (const Said& s : told) start(g, s);
@@ -1059,6 +1070,55 @@ Ear Mixer::ear_of(const Engine& engine) {
 }
 
 void Mixer::read(const Engine& engine, double dt) { read(engine.graph(), ear_of(engine), dt); }
+
+// --- one action, one sound: every cue any sound system starts, counted ---------------------------
+namespace {
+struct Cues {
+    std::mutex m;
+    std::unordered_map<std::string, std::vector<double>> recent;
+    std::set<std::string> said;
+    std::vector<std::string> faults;
+};
+Cues& cues() {
+    static Cues c;
+    return c;
+}
+}  // namespace
+
+bool note_cue(Key state, const std::string& cue, double t) {
+    Cues& c = cues();
+    std::lock_guard<std::mutex> lock(c.m);
+    const std::string k = cue + " (said by " + state.str() + ")";
+    std::vector<double>& r = c.recent[k];
+    // (A time gone back - a run started again - starts it afresh.)
+    if (!r.empty() && t < r.back()) r.clear();
+    r.erase(std::remove_if(r.begin(), r.end(), [&](double x) { return x < t - 0.3; }), r.end());
+    std::size_t at_once = 1;
+    for (double x : r) at_once += std::fabs(x - t) < 1e-6 ? 1 : 0;
+    r.push_back(t);
+    const bool bad = at_once > 1 || r.size() >= 3;
+    if (bad && c.said.insert(k).second) {
+        const std::string f = "one-shot " + k + " started " + std::to_string(at_once > 1 ? at_once : r.size()) + (at_once > 1 ? " times at once" : " times within 0.3 s") +
+                              ": one action, one sound - say it from the one arrow that does the thing, not from each part or each frame";
+        c.faults.push_back(f);
+        std::fprintf(stderr, "! sound: %s\n", f.c_str());
+    }
+    return !bad;
+}
+
+std::vector<std::string> cue_faults() {
+    Cues& c = cues();
+    std::lock_guard<std::mutex> lock(c.m);
+    return c.faults;
+}
+
+void forget_cues() {
+    Cues& c = cues();
+    std::lock_guard<std::mutex> lock(c.m);
+    c.recent.clear(), c.said.clear(), c.faults.clear();
+}
+
+std::vector<std::string> Mixer::faults() const { return cue_faults(); }
 
 void Mixer::read(const StateGraph& g, const Ear& ear, double dt) {
     Impl& m = *impl_;

@@ -93,6 +93,10 @@ struct DrawLight {
         // reaches as far. 0: it goes on for ever, as lamps did before they
         // said - a sun's never ends.
         float range = 0.0f;
+        // Where its shadow maps begin, metres from it (`shadow_near`): a lamp
+        // in a cage whose bars stand closer than the usual 0.1 m - a
+        // lantern's ribs - says so, or they are never in its maps.
+        float shadow_near = 0.1f;
         // How strong it stands among the lamps when the strongest are chosen
         // to cast (< 0: its power): a renderer ranks a lamp by the most it
         // has given lately, not this moment's - a lamp that flickers keeps
@@ -142,6 +146,15 @@ constexpr float kCubeFaceSpread = 1.25f;
 spatial::projection::Mat4 shadow_face(const DrawLight& light, int face);
 
 float portal_occlusion(const Spatial3D& room,const Element& portal,const Pose& door,float half_w,float half_h,bool& shut);
+// Whether a doorway (or a ball, a screen) of `world` can be seen from the camera at all: some
+// of it before the eye and short of the world's `far`, and inside what the eye sees (`aspect`
+// its width to its height; 0: before it is enough). What is beyond one that cannot is not drawn.
+bool portal_in_view(const State& world,const Element& portal,const ViewCamera& camera,double aspect);
+// The depth of a doorway's wall, and a little more: within it, an eye is in the doorway.
+double portal_slab(const Element& portal);
+// Whether a door shut in a doorway (`closed`) stands between the eye and what is beyond: the
+// eye anywhere but in the doorway itself. Nothing beyond it is drawn, nor on from it.
+bool portal_shut_to(const Element& portal,const Vec3d& eye);
 struct RoomDraw {
     const Spatial3D* room = nullptr;
     Pose placement;

@@ -494,11 +494,19 @@ in vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uScene;
 uniform float uThreshold;
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 over(vec3 c) { float y = luma(c); return c * (max(y - uThreshold, 0.0) / max(y, 1e-4)); }
 void main() {
-    vec3 c = texture(uScene, vUV).rgb;
-    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float k = max(luma - uThreshold, 0.0) / max(luma, 1e-4);
-    FragColor = vec4(c * k, 1.0);
+    // (Four pixels round this one, each weighed by 1 / (1 + its light) - a
+    // Karis average: one pixel far brighter than those round it - a glossy
+    // highlight caught by a lone texel - would otherwise glow as a star of
+    // its own and flash as it comes and goes. A lamp, many pixels across,
+    // glows as bright as before.)
+    vec2 t = 0.5 / vec2(textureSize(uScene, 0));
+    vec3 s0 = over(texture(uScene, vUV + vec2(-t.x, -t.y)).rgb), s1 = over(texture(uScene, vUV + vec2(t.x, -t.y)).rgb);
+    vec3 s2 = over(texture(uScene, vUV + vec2(-t.x, t.y)).rgb), s3 = over(texture(uScene, vUV + vec2(t.x, t.y)).rgb);
+    float w0 = 1.0 / (1.0 + luma(s0)), w1 = 1.0 / (1.0 + luma(s1)), w2 = 1.0 / (1.0 + luma(s2)), w3 = 1.0 / (1.0 + luma(s3));
+    FragColor = vec4((s0 * w0 + s1 * w1 + s2 * w2 + s3 * w3) / (w0 + w1 + w2 + w3), 1.0);
 })";
 }
 

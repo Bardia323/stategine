@@ -6,6 +6,7 @@
 #include <typeinfo>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include "sg/domains/Shapes.hpp"
 #include "sg/core/Cache.hpp"
@@ -15,11 +16,14 @@
 #include "sg/domains/Light.hpp"
 #include "sg/domains/Fog.hpp"
 #include "sg/domains/Walk.hpp"
+#include "sg/domains/Guard.hpp"
 
 #include <atomic>
 #include <thread>
 
 namespace sg::render {
+
+void lens_keep_faults(const void* view, const std::vector<std::string>& faults);  // (src/gl/WorldLensSheet.cpp)
 
 std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     graph_ = &g;
@@ -144,6 +148,13 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     for (Key id : reach)
         if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
             for (const std::string& p : space_faults(*room)) out.push_back("state " + id.str() + ": " + p);
+    // The guardrails (sg/domains/Guard.hpp): what hangs on a wall on it, what
+    // stands on a floor on it, doorways open, doors leading somewhere, no
+    // level faces fighting, nothing inside another, nothing used unseen,
+    // nothing taken still there, nothing climbed that says not.
+    for (Key id : reach)
+        if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
+            for (const std::string& p : guard_faults(*room, &g)) out.push_back("state " + id.str() + ": " + p);
     // Lamps that light nothing: shut in what casts, or every one a fill.
     for (Key id : reach)
         if (const auto* room = dynamic_cast<const Spatial3D*>(g.find(id)))
@@ -184,6 +195,7 @@ std::vector<std::string> GLWorldView::prepare(const StateGraph& g) {
     // What things wear, made now and on the card: never in the frame it is
     // first seen, through a doorway or round a corner.
     ready_skins();
+    lens_keep_faults(this, out);  // (for the lens, if one is asked: where each is)
     return out;
 }
 
@@ -877,6 +889,8 @@ void GLWorldView::render(const std::vector<PlacedRoom>& requested, int fb_w, int
     // (And what pictures' finer levels the frame may send: Quality::stream_textures.)
     if (!root_) gl::Texture::stream_budget = std::size_t{4} << 20;
 
+    // The agent's lens, when one is asked (SG_LENS): this frame from its eye.
+    if (!eye_override_ && !root_ && !requested.empty() && requested.front().room && lens_frame(requested, fb_w, fb_h)) return;
     // A room that says it is seen from one of its own (its camera's
     // `seen_from`: an element of it - a camera hung there, chosen by whatever
     // stages it) is drawn from there; what walks it is still its camera.
@@ -1388,17 +1402,23 @@ void main() {
         // (Left out by the card if its doorway is not seen: ask_doorways.)
         const gl::GLuint gate = gate_of(path);
         gate_now_ = gate;
+        // (A doorway's view at the scale asked of views - a screen's or a glass ball's as the screen.)
+        const bool scaled = !screen && !e.params.has(Key{"ball"}) && q_.view_scale < 0.999f;
+        view_scale_ = scaled ? q_.view_scale : 1.0f;
         draw_world(seen(*wp.world), guest_cam, aspect, scene_ms(),
                    /*depth=*/1, way.znear, back ? back->id.key() : Key{}, clips);
+        view_scale_ = 1.0f;
         gate_now_ = 0;
         cull_.clear();
         wp.fx = vp_w_ / static_cast<float>(scene_ms().width()), wp.fy = vp_h_ / static_cast<float>(scene_ms().height());
+        wp.laid_fx = scaled ? wp.fx : 1.0f, wp.laid_fy = scaled ? wp.fy : 1.0f;
         sub_ = Rect{-1, -1, 1, 1};
         host_air_.on = false;
         wp.drawn = frame_count_;
         path_.clear();
         const float view_near = drawn_near_, view_far = drawn_far_;
-        const bool cut = scissor_to(cut_, scene_ms().width(), scene_ms().height());
+        // (Drawn smaller, its doorway is where it is in the smaller picture.)
+        const bool cut = scaled ? scissor_to(cut_, static_cast<int>(vp_w_), static_cast<int>(vp_h_)) : scissor_to(cut_, scene_ms().width(), scene_ms().height());
         if (gate) gl::glBeginConditionalRender(gate, gl::GL_QUERY_WAIT);
         scene_ms().blit_to(view.target);
         scene_ms().blit_depth_to(view.target);
@@ -1437,6 +1457,12 @@ void main() {
     // each pixel's surface is, drawn first, then the rays - which the scene
     // drawn next reads.
     if (!in_part && tracing()) trace_frame(rooms, drawn_cam, aspect);
+    // The light from all round near each surface gathered in cascades after
+    // the scene, where the eye's look asks (run_cascades): the scene says
+    // each pixel's diffuse colour beside it.
+    // (`gi.cascades.bounce` 0: what is near shuts out the light, gives none back - no diffuse colour drawn.)
+    cascades_beside_ = !in_part && !root_ && !baking_ && surface_only_ == 0 && setting(post_, passes::composite, "gi.cascades", 0.0) > 0.0;
+    diffuse_wanted_ = cascades_beside_ && setting(post_, passes::composite, "gi.cascades.bounce", 1.0) > 0.0;
     draw_world(rooms, drawn_cam, aspect, scene_ms(), /*depth=*/0, kNear, own_skip_, own_clips_);
     if (trace_beside_) trace_after(rooms);
     if (in_part) cut_ = Rect{-1, -1, 1, 1};
@@ -1481,7 +1507,14 @@ void main() {
         }
         if (fl > 1e-6f) turn_fwd_ = {f.x / fl, f.y / fl, f.z / fl};
     }
-    if (ao > 0.0) {
+    // (`SG_CASCADES=0`: the occlusion as before, whatever the look says - to compare.)
+    static const bool cascades_off = std::getenv("SG_CASCADES") && std::atoi(std::getenv("SG_CASCADES")) == 0;
+    const bool cascades = cascades_beside_ && !cascades_off;
+    cascades_beside_ = false;
+    if (cascades) {
+        run_cascades(static_cast<float>(ao > 0.0 ? ao : 1.0));
+        scene_src_ = &lit_;
+    } else if (ao > 0.0) {
         run_ao(static_cast<float>(ao),
                static_cast<float>(setting(post_, passes::composite, "ao.radius", 0.45)));
         scene_src_ = &lit_;
@@ -1493,7 +1526,7 @@ void main() {
     const double mosh = eye_view() ? setting(post_, passes::composite, "mosh", 0.0) : 0.0;
     // (The eye's lens, as its camera says: a depth of field, a shutter.)
     lens_of(world, eye_cam, aspect);
-    if ((fog_depth_ || taa_on() || motion_on() || mosh > 0.0 || lens_.on()) && ao <= 0.0) {
+    if ((fog_depth_ || taa_on() || motion_on() || mosh > 0.0 || lens_.on()) && ao <= 0.0 && !cascades) {
         const bool depth_part = scissor_to(own_seen_, scene_ms().width(), scene_ms().height());
         scene_ms().blit_depth_to(depth_);
         if (depth_part) gl::glDisable(gl::GL_SCISSOR_TEST);

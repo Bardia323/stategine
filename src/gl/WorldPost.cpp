@@ -433,9 +433,12 @@ void GLWorldView::adapt_exposure() {
         if (rg[1] > 0.0f && std::isfinite(rg[0])) x.target = exposure_target(rg);
     }
     if (!x.known || x.settle) return;  // measured at once this frame (meter_exposure)
+    // A camera opens up slowly in the dark and stops down at once in the light
+    // (`exposure.rate.up`, `exposure.rate.down`, stops a second; each `exposure.rate` unless said).
     const double rate = std::max(0.0, setting(post_, passes::scene, "exposure.rate", 1.5));
-    const double step = rate * dt_;
-    x.ev += std::clamp(x.target - x.ev, -step, step);
+    const double up = std::max(0.0, setting(post_, passes::scene, "exposure.rate.up", rate));
+    const double down = std::max(0.0, setting(post_, passes::scene, "exposure.rate.down", rate));
+    x.ev += std::clamp(x.target - x.ev, -down * dt_, up * dt_);
 }
 
 void GLWorldView::meter_exposure() {
@@ -540,6 +543,10 @@ void GLWorldView::composite(int fb_w, int fb_h) {
         apply_attended(p, passes::composite);
         if (gain != 1.0f) p.set("uExposure", exposure);
         if (film_of_viewer_) p.set("uGrain", 0.0f);
+        // (The agent's lens, asked to see in the dark or clean of the film's noise: SG_LENS bright / clean.)
+        if (lens_gain_ != 1.0f && !film_of_viewer_)
+            p.set("uExposure", (gain != 1.0f ? exposure : static_cast<float>(setting(post_, passes::composite, "uExposure", 1.0))) * lens_gain_);
+        if (lens_clean_ && !film_of_viewer_) p.set("uGrain", 0.0f), p.set("uReadout", 0.0f), p.set("uDither", 0.0f);
         // (Nor its lens: the viewer's bows and fringes the whole picture,
         // this one in it - a lens here too would bow it twice, and reach
         // past the part of the screen it was drawn in.)

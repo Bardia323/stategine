@@ -13,12 +13,23 @@
 // them is that world's clock, never the renderer's, so a world paused holds
 // its fog where it is, and one run back takes it back.
 //
+// A fog that says `takes` (0..1) is no air but the dark: it takes light.
+// What stands in it is lit the less, the lamps' light scattered in the air
+// there is gone, and whatever is seen through it is darkened as deep as the
+// way through it goes - a hole in the light, seen only against what is lit,
+// black on black where nothing is. It scatters nothing and glows with
+// nothing; its colour is none.
+// It breathes where it says `breath` (0..0.5): its edge drawn in and let
+// out by so much of its width, a slow swell climbing it, `breath_rate`
+// (radians a second of its world's time) how fast. Where nothing of it is
+// thick (`density` 0) it is not drawn at all: a dark elsewhere costs nothing.
+//
 // A renderer reads it as data: thicker fog along each way from the eye where
 // the way crosses it, and more of a lamp's light scattered in the air there.
 //
 // The laws of a fog (fog_faults, a Spatial3D's faults): its numbers are
 // numbers, its box has a size, it is no thinner than none, its drift is
-// between none and the most.
+// between none and the most, what it takes between none and all.
 #pragma once
 
 #include <string>

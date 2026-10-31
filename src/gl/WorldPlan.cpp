@@ -39,20 +39,13 @@ HalfSpace GLWorldView::far_side(const Spatial3D& host,const Element& portal,cons
     return portal_clip(host,portal,eye_of(host),guest);
 }
 
-double GLWorldView::slab_of(const Element& portal) {
-    // The wall's depth (`depth`), and a little more: the near plane cuts a
-    // leaf the eye comes within a few centimetres of.
-    return std::max(portal.params.num(Key{"depth"}, 0.34), 0.2) + 2.0 * static_cast<double>(kNear);
-}
+// (Both renderers measure a doorway alike: sg/render/ViewPlan.hpp.)
+double GLWorldView::slab_of(const Element& portal) { return portal_slab(portal); }
 
 bool GLWorldView::shut_to(const Element& portal, const Vec3d& eye) const {
     // (Warming, every doorway is seen through: what is beyond a door shut
     // now is laid ready for when it is opened.)
-    if (warming_ || portal.params.num(Key{"closed"}, 0.0) < 0.5) return false;
-    // (Measured as opens_from measures which side the eye is on.)
-    const Pose p = local_pose(portal);
-    const Vec3d face = upright(p) ? heading(p.yaw) : facing(p);
-    return std::fabs(dot(eye - p.position, face)) > slab_of(portal);
+    return !warming_ && portal_shut_to(portal, eye);
 }
 
 auto GLWorldView::through(const Element& portal, const Spatial3D& guest, const Element& back, const Camera& cam) const -> Through {

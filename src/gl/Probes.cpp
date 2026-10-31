@@ -572,14 +572,48 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     // from it. What the probes see is taken again only when the room has
     // been quiet a while (kQuiet): things settling one by one (a cord's
     // links) make one change, not one each.
-    const auto tracked = [](const Element& e) { return e.kind != kinds::camera && e.kind != kinds::light && e.kind != kinds::probe; };
+    // (Only what is drawn is seen: not a marker of a world's own reckoning,
+    // its fog, a hole's outline - whose numbers change as a game goes - nor
+    // an anchor nothing drawn hangs from.)
+    static const Key kMarker{"marker"}, kHole{"hole"}, kFog{"fog"};
+    const auto tracked = [&rl](const Element& e) {
+        if (e.kind == kinds::camera || e.kind == kinds::light || e.kind == kinds::probe || e.kind == kFog || e.kind == kMarker || e.kind == kHole) return false;
+        return e.kind != kinds::anchor || rl.holding.count(e.id) > 0;
+    };
+    // (What of a thing the probes see: all it says but how much it mirrors, which is the eye's alone.)
+    static const Key kReflects{"reflects"};
+    const auto seen_as = [](const Element& e) {
+        Hasher h;
+        h.integer(e.alive ? 1 : 0);
+        for (const auto& [k, v] : e.params) {
+            if (k == kReflects) continue;
+            h.text(k.str());
+            if (const double* d = std::get_if<double>(&v)) h.number(*d);
+            else if (const int64_t* n = std::get_if<int64_t>(&v)) h.integer(*n);
+            else if (const bool* b = std::get_if<bool>(&v)) h.integer(*b ? 1 : 0);
+            else if (const std::string* s = std::get_if<std::string>(&v)) h.text(*s);
+        }
+        return h.digest().lo;
+    };
     bool restless = false;  // which things move is not what the probes see
     if (rl.structure != room.structure() || rl.stamps.size() != things.size()) {
         rl.structure = room.structure();
         rl.stamps.assign(things.size(), ~uint64_t{0});
+        rl.seen_as.assign(things.size(), 0);
         rl.still.assign(things.size(), kSettle);
         rl.index.clear();
         for (std::size_t i = 0; i < things.size(); ++i) rl.index.emplace(things[i].id, i);
+        rl.holding.clear();
+        for (const Element& e : things) {
+            if (e.kind == kinds::anchor || e.kind == kMarker || e.kind == kHole || e.kind == kinds::camera || e.kind == kinds::light) continue;
+            const std::string* p = e.params.text(keys::parent);
+            for (int k = 0; k < 8 && p && !p->empty(); ++k) {
+                const auto up = rl.index.find(Key{*p});
+                if (up == rl.index.end()) break;
+                rl.holding.insert(things[up->second].id);
+                p = things[up->second].params.text(keys::parent);
+            }
+        }
         restless = true;
         rl.quiet = kQuiet;  // (a new make-up is taken at once)
     }
@@ -589,10 +623,17 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         const uint64_t stamp = (e.params.stamp() << 1) | (e.alive ? 1u : 0u);
         if (rl.stamps[i] == ~uint64_t{0}) {
             rl.stamps[i] = stamp;  // (as it was found: standing)
+            rl.seen_as[i] = seen_as(e);
             continue;
         }
         if (stamp != rl.stamps[i]) {
             rl.stamps[i] = stamp;
+            // (Changed only in what the probes do not see: still, to them.)
+            const uint64_t now = seen_as(e);
+            if (now == rl.seen_as[i]) continue;
+            rl.seen_as[i] = now;
+            // (SG_SAY_RESTLESS: what, standing, moved - what makes a room's light from all round be taken again.)
+            if (rl.still[i] >= kSettle && std::getenv("SG_SAY_RESTLESS")) std::fprintf(stderr, "restless %s: %s moved\n", room.id().str().c_str(), e.id.str().c_str());
             if (rl.still[i] >= kSettle) restless = true, rl.quiet = 0;
             rl.still[i] = 0;
             continue;
@@ -625,19 +666,15 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
         Hasher h;
         h.text("surroundings").text(SG_PROBE_CODE).integer(size);
         for (const char* k : {"room_w", "room_d", "room_h", "sky"}) h.number(room.params().num(Key{k}, 0.0));
-        for (const Element& e : things) {
+        for (std::size_t i = 0; i < things.size(); ++i) {
+            const Element& e = things[i];
             if (!e.alive || !tracked(e) || rl.hidden.count(e.id.key())) continue;
-            h.text(e.id.str()).text(e.kind.str());
-            for (const auto& [k, v] : e.params) {
-                h.text(k.str());
-                if (const double* d = std::get_if<double>(&v)) h.number(*d);
-                else if (const int64_t* n = std::get_if<int64_t>(&v)) h.integer(*n);
-                else if (const bool* b = std::get_if<bool>(&v)) h.integer(*b ? 1 : 0);
-                else if (const std::string* s = std::get_if<std::string>(&v)) h.text(*s);
-            }
+            h.text(e.id.str()).text(e.kind.str()).integer(static_cast<int64_t>(seen_as(e)));
         }
         for (const ProbeBox& b : boxes) h.number(b.mid.x).number(b.mid.y).number(b.mid.z);
+        if (std::getenv("SG_SAY_RESTLESS") && !(h.digest() == rl.shell)) std::fprintf(stderr, "restless %s: its shell taken again (%zu hidden)\n", room.id().str().c_str(), rl.hidden.size());
         rl.shell = h.digest();
+        if (!rl.shell_known) rl.first_shell = rl.shell;
         rl.shell_known = true;
     }
 
@@ -992,7 +1029,9 @@ auto GLWorldView::relight_room(const Spatial3D& room, const std::vector<ProbeBox
     const bool current = drawn_all && jobs > 0 &&
                          std::none_of(rl.lamps.begin(), rl.lamps.end(), [](const auto& l) { return l.second.pending || l.second.sets.empty(); });
     // (Not an open land's: its boxes move on with the eye, a shell a cell.)
-    if (current && rl.kept != rl.shell && !rl.lamps.empty() && !rl.open) {
+    // (Kept on disk only as first seen - the only shell a later start reads back: every shell a playing room passed through,
+    // kept, filled a disk.)
+    if (current && rl.kept != rl.shell && rl.shell == rl.first_shell && !rl.lamps.empty() && !rl.open) {
         std::ostringstream out;
         out.precision(9);
         for (const auto& [name, ll] : rl.lamps) {

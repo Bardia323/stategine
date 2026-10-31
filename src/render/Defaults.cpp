@@ -34,6 +34,7 @@ const Setting kSettings[] = {
     {"reflections", nullptr, nullptr, &Quality::reflections,
      "planes that say they reflect (reflects, floor_reflects) show the room in them (true/false)"},
     {"reflection_scale", nullptr, &Quality::reflection_scale, nullptr, "how sharp reflections are drawn: the pixels each may take, a part of the screen's (0.1 to 1)"},
+    {"view_scale", nullptr, &Quality::view_scale, nullptr, "how sharp views through doorways are drawn: a part of the screen's pixels each way (0.4 to 1)"},
     {"bloom_passes", &Quality::bloom_passes, nullptr, nullptr, "blurs of the glow round bright things"},
     {"bloom_strength", nullptr, &Quality::bloom_strength, nullptr, "how much bright things glow (the default look's)"},
     {"bloom_threshold", nullptr, &Quality::bloom_threshold, nullptr, "how bright a thing must be to glow (the default look's)"},
@@ -45,6 +46,7 @@ const Setting kSettings[] = {
     {"skip_unseen", nullptr, nullptr, &Quality::skip_unseen, "views through doorways the eye cannot see left out by the card (true/false)"},
     {"lamp_cells", nullptr, nullptr, &Quality::lamp_cells, "each part of a view asks only the lamps whose range reaches it (true/false)"},
     {"stream_textures", nullptr, nullptr, &Quality::stream_textures, "packed pictures sent coarse first, each finer level as it is drawn with (true/false)"},
+    {"texture_most", &Quality::texture_most, nullptr, nullptr, "the most pixels each way of any packed picture the card holds (0: all; 1024 a quarter of 2048's memory)"},
     {"gpu_cull", nullptr, nullptr, &Quality::gpu_cull, "merged cells' things culled by the card itself, where it can (GL 4.3) (true/false)"},
     {"proxies", nullptr, nullptr, &Quality::proxies, "still things of a room's cells drawn together, each cell in a call or two (true/false)"},
     {"lod", nullptr, nullptr, &Quality::lod, "a model far off drawn with fewer faces, where no pixel would show the difference (true/false)"},
@@ -164,6 +166,7 @@ Quality kept_to_bounds(Quality q) {
     q.bloom_threshold = std::clamp(q.bloom_threshold, 0.0f, 16.0f);
     q.exposure = std::clamp(q.exposure, 0.05f, 16.0f);
     q.reflection_scale = std::clamp(q.reflection_scale, 0.1f, 1.0f);
+    q.view_scale = std::clamp(q.view_scale, 0.4f, 1.0f);
     q.pixel = std::clamp(q.pixel, 1, 8);
     q.upscaler = std::clamp(q.upscaler, 0, 2);
     q.dlss_mode = std::clamp(q.dlss_mode, 0, 4);

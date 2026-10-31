@@ -460,3 +460,67 @@ placing by the story) is the agent's, by this list. Look at every result
    looking along it and into its doorways - 15 ms on the 4080 at 1080p,
    each over it profiled pass by pass before anything is cut.
 7. **To the PC** (section 12, 8).
+
+### 14. Guardrails and the lens (every place, from its first line)
+
+The mistakes UNLIT was found with are named by the engine, so that a place
+showing one is refused before anyone walks it - not found by a critic later.
+`sg::guard_faults(space, &graph)` (`sg/domains/Guard.hpp`) runs them all; every
+program prints them where it prints the rest (`GLWorldView::prepare`, each
+line `state <room>: <law>: ...` with the thing, the other thing and where, in
+metres). A project's laws pass (UNLIT_LAWS, the hotel's, a `*_laws` program)
+calls `guard_faults` for each of its spaces and fails on any, as built and
+after every take and give. Each is held by `sg_guard` (a tiny place that
+shows it, named; the same place mended, let be). **Every place is guarded**:
+its guardrails are its faults - validation names them, `sg::verify` refuses
+them, and a DSL edit that makes one is not made - unless it says
+`unguarded` with the reason in words (a place built before the guardrails,
+until it is mended; `unguarded` 1 with no reason is itself a fault).
+`SG_GUARD=1` guards even those: a laws pass run so lists what is left to mend.
+Nothing new starts unguarded.
+
+| Class | The law (Guard.hpp) | What a thing says when the law cannot know |
+| --- | --- | --- |
+| a sconce sunk in its wall, a switch off it; a wardrobe hovering, a chest sunk in the floor | `mount`: what hangs on a wall touches the nearest wall's face (off it > 1.5 cm floats; into it more than half its depth is sunk); a thing of furniture's size has the floor, or something lower it touches, at its foot | `mount` wall / floor / ceiling / free; unsaid, a thing named sconce / switch / socket / outlet is on a wall |
+| a skirting, dado, cornice, wainscot or rail run through a doorway | `opening`: nothing drawn crosses a doorway's opening (a walked portal, a hole) inside its jambs, over a 3 cm sill | `in_opening` 1: it belongs there (a leaf, a curtain); a door's own parts are named so (door, leaf, jamb, casing, frame, sill, lever, knob, handle, latch, bolt, lock, hinge) |
+| a door, or a door's frame, on a wall with nothing behind it; a doorway walked into nothing | `door`: a door's leaf or frame stands at a doorway; a walked portal is in a seam | `blind` 1: a false door on purpose |
+| Z-fighting: two floors, a rug on a floor, a shelf on a shelf, at a seam between joined rooms | `level`: no two tops (or bottoms) level within 2 mm, overlapping, of much one size (`coinciding` holds the upright faces; prepare also the slabs and the renderer's box); `seam`: a room's tops near a glued doorway and the other room's, carried through it, not level and overlapping (`seam_level_faults`) | `depth_layer`, or lift one a few mm; end each floor at the doorway's plane |
+| a thing set inside a solid; a given thing stood in a table | `inside`: no two solid drawn things inside each other by more than 3 cm each way, but kin (parent, `group`, parts of one recipe) | `in` <id>: it is in that on purpose (a shelf behind glass) |
+| walkable openings blocked | `walkway`: a walker steered at every walked doorway's middle from a pace inside reaches its plane (`sg::doorway_faults`); `space_faults`: through every hole of a space made one | `blind` 1 on a doorway not walked |
+| an invisible switch | `pad`: an unseen thing that is used (`use`, `pt_use`, `pad`) has a drawn thing within 5 cm (not the room's shell) | `bare` 1 |
+| a taken thing still casting a shadow, still drawn where it lay | `taken`: a thing that says `taken` or `hidden` is not drawn, casts nothing, is not mirrored or solid | take it away: `alive` false, or moved to who holds it - never only `solid` 0 |
+| the player climbing onto furniture | `climb`: no solid top is reachable from the floor by steps of the walker's `step` (from top to top) unless it says `climb` or `walk`; a walker that says a `step` over 0.36 m is a fault; the reach is checked at the step it has | `climb` 1 on a stair's tread (one named stair, tread, step or landing is one) |
+| a door's sound played eight times for one push | `sg::audio::note_cue(state, cue, t)` - one call for every one-shot any sound system starts (the engine's mixer calls it for its own; a game's own, as UNLIT's `unlit::Sounds`, calls it beside each cue): a cue started again at the same time, or three times in 0.3 s, by one state is a fault, said to stderr and kept in `cue_faults()` (`sg_audio`). And by hand: a sound is said by the one arrow that does the thing (the door's `push`), never by each part, each frame a key is down, or each functor that carries it; count the cues per action in a scripted run | - |
+| a screen's feed grey (the "after" set) | the lens: every screen's picture read back as it was last made; one flat colour (spread under 1%) is `blank`, a fault (`lens.json` `feeds`) | - |
+| a single black frame, the exposure hunting, flicker with a still camera | the lens's still eye (below): any black frame, any frame where more than 1% of the pixels change by 12/255 with nothing moving, more than two turns of the mean light is a fault | - |
+
+**Look before and after every placement: the lens.** Any program that draws
+through a `GLWorldView` takes `SG_LENS` (`src/gl/WorldLensSheet.cpp`): after its
+own first frames it looks at a point (`at=x,y,z;yaw=deg`) or a thing of the
+room it stands in (`thing=<id>`, by id or the end of one) from nine eyes round
+it - front, left, right, above, low, across, close, closer, far - holds a
+tenth still for `hold` seconds and measures every frame of it, marks where
+each of prepare's faults is in each picture, writes it all (`lens.json`, a png
+an eye) and ends the program. One start, ~10 s. `bright=N` (`--bright N`)
+lifts the exposure N times while it looks - a dark room seen; `clean=1`
+(`--clean`) takes the film's grain, readout noise and dither off. The still
+eye's first 24 frames are its settling and are not counted. It is read in
+8 by 8 blocks (grain, a pixel wide, averages away in a block and is reported
+apart, `grain`): a frame *flickers* where its blocks stand off both frames
+beside it the same way (a pop and back: faces fighting, a shadow redrawn); a
+*pop* is many blocks changing at once and staying changed (a light switched,
+a shadow or probe made again, a picture streamed in), said with its frame; a
+slow drift is neither. Every screen is read back: one
+flat colour is a blank screen. `tools/sg_lens.py` runs it on
+the card (through `reports/pt/tools/gpu.sh` when there) and lays `sheet.png`:
+
+```sh
+~/comfyui/venv2/bin/python tools/sg_lens.py --out /tmp/look --thing lamp_end_sconce \
+    --env UNLIT_HALL=2 -- ~/stategine/memory-leak-pt/build/unlit 14 none.png 960 540
+```
+
+It prints the verdict (black / flickering frames, exposure turns: `FAULT` or
+`steady`) and every fault with the eyes it is seen in, numbered as on the
+sheet. The program must run long enough: its warm frames (`--warm`, 40) +
+the still eye's (60 a second) + nine times `--settle` (8). The eyes are the
+lens's own copy of the room's camera: nothing of the world is written.

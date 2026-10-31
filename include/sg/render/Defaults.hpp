@@ -39,6 +39,9 @@ struct Quality {
     // or so a polished floor, 1 a mirror; a window's glass as glass does).
     bool reflections=true;
     float reflection_scale=0.5f;
+    // A view through a doorway drawn at `view_scale` of the screen's pixels each way and laid in scaled up (1: as the
+    // screen; 0.7: half the pixels - a doorway filling the screen costs what a second room does).
+    float view_scale=1.0f;
     // How many of the screen's pixels, each way, one pixel of the picture
     // takes: the view drawn at a part of the screen's size and laid on it
     // whole, each of its pixels a hard-edged square (1: the screen's own).
@@ -91,6 +94,11 @@ struct Quality {
     // world of many photographs is ready sooner, and holds on the card the
     // detail of what has been seen near. Off unless said.
     bool stream_textures=false;
+    // The most pixels, each way, of any packed picture the card holds: its
+    // finer levels never sent (0: all of them). A machine's choice for a
+    // card with little memory - 1024 holds a quarter of what 2048 does, and
+    // a photographed wall a metre or two off still has a pixel a pixel.
+    int texture_most=0;
     // Light traced along rays through the world where a look asks for it
     // (its scene pass's `trace` and `path`: docs/trace.md) - the sun's
     // shadows, the light from all round and what glossy things mirror. Off

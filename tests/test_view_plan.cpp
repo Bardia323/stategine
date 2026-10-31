@@ -227,6 +227,31 @@ void openings_covered() {
     const float some = sg::render::portal_occlusion(room, window, at, 1.0f, 0.5f, shut);
     require(std::fabs(some - 0.4f * whole) < 1e-4f && !shut, "a lattice keeps out what it covers of its box, and never shuts it");
 }
+// Whether what is beyond a doorway is drawn at all (both renderers ask the same: portal_in_view,
+// portal_shut_to): a doorway before the eye is seen, one behind it or well off to its side is not,
+// and a door shut in it hides the far side unless the eye stands in the doorway itself.
+void doorways_seen() {
+    sg::Spatial3D room(sg::Key{"doorways"});
+    sg::Element &door = room.portal(sg::Key{"door"}, {5.0, 1.0, 0.0}, 1.0, 2.0, 0.0);  // (facing +x and -x: across z)
+    sg::render::ViewCamera eye;
+    eye.eye = {0.0, 1.6, 0.0}, eye.fov = 70.0;
+    eye.forward = {1.0, 0.0, 0.0};
+    require(sg::render::portal_in_view(room, door, eye, 16.0 / 9.0), "a doorway straight ahead is seen");
+    eye.forward = {-1.0, 0.0, 0.0};
+    require(!sg::render::portal_in_view(room, door, eye, 16.0 / 9.0), "a doorway behind the eye is not");
+    eye.forward = {0.0, 0.0, 1.0};
+    require(!sg::render::portal_in_view(room, door, eye, 16.0 / 9.0), "nor one well off to its side");
+    eye.forward = {0.7071, 0.0, 0.7071};
+    require(sg::render::portal_in_view(room, door, eye, 16.0 / 9.0), "one at the edge of what it sees is");
+    sg::Element &ball = room.portal(sg::Key{"ball"}, {0.0, 1.0, 8.0}, 1.0, 1.0, 0.0);
+    ball.params.set("ball", 1.0);
+    eye.forward = {0.0, 0.0, 1.0};
+    require(sg::render::portal_in_view(room, ball, eye, 16.0 / 9.0), "a ball before the eye is seen");
+    require(!sg::render::portal_shut_to(door, {0.0, 1.6, 0.0}), "an open door hides nothing");
+    door.params.set("closed", 1.0);
+    require(sg::render::portal_shut_to(door, {0.0, 1.6, 0.0}), "a shut door hides what is beyond it");
+    require(!sg::render::portal_shut_to(door, {5.1, 1.6, 0.0}), "but not from an eye in the doorway itself");
+}
 } // namespace
 int main() {
     try {
@@ -275,6 +300,7 @@ int main() {
         sun_box_steps();
         sun_boxes_hold_the_view();
         openings_covered();
+        doorways_seen();
         std::cout << "reconstruction, graph supremacy and one time ontology pass\n";
         return 0;
     } catch (const std::exception &ex) {

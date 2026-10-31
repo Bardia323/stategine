@@ -1,6 +1,8 @@
 #include <cstdio>
 #include <cmath>
 #include "sg/domains/Spatial.hpp"
+#include "sg/domains/Guard.hpp"
+#include <cstdlib>
 
 #include <algorithm>
 #include <set>
@@ -278,6 +280,23 @@ std::vector<std::string> Spatial3D::faults() const {
     std::vector<std::string> out = probe_faults(*this), fogs = fog_faults(*this), wear = wear_faults(*this);
     out.insert(out.end(), fogs.begin(), fogs.end());
     out.insert(out.end(), wear.begin(), wear.end());
+    // Every place is guarded (sg/domains/Guard.hpp; docs/workflows.md
+    // section 14): its guardrails are its faults, so validation names them,
+    // verify refuses them and an edit that makes one is not made - unless it
+    // says `unguarded` with the reason why (a place built before the
+    // guardrails, until it is mended). SG_GUARD=1 guards even those.
+    static const bool all_guarded = [] {
+        const char* g = std::getenv("SG_GUARD");
+        return g && *g == '1';
+    }();
+    const std::string why_not = params().has(Key{"unguarded"}) ? params().get_or<std::string>(Key{"unguarded"}, "") : std::string();
+    const bool unguarded = params().has(Key{"unguarded"}) && !why_not.empty() && why_not != "0";
+    if (params().has(Key{"unguarded"}) && !unguarded)
+        out.push_back("says `unguarded` without a reason: say why, in words (`unguarded` \"built before the guardrails: ...\"), or be guarded");
+    if (all_guarded || !unguarded) {
+        const std::vector<std::string> guard = guard_faults(*this);
+        out.insert(out.end(), guard.begin(), guard.end());
+    }
     // Its eye - whoever walks it - stands in it, or near: a room that says
     // how big it is, walled (no sky), with its eye far outside its box -
     // farther off it than twice its own size - has it stood by a number

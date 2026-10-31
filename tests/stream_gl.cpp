@@ -58,6 +58,17 @@ int main() {
     t.bind(0);
     check(t.finest() == 0, "and the next frame, the rest");
 
+    // Held no finer than 512 (Quality::texture_most): its finest level never sent, streamed or not.
+    {
+        sg::gl::Texture held;
+        held.create_packed(packed, false, 512);
+        check(held.finest() == 1 && held.finest_held() == 1, "held no finer than 512: from its second level (" + std::to_string(held.finest()) + ")");
+        sg::gl::Texture both;
+        both.create_packed(packed, true, 512);
+        sg::gl::Texture::stream_budget = std::size_t{64} << 20;
+        both.bind(0);
+        check(both.finest() == 1, "streamed and held no finer than 512: drawn with, it comes to 512 and no further (" + std::to_string(both.finest()) + ")");
+    }
     // A box wearing one: streamed, it comes to the picture it has whole.
     sg::StateGraph g;
     auto& room = g.add<sg::Spatial3D>("room");

@@ -74,12 +74,24 @@ private:
 
 // An RGBA texture the CPU refills - how a 2D state's raster becomes a surface
 // inside the 3D world. Uploads only when the content actually changed.
+// What the card holds of what this layer made, by kind, in bytes: as made,
+// less what was let go (pictures and shapes are never let go; targets and
+// layered pictures are). For finding what fills a card - not a law; the
+// driver's own memory and what it keeps beside each is not here.
+struct CardHeld {
+    long long textures = 0, packed = 0, meshes = 0, targets = 0, layers = 0, pictures = 0, cubes = 0;
+};
+CardHeld card_held();
+// (SG_SAY_TEXTURES: each plain picture made said as it is made - its size and
+// what it is for, as whoever makes it says in `Texture::making`.)
+
 class Texture {
 public:
     // With mipmaps, a detailed texture seen small or at a grazing angle - print
     // on a sheet across the room - averages out instead of shimmering.
     // `pixel`: pixel art - each texel a hard square, nearest, repeating.
     void create(int w, int h, bool mipmaps = false, bool srgb = false, bool pixel = false);
+    inline static const char* making = "a picture";  // what the next made is for (SG_SAY_TEXTURES)
 
     // Its picture given again (w x h RGBA). One with mipmaps goes through a
     // buffer of its own (GL_PIXEL_UNPACK_BUFFER, taken anew each time), so
@@ -95,9 +107,12 @@ public:
     // while the frame may still send that many bytes (`stream_budget`, set
     // each frame by whoever draws) - so a picture first seen far off costs
     // what it shows, and gains its detail over the next frames it is seen.
-    void create_packed(const render::Packed& p, bool streamed = false);
+    // `most`: no level finer than that many pixels each way is ever sent
+    // (Quality::texture_most; 0: all).
+    void create_packed(const render::Packed& p, bool streamed = false, int most = 0);
     // The finest level sent yet (0: all of it), and what a frame may send.
     int finest() const { return sent_from_; }
+    int finest_held() const { return finest_; }  // the finest it will ever hold (texture_most)
     inline static std::size_t stream_budget = 0;
     // Whether this card takes packed pictures (BPTC). Asked of the current
     // context, once.
@@ -124,6 +139,8 @@ private:
     // Its finer levels still to send (streamed), and the finest sent.
     mutable std::shared_ptr<const render::Packed> pending_;
     mutable int sent_from_ = 0;
+    int finest_ = 0;
+    mutable long long held_ = 0;
     void send_finer() const;
 };
 
@@ -313,6 +330,12 @@ public:
     bool has_third() const { return third_tex_ != 0 || third_rb_ != 0; }
     void third(bool drawn) const;
     void third_to(const RenderTarget& dst) const;
+    // And a fourth (attachment 3), the same way: each pixel's diffuse colour,
+    // for the light bounced onto it from what is near (the cascades).
+    void add_fourth(GLenum internal_format);
+    bool has_fourth() const { return fourth_tex_ != 0 || fourth_rb_ != 0; }
+    void fourth(bool drawn) const;
+    void fourth_to(const RenderTarget& dst) const;
     // Its pictures' GL names (0 where it has none as a texture).
     GLuint color_texture() const { return color_tex_; }
     GLuint depth_texture() const { return depth_tex_; }
@@ -323,12 +346,13 @@ public:
 
 private:
     GLuint fbo_ = 0, color_tex_ = 0, color_rb_ = 0, depth_rb_ = 0, depth_tex_ = 0;
-    GLuint second_tex_ = 0, second_rb_ = 0, third_tex_ = 0, third_rb_ = 0;
-    mutable bool second_on_ = false, third_on_ = false;
+    GLuint second_tex_ = 0, second_rb_ = 0, third_tex_ = 0, third_rb_ = 0, fourth_tex_ = 0, fourth_rb_ = 0;
+    mutable bool second_on_ = false, third_on_ = false, fourth_on_ = false;
     void draw_buffers() const;
     void add_beside(int at, GLenum internal_format, GLuint& tex, GLuint& rb);
     int w_ = 0, h_ = 0, samples_ = 0;
     bool mipmapped_ = false;
+    long long held_ = 0;  // what it holds on the card (card_held)
 };
 
 // Depth-only target sampled with hardware comparison, for shadows.

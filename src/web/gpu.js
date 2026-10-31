@@ -3,7 +3,11 @@
 globalThis.sgGPU={create(selector){
   const canvas=document.querySelector(selector);
   if(!canvas)throw Error('WebGPU canvas absent');
-  let device=null,context=null,closed=false,pending=0,generation=0;
+  let device=null,context=null,closed=false,pending=0,generation=0,drawn=0;
+  // (globalThis.sgGPUPresent='readback': the picture made in a texture of its own, read back and laid on the
+  // canvas through a 2D context - where nothing composites a WebGPU canvas, as headless Chrome's software
+  // compositor does not: slow, and only for that.)
+  const readback=globalThis.sgGPUPresent==='readback';let shown=null,shownBuffer=null,reading=false,flat=null;
   const errors=[],meshes=new Map(),textures=new Map(),targets=new Map(),custom=new Map();
   let sceneLayout,postLayout,shadowLayout,scenePipeline,builtinScene,shadowPipeline,postPipelines,sampler,pixelSampler,mipSampler,compareSampler,white,dummyShadow,packs=false;
   const sceneBuffers=[{arrayStride:32,attributes:[{shaderLocation:0,offset:0,format:'float32x3'},{shaderLocation:1,offset:12,format:'float32x3'},{shaderLocation:2,offset:24,format:'float32x2'}]},
@@ -16,23 +20,29 @@ globalThis.sgGPU={create(selector){
     ...(shadow?{fragment:{module,entryPoint:'fs_shadow',targets:[]}}:{fragment:{module,entryPoint:'fs_main',targets:[{format:'rgba16float'},{format:'rgba16float'}]}}),
     primitive:{topology:'triangle-list',cullMode:'none'},depthStencil:{format:'depth32float',depthWriteEnabled:true,depthCompare:'less'}});
   const createPost=(module,entry,format)=>device.createRenderPipeline({layout:device.createPipelineLayout({bindGroupLayouts:[postLayout]}),vertex:{module,entryPoint:'vs_main'},fragment:{module,entryPoint:entry,targets:[{format,...(entry==='composite'||entry==='fs_main'||entry==='bloom_up'?{blend:{color:entry==='bloom_up'?{srcFactor:'constant',dstFactor:'constant',operation:'add'}:{srcFactor:'constant',dstFactor:'one-minus-constant'},alpha:{srcFactor:'one',dstFactor:'zero'}}}:{})}]},primitive:{topology:'triangle-list'}});
-  const destroyTarget=t=>{for(const value of Object.values(t))for(const v of Array.isArray(value)?value:[value])v?.destroy?.();};
+  // (One array of shadow maps for every room: the rooms are drawn one after another, each its maps then its scene -
+// 24 layers, a bulb taking six, as WebGPU.cpp hands them out.)
+  let shadows=null;const sharedShadow=()=>shadows||(shadows=device.createTexture({size:[1024,1024,24],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING}));
+  const destroyTarget=t=>{for(const [key,value] of Object.entries(t))if(key!=='shadow')for(const v of Array.isArray(value)?value:[value])v?.destroy?.();};
   const dispose=()=>{
     for(const m of meshes.values()){m.buffer.destroy();m.index.destroy();}for(const t of textures.values())t.texture.destroy();
     for(const t of targets.values())destroyTarget(t);
-    meshes.clear();textures.clear();targets.clear();custom.clear();white?.destroy();dummyShadow?.destroy();
+    meshes.clear();textures.clear();targets.clear();custom.clear();white?.destroy();dummyShadow?.destroy();shadows?.destroy();shadows=null;
+    shown?.destroy();shownBuffer?.destroy();shown=shownBuffer=null;reading=false;
     device=null;context=null;
   };
   const init=async()=>{
     const mine=++generation;pending++;
     try{
       if(!navigator.gpu)throw Error('WebGPU is unavailable');
-      const adapter=await navigator.gpu.requestAdapter();if(!adapter)throw Error('WebGPU adapter unavailable');
+      const adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});if(!adapter)throw Error('WebGPU adapter unavailable');
+      // (Which card it is, said once a device is asked of it: a software one - SwiftShader - draws, slowly, or is taken away.)
+      {const i=adapter.info||{};console.log('WebGPU adapter: '+[i.vendor,i.architecture,i.device,i.description].filter(Boolean).join(' / ')+(adapter.isFallbackAdapter||i.isFallbackAdapter?' (fallback)':''));}
       const bc=adapter.features.has('texture-compression-bc');
       const next=await adapter.requestDevice(bc?{requiredFeatures:['texture-compression-bc']}:{});if(closed||mine!==generation){next.destroy();return;}packs=bc;
       device=next;device.lost.then(info=>{if(!closed&&mine===generation){errors.push('WebGPU device lost: '+info.message);dispose();init();}});
       device.onuncapturederror=e=>errors.push(e.error.message);
-      context=canvas.getContext('webgpu');context.configure({device,format:navigator.gpu.getPreferredCanvasFormat(),alphaMode:'opaque'});
+      if(!readback){context=canvas.getContext('webgpu');context.configure({device,format:navigator.gpu.getPreferredCanvasFormat(),alphaMode:'opaque'});}
       const lookUniform={binding:6,visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}};
       const uniform={binding:0,visibility:GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}};
       sceneLayout=device.createBindGroupLayout({entries:[uniform,lookUniform,{binding:1,visibility:GPUShaderStage.FRAGMENT,sampler:{type:'filtering'}},{binding:2,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'float'}},{binding:3,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'depth',viewDimension:'2d-array'}},{binding:4,visibility:GPUShaderStage.FRAGMENT,sampler:{type:'comparison'}}]});
@@ -40,7 +50,7 @@ globalThis.sgGPU={create(selector){
       postLayout=device.createBindGroupLayout({entries:[uniform,lookUniform,{binding:1,visibility:GPUShaderStage.FRAGMENT,sampler:{type:'filtering'}},...Array.from({length:3},(_,i)=>({binding:2+i,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'float'}})),{binding:5,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'depth'}}]});
       sampler=device.createSampler({minFilter:'linear',magFilter:'linear'});mipSampler=device.createSampler({minFilter:'linear',magFilter:'linear',mipmapFilter:'linear',maxAnisotropy:8});pixelSampler=device.createSampler({minFilter:'nearest',magFilter:'nearest',addressModeU:'repeat',addressModeV:'repeat'});compareSampler=device.createSampler({compare:'less-equal',minFilter:'linear',magFilter:'linear'});
       white=texture(1,1,'rgba8unorm',GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST);device.queue.writeTexture({texture:white},new Uint8Array([255,255,255,255]),{bytesPerRow:4},[1,1]);
-      dummyShadow=device.createTexture({size:[1,1,8],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
+      dummyShadow=device.createTexture({size:[1,1,24],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
       const scene=device.createShaderModule({code:sgWGSL.scene}),post=device.createShaderModule({code:sgWGSL.post});
       const reports=await Promise.all([scene.getCompilationInfo(),post.getCompilationInfo()]);
       const failed=reports.flatMap(r=>r.messages.filter(m=>m.type==='error').map(m=>m.message));if(failed.length)throw Error(failed.join('\n'));
@@ -51,7 +61,7 @@ globalThis.sgGPU={create(selector){
   const target=(id,w,h)=>{
     const old=targets.get(id);if(old&&old.w===w&&old.h===h)return old;
     if(old)destroyTarget(old);
-    const t={w,h,hdr:texture(w,h,'rgba16float'),normal:texture(w,h,'rgba16float'),depth:texture(w,h,'depth32float'),shadow:device.createTexture({size:[1024,1024,8],format:'depth32float',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING}),ao:texture(w,h,'rgba16float'),aoBlur:texture(w,h,'rgba16float'),lit:texture(w,h,'rgba16float'),bright:texture(w,h,'rgba16float'),blur:texture(w,h,'rgba16float'),out:texture(w,h,'rgba8unorm'),previous:texture(w,h,'rgba8unorm')};t.chain=[];for(let cw=Math.floor(w/2),ch=Math.floor(h/2);t.chain.length<6&&cw>=8&&ch>=8;cw=Math.floor(cw/2),ch=Math.floor(ch/2))t.chain.push(texture(cw,ch,'rgba16float'));targets.set(id,t);return t;
+    const t={w,h,hdr:texture(w,h,'rgba16float'),normal:texture(w,h,'rgba16float'),depth:texture(w,h,'depth32float'),shadow:sharedShadow(),ao:texture(w,h,'rgba16float'),aoBlur:texture(w,h,'rgba16float'),lit:texture(w,h,'rgba16float'),bright:texture(w,h,'rgba16float'),blur:texture(w,h,'rgba16float'),out:texture(w,h,'rgba8unorm'),previous:texture(w,h,'rgba8unorm')};t.chain=[];for(let cw=Math.floor(w/2),ch=Math.floor(h/2);t.chain.length<6&&cw>=8&&ch>=8;cw=Math.floor(cw/2),ch=Math.floor(ch/2))t.chain.push(texture(cw,ch,'rgba16float'));targets.set(id,t);return t;
   };
   const picture=t=>{
     let old=textures.get(t.key);
@@ -128,18 +138,35 @@ globalThis.sgGPU={create(selector){
         const error=await device.popErrorScope();if(error){errors.push(s.name+': '+error.message);if(!fallback)scenePipeline=null;}else if(pipeline&&mine===generation)custom.set(s.key,pipeline);
       }}finally{pending--;}return true;
     },
-    render(rooms,w,h){if(!device||!scenePipeline||pending)return false;canvas.width=w;canvas.height=h;const enc=device.createCommandEncoder(),transient=[];
+    render(rooms,w,h){if(!device||!scenePipeline||pending)return false;if(canvas.width!==w)canvas.width=w;if(canvas.height!==h)canvas.height=h;const enc=device.createCommandEncoder(),transient=[];
       const dw=rooms[0].width||w,dh=rooms[0].height||h;for(let i=0;i<rooms.length;i++)target(rooms[i].key,i?rooms[i].width:dw,i?rooms[i].height:dh);
       for(const room of rooms)for(const batch of room.batches){if(batch.mesh.vertices)mesh(batch.mesh);if(batch.picture?.bytes)picture(batch.picture);}
-      for(const t of targets.values()){const previous=t.previous;t.previous=t.out;t.out=previous;}
+      for(const room of rooms){const t=targets.get(room.key);if(t){const previous=t.previous;t.previous=t.out;t.out=previous;}}  // (a target not drawn this frame - a feed not due - keeps its picture)
       for(let i=1;i<rooms.length;i++)renderRoom(enc,rooms[i],rooms[i].width,rooms[i].height,null,transient);
-      renderRoom(enc,rooms[0],dw,dh,context.getCurrentTexture().createView(),transient);
+      let out;
+      if(readback){
+        if(!shown||shown.width!==w||shown.height!==h){shown?.destroy();shownBuffer?.destroy();
+          shown=device.createTexture({size:[w,h],format:navigator.gpu.getPreferredCanvasFormat(),usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});
+          shownBuffer=device.createBuffer({size:Math.ceil(w*4/256)*256*h,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});reading=false;}
+        out=shown.createView();
+      }else out=context.getCurrentTexture().createView();
+      renderRoom(enc,rooms[0],dw,dh,out,transient);
+      const copy=readback&&!reading;
+      if(copy)enc.copyTextureToBuffer({texture:shown},{buffer:shownBuffer,bytesPerRow:Math.ceil(w*4/256)*256},[w,h]);
       device.queue.submit([enc.finish()]);
+      if(copy){reading=true;const buf=shownBuffer,row=Math.ceil(w*4/256)*256,bgra=navigator.gpu.getPreferredCanvasFormat().startsWith('bgra');
+        buf.mapAsync(GPUMapMode.READ).then(()=>{
+          if(buf!==shownBuffer){reading=false;return;}
+          const src=new Uint8Array(buf.getMappedRange()),img=new ImageData(w,h),dst=img.data;
+          for(let y=0;y<h;y++){let a=y*row,b=y*w*4;for(let x=0;x<w;x++,a+=4,b+=4){dst[b]=src[a+(bgra?2:0)];dst[b+1]=src[a+1];dst[b+2]=src[a+(bgra?0:2)];dst[b+3]=255;}}
+          buf.unmap();reading=false;(flat||(flat=canvas.getContext('2d'))).putImageData(img,0,0);
+        },()=>{reading=false;});}
       const usedMeshes=new Set(),usedTextures=new Set(),usedTargets=new Set();
       for(const room of rooms){usedTargets.add(room.key);for(const batch of room.batches){usedMeshes.add(batch.mesh.key);if(batch.picture)usedTextures.add(batch.picture.key);if(batch.target)usedTargets.add(batch.target);}}
-      const retired=[];
-      for(const [key,value]of meshes)if(!usedMeshes.has(key)){meshes.delete(key);retired.push(()=>{value.buffer.destroy();value.index.destroy();});}
-      for(const [key,value]of textures)if(!usedTextures.has(key)){textures.delete(key);retired.push(()=>value.texture.destroy());}
+      // (Held by the frame that last used it, let go after eight drawn frames without - as WebGPU.cpp counts.)
+      const retired=[];drawn++;
+      for(const [key,value]of meshes){if(usedMeshes.has(key))value.last=drawn;else if(drawn-(value.last??drawn)>8){meshes.delete(key);retired.push(()=>{value.buffer.destroy();value.index.destroy();});}}
+      for(const [key,value]of textures){if(usedTextures.has(key))value.last=drawn;else if(drawn-(value.last??drawn)>8){textures.delete(key);retired.push(()=>value.texture.destroy());}}
       for(const [key,value]of targets)if(!usedTargets.has(key)){targets.delete(key);retired.push(()=>destroyTarget(value));}
       device.queue.onSubmittedWorkDone().then(()=>{for(const b of transient)b.destroy();for(const release of retired)release();});return true;},
     recreate(){device?.destroy();dispose();errors.length=0;init();},

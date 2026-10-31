@@ -27,6 +27,11 @@ Mat4 web_depth(Mat4 m) {
     return m;
 }
 void matrix(std::vector<float> &f, std::size_t at, const Mat4 &m) { std::copy(m.m, m.m + 16, f.begin() + at); }
+// The frame's block (shaders.js's Frame), in floats: its shadow maps' matrices, biases and caster
+// sides (a layer each), the doorways' light, and each light's maps (its first layer, how many).
+constexpr std::size_t kShadowLayers = 24, kShadowSize = 1024;
+constexpr std::size_t kShadows = 776, kBias = kShadows + kShadowLayers * 16, kCaster = kBias + kShadowLayers * 4,
+                      kDoors = kCaster + kShadowLayers * 4, kShadowOf = kDoors + 4 * 20, kFrameFloats = kShadowOf + 24 * 4;
 } // namespace
 struct WebGPUView::Impl {
     val handle;
@@ -45,9 +50,20 @@ struct WebGPUView::Impl {
     // and revision - as of the last frame it drew, which kept exactly what
     // that frame used (and let the rest go). What this frame uses, the first
     // use of each carrying its data only when the browser does not hold it.
-    std::set<std::string> held_meshes, used_meshes;
-    std::map<std::string, std::string> held_pictures, used_pictures;
-    unsigned held_generation = 0;
+    // Held: by the frame (drawn) that last used it, let go once kKeepFrames drawn frames have not -
+    // so a feed drawn only now and then (feed_rate) keeps what it shows between. gpu.js keeps them
+    // by the same count.
+    static constexpr unsigned kKeepFrames = 8;
+    std::map<std::string, unsigned> held_meshes;
+    std::set<std::string> used_meshes;
+    std::map<std::string, std::pair<std::string, unsigned>> held_pictures;
+    std::map<std::string, std::string> used_pictures;
+    unsigned held_generation = 0, drawn = 0;
+    // Feeds drawn at a rate of their own (a panel's `feed_rate`, Hz), no more often than the
+    // view's cap (set_feed_rate: a machine's choice, as render_scale is): how long since each was
+    // drawn, in the frames' own intervals - execution's pacing, never a world's time.
+    float feed_rate_cap = 0.0f;
+    std::map<std::string, double> feed_age;
     // The shapes every frame draws, made once.
     const std::vector<float> cube = render::cube_vertices(), quad = render::quad_vertices(),
                              sphere = render::sphere_vertices();
@@ -80,7 +96,7 @@ struct WebGPUView::Impl {
     bool send_picture(const std::string &key, const std::string &revision) {
         if (!used_pictures.emplace(key, revision).second) return false;
         const auto held = held_pictures.find(key);
-        return held == held_pictures.end() || held->second != revision;
+        return held == held_pictures.end() || held->second.first != revision;
     }
     MissingShader policy = MissingShader::Refuse;
     explicit Impl(const std::string &selector) : handle(val::global("sgGPU").call<val>("create", selector)) {
@@ -151,6 +167,14 @@ struct WebGPUView::Impl {
         t.set("bytes", copy(surface.raster(), "Uint8Array"));
         return t;
     }
+    // Whether a feed is to be drawn this frame: at its rate (its panel's `feed_rate`, capped by the
+    // view's), or every frame where neither says; always the first time.
+    bool feed_due(const std::string &feed, const Element &panel) {
+        double rate = panel.params.num("feed_rate", 0.0);
+        if (feed_rate_cap > 0) rate = rate > 0 ? std::min<double>(rate, feed_rate_cap) : feed_rate_cap;
+        const auto age = feed_age.find(feed);
+        return rate <= 0 || age == feed_age.end() || age->second + 1e-6 >= 1.0 / rate;
+    }
     val room(const StateGraph &g, const State &root, int w, int h, const render::ViewCamera *eye,
              std::vector<HalfSpace> clips, unsigned depth, val &all, const std::string &route, Key entered = {}) {
         const auto derived = render::view_plan(g, root);
@@ -158,7 +182,7 @@ struct WebGPUView::Impl {
         out.set("key", root.id().str() + ":" + route);
         out.set("width", w);
         out.set("height", h);
-        std::vector<float> frame(1048, 0);
+        std::vector<float> frame(kFrameFloats, 0);
         const LookState *look = nullptr;
         render::ViewCamera camera;
         const bool flat = derived.rooms.empty();
@@ -269,14 +293,26 @@ struct WebGPUView::Impl {
         });
         const auto own = std::min<std::size_t>(lights.size(), 4);
         auto incoming = flat ? std::vector<render::DrawLight>{} : render::boundary_lights(g, derived.rooms[0], fader);
-        const unsigned shadowed = static_cast<unsigned>(std::min<std::size_t>(own + incoming.size(), 8));
-        for (std::size_t i = shadowed - own; i < incoming.size(); ++i)
-            incoming[i].power *= incoming[i].open;
+        const std::size_t incoming_from = own, incoming_to = own + incoming.size();
         lights.insert(lights.begin() + own, incoming.begin(), incoming.end());
         if (lights.size() > 24)
             lights.resize(24);
+        // Shadow maps, in that order, while kShadowLayers last: a bulb six (a cube round it:
+        // render::shadow_faces / shadow_face, as the GL view's), a cone or a sun one; a light that
+        // stands in for bounced light none. Light let in at a doorway with no map of its own comes
+        // in as open as the doorway is.
+        std::vector<int> layer_of(lights.size(), -1), faces_of(lights.size(), 0);
+        unsigned layers = 0;
+        for (std::size_t i = 0; i < lights.size(); ++i) {
+            if (lights[i].indirect) continue;
+            const int n = render::shadow_faces(lights[i]);
+            if (layers + static_cast<unsigned>(n) > kShadowLayers) continue;
+            layer_of[i] = static_cast<int>(layers), faces_of[i] = n, layers += static_cast<unsigned>(n);
+        }
+        for (std::size_t i = incoming_from; i < incoming_to && i < lights.size(); ++i)
+            if (layer_of[i] < 0) lights[i].power *= lights[i].open;
         frame[22] = static_cast<float>(lights.size());
-        frame[442] = static_cast<float>(shadowed);
+        frame[442] = static_cast<float>(layers);
         for (std::size_t i = 0; i < lights.size(); ++i) {
             const auto &l = lights[i];
             frame[88 + i * 12] = l.pos.x;
@@ -311,26 +347,32 @@ struct WebGPUView::Impl {
             frame[681 + i * 4] = l.gate_across.z;
             frame[682 + i * 4] = l.gate_h;
             frame[683 + i * 4] = l.gated ? 1 : 0;
-            if (i < shadowed) {
-                frame[936 + i * 4] = l.gated ? l.gate_in.x : 0;
-                frame[937 + i * 4] = l.gated ? l.gate_in.y : 0;
-                frame[938 + i * 4] = l.gated ? l.gate_in.z : 0;
-                frame[939 + i * 4] = l.gated ? .08f - spatial::projection::dot(l.gate_in, l.gate_at) : 1;
-                float bias = 1;
-                const auto m = web_depth(render::shadow_projection(l, camera, 1024, bias));
-                matrix(frame, 776 + i * 16, m);
-                frame[904 + i * 4] = bias;
+            if (layer_of[i] >= 0) {
+                const std::size_t first = static_cast<std::size_t>(layer_of[i]);
+                frame[kShadowOf + i * 4] = static_cast<float>(first);
+                frame[kShadowOf + 1 + i * 4] = static_cast<float>(faces_of[i]);
+                for (int face = 0; face < faces_of[i]; ++face) {
+                    const std::size_t k = first + static_cast<std::size_t>(face);
+                    frame[kCaster + k * 4] = l.gated ? l.gate_in.x : 0;
+                    frame[kCaster + 1 + k * 4] = l.gated ? l.gate_in.y : 0;
+                    frame[kCaster + 2 + k * 4] = l.gated ? l.gate_in.z : 0;
+                    frame[kCaster + 3 + k * 4] = l.gated ? .08f - spatial::projection::dot(l.gate_in, l.gate_at) : 1;
+                    float bias = 1;
+                    const auto m = web_depth(faces_of[i] == 6 ? render::shadow_face(l, face) : render::shadow_projection(l, camera, static_cast<int>(kShadowSize), bias));
+                    matrix(frame, kShadows + k * 16, m);
+                    frame[kBias + k * 4] = bias;
+                }
             }
         }
-        if (shadowed)
-            std::copy(frame.begin() + 776, frame.begin() + 792, frame.begin() + 376);
+        if (layers)
+            std::copy(frame.begin() + kShadows, frame.begin() + kShadows + 16, frame.begin() + 376);
 
         if (!flat) {
             const auto doors = render::boundary_ambient(g, derived.rooms[0], fader);
             frame[444] = static_cast<float>(doors.size());
             for (std::size_t i = 0; i < doors.size(); ++i) {
                 const auto &d = doors[i];
-                const std::size_t at = 968 + i * 20;
+                const std::size_t at = kDoors + i * 20;
                 frame[at] = d.at.x;
                 frame[at + 1] = d.at.y;
                 frame[at + 2] = d.at.z;
@@ -529,6 +571,11 @@ struct WebGPUView::Impl {
                     append("cube", cube, body.model, body.colour, body.roughness, 0, 0, val::null(), {}, false, 0);
                 if (portal.seam && portal.seam->name == entered)
                     continue;
+                // Nothing beyond a doorway or on a screen the eye cannot see - out of its view, facing
+                // away, or a door shut in it - is made at all (the shared tests, as the GL view's).
+                if (!opens_from(e, camera.eye) || !render::portal_in_view(root, e, camera, static_cast<double>(w) / h) ||
+                    render::portal_shut_to(e, camera.eye))
+                    continue;
                 val image = val::null();
                 std::string feed;
                 bool feedback = false;
@@ -572,9 +619,12 @@ struct WebGPUView::Impl {
                     feed = guest->id().str() + ":" + path;
                     if (portal.feed && active_feeds.count(feed)) {
                         feedback = true;
+                    } else if (portal.feed && !finished_feeds.count(feed) && !feed_due(feed, *dimensions)) {
+                        // (Not due: its last picture kept, shown as it is.)
+                        finished_feeds.insert(feed);
                     } else if (!portal.feed || !finished_feeds.count(feed)) {
                         if (portal.feed)
-                            active_feeds.insert(feed);
+                            active_feeds.insert(feed), feed_age[feed] = 0;
                         auto child = this->room(g, *guest, gw, gh, &farCamera, std::move(far),
                                                 portal.feed ? depth : depth + 1, all, path,
                                                 portal.feed   ? Key{}
@@ -714,6 +764,7 @@ void WebGPUView::render(const StateGraph &g, const State &root, int w, int h, do
         impl_->held_generation = impl_->resource_generation;
     }
     impl_->used_meshes.clear(), impl_->used_pictures.clear();
+    for (auto &age : impl_->feed_age) age.second += dt;
     auto rooms = val::array();
     rooms.set(0, val::null());
     // (Drawn at a part of the canvas's pixels: the room that size, shown on all of it.)
@@ -724,10 +775,16 @@ void WebGPUView::render(const StateGraph &g, const State &root, int w, int h, do
     // Drawn, the browser holds what this frame used - and only that (what
     // a frame does not use it lets go); not drawn, what it holds is as it was.
     if (!impl_->handle.call<bool>("render", rooms, w, h)) return;
-    impl_->held_meshes.swap(impl_->used_meshes);
-    impl_->held_pictures.swap(impl_->used_pictures);
+    const unsigned now = ++impl_->drawn;
+    for (const std::string &m : impl_->used_meshes) impl_->held_meshes[m] = now;
+    for (const auto &p : impl_->used_pictures) impl_->held_pictures[p.first] = {p.second, now};
+    for (auto it = impl_->held_meshes.begin(); it != impl_->held_meshes.end();)
+        it = now - it->second > Impl::kKeepFrames ? impl_->held_meshes.erase(it) : std::next(it);
+    for (auto it = impl_->held_pictures.begin(); it != impl_->held_pictures.end();)
+        it = now - it->second.second > Impl::kKeepFrames ? impl_->held_pictures.erase(it) : std::next(it);
 }
 void WebGPUView::bind_surface(Key p, Surface2D *s) { impl_->surfaces[p] = s; }
+void WebGPUView::set_feed_rate(float hz) { impl_->feed_rate_cap = std::isfinite(hz) && hz > 0 ? hz : 0.0f; }
 void WebGPUView::set_render_scale(float scale) { impl_->render_scale = std::isfinite(scale) ? std::clamp(scale, 0.5f, 1.0f) : 1.0f; }
 void WebGPUView::recreate() {
     impl_->configured = false;

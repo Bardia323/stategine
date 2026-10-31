@@ -333,6 +333,28 @@ int main() {
         int carried = 0;
         for (int i = 0; i < 4; ++i) frame(1), carried += cv.times().captures;
         check(carried > 0, "a lamp carried: the captures are taken again, a face a frame");
+        // What is not drawn - a marker a world keeps its own reckoning in, changing every frame - and what only
+        // the eye sees of a thing (how much it mirrors) take nothing again; a drawn thing moved, once it has
+        // stood a while, does.
+        {
+            for (int i = 0; i < 400; ++i) frame(1);  // (the carried lamp's faces all taken, settled)
+            sg::Element& tally = box.add_element(sg::Key{"box.tally"}, sg::Key{"marker"});
+            (void)tally;
+            for (int i = 0; i < 400; ++i) frame(1);  // (the new make-up taken, settled)
+            int idle = 0;
+            for (int i = 0; i < 400; ++i) {
+                box.element(sg::Key{"box.tally"}).params.set("count", static_cast<double>(i));
+                box.element(sg::Key{"mirror"}).params.set("reflects", (i / 50) % 2 ? 0.2 : 0.3);
+                frame(1);
+                idle += cv.times().captures;
+            }
+            std::printf("  a marker counting, a floor's mirroring changed: %d faces taken again\n", idle);
+            check(idle == 0, "a marker's numbers and how much a floor mirrors take nothing again");
+            box.element(sg::Key{"stripe"}).params.set(sg::keys::x, 1.5);
+            int moved_taken = 0;
+            for (int i = 0; i < 400; ++i) frame(1), moved_taken += cv.times().captures;
+            check(moved_taken > 0, "a drawn thing moved: once it has stood, the captures are taken again");
+        }
         // No probes (gi 0): what it asks for has nothing to be taken from - drawn as without.
         box.params().set("gi", 0.0);
         const auto none = frame(4);

@@ -112,6 +112,48 @@ int seen_the_same() {
     return failures;
 }
 
+// Six boxes, each wearing a texture of its own that says the same photograph
+// of dirt: the card holds that photograph once, not six times.
+int wear_held_once() {
+    const int W = 320, H = 180;
+    sg::Texture::set_reader([](const std::string& path, int& w, int& h, std::vector<unsigned char>& rgba) {
+        if (path.find("grime") == std::string::npos) return false;
+        w = h = 512;
+        rgba.assign(static_cast<std::size_t>(w) * h * 4, 0);
+        for (int i = 0; i < w * h; ++i) rgba[static_cast<std::size_t>(i) * 4] = static_cast<unsigned char>(i * 7), rgba[static_cast<std::size_t>(i) * 4 + 3] = 255;
+        return true;
+    });
+    sg::StateGraph g;
+    auto& room = g.add<sg::Spatial3D>("worn");
+    room.params().set("room_w", 20.0).set("room_d", 20.0).set("room_h", 6.0);
+    g.set_initial("worn");
+    room.light("lamp", {10.0, 3.0, 10.0}).params.set(sg::keys::intensity, 2.0);
+    std::vector<sg::Texture*> skins;
+    for (int i = 0; i < 6; ++i) {
+        const std::string n = "box" + std::to_string(i);
+        room.mesh(sg::Key{n}, 7.0 + i, 0.0, 8.0).params.set(sg::keys::sx, 0.8).set(sg::keys::sy, 0.8).set(sg::keys::sz, 0.8);
+        auto& skin = g.add<sg::Texture>(sg::Key{"skin" + std::to_string(i)}, 64);
+        skin.element(sg::Texture::map_id()).params.set("dirt_layer", std::string("grime.png"));
+        g.embed(sg::Key{"wears." + n}, sg::Key{"worn"}, sg::Key{n}, skin.id(), sg::Key{}, sg::Key{});
+        skins.push_back(&skin);
+    }
+    room.camera().params.set(sg::keys::x, 9.5).set(sg::keys::y, 1.5).set(sg::keys::z, 14.0).set(sg::keys::yaw, -1.5707963).set("fov", 70.0);
+    sg::render::GLWorldView view;
+    view.prepare(g);
+    for (int i = 0; i < 6; ++i) view.bind_surface(sg::Key{"box" + std::to_string(i)}, skins[static_cast<std::size_t>(i)]);
+    const long long before = sg::gl::card_held().textures;
+    for (int i = 0; i < 3; ++i) view.render(room, W, H);
+    const double held = (sg::gl::card_held().textures - before) / 1048576.0;
+    std::printf("six textures wearing one photograph of dirt: %.2f MB of plain pictures made\n", held);
+    sg::Texture::set_reader({});
+    if (held > 3.0) {  // (once: 1.3 MB and the six small skins; six times: over 8)
+        std::printf("FAIL: the photograph of dirt is held once for each texture that wears it\n");
+        return 1;
+    }
+    std::printf("[ok] the photograph of dirt is held once, however many textures wear it\n");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -120,7 +162,7 @@ int main() {
         std::printf("this card takes no BPTC: nothing to check\n");
         return 0;
     }
-    int failures = 0;
+    int failures = wear_held_once();
     long modes[9] = {};  // how many blocks of each mode were read
     for (const auto& [w, h] : std::vector<std::pair<int, int>>{{256, 256}, {192, 128}, {768, 512}, {132, 260}}) {
         for (const bool srgb : {false, true}) {
