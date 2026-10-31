@@ -234,6 +234,9 @@ or derive a functor when necessary, rather than keeping a private copy.
 | `Save`, `SaveFiles` (`domains/Save.hpp`) | a save game: the states it keeps written out, those it replays put back to their start, and what follows from the kept brought back through the graph's own links on loading (the left Kan extension along the kept, `kan::inverse` for links undone); its file kept by a device at its port | a save system, a serializer of a world, flags copied between states by hand on loading |
 | `Being` (`domains/Being.hpp`) | a creature: skeleton (joints), body (parts or a skin read from glTF), spirit (one driven arrow - clips blended, joints held, IK goals, each joint relaxing to its target at its stiffness), its own tempo from its scale; clips blended by a point (`blend`, `steer`); one body's motion carried onto another of the same skeleton by a kept functor (`retarget`, followed by `lead` - or, `own`, taken as its own motion, followed by `follow`, a ragdoll's knocks still on top); its feet set down on the ground as it travels (`plant`, its `ankles` found by shape, its `travel`), a walk's own speed (`ground_speed`), a change of clip inertialized (`play`'s `inert`); its skin posed on the card (`show_skins`: bound corners once, joints each step); on uneven ground its soles turned to the ground and its hips leaned up a slope, as `pace` tells it; its balance its own law (`balance_event`: load, steadying; sway, stumbles) | an animation player, a skeleton or IK of your own, a retargeter or blend tree of your own, a creature's private clock; foot locking, foot IK or a motion-matching blend of your own; a skin skinned on the processor and sent every frame; a balance meter of a game's own |
 | `fit`, `Being::resize/face/lift/height/facing` (`domains/Being.hpp`) | a model made anywhere (any units, up, facing, holder node) put where a reference body stands; glTF holders, skin pictures (`Files::decode`) read in | scaling, turning or grounding an imported character by hand, per game |
+| `Mover`, `bricks` (`domains/Mover.hpp`, `Bricks.hpp`) | a person's motion made by MotionBricks as they are steered (`go`, `stand`), carried onto any rig (`move_body`) and its spot (`move_spot`); `Casting::moved` | a walk blend, a motion-matching table or a per-frame steering loop of a game's own |
+| `LensState`, `look_through` (`domains/Lens.hpp`) | the eye's glass as a state of its own - mounted, focused - embedded in a world's eye | barrel, fringe or corner softness in a look; a camera's lens params set from the game loop |
+| `sg::physics::Physics`, `lay_space` (`domains/Physics.hpp`) | the loose things of a space as a state of their own: sheets, books, rigid things, held, dropped, pinned, laid, carried on what they lie on | a physics of a game's own, things moved by hand |
 | `cast`, `pace`, `lead`, `touch` (`domains/Cast.hpp`) | a person put in a place: a rigged glTF read, fitted, stood at its spot (`spot_of`), shown, its spirit on its own line, its feet set down; walked and stood by pace (its travel told, its walk as fast as its feet say); moved by another skeleton's motion; touched by a ray against its ragdoll | a character loader, walk blend, leader rig or body ray of a game's own |
 | `Face` (`domains/Face.hpp`) | which picture a face wears, on its own line: idle ones at random, talking ones by how open the mouth is told to be (`voices`), worn by the skin (`wears_face`) | a face, mouth or lip-sync of a game's own; a game loop writing a skin's picture |
 | `Dialogue` (`domains/Dialogue.hpp`) | a conversation: speakers (any number), exchanges of lines by any of them, links by what they are about and what they wait on, phases on its own line, a voice a speaker; written as text; painted by whoever subclasses it | a dialogue tree, a conversation's state or its notation in a game |
@@ -288,22 +291,28 @@ its source - `space <name> = sheaf <room> <room> ...` - rooms of one kind
 are made one room (`sg::make_space`, README *Rooms made one room*). Rules
 that keep it inside the ontology:
 
-- **Two local states made one local state.** The result is a room like any
-  other: flat, no authority over anything, embedded in, joined by doorways
-  to other worlds. Nothing stands above the rooms it was made of; they are
-  no more, and neither are their seams with each other.
+- **Made one, the rooms kept.** The space is a room like any other: flat,
+  no authority over anything, embedded in, joined by doorways to other
+  worlds. Each room stays a state, the source of its part, joined to the
+  space by a lens (`<space>.of.<room>` / kept `<space>.to.<room>`): what
+  moves in the space is written back into its room in the room's own frame.
+  Their seams with each other are gone; a seam from one of them to a room
+  outside is laid again on the space.
 - **Said, never assumed.** Only what a `space` line names is made one. Every
   other doorway is a doorway, every other room its own.
 - **Same kind only.** Of three dimensions both, met by a rigid motion at a
   plain walked doorway, one scale, both walled or both under a sky, nothing
-  said to `differ`. A hyperbolic room and a Cartesian one are glued, never
-  made one; a ball, a screen, a world in its own look neither.
-- **Holonomy is shape.** A ring of rooms that does not close cannot be one
-  room: `make_space` refuses it, saying where.
+  said to `differ` but their walls. A hyperbolic room and a Cartesian one are
+  glued, never made one; a ball, a screen, a world in its own look neither.
+- **Holonomy is shape.** A ring of rooms that does not close, or a room that
+  wraps onto itself, is not flattened: that seam stays, a seam of the space
+  to itself that wraps, carried by its transform (walkers, things thrown,
+  the eye). Rooms that would stand in each other cannot be one space: make
+  them two, joined by a seam.
 - **One, in every way.** One frame, eye, walker, physics, look and clock;
   its doorways between its rooms holes in its walls - no view, no crossing;
   its light from all round, its wear, its walls' dirt laid over the floor
-  each room covered (`regions`).
+  each room covered (`regions`). Crossing among its rooms changes nothing.
 
 (The older `sheaf` on doorways - rooms drawn and simulated as one while each
 stays its own state - is superseded where a world can say `space`; Memory
