@@ -406,6 +406,13 @@ void Mesh::pose(const std::vector<float>& joints) const {
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
+void Mesh::bind_joints() const {
+    if (!joints_tex_) return;
+    glActiveTexture(GL_TEXTURE0 + kJointsUnit);
+    glBindTexture(GL_TEXTURE_BUFFER, joints_tex_);
+    glActiveTexture(GL_TEXTURE0);
+}
+
 void Mesh::update(const std::vector<float>& verts) {
     if (!valid()) {
         create(verts);

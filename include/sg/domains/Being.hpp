@@ -197,6 +197,9 @@ public:
     // The picture a skin wears by its uvs (its material's base colour), as
     // read with it; null if it wears none.
     const std::vector<unsigned char>* skin_picture(Key skin, int& w, int& h) const;
+    // The maps that go with it, if its material has them: `which` "normal"
+    // (its normal map) or "surface" (occlusion, roughness, metal: ORM).
+    const std::vector<unsigned char>* skin_map(Key skin, const std::string& which, int& w, int& h) const;
 
     // --- read ---------------------------------------------------------------------
     // A joint's or part's pose in the being's own frame, as last resolved.

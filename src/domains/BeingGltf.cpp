@@ -287,6 +287,11 @@ struct SkinData {
     // Its picture: the base colour its material wears, by its uvs (none: 0 x 0).
     int image_w = 0, image_h = 0;
     std::vector<unsigned char> image;
+    // And the maps that go with it, if its material has them: its normal map
+    // (glTF's, green up) and its occlusion, roughness and metal in one
+    // (glTF's metallicRoughness laid with occlusion in red: ORM).
+    int normal_w = 0, normal_h = 0, surface_w = 0, surface_h = 0;
+    std::vector<unsigned char> normal, surface;
 };
 std::map<std::string, std::shared_ptr<SkinData>>& skins() {
     static std::map<std::string, std::shared_ptr<SkinData>> s;
@@ -399,6 +404,19 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         }
         Element& s = add_element(Key{sname}, Key{"skin"});
         s.params.set("file", path).set("node", double(mesh_node)).set("prefix", prefix).set("rig", rig);
+        // How its material is drawn: cut out where its picture's alpha is under
+        // its cutoff (glTF's MASK: hair cards, lashes), seen from both sides.
+        {
+            const J& prim0 = d.j["meshes"][std::size_t(nodes[std::size_t(mesh_node)]["mesh"].i(0))]["primitives"][0];
+            if (prim0.has("material")) {
+                const J& mat = d.j["materials"][std::size_t(prim0["material"].i(0))];
+                if (mat["alphaMode"].s == "MASK") s.params.set("cutout", mat.has("alphaCutoff") ? mat["alphaCutoff"].num(0.5) : 0.5);
+                if (mat["doubleSided"].t == J::Bool && mat["doubleSided"].b) s.params.set("two_sided", 1.0);
+                // (Skin: light through it, scattered - `extras.subsurface`, how
+                // much texel by texel in its picture's alpha.)
+                if (mat["extras"]["subsurface"].num(0.0) > 0) s.params.set("subsurface", mat["extras"]["subsurface"].num(0.0));
+            }
+        }
         s.params.set(keys::r, 0.75).set(keys::g, 0.72).set(keys::b, 0.68);
         // Which joints the skin binds anything to (`bound`): a joint it binds
         // nothing to only marks a place - the end of a head, a toe. (Bound
@@ -529,6 +547,11 @@ bool Being::import_gltf(const std::string& path, const std::string& prefix, std:
         }
         const std::string clip_name = an["name"].s.empty() ? "anim" + std::to_string(a) : an["name"].s;
         clip(clip_name, keys_text, true);
+        // How fast it goes as made (metres a second), if its maker knew -
+        // captured motion does (`extras.pace`): kept on the clip as `pace`,
+        // sized as its joints are; what its feet would say is a guess.
+        if (an["extras"]["pace"].num(0.0) > 0)
+            if (Element* ce = find(Key{"clip." + clip_name})) ce->params.set("pace", an["extras"]["pace"].num(0.0) * rig);
         ++a;
     }
     resolve();
@@ -650,9 +673,9 @@ static const SkinData* skin_of(const Element& skin) {
                 {
                     const J& prim0 = d.j["meshes"][std::size_t(node["mesh"].i(0))]["primitives"][0];
                     const J& mat = d.j["materials"][std::size_t(prim0["material"].i(-1) < 0 ? 0 : prim0["material"].i(0))];
-                    const int tex = prim0.has("material") ? mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].i(-1) : -1;
-                    const int img = tex >= 0 ? d.j["textures"][std::size_t(tex)]["source"].i(-1) : -1;
-                    if (img >= 0 && Being::files().decode) {
+                    const auto read_texture = [&](int tex, int& w, int& h, std::vector<unsigned char>& out) {
+                        const int img = tex >= 0 ? d.j["textures"][std::size_t(tex)]["source"].i(-1) : -1;
+                        if (img < 0 || !Being::files().decode) return;
                         const J& im = d.j["images"][std::size_t(img)];
                         std::string data;
                         if (im.has("bufferView")) {
@@ -664,7 +687,12 @@ static const SkinData* skin_of(const Element& skin) {
                             const std::string dir = path.find_last_of("/\\") == std::string::npos ? "" : path.substr(0, path.find_last_of("/\\") + 1);
                             Being::files().read(dir + im["uri"].s, data);
                         }
-                        if (!data.empty() && !Being::files().decode(data, slot->image_w, slot->image_h, slot->image)) slot->image_w = slot->image_h = 0;
+                        if (!data.empty() && !Being::files().decode(data, w, h, out)) w = h = 0;
+                    };
+                    if (prim0.has("material")) {
+                        read_texture(mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].i(-1), slot->image_w, slot->image_h, slot->image);
+                        read_texture(mat["normalTexture"]["index"].i(-1), slot->normal_w, slot->normal_h, slot->normal);
+                        read_texture(mat["pbrMetallicRoughness"]["metallicRoughnessTexture"]["index"].i(-1), slot->surface_w, slot->surface_h, slot->surface);
                     }
                 }
                 for (const J& prim : d.j["meshes"][std::size_t(node["mesh"].i(0))]["primitives"].a) {
@@ -900,6 +928,17 @@ const std::vector<unsigned char>* Being::skin_picture(Key skin_id, int& w, int& 
     return &it->second->image;
 }
 
+const std::vector<unsigned char>* Being::skin_map(Key skin_id, const std::string& which, int& w, int& h) const {
+    const Element* s = find(skin_id);
+    if (!s) return nullptr;
+    auto it = skins().find(s->params.get_or<std::string>("file", "") + "#" + std::to_string(int(s->params.num("node"))));
+    if (it == skins().end() || !it->second) return nullptr;
+    const SkinData& d = *it->second;
+    if (which == "normal" && d.normal_w > 0) return w = d.normal_w, h = d.normal_h, &d.normal;
+    if (which == "surface" && d.surface_w > 0) return w = d.surface_w, h = d.surface_h, &d.surface;
+    return nullptr;
+}
+
 void show_skins(Spatial3D& host, const Being& b, Key anchor) {
     for (const Element& s : b.elements()) {
         if (s.kind != Key{"skin"}) continue;
@@ -943,7 +982,21 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
             // (Its own picture worn as it is first shown; after that, whatever
             // it has been given to wear - a face, an open mouth - it keeps.)
             if (!e->params.has(Key{"skin"})) e->params.set("skin", pic.str()).set("uv", 1.0);
+            for (const char* k : {"cutout", "two_sided", "subsurface"})
+                if (s.params.has(Key{k})) e->params.set(k, s.params.num(Key{k}));
             for (Key k : {keys::r, keys::g, keys::b}) e->params.set(k, 1.0);
+            // Its maps, worn by the same uvs: the folds and pores its picture
+            // was baked with (`skin_normal`), how rough, shut in and metal it
+            // is (`skin_surface`, ORM).
+            for (const char* which : {"normal", "surface"}) {
+                int mw = 0, mh = 0;
+                const std::vector<unsigned char>* map = b.skin_map(s.id, which, mw, mh);
+                if (!map) continue;
+                const Key mk{model.str() + "." + which};
+                if (!host.picture(mk)) host.picture(mk, mw, mh, *map);
+                const Key param{std::string("skin_") + which};
+                if (!e->params.has(param)) e->params.set(param, mk.str());
+            }
         }
     }
 }

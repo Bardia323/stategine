@@ -120,6 +120,7 @@ DXGI_FORMAT resource_format(Format f) {
         case Format::r32f: return DXGI_FORMAT_R32_FLOAT;
         case Format::r32ui: return DXGI_FORMAT_R32_UINT;
         case Format::rg32ui: return DXGI_FORMAT_R32G32_UINT;
+        case Format::rgba8ui: return DXGI_FORMAT_R8G8B8A8_UINT;
         case Format::bc7: return DXGI_FORMAT_BC7_UNORM;
         case Format::bc7_srgb: return DXGI_FORMAT_BC7_UNORM_SRGB;
         case Format::d24: return DXGI_FORMAT_R24G8_TYPELESS;
@@ -1312,7 +1313,7 @@ ID3D12PipelineState* D3D12Device::pso(Program* p, const Draw& d) {
     pd.PS = {p->code[1].data(), p->code[1].size()};
     for (int i = 0; i < Target::kColors; ++i) {
         D3D12_RENDER_TARGET_BLEND_DESC& b = pd.BlendState.RenderTarget[i];
-        const bool whole = target_.color[i].tex && (target_.color[i].tex->info.format == Format::r32ui || target_.color[i].tex->info.format == Format::rg32ui);
+        const bool whole = target_.color[i].tex && (target_.color[i].tex->info.format == Format::r32ui || target_.color[i].tex->info.format == Format::rg32ui || target_.color[i].tex->info.format == Format::rgba8ui);
         b.BlendEnable = r.blend && !whole;
         b.SrcBlend = d3d_factor(r.src_rgb);
         b.DestBlend = d3d_factor(r.dst_rgb);

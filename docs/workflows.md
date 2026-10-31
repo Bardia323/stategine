@@ -524,3 +524,671 @@ It prints the verdict (black / flickering frames, exposure turns: `FAULT` or
 sheet. The program must run long enough: its warm frames (`--warm`, 40) +
 the still eye's (60 a second) + nine times `--settle` (8). The eyes are the
 lens's own copy of the room's camera: nothing of the world is written.
+
+## A person from a video
+
+A real or generated orbit video of a person made into a rigged, textured
+character the engine reads (a skinned glTF), and that character's face
+moved by speech. The tool stands beside the engine, not in it:
+`~/stategine/stategine-capture` (private). The engine reads what it makes
+as it reads any rigged glTF (`sg::cast`); where a character needs more of
+the engine (skin normal and ORM maps, morph targets, skin shading, a
+joint-name map for retarget), that is engine machinery, never a change of
+its ontology. Started 2026-10-22.
+
+### 0. End to end: what to give it, what comes out (read this first)
+
+One command; no choices to make. Each stage is cached beside the video and
+skipped when its file is there (delete a file to run that stage again).
+
+    cd ~/stategine/stategine-capture
+    curl -s -X POST http://127.0.0.1:8188/free -d '{"unload_models":true,"free_memory":true}'
+    PYTHONPATH=. .venv/bin/python tools/video_to_character.py work/<name>/orbit.mp4 [--face face.mp4|png]
+
+Give it: the orbit video (section 1; a T pose best, an A pose works) and,
+optionally, his face (a short video or a picture, square on). Needs:
+ComfyUI up (Klein, TRELLIS.2), Blender 5 (`/snap/bin/blender`), Hi3D's venv
+(section 12; without it those steps are skipped). The card is shared: free
+ComfyUI first. A first run takes about an hour.
+
+What it does, in order (the settings are the ones that won; why each:
+the sections named):
+
+1. Body: masks, SAM 3D Body, MHR fitted to the silhouettes, face and hands
+   to their landmarks (section 5). Hands scaled to 0.105 of his height,
+   wrist to middle fingertip (`hands.in_proportion`: read from the video
+   they came out 16.7 cm on a 1.82 m man and looked small).
+2. Head under the hair: bald picture (Klein, seed 21, 12/12), TRELLIS.2
+   sculpt, SDF clean, MHR wrapped on it, stitched down the neck (section 8);
+   its forms from the sculpt in Blender (`head_forms.py`).
+3. Texture: SIFT-aligned views, graph-cut mosaic at 4096, the face cropped
+   tight in the front views (section 11); skin pores and roughness 0.58,
+   the boots a leather sheen of their own (roughness 0.38: they read as the
+   jeans' cloth), the base alpha saying where the skin is (section 13).
+4. Hi3D (section 12): the body refined against the square-on frame (1536,
+   offload) - its broad forms carried onto the mesh, its detail baked into
+   the normal map on the clothes; the head alone refined against the bald
+   picture (1024) and baked on the head. The million-vertex meshes are
+   working files; the game mesh stays 75,777 vertices.
+5. **The refinement, by hand in Blender** - the first run stops here with
+   `<name>_refine.blend` laid out. Done by looking (the MCP bridge: open
+   it, render clay and colour close, change, look again), in this order -
+   what dad2 needed, and how:
+   - the head onto Hi3D's head: `work/<name>/hi3d_head/aligned_rest.ply`
+     (set by `hi3d.head`: scale from the busts' heights, then rigid on the
+     top 22 cm only - with the hood and a free scale it slid 10 mm off the
+     face), smoothed lightly (Smooth, 6 x 0.5), each head vertex to its
+     nearest point there (within 25 mm), weighted by the head joint's skin
+     weight, the scalp fading past the eyes' level, the ears whole, lips
+     40% held, nostrils and mouth corners held (wrapped, they tore);
+     the moves smoothed 3 passes; expression shapes moved alike. Median
+     move 0.8 mm. (Hi3D's own mesh is not used: its eye area is a single
+     closed surface, its mesh is not his rig's.)
+   - the eyes: openings traced on a straight-on orthographic render (matcap
+     and cavity) and cut inside (not into the corners); an eyeball per eye,
+     12 mm, with a 1.4 mm cornea, its front at Hi3D's cornea apex, then set
+     1.8 mm back (in front of it the upper lid could not cover it: a stare);
+     the lid rims settled 0.2 mm off the ball, the corners' skin tucked
+     under it; iris his colour, 25 degrees across, sclera warm and shaded
+     off, roughness 0.3. A blink: expr_12/13 with 28/29.
+   - the webbing between the thighs (section 12), the boots' hem (the cuff
+     out 3 mm over the boot's top, the boot in 1 mm under it: a step, not
+     one surface), the stride and limbs bent far and looked at in clay.
+   Then `touch work/<name>/<name>_refined` and run the same command again.
+6. The game copy (`<name>_me.glb`, `tools/split_head.py`): the head a mesh
+   of its own on the same skin, so the game can leave it out of your eye.
+7. The walk (section 10) and the checks (`checks/report.txt`,
+   `checks/sheet.png`): loop seam, foot sliding, feet apart and straight,
+   kneecaps, hands clear, a foot's drift over a stance <= 0.01 H; the rig
+   gate (`capture/rig_gate.py`) on `<name>.glb` and `<name>_me.glb` read
+   back as a game reads them: skin indices, weights summing to 1, every
+   mesh skinned, skin at rest on its bind, l_/r_ on the right sides, no
+   joint scale, finite vertices at sampled times, the walk loop closing
+   (<= 0.5 deg, root <= 0.002 H) - gates after img2threejs/plugin-character,
+   each tried on a spoiled copy and caught. Hand rig, head, face
+   expressions looked at. Then a corridor video for the user to judge.
+
+Into the game (Memory Leak's hotel): copy `<name>_me.glb`, `<name>_me.json`
+and `<name>_walk.glb` to `assets/characters/me.glb`, `me.json`,
+`me_walk.glb`. The hotel plays as him in first person: his body under the
+eye (look down), his head, hair and eyes `unseen` but `mirrored`; a long
+mirror on the hall's west wall at z 42.6 (`HOTEL_MIRROR_Z`); the lens f/2.5
+(`HOTEL_FSTOP`). `HOTEL_CAST=<glb>,x,z,yaw,height` stands someone to look
+at. Look at him at the hotel's own light near a lamp (exposure 1.6-1.8),
+never at exposure 3 (flat).
+
+The PC draws through Vulkan and DLSS (`build-win/hotel.conf`), the server
+through GL: when the PC looks wrong and the server's pictures do not, render
+on the server as the PC does - `HOTEL_CONF=build-win/hotel.conf` (or
+`SG_GPU=vulkan`) - and compare term by term. (2026-10-24: the native layer
+lacked RGBA8UI, the probe index map's format; on the PC no room had light
+from all round - the lamps alone, hard - and the occlusion, which darkens
+only that light, fell as black slits along the curtains' creases.)
+
+Dead ends, so they are not tried again: a walk read from video; fitting
+MHR's parameters to mocap; automating the eyes in code; a near-eye cut in
+the shader to hide the player's head (some pass still drew it: split the
+mesh instead); Hi3D at 1536 on the head (out of memory on the shared card);
+lifting the crotch straight up or smoothing its folds (tore flaps, holes).
+
+### 1. The capture asked for
+
+One person standing still in a T pose (arms straight out: nothing hidden
+under them, the hands apart from the body; an A pose, arms about 30
+degrees out, works too), even
+soft light from all round, a plain ground, the camera circling once at
+constant speed, the whole body in frame all the way round. 9:16 (a
+standing person fills it), the highest resolution offered (1080x1920
+ideal, 720x1280 the least for a face worth texturing), 6-10 s at 24 fps or
+more. A generated video is asked the same, with a negative prompt against
+walking, talking, blinking, hair blowing, camera shake, cuts and zoom.
+
+### 2. The models (code and licence checked first)
+
+| Stage | Model | Licence |
+| --- | --- | --- |
+| body model and rig | MHR, Meta's Momentum Human Rig (`facebookresearch/MHR`, assets v1.0.1) | Apache-2.0 |
+| a body from one picture | SAM 3D Body (`facebook/sam-3d-body-dinov3`, gated, approved by hand) | SAM License (commercial, no military) |
+| the person cut out | BiRefNet (ComfyUI's copy) | MIT |
+| masks through a video | SAM 3 (`facebook/sam3`, gated) | SAM License |
+| camera poses | MapAnything, its Apache weights (`facebook/map-anything-apache`); VGGT-1B-Commercial a second road (gated) | Apache-2.0 |
+| normals and other cues | Sapiens2 | Meta's own (no non-commercial clause) |
+| speech to face | NVIDIA Audio2Face-3D v3.0 (diffusion, `network.onnx`) | NVIDIA Open Model License (commercial) |
+
+Kept out of the core, opt-in only: MASt3R and Sapiens v1 (CC BY-NC),
+WiLoR (CC BY-NC-ND, and MANO's licence), CoRA (non-commercial; only for a
+flash-lit face). Checked and passed over for speech: UniTalker and SAiD
+(2024, no tongue or eyes), ARTalk (FLAME, whose licence is
+non-commercial), EmoTalk and FaceDiffuser (no clear licence).
+
+### 3. Where things are, and the smallest footprint
+
+- Its venv `.venv` overlays ComfyUI's `venv2` (Python 3.12, torch 2.9.1
+  cu128) by a `.pth` line: only what venv2 lacks is installed into it (14
+  MB). Never put numpy 2 into it - venv2's compiled modules (onnxruntime
+  and others) break.
+- MHR's assets: `~/stategine/downloads/mhr/assets/assets` (4.5 GB;
+  `MHR_ASSETS` names another). Weights the tool fetches: `weights/`
+  (gitignored), only the files used (SAM 3D Body's checkpoint and config,
+  not its second copy of MHR).
+- SAM 3D Body's code: `third_party/sam-3d-body`, run with our own box,
+  mask and camera - no detector, no field-of-view model, no detectron2.
+
+### 4. MHR, as the tool uses it
+
+- Run through its TorchScript model (`mhr_model.pt`): skeleton, skinning,
+  UVs, identity and expression shapes and pose correctives are all in it,
+  and it runs on any torch. pymomentum is not used: its 0.1.114 wheel
+  segfaults beside torch 2.9 (`Character.with_blend_shape`).
+- 127 joints (`body_world`, `root`, ... fingers, twist bones, jaw, teeth,
+  tongue, eyes), at most four weights a vertex (the engine's four), a real
+  UV atlas (a large face square, hands, body, legs, feet), 45 identity
+  shapes (20 body, 20 head, 5 hands), 72 FACS expression shapes (linear:
+  glTF morph targets as they are). Seven levels of detail; LOD 1 (18,439
+  vertices) the default.
+- Centimetres, Y up; a joint's state is [t, q xyzw, s], a point goes to
+  t + s R(q) p. Model parameters: 0-129 the pose (root and joint angles),
+  130-203 the body's proportions (the `*_length/width_flexible` lengths
+  and `scale_*`) - a person's, fixed for every clip of them.
+- Bound in MHR's zero pose at the person's proportions, without scale on
+  the joints (exact for a body whose proportions do not change; within
+  1-3.5 mm of MHR's own vertices, checked by evaluating the glTF in numpy
+  and through Blender's importer). Pose correctives are not exported.
+
+### 5. The steps, in the order built
+
+1. One picture -> MHR -> glTF: `tools/image_to_character.py photo out.glb`
+   (BiRefNet mask, its box, SAM 3D Body, `capture/export.py`). Writes
+   `out.json` beside it: identity, proportions, the picture's pose.
+2. Clips: retarget Mixamo-rigged motion (Bruce's) onto MHR's skeleton;
+   motion from a video read by SAM 3D Body frame by frame (MHR already,
+   no retarget), smoothed.
+3. The video fit, all in `tools/video_to_character.py work/<name>/orbit.mp4`
+   (each stage kept beside the video, skipped when there): BiRefNet masks
+   and SAM 3D Body on every second frame; the cameras from the body (a
+   plain ground gives nothing to track: the person stands still, so how
+   SAM 3D Body reads the body turned in each frame is the orbit); one body
+   fitted to every silhouette (shape, proportions, joint angles shared, a
+   correction per view); the face to MediaPipe's 478 landmarks; offsets
+   along the normals for clothes and hair.
+4. Texture: the frames projected onto MHR's 2048 atlas, each texel from the
+   views that see it most squarely, unseen texels inpainted, islands padded.
+5. The face from speech: Audio2Face-3D's skin motion (its own face mesh,
+   24,002 vertices; also tongue, jaw, eyes) solved onto MHR's own 72
+   expressions through a fitted correspondence of the two faces; jaw,
+   tongue and eyes on MHR's joints. ARKit's 52 weights kept beside it.
+6. Opt-in: hands (WiLoR), a flash-lit face (CoRA).
+
+### 6. Into the engine
+
+- A character to look at in the hotel: `HOTEL_CAST=<glb>,x,z,yaw,height`
+  (the hall's coordinates, yaw in degrees, the person's real height - the
+  engine fits any model to the height it is told).
+- A person cast must be shown each frame by whoever draws
+  (`cast::show` before `view.render`), or its skin never moves; and one
+  cast where the place does not count it active needs `always`
+  (`cast::person(..., why, true)`), or its clip never plays.
+
+### 7. Errors already met
+
+- A view's root as Euler angles wraps going round the person: smoothing
+  the orbit on them tipped the body over in the back view. Correct each
+  view by a small turn (axis-angle) and measure smoothness on quaternions.
+- A body fitted to clothed silhouettes swells to fill them (a thick neck
+  inside a hood, a jowly face on it): keep its shape near SAM 3D Body's
+  reading (learnt for the body under clothes), let the offsets fill.
+- Free 3D offsets fold at hair (fins, holes): push along the normal only;
+  hold the face's front, hands and feet (silhouettes say nothing of a face
+  seen from the front; a floor shadow in a mask is no boot); low-pass the
+  scalp (hair grew two ridges otherwise).
+- The face needs its own cue: MediaPipe on a crop of the head (a face 150
+  px tall in the frame is too small for it whole), placed on MHR's surface
+  by running MediaPipe on renders of MHR's own head.
+- The atlas is drawn with MHR's v and the glTF's v is 1 - MHR's: turn the
+  picture over (MHR's face is bottom-left in glTF's way). Check by reading
+  the colour at a known vertex's glTF uv - and look at it in Blender before
+  blaming the engine.
+- With no clip the engine shows the bind pose (MHR's: arms out): export
+  the captured stance as the first clip.
+- ComfyUI keeps its models on the card: free it (`POST /free`) before a
+  stage that needs the GPU.
+- Sapiens2's normals are in OpenGL's camera frame (y up, z toward the
+  camera); the fit's is OpenCV's (y down, z ahead): turn y and z over.
+  Check any network's frame against a fitted body's own normals, axis by
+  axis, before fitting to it.
+- A finer mesh fitted from nothing ran away (63 cm): the same smoothing
+  weights smooth a mesh with half the edge a quarter as much (bending a
+  sixteenth). Go coarse to fine: the silhouettes' shape on MHR's own mesh,
+  lifted to the finer (`capture/dense.py`, each triangle in four), the
+  normals adding detail only, bounded (a few cm), on clothes and hair.
+- MHR has teeth, a tongue and eyeballs inside its head: offsets pushed them
+  out through the lips and lids. They never move. The face is the head
+  ahead of its joint and below the brow (by place, not by how it faces:
+  the nostrils' insides face down), and keeps its shape; a boot, like the
+  scalp, is low-passed - one rounded shell, never claws.
+- A normal map baked from a network's normals carries their disagreement
+  with the mesh too (a 24-degree lean on average): keep the detail only - a
+  blur that keeps to the atlas' islands, taken away - and less of it on a
+  face seen at a video's size.
+- Skins wear glTF's normal and ORM pictures (`Being::skin_map`, given to
+  the host as `skin_normal` / `skin_surface` by `show_skins`): an A/B shot
+  with and without the map in the file is how to see that it is worn.
+
+
+### 8. The head under the hair, from his face (`--face`)
+
+A video's head is a shell over the hair, and its face only as deep as the
+silhouettes and landmarks say: horns, bulging ears and jaw where the shell
+was taken for skull. The head is measured instead from one picture of the
+person bald, square on, evenly lit, and MHR's head is laid onto it,
+keeping MHR's rig, UVs and expression shapes. The whole road is one
+command - a body video and, if there is one, a picture or video of the face:
+
+    tools/video_to_character.py work/<name>/orbit.mp4 --face face.mp4
+
+`capture/headscan.py`, each step kept in `work/<name>/head/`:
+
+0. The bald picture (`bald.png`): the face's most square-on, sharpest
+   frame of `--face` (a picture is taken as it is; with no `--face`, the
+   body video's own large front view), cropped round the head (`face.png`),
+   made bald by Flux Klein with the settings the user chose: seed 21, all
+   12 of 12 steps, the picture as its ReferenceLatent, "the exact same man
+   ... but completely bald" (`headscan.BALD_PROMPT`). `--head bald.png`
+   gives one ready; `--no-head` keeps the video's head.
+1. TRELLIS.2 (ComfyUI) on the picture: the sculpt, shape only, ~60k faces
+   (`sculpt.glb`).
+2. The user's SimplifyMeshSDF node group (`~/BlenderFiles/morpheus2.blend`,
+   `SG_SDF_BLEND` names another) through `tools/blender/sdf_clean.py`: one
+   closed skin (`sdf_0.006.ply`).
+3. MediaPipe on the sculpt seen square on, Umeyama onto MHR's head
+   landmarks: the sculpt in the head's frame (`align.npz`, ~0.5 cm off).
+4. The sculpt smoothed as points (`capture/smooth.mls`, each point laid
+   on the plane through its neighbours): 12 neighbours everywhere, 64 where
+   stubble was, the lips and eyes least, the two blended by a soft mask
+   (`scan.ply`, `scan.npz`).
+5. The wrap (`capture/wrap.py`): MHR's bald head drawn onto the scan's
+   nearest surface facing its way; each ear MHR's own, laid on the
+   sculpt's ear whole (turned, moved, sized: `fit_part`); the eyes and
+   mouth his first fit's, moved whole onto the sculpt's landmarks; folds
+   relaxed (`unfold`); teeth, tongue and eyeballs carried with the face.
+   Kept as the tool's offsets (`head.pt`).
+6. Stitched to the body (`headscan.stitch`): the head kept exactly; the
+   change between it and the body as fitted carried down the neck and the
+   collar as a harmonic field (each vertex the average of its neighbours,
+   the head's edge held, nothing moved 14 cm away) - the neck and hood
+   follow the head, their detail kept. (The wrap's own short falloff left
+   a crease under the jaw and a collar standing off the neck.)
+
+The video still textures it (section 9): its frames are projected through
+the shape fitted to the video (that is where they line up), and MHR's UVs
+carry them onto the new head vertex for vertex. The hair cards are rooted
+on the new skull, as thick as the video's hair stood off it.
+
+Settings and why:
+
+- Voxel 0.006 (in TRELLIS's unit; ~2.2 mm on a head). 0.007 lost the brows
+  and lids; 0.005 kept the stubble's noise.
+- The TRELLIS refiner is left off. At 1536 it does not fit beside
+  ComfyUI's own ~2.4 GB on the 16 GB card; at 1024 its eyes, nose and lips
+  are better, but stubble and brows come out as loose flaps with holes
+  (the SDF of that turns inside out).
+
+Errors met:
+
+- A nearest-point wrap tore the ears onto the skull: thin flaps whose
+  nearest surface is the head behind them. Ears are placed whole, and
+  matches must face the same way.
+- Fins from the ear canal: MediaPipe's face outline lands on MHR's ear and
+  on the sculpt's cheek. The outline points are dropped (a silhouette in a
+  picture is no fixed skin; they pulled ridges along the jaw too).
+- Creases on the chin, jaw and temple came from TRELLIS: it makes a
+  stubble edge a step and leaves seams, the SDF keeps them, the wrap copies
+  them. Smoothing along the mesh cannot fix a surface of flaps; point
+  smoothing can - but a hard edge between two smoothings made its own
+  seam.
+- The sculpt's eyes and mouth are soft lumps (puffy closed lids): the
+  first fit's are used instead.
+- A step in stiffness (6x round the eyes) creases the skin at its edge:
+  stiffness eased in.
+- MHR has no eyeballs: its eyes are its skin's own surface. Cutting the
+  skin inside the lids and setting spheres behind left ragged holes. The
+  eyes are that skin wearing the square-on view's eyes, glossy (roughness
+  ~0.08) inside each lid's contour in the ORM map.
+- The crown fill painted under the cards up to a height painted a high
+  forehead as a fringe: kept behind the hairline. Hair only where the
+  video's hair stood off the skull, and none within 4 cm of an ear.
+- Hair cards drawn long and lifted to the hair shell's full thickness made
+  a mop: short (2-5 cm), lifted at most ~1 cm at the sides, 3 on top, the
+  front swept up and back (forward, it fell as a fringe).
+- A hotel built before the engine's cutout reads hair cards as opaque
+  sheets: rebuild it.
+- Look in a bright eye (`HOTEL_EXPOSURE=3 HOTEL_GRAIN=0 HOTEL_FSTOP=16`,
+  `HOTEL_EYE=hall:x,y,z,yaw,pitch,fov` - the last is the field of view,
+  never 0): the hall's own light hides the eyes.
+
+#### The head's forms (Blender, `tools/blender/head_forms.py`)
+
+The head came out flat: lit from the front in the hotel, the face read as
+painted on. Not too few polygons (edges 1.8 mm, 21,700 vertices on the
+head) - the forms themselves: smoothing the stubble's noise out of the
+sculpt (`scan`) took the brow, the eye sockets, the cheekbones and the
+folds by the mouth with it. Now, after the first export, the sculpt is
+brought into the body's frame (`head/align.npz`), smoothed in Blender only
+as far as the stubble (12 Laplacian passes), and each head vertex carried
+along its normal onto it (Shrinkwrap, project both ways, at most 8 mm),
+then lightly smoothed where it moved:
+
+- weighted by the head joint's own skin weight (1 on the head, fading down
+  the neck as the skin does);
+- none on the lids and lips, ramping in round them (whole within 4 mm of
+  MediaPipe's eye contour, free past 18; lips 2-9 mm; the nostrils 3-10):
+  MHR's lids and lips are made to close and open, and the sculpt is a mess
+  right there (a short ramp left a ridge over each lid; the nostrils a
+  notch under the nose);
+- none on the ears (MHR's own, placed whole), a quarter on the scalp.
+
+Vertices move, the mesh does not change: the expression shapes, skin and
+UVs hold - the face still animates (checked: jaw, blink, smile, brows).
+Masking by how much each vertex moves in the expressions was tried first
+and was too broad (the cheeks move too). The rest of the head's finish is
+the refinement by hand (section 0).
+
+### 9. The texture: stitched, not averaged
+
+Averaging every view's texels lays the views' disagreements over each
+other: a generated orbit's cameras are read from the body and its head moves
+a little on its own, so a feature lands a few mm apart from each view -
+an iris painted twice (on the lid and in the eye), a blur. A texture solved
+as one unknown fitted to every view at once (with per-view warps) came out
+noisy and was dropped. What works is what photogrammetry does, after the
+views are made to agree:
+
+1. Agreement (`capture/views.py`, `ViewSet.align`): SIFT features (OpenCV)
+   in each pair of views within 50 degrees of each other - every 4th
+   frame and the 9 large face views - matched (ratio 0.75, mutual, RANSAC
+   fundamental matrix). Each match is followed onto the fitted surface in
+   its own view (rasterised: triangle, barycentrics) and projected into the
+   other; each view gets a correction solved by Adam with small steps
+   (3e-4), Huber at 2 px, the square-on large view held still: first a turn
+   and shift of the head and of the body apart, then a smooth warp of its
+   picture (a 16x9 grid; 12x12 on a large view). On the first person:
+   48,403 matches over 738 pairs; 4.47 px apart as fitted (median), 2.99
+   after the turns, 1.33 after the warps (60% within 2 px). Kept as
+   `view_corr.pt`.
+2. The mosaic (`capture/texmosaic.py`; Waechter, Moehrle, Goesele, "Let
+   There Be Color!", ECCV 2014 - OpenMVS' method): each triangle takes ONE
+   view, chosen by graph cuts (alpha-expansion, PyMaxflow) on a Potts
+   energy - its quality in a view (projected area in pixels, its middle
+   the nearest surface there and inside the mask, facing it) against a
+   cost of 15 for each neighbour on another view. The square-on large view
+   counts 3x, so it takes the face's whole front. The large views (Klein's
+   redrawing of a head crop) texture the head only.
+3. Seams: a colour offset per (vertex, view) solved by least squares so
+   the two sides of every seam meet and each patch stays smooth; texels
+   take theirs by barycentrics; each view feathered 2.5 texels past its
+   patch where it also sees the triangles. Hands and soles keep the
+   projection's own clean-up (one skin tone; rubber).
+
+Errors met:
+
+- One triangle at a time (ICM) stuck at ~29,000 seam edges: moving a
+  boundary costs nothing either way. Graph cuts move whole regions (9,000).
+- Counting a triangle's covered pixels as its quality: on the fine mesh a
+  triangle covers 1-4 pixels in a frame, the counts were noise and
+  neighbours never agreed. Its exact projected area instead.
+- Every frame as a candidate: frames 2.5 degrees apart see nearly the same,
+  and each extra choice is another seam. Every 4th.
+- With no preference, two large views split the face down the nose and
+  disagreed there: the square-on one holds the front.
+- The large views textured the hood and shoulders with what Klein invented
+  round the head (a white patch on the jacket, hair on a shoulder): they
+  are kept to the head.
+- COLMAP could not hold the generated body orbit together (at best 56 of
+  145 frames in one model, exhaustive matching): structure from motion
+  needs a rigid subject. The fit's cameras, corrected by the matches
+  through the surface, are the ones used.
+
+### 10. His walk
+
+Captured motion, retargeted in Blender: 100STYLE's `Neutral_FW.bvh` unless `--walk other.bvh` (any of 100STYLE's 100
+walking styles - Neutral, Depressed, Old, Heavyset, HandsInPockets... - kept
+whole in `~/stategine/downloads/100style`, CC BY 4.0: credit "100STYLE,
+Mason, Starke & Komura 2022" in the game). `tools/mocap_to_walk.py
+walk.bvh <name>.glb fit_hands.pkl <name>_walk.glb` (what the tool runs):
+`capture/mocap.py` takes the period from the left foot's own rhythm (the
+whole pose nearly repeats every step: matching that cut half a cycle) and
+the straightest, steadiest stretch of that length; then **Blender
+retargets it, as an animator would** (`tools/blender/retarget_bvh.py`,
+headless):
+
+1. The character (MHR rests in an A) is posed into the actor's T: upper
+   and lower arms and legs turned onto the actor's rest bone directions.
+2. His thighs lean out by what makes up the hips' difference: MHR's hip
+   joints are 13 cm apart, 100STYLE's 21.5 - on the actor's turns alone
+   his feet came in and his knees nearly met. atan(half the difference /
+   leg length): 2.7 degrees. On top, what his own build asks, as leans
+   of the whole limb in the T: feet 2 cm further out each side as he walks
+   (`WALK_STEP_OUT`), arms 7 degrees out (`WALK_ARM_OUT`: on the actor's
+   turns his hands brushed his thighs through most of the stride - the
+   actor is slimmer than him in his jacket; now 3-6 cm clear).
+3. Each frame, each mapped bone is given the actor's whole turn from his
+   T (`R = R_actor A_rest^-1 T_char`, world space, parents first) on
+   Blender's free bones - roll included, no MHR limits; the pelvis carries
+   the actor's height and sway (scaled by leg length), in place.
+4. The loop closed - on the walk as carried over, before the legs are
+   set straight (closed after, its small turns down each leg added up to
+   the planted foot turned 10 degrees). The cycle is sampled evenly over exactly one period
+   (frames at fractional BVH times: 83 frames at 60 fps make 42 at 30.36),
+   and what is left between the end and the start - the actor never quite
+   repeats - is eased over the cycle, bone by bone, along each bone's
+   own motion (it goes where the bone is busy: a foot in the air). The clip then ends
+   with its first frame again: the engine's clip is as long as its last
+   key, so without it the wrap took no time. (Both together: at the wrap
+   the planted foot jumped 8 cm in one frame and the knee dropped.)
+5. The legs set straight about their own length on each frame (the
+   joints left where they are), measured against the way he faces - square
+   to his hips, as the clip walks - not the way the actor went, a few
+   degrees off it: the actor's feet toe in (Neutral: 9 and 15
+   degrees - his Toe joint straight ahead of his ankle at rest) and his
+   shins roll in as each foot takes the weight; on the character that read
+   as pigeon toes and a knee caving in for a moment. Each foot is turned to
+   point straight ahead while it bears weight (`WALK_TOE_OUT`, 0: 7 degrees
+   out read as a V), and thigh and shin are rolled so
+   the knee cap faces the way the knee bends (the foot's way when the leg
+   is near straight).
+   His hands are posed relaxed (`tools/blender/hand.py`, `RELAXED`):
+   MHR rests with a flat hand and 100STYLE has no fingers, so they hung
+   straight and looked limp. Each finger bends about the hand's crosswise
+   line toward the palm, more toward the little finger (knuckle 22-35,
+   middle 30-40, end 14-18 degrees); resting, the thumb is laid along the
+   index, its tip by the index's middle joint on the palm side (the rest
+   hand's thumb stands off, pointing out); bending (a fist), its base
+   brings it in front of the palm and its joints curl it across toward the
+   little finger (bent toward the palm like a finger, it stood straight
+   out of it). `hand.pose(char, view_layer, side, angles)` poses any hand for
+   any animation (`FIST` too); a fist checked the skin: knuckles and the
+   thumb's web bend cleanly on MHR's own finger weights.
+6. The feet held on the ground. The body goes at the walk's pace; a foot
+   that is down has to go back under it at exactly that pace or it
+   slides - and as each heel landed and the foot rolled down, the actor's
+   went back at half of it (5 cm of slide a step). A heel point and a
+   ball point are read off each boot's sole; a point is down when it is
+   low (3 cm) and all but still over the ground (by height alone the flat
+   foot was missed: the lowest a point goes is a dip as the foot rolls).
+   While down it is held where it landed - the heel, then the ball as the
+   foot rolls over - and the leg reaches to it (two-bone, the knee bending
+   the way it bent). What the hold moved eases back to nothing through
+   the swing (let go in a frame or two, the right foot's 9 cm came out as
+   a hitch).
+7. `tools/blender_walk_to_glb.py` writes it through the character's own
+   rest skeleton, turned so the hips face +z, with its `pace` (the
+   actor's hips' speed at his leg length) and its rate.
+
+By hand: the `.blend` kept beside the clip (`<name>_walk.blend`: textures
+packed, the walk keyed and looping, the actor's take cut to the cycle and
+playing beside him; `<name>_walk_edit.blend` the same at 9 MB rather than
+57 - no textures, hair cards or face shapes, the 73 face shapes on 75k
+vertices were most of it) is opened in Blender and adjusted - the hands, say - and given back in place of the
+BVH: `tools/mocap_to_walk.py <name>_walk.blend <name>.glb fit_hands.pkl
+<name>_walk.glb` reads every frame as it now is
+(`tools/blender/blend_to_walk.py`) and writes the clip again.
+
+What did not work (all walked like a zombie - knees together, arms stuck
+to the body, the arm swinging the wrong way): fitting MHR's own pose
+parameters to the actor's bone directions (a direction carries no roll:
+knees, elbows and palms stayed rolled as MHR's A had them), and fitting
+them to the actor's whole turns. The T-against-A rest is the root of it:
+pose the character into the actor's rest first, then copy turns.
+
+Two things that made every walk drag (fixed in the engine):
+
+- How fast a walker goes was read from its clip's feet (`Being::ground_speed`:
+  a foot's speed back while it is lowest). On MHR it read 0.21 m/s for a walk
+  of 0.9 - the heading it measured along came from every low joint's
+  children (MHR's foot is five joints, some pointing down and back), and the
+  "lowest" window caught the heel still landing and the toe leaving - so the
+  feet slid back at four times the pace. Now `Being::facing` goes from each
+  ankle to the furthest thing below it (the toe), and a walk that knows its
+  pace says so: the glTF animation's `extras.pace` (m/s), kept on the clip
+  as `pace`, sized with the body, used by `sg::cast` before any guess. The
+  capture tool writes it (the actor's hips' speed over the cycle, at his leg
+  length).
+
+(A walk read from a video of him - SAM 3D Body on each frame, made
+symmetric, its stride and stance set by rule - was the first road and is
+gone: one camera guessed the far side and foreshortened depth, and no
+fixing made it walk well.)
+
+Errors met:
+
+- Legs bent, stepping on the ankle: `Being::ankles` took MHR's shin twist
+  bones (`lowleg_twist3/4`, low and hanging from the knee) for ankles and
+  planted them. Of what hangs from one knee, only the lowest is its ankle.
+- Boots that bent like bare feet and a cuff dragged off the ankle: MHR's
+  feet are bare feet (heel, arch, toes each a joint) and the fitted shell
+  of the boots and the jeans' hem was skinned to them. `capture/rig.py`:
+  below the boot's top the skin follows the foot whole (`transversetarsal`;
+  bound to `foot` alone the true ankle's turn was lost and the toes
+  pointed down), the toe box bends at the ball, the cuff follows the shin,
+  blended over a band (cut sharp, they sheared at a tear line); the shell
+  on the foot capped at a boot's thickness (the hem stacked on it in the
+  video stood 4-7 cm off it).
+- An "inverted foot" at his heel as he walked was his hair: the game's
+  `cast::show` stood every skin's box on the ground, and the hair cards'
+  box does not start at the feet. All of a being's skins move alike now
+  (`HOTEL_SAY_SKINS` prints each skin's box). To tell such a thing from
+  the clip, `CAST_PLANT=0` shows the clip with its feet left alone, and a
+  build with `NO_HAIR_CARDS=1` shows the body alone.
+- A skinned mesh's joints were bound to the shader's unit only when it was
+  posed: with two skins on one skeleton the unit held the last posed one's.
+  Each skinned mesh binds its own joints as it is fetched to be drawn
+  (`gl::Mesh::bind_joints`).
+
+### 11. The face's texture and the skin (2026-10-23)
+
+"His skin looks like plastic... the quality of the texture of his face is
+really bad." Measured, not guessed:
+
+- The face had 600 x 600 texels in the 2048 atlas (28.6 a cm) - not the
+  limit. The source was: the large views were 300 px crops of the 1080 x
+  1920 frame round the head and shoulders, the face some 100 px of it,
+  Klein's redrawing at 1024 putting the face in 280 px (14 a cm). Now
+  `enhance.tight` crops the face itself (its landmarks' extent and a
+  fifth: ~175 px of the frame) in the views within 50 degrees of square on
+  and Klein redraws them at 1024 (strength 8 of 12 - 6 stayed soft; 8 draws
+  stubble and skin and keeps the face where it is): 45 texels a cm. The
+  stitcher takes them beside the head crops (a view may carry several
+  pictures now; the square-on view's sharpest one anchors the face) and
+  the base colour is 4096.
+- The ORM map gave all skin one roughness (0.52; the neck counted as cloth,
+  0.86) and the normal map, from the video's normals, had no pore.
+  `capture/skin.py`: the base colour's fine detail (a high-pass of its
+  brightness: pores, stubble, creases) laid into a 4096 normal map as bumps
+  and into the roughness round 0.5 (a pore rougher, smooth skin glossier),
+  on skin alone (face, neck, ears, hands).
+- The eyeballs (by hand): roughness 0.3, not 0.06 (they flared); a darker,
+  warmer sclera shading off to its edges (bright white made him stare); a
+  larger iris (25 degrees: 11.8 mm) with the ball turned up 6 degrees, so
+  the upper lid lies on the iris as in his photograph.
+- What the video cannot give, a picture or video of his face can: `--face`
+  is the road to a face texture better than this.
+
+### 12. The body from Hi3D (`capture/hi3d.py`)
+
+The body fitted to silhouettes was a smooth suit - no pocket, seam or fold.
+Hi3D v1.0 (hi3d-official, on Sparc3D; commercial use allowed, with notice
+above 200k monthly users or $1M monthly revenue) refines a coarse mesh
+against a picture of the same thing. The finished character, standing as
+captured (`tools/blender/posed_mesh.py`), refined against the square-on
+frame (the person masked) at 1536: a million vertices with the jacket's
+pockets, seams and collar, the jeans' folds, the boots' laces - 11 minutes
+on the 4080 with sequential CPU offload (straight on the card, with the
+card shared, the second pass's decode ran out at 11 GB). Its face is not
+his and its hair is not used.
+
+**A working file only - never in the game.** Set back on him by ICP (it
+comes out recentred and rescaled: scale 0.93, 0.2 degrees, 5.6 mm off his
+surface on median), then two things, in Blender:
+
+- his body takes its broad forms (`tools/blender/body_forms.py`): posed as
+  it stands, carried along its normals onto it (at most 12 mm), smoothed
+  (6 passes at 0.5 - fewer left it lumpy: a 75k mesh cannot hold a crisp
+  jacket edge), head, hands and eyes left; the move, measured in the
+  stance, carried back through the skin to the rest pose (`uncarry` with
+  the stance's skeleton). Median 3 mm, at most 10.
+- its fine detail baked into his normal map (`tools/blender/bake_detail.py`:
+  Cycles, tangent space, selected to active, cage 8 mm, rays 12 mm - at
+  40 mm, with the arms close to the body, the torso's rays found the arm),
+  laid on the clothes only and only where believable (under 50 degrees of
+  tilt; past it a ray found the wrong surface).
+
+The game mesh stays his 75,777 vertices; the detail rides in the 4096
+normal map. Set up: `HI3D_DIR` (default `~/stategine/downloads/hi3d`): a
+Python 3.10 venv with torch 2.5.0+cu124, the flash-attn 2.7.4.post1 wheel
+for torch 2.5/cu12 (no build), `pip install -e Hi3Dv1.0[inference]` with
+its constraints, weights in `weights/` (snapshot of hi3d-official/Hi3Dv1.0;
+DINOv2-large and CLIP ViT-L/14 in the HF cache). Without it the tool goes
+on without this step.
+
+The head, the same way (`hi3d.head`): Hi3D on the head alone - his bust
+(the top 40 cm, at the rig's rest pose) against his bald, square-on picture
+(`head/bald.png`), so the head fills the grid: forehead lines, crow's feet,
+the brows and stubble in relief, a whole ear. At 1024 (1536's third pass ran
+out of memory on the shared card; 1024 is 0.4 mm a voxel on a 40 cm bust),
+8.5 minutes. Set on his head at rest by ICP, baked there (`bake_detail.py
+... rest`) and laid on the head and scalp. Its broad forms are not taken:
+they already agree with his head (median 0.06 mm), and where they do not -
+the skull's sides - carrying them left a ridge round the temple.
+
+Errors met: the glTF carries a small icosphere, and "the last mesh in the
+scene" picked it as Hi3D's mesh (2 m box, 47 cm off) - take what the
+import adds. (Blender sorts objects by name: the head step had the same bug
+and worked by luck while the sculpt was called `sculpt_cm` - with Hi3D's
+`aligned_rest_cm` it took an eyeball.) A vertex no joint moves (an eye's opening cut away) made the
+skin's inverse singular - left alone.
+
+The webbing between his legs (the refinement, by hand): the silhouette fit
+cannot see between touching thighs, so it pressed each thigh's inner side
+into the other from 67 cm up to the crotch - two tubes fused, not one sheet.
+Fixed in the .blend: the crotch region set on Hi3D's surface (nearest point,
+measured in his stance and carried back through the skin), then each
+thigh's inner side moved out from the midline (up to 1.2 cm, from the crotch
+at 79 cm down to 55 cm, fading out by 45). Two things tried first made it
+worse and were undone: lifting the crotch's underside straight up (it tore
+flaps that showed in a stride), and smoothing the folds (it opened holes).
+The test is a stride (one thigh 35 degrees forward, the other 25 back),
+looked at from below.
+
+### 13. Skin that lets light through (engine: SKIN_WRAP)
+
+"Subsurface scattering - only if it is not heavy." A character's material
+says `extras.subsurface` (0..1) and its base picture's alpha says how much,
+texel by texel (the capture tool writes 1 on face, neck, ears and hands, 0
+on clothes; glTF's OPAQUE ignores alpha). The shader reads it only for
+those (`uSubsurface`), sets the alpha back to 1, and for each light lets the
+diffuse wrap past where the skin turns away from it, red furthest (0.45,
+0.2, 0.12 of a quarter turn, energy kept: (n.l + w) / (1 + w)^2), with the
+shadow looked up through that band. A few sums per light on skin pixels,
+nothing anywhere else, no extra pass: the warm soft edge of lit skin
+instead of a plastic one's hard line. Skin roughness went to 0.58 at the
+same time (0.5 still read glossy).
