@@ -69,16 +69,32 @@ int main() {
         check(r.ok(), "the camera's laws hold with its mount");
     }
 
-    // A world's own eye mounts one too.
+    // A lens as a state of its own: the world's eye seen through it - its
+    // glass carried onto the eye whenever it changes, by its own arrows.
     {
         sg::StateGraph g;
         auto& w = g.add<sg::Spatial3D>(sg::Key{"room"});
+        auto& lens = g.add<sg::LensState>(sg::Key{"eye_lens"}, "wide24");
+        g.set_initial(sg::Key{"room"});
+        const sg::Key put = sg::look_through(g, w.id(), lens.id());
+        check(g.validate().empty(), "a world seen through a lens: the graph is whole" + (g.validate().empty() ? std::string() : ": " + g.validate().front()));
+        check(w.camera().params.is(sg::Key{"lens"}, "wide24") && near(w.camera().params.num(sg::Key{"barrel"}), 0.05), "the eye has the lens's glass at once");
         sg::Engine engine(g);
         engine.start(sg::Key{"room"});
-        engine.fire(sg::mount_event(sg::Key{"space3.mount"}, *tele, 36.0));
+        check(engine.send(lens.id(), sg::mount_event(sg::LensState::mount_event(), *tele)), "the lens takes a glass at its port");
         engine.tick(0.0);
-        check(w.camera().params.is(sg::Key{"lens"}, "tele135") && near(w.camera().params.num(sg::keys::fov), sg::lens_fov(135.0, 36.0)),
-              "a room's eye mounts a lens, its view over a frame held upright");
+        engine.tick(0.0);
+        check(lens.glass().params.is(sg::Key{"lens"}, "tele135"), "the lens mounts another glass by its own arrow");
+        check(w.camera().params.is(sg::Key{"lens"}, "tele135") && near(w.camera().params.num(sg::Key{"barrel"}, 1.0), 0.0) && near(w.camera().params.num(sg::keys::fov), sg::lens_fov(135.0)),
+              "and the eye follows it (" + put.str() + "): nothing of the last glass left on it");
+        sg::Event focus{sg::LensState::focus_event()};
+        focus.args.set(sg::Key{"focus_distance"}, 3.5).set(sg::Key{"fstop"}, 1.4);
+        engine.send(lens.id(), focus);
+        engine.tick(0.0);
+        engine.tick(0.0);
+        check(near(w.camera().params.num(sg::Key{"focus_distance"}), 3.5) && near(w.camera().params.num(sg::Key{"fstop"}), 1.4), "focused and stopped down by the lens, the eye is");
+        const sg::LawReport r = sg::verify(g);
+        check(r.ok(), "the lens's laws hold" + (r.ok() ? std::string() : ": " + r.str()));
     }
 
     std::printf(failures ? "%d failed\n" : "all passed\n", failures);

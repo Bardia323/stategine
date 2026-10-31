@@ -20,6 +20,7 @@
 #include "sg/core/Text.hpp"
 #include "sg/core/Typed.hpp"
 #include "sg/domains/Camera.hpp"
+#include "sg/domains/Lens.hpp"
 #include "sg/domains/Console.hpp"
 #include "sg/domains/Fog.hpp"
 #include "sg/domains/Light.hpp"

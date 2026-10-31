@@ -17,25 +17,22 @@ namespace {
 // The engine's own. `photoreal`: the settings docs/workflows.md section 10
 // found by measuring a photographic interior against its references - a
 // film's curve, the light from all round in probes and maps (nothing
-// traced: steady wherever one looks), contact occlusion, the detail TAA
-// takes given back, a wide lens's bow and fringe, no grain. `psx`: a
+// traced: steady wherever one looks), the detail TAA takes given back, no
+// grain (its glass, a wide lens's bow and fringe, the eye's lens's: wide24). `psx`: a
 // console of 1997's - few pixels, few colours, dithered, nothing soft.
 // `video`: a handheld digital video camera in a dark house - the sensor's
-// noise, a wide cheap lens (P.T.'s). `standard`: nothing - the engine's defaults.
+// noise (its wide cheap lens the eye's: camcorder). `standard`: nothing - the engine's defaults.
 const std::map<std::string, std::string>& built_in() {
     static const std::map<std::string, std::string> s = {
         {"standard", "# the engine's defaults: nothing said\n"},
         {"photoreal", R"(# A photograph (docs/workflows.md, A photographic interior, section 10).
 composite.uTonemap = 1
 composite.uSharpen = 0.6
-composite.uBarrel = 0.06
-composite.uFringe = 0.8
+# (Its glass - a little bow and fringe - is the eye's lens's: wide24.)
 composite.uGrain = 0
 composite.uBloomStrength = 0.5
 composite.uVignette = 0.42
 composite.uGradeContrast = 0
-composite.ao = 1
-composite.ao.radius = 0.6
 scene.trace = 0
 scene.trace.lamps = 0
 scene.trace.gi = 0
@@ -51,20 +48,16 @@ composite.uGrain = 0
 # (Video clips its highlights where film rolls them off: the harder curve.)
 composite.uTonemap = 0
 composite.uSharpen = 0
-composite.uBarrel = 0.14
-composite.uFringe = 2.2
+# (Its glass - bowed, fringed, soft and smeared at its edges - is the eye's
+# lens's: camcorder.)
 composite.uVignette = 0.95
-composite.uCornerSoft = 0.8
 composite.uSharpenHalo = 0.6
-composite.uEdgeSmear = 6
 composite.uChromaHalf = 1
 # (A sensor's darks lose their colour first.)
 composite.uDarkChroma = 0.6
 composite.uReadout = 0.018
 composite.uBloomStrength = 0.9
 composite.uGradeContrast = 0.15
-composite.ao = 1
-composite.ao.radius = 0.6
 scene.trace = 0
 scene.trace.lamps = 0
 scene.trace.gi = 0
@@ -85,7 +78,6 @@ composite.uPixels = 240
 composite.uLevels = 32
 composite.uDither = 1
 composite.uContrast = 1.05
-composite.uFringe = 0
 composite.uBloomStrength = 0.15
 composite.ao = 0
 scene.trace = 0

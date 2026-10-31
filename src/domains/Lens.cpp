@@ -1,6 +1,8 @@
 // A lens: the glass a camera sees through (sg/domains/Lens.hpp).
 #include "sg/domains/Lens.hpp"
 
+#include "sg/domains/Spatial.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -126,8 +128,8 @@ std::optional<LensKind> lens_named(const std::string& name, const std::string& p
         }
         *f->second = v;
     }
-    if (k.focal <= 0.0) {
-        if (problems) problems->push_back("lens " + k.name + ": its focal length is not above 0");
+    if (k.focal < 0.0) {
+        if (problems) problems->push_back("lens " + k.name + ": its focal length is below 0 (0: the eye's own view kept)");
         return std::nullopt;
     }
     return k;
@@ -140,8 +142,9 @@ double lens_fov(double focal_mm, double film_height_mm) {
 Event mount_event(Key event, const LensKind& lens, double film_height_mm) {
     Event ev{event};
     ev.args.set(Key{"lens"}, lens.name);
-    ev.args.set(keys::fov, lens_fov(lens.focal, film_height_mm));
-    ev.args.set(Key{"focal"}, lens.focal).set(Key{"fstop"}, lens.fstop);
+    // (A focal length of 0: glass alone - the eye keeps its own view.)
+    if (lens.focal > 0.0) ev.args.set(keys::fov, lens_fov(lens.focal, film_height_mm)).set(Key{"focal"}, lens.focal);
+    ev.args.set(Key{"fstop"}, lens.fstop);
     ev.args.set(Key{"barrel"}, lens.barrel).set(Key{"fringe"}, lens.fringe).set(Key{"vignette"}, lens.vignette);
     ev.args.set(Key{"corner_soft"}, lens.corner_soft).set(Key{"edge_smear"}, lens.edge_smear);
     return ev;
@@ -158,6 +161,85 @@ void mount(Element& camera, const Event& ev) {
         if (ev.args.has(k) && !(k == Key{"fstop"} && ev.args.num(k) <= 0.0)) camera.params.set(k, ev.args.num(k));
         else camera.params.erase(k);
     }
+}
+
+const std::vector<Key>& glass_keys() {
+    static const std::vector<Key> k = [] {
+        std::vector<Key> out = lens_keys();
+        for (const char* more : {"fov", "focus_distance", "focus", "focus_up"}) out.push_back(Key{more});
+        return out;
+    }();
+    return k;
+}
+
+LensState::LensState(Key id, const std::string& lens) : LensState(id, lens_named(lens).value_or(LensKind{lens})) {}
+
+LensState::LensState(Key id, const LensKind& lens) : State(id) {
+    Element& glass = add_element(glass_id(), Key{"glass"});
+    glass.params.set(keys::fov, 60.0);
+    mount(glass, sg::mount_event(mount_event(), lens));
+    if (lens.focal <= 0.0) glass.params.erase(keys::fov);  // (the eye's own view kept)
+    // glass --mount--> glass: another lens on it, nothing of the last kept.
+    loop(Key{"mount"}, glass_id(), mount_event(), [](State&, Element& e, Element*, const Event& ev) {
+        const Value focus_d = e.params.has(Key{"focus_distance"}) ? e.params.get(Key{"focus_distance"}) : Value{};
+        mount(e, ev);
+        // (Where it was focused it stays focused: the glass changed, not what is looked at.)
+        if (!std::holds_alternative<std::monostate>(focus_d)) e.params.set(Key{"focus_distance"}, focus_d);
+    });
+    // glass --focus--> glass: where it is focused, how far it is stopped down.
+    loop(Key{"focus"}, glass_id(), focus_event(), [](State&, Element& e, Element*, const Event& ev) {
+        if (ev.args.has(Key{"focus_distance"})) {
+            e.params.set(Key{"focus_distance"}, std::max(0.05, ev.args.num(Key{"focus_distance"})));
+            e.params.erase(Key{"focus"});
+        }
+        if (const std::string* on = ev.args.text(Key{"focus"})) {
+            e.params.set(Key{"focus"}, *on).set(Key{"focus_up"}, ev.args.num(Key{"focus_up"}, 0.0));
+            e.params.erase(Key{"focus_distance"});
+        }
+        if (ev.args.has(Key{"fstop"})) {
+            if (ev.args.num(Key{"fstop"}) > 0.0) e.params.set(Key{"fstop"}, ev.args.num(Key{"fstop"}));
+            else e.params.erase(Key{"fstop"});
+        }
+    });
+}
+
+Key look_through(StateGraph& g, Key world, Key lens, Key eye) {
+    if (eye.empty()) eye = SpatialState::camera_id();
+    // (The glass's keys, all of them: what one side does not say, the other
+    // is made not to - so the eye shows this lens and nothing of another.
+    // Its view and its focus only where it says them: glass alone leaves
+    // the eye's own.)
+    const auto carry = [](const Element& from, Element& to) {
+        const auto& glass = lens_keys();
+        for (const Key& k : glass_keys()) {
+            if (from.params.has(k)) {
+                if (!to.params.has(k) || !(to.params.get(k) == from.params.get(k))) to.params.set(k, from.params.get(k));
+            } else if (to.params.has(k) && std::find(glass.begin(), glass.end(), k) != glass.end()) {
+                to.params.erase(k);
+            }
+        }
+    };
+    const Key put{lens.str() + ".onto." + world.str()}, get{world.str() + ".into." + lens.str()};
+    g.add_lens(get, put, world, lens, {{eye, LensState::glass_id()}}, carry, carry);
+    // Held in the eye: an embedding of the lens in it, Live (the glass onto
+    // the eye whenever it changes), taking no input, open from the start.
+    Embedding e;
+    e.name = Key{world.str() + "/" + eye.str() + ":" + lens.str()};
+    e.host = world, e.portal = eye, e.guest = lens;
+    e.in = get, e.out = put;
+    e.sync = EmbedSync::Live;
+    e.focus = false;
+    g.embed(e);
+    // (What turns the lens comes from outside it - a key, a director: its
+    // arrows' events let in at its ports.)
+    g.port(lens, LensState::mount_event());
+    g.port(lens, LensState::focus_event());
+    if (State* w = g.find(world))
+        if (Element* at = w->find(eye)) {
+            at->params.set(open_key(e), true);
+            if (State* l = g.find(lens)) g.functor(put)->apply(*l, *w);
+        }
+    return put;
 }
 
 }  // namespace sg

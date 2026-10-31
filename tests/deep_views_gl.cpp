@@ -18,6 +18,7 @@
 #include "sg/gl/Window.hpp"
 #include "sg/gl/World.hpp"
 #include "sg/sg.hpp"
+#include "sg/domains/Lens.hpp"
 namespace sgen { void build_deep_views(sg::StateGraph&, const sg::dsl::Natives&, sg::dsl::Bindings&); }
 
 namespace {
@@ -66,10 +67,7 @@ int main() {
     hazy.uniform(sg::passes::scene, "uFogDensity", 0.02);
     hazy.setting(sg::passes::scene, "scatter", 0.0);
     sg::wear(g, "c", "hazy");
-    // (b's lens: none, until a wide one is tried below.)
-    auto& bowed = g.add<sg::LookState>("bowed");
-    bowed.uniform(sg::passes::composite, "uBarrel", 0.0);
-    sg::wear(g, "b", "bowed");
+    // (b's eye: no lens, until a wide one is tried below.)
 
     sg::render::GLWorldView view;
     sg::dsl::Bindings bindings;
@@ -147,14 +145,16 @@ int main() {
         eye.params.set(sg::keys::z, 3.7).set(sg::keys::x, 7.0);
         a.element("pa").params.set("own_look", 1.0);
         const auto straight = picture();
-        bowed.uniform(sg::passes::composite, "uBarrel", 0.3);
+        sg::LensKind glass{"wide"};
+        glass.focal = 0.0, glass.barrel = 0.3;
+        sg::mount(b.camera(), sg::mount_event(sg::LensState::mount_event(), glass));
         // (A step aside and back: the window's picture drawn again, not held.)
         eye.params.set(sg::keys::x, 7.05);
         picture();
         eye.params.set(sg::keys::x, 7.0);
         const auto wide = picture();
         a.element("pa").params.set("own_look", 0.0);
-        bowed.uniform(sg::passes::composite, "uBarrel", 0.0);
+        for (const sg::Key& k : sg::lens_keys()) b.camera().params.erase(k);
         const double d = apart(straight, wide);
         check(d < 0.05, "a window in its own look, its world's lens a wide one: the picture through it bowed only by the eye's lens (" +
                             std::to_string(d) + " levels a pixel apart)");

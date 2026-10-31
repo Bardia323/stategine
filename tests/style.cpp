@@ -31,7 +31,7 @@ int main() {
         std::vector<std::string> problems;
         check(gl::apply_style(look, &world, "photoreal", {}, &problems), "the engine's photoreal style is found");
         check(value(look, passes::composite, "uSharpen") == 0.2, "what the look says is its own: its sharpening kept");
-        check(value(look, passes::composite, "uBarrel") == 0.06, "what it does not say is the style's: the lens's bow");
+        check(value(look, passes::composite, "uTonemap") == 1.0, "what it does not say is the style's: the film's curve");
         check(value(look, passes::scene, "trace.gi") == 0.0, "a setting of the scene's: nothing traced");
         check(world.params().num(Key{"probe_cell"}) == 2.0, "the world's own probe boxes kept");
         check(problems.empty(), "nothing it could not read");

@@ -168,6 +168,12 @@ std::vector<std::string> look_defects(const StateGraph& g) {
     }
     for (Key id : g.ids()) {
         const State& s = g.state(id);
+        // (The glass is the eye's lens's, never a look's: rule 7.)
+        if (s.kind() == kinds::look)
+            if (const Element* c = s.find(passes::composite))
+                for (const char* glass : {"uBarrel", "uFringe", "uCornerSoft", "uEdgeSmear"})
+                    if (c->params.has(Key{glass}))
+                        out.push_back(id.str() + " says " + glass + ": the glass is the eye's lens's (sg::LensState, sg::look_through; a camera's `camera.mount`), not a look's - it is not drawn");
         if (s.kind() == kinds::look) {
             for (const auto& el : s.elements()) {
                 bool known = false;
