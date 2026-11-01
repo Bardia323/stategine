@@ -3257,6 +3257,7 @@ vec3 surface_albedo(out float rough_mod) {
     return mAlbedo * planks * mix(1.0, 0.55, bevel);
 }
 
+vec3 gPlane;  // abs of the surface's flat normal, in the room's frame (main sets it)
 void main() {
     TraceSurf = vec4(0.0);
     Diffuse = vec4(0.0);
@@ -3267,6 +3268,14 @@ void main() {
 #endif
     vLit = vWorld + uLatticeShift;
     vLitDx = dFdx(vWorld), vLitDy = dFdy(vWorld);  // (uLatticeShift is the same at every pixel)
+    // (The plane a picture laid in the room's frame is laid on - dirt, damp,
+    // moss, grime - is the surface's own flat one, never its shaded normal:
+    // bent toward the next wall near a corner, that one would lay the picture
+    // edge on there, in streaks.)
+    {
+        vec3 fn = cross(dFdx(vRoom), dFdy(vRoom));
+        gPlane = dot(fn, fn) > 1e-20 ? abs(normalize(fn)) : abs(normalize(vRoomNormal));
+    }
     if (vInstanced > 0.5) {
         mAlbedo = vMat0.rgb, mRoughness = vMat0.a;
         mSurface = vMat1.x, mEmissive = vMat1.y, mHighlight = vMat1.z, mMirror = vMat1.w, mMetal = vMetal, mGrime = vGrime;
@@ -3440,7 +3449,7 @@ void main() {
     // plane the surface lies in), roughness going with it; and on a wall,
     // the scuffs and dust of the floor's edge, its line not quite straight.
     if (mGrime > 0.0) {
-        vec3 an = abs(normalize(vRoomNormal));
+        vec3 an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
         // (Patches a metre or two across, edges a hand's width soft; inside
         // them finer mottling - none of it lined up with anything.)
@@ -3478,7 +3487,7 @@ void main() {
     // Its edges worn: knocked, rubbed, weathered first where it stands out -
     // paler, smoother - their line ragged as the surface's own grain makes it.
     if (shaped && uEdge.x > 0.0) {
-        vec3 an = abs(normalize(vRoomNormal));
+        vec3 an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
         float grain = noise(gp * 23.0) * 0.55 + noise(gp * 71.0) * 0.3 + noise(gp * 5.0) * 0.15;
         float worn = smoothstep(0.12, 0.7, vMeshWear.x) * uEdge.x;
@@ -3495,7 +3504,7 @@ void main() {
     // on the plane the surface lies in, in the room's frame, at two sizes
     // crossed, so it repeats nowhere a wall is long.
     if (uWear.x > 0.5 && uDirtSet.x > 0.0) {
-        vec3 an = abs(normalize(vRoomNormal));
+        vec3 an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
         vec4 d1 = texture(uDirt, gp / uDirtSet.z);
         vec4 d2 = texture(uDirt, gp / (uDirtSet.z * 2.71) + vec2(0.37, 0.61));
@@ -3536,7 +3545,7 @@ void main() {
     // the sun reaches least, in what is shut in and stays damp - a
     // photograph of it, its edge the photograph's own, as dirt's is.
     if (uMossSet.w > 0.5) {
-        vec3 rn = normalize(vRoomNormal), an = abs(rn);
+        vec3 rn = normalize(vRoomNormal), an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
         vec4 m1 = texture(uMoss, gp / uMossSet.y);
         vec4 m2 = texture(uMoss, gp / (uMossSet.y * 2.37) + vec2(0.29, 0.83));
@@ -3562,7 +3571,7 @@ void main() {
     // wall. Its edge, as dirt's, the photograph's own.
     float covered = 0.0;  // how far what covers it fills its relief: flat where it lies thick
     if (uWear.y > 0.5 && uDampSet.x > 0.0) {
-        vec3 rn = normalize(vRoomNormal), an = abs(rn);
+        vec3 rn = normalize(vRoomNormal), an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
         vec4 d1 = texture(uDamp, gp / uDampSet.z);
         vec4 d2 = texture(uDamp, gp / (uDampSet.z * 2.43) + vec2(0.71, 0.19));

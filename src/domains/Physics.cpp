@@ -45,6 +45,7 @@ Physics::Physics(sg::Key id, double room_w, double room_d, double room_h) : sg::
     add_element(sg::Key{"rigid"}, sg::Key{"solver"});
     says(moved_event());
     says(grabbed_event());
+    says(knocked_event());
     says(cords_event());
     loop(sg::Key{"step.rigid"}, sg::Key{"rigid"}, step_event(),
          [](sg::State& s, sg::Element& solver, sg::Element*, const sg::Event& ev) {
@@ -53,12 +54,34 @@ Physics::Physics(sg::Key id, double room_w, double room_d, double room_h) : sg::
              for (const auto& e : s.elements())
                  if (e.kind == kBody && e.params.get_or<std::string>("mode", "") == mode::fall) falling.push_back(e.id);
              static_cast<Physics&>(s).step_rigid(ev.args.num(sg::keys::dt), ev.args.num(sg::keys::time) - ev.args.num(sg::keys::dt));
+             // What knocked this step, said: a body's own (`hit`), and heard as what it is
+             // made of - one sound a kind a step (the cup and the brush in it landing
+             // together are one clatter), as hard as the hardest of them, where that was.
+             std::vector<std::pair<std::string, sg::Params>> heard;
              for (auto& e : s.elements()) {
                  if (e.kind != kBody) continue;
                  if (const double hit = e.params.num("hit"); hit > 0) {
                      s.emit(sg::Event{hit_event(), sg::Params{}.set("id", e.id.str()).set("hit", hit)});
                      e.params.set("hit", 0.0);
+                     const std::string& m = text_of(e, sg::Key{"sound"});
+                     if (m.empty()) continue;
+                     sg::Params said;
+                     said.set("id", e.id.str()).set("hit", hit).set("sound", "hit." + m).set("gain", std::clamp(hit / 1.5, 0.05, 1.0))
+                         .set("pitch", 0.92 + 0.16 * std::fmod(hit * 7.31, 1.0))
+                         .set(sg::keys::x, e.params.num(sg::keys::x)).set(sg::keys::y, e.params.num(sg::keys::y)).set(sg::keys::z, e.params.num(sg::keys::z));
+                     auto it = std::find_if(heard.begin(), heard.end(), [&](const auto& h) { return h.first == m; });
+                     if (it == heard.end()) heard.push_back({m, said});
+                     else if (hit > it->second.num("hit")) it->second = said;
                  }
+             }
+             // (A kind knocked again within a sixth of a second - a bounce's rattle - is the
+             // same sound still ringing: not said again, on this physics' own time.)
+             const double heard_at = ev.args.num(sg::keys::time);
+             for (auto& [m, said] : heard) {
+                 const sg::Key last{"heard." + m};
+                 if (s.params().has(last) && heard_at - s.params().num(last) < 0.16) continue;
+                 s.params().set(last, heard_at);
+                 s.emit(sg::Event{knocked_event(), said});
              }
              for (sg::Key id : falling)
                  if (const sg::Element* e = s.find(id); e && e->params.get_or<std::string>("mode", "") == mode::rest)

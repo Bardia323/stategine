@@ -258,6 +258,9 @@ void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
             gl::Texture::making = name;
             card.create(w, h, /*mipmaps=*/true, /*srgb=*/true);
             card.upload(px);
+            // (Laid over the room's frame in metres: it tiles, every way - clamped,
+            // past its first picture it would be its edge row drawn out in streaks.)
+            card.repeat();
         }
         card.bind(unit);
         return true;

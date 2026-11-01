@@ -95,6 +95,8 @@ public:
     // (how hard), and something that was falling come to rest {id}.
     static sg::Key hit_event() { return sg::Key{"phys.hit"}; }
     static sg::Key landed_event() { return sg::Key{"phys.landed"}; }
+    // Said: what knocked in a step, heard - `sound` hit.<what it is made of>, one a kind a step.
+    static sg::Key knocked_event() { return sg::Key{"phys.knocked"}; }
     // Said whenever strand data changes, including the last step before sleep.
     static sg::Key cords_event() { return sg::Key{"phys.cords"}; }
     // Carried along by what holds it - a printer feeding a page - to {x, y,
