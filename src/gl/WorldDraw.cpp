@@ -709,7 +709,10 @@ void GLWorldView::draw_world(const std::vector<PlacedRoom>& given, const Camera&
         // Only what moves in it has moved (a creature breathing): drawn again
         // as the frame's maps allow, the ones that waited longest first - a
         // shadow a frame or two behind, never every lamp's map every frame.
-        if (at_rest && maps.sig[i] != 0) {
+        // (Not in a mirror: what it shows is the eye's own room, and whoever
+        // looks into it - a shadow a frame behind its thing there falls on
+        // their own face, as they move.)
+        if (at_rest && maps.sig[i] != 0 && !mirroring_) {
             int& budget = depth == 0 && !mirroring_ ? eye_shadow_budget_ : shadow_budget_;
             if (budget <= 0 && maps.waits[i] < kShadowWaits) {
                 ++maps.waits[i];
