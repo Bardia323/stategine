@@ -947,6 +947,12 @@ private:
         };
         std::map<std::string, Steady> steady;
         Digest lamps_stand;  // the lamps as they stand (a capture is of them)
+        // The room's lamps' light (power by brightness, summed) as they
+        // stand, and as the captures were taken in - what is seen in them is
+        // scaled by the light now over that (captures_to), so a lamp switched
+        // off darkens what shines at once, not when the captures are taken again.
+        float light_stand = 0.0f, light_taken = -1.0f;
+        int lamps_out = 0, hurry = 0;  // how many are out; frames left of taking faces quickly
     };
     std::unordered_map<const Spatial3D*, RoomLight> room_light_;
     // Reflection captures (README *Reflections*): each room relit this frame

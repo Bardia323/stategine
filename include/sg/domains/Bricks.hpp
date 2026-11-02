@@ -94,6 +94,7 @@ struct Motion {
 struct Settings {
     std::vector<int> tokens = {8, 9, 10, 11, 12, 13, 14};  // how long it may make it, in tokens (6..16)
     bool correct = true;       // its ends made to meet the context's last pose and the first target
+    bool root_only = false;    // the targets say only where the body is and which way it faces - its limbs as the model makes them (a walk going on)
     double face_x = 1.0, face_z = 0.0;  // the way the last context pose is turned to, in the model's space
 };
 
@@ -112,8 +113,9 @@ Xf encode(const Skeleton& sk, const std::array<Pose, 4>& context, const std::vec
 // poses: the boundary frames dropped, its root put back where `alignment` took it from.
 void decode(const Skeleton& sk, const float* pred, int tokens, const Xf& alignment, Motion& out);
 // Its ends made to meet the last context pose and the first target, the
-// difference spread over it.
-void correct(const std::array<Pose, 4>& context, const Pose& target, Motion& m);
+// difference spread over it (`whole`: all of the target; else only where on
+// the ground it stands).
+void correct(const std::array<Pose, 4>& context, const Pose& target, Motion& m, bool whole = true);
 
 // Poses placed on the ground at `ground` (its y unused), turned to face
 // `facing` (in XZ): only the root moves.

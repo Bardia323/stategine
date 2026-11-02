@@ -1159,11 +1159,33 @@ std::vector<ProbeBake> GLWorldView::relight_probes(const Spatial3D& room, int si
 
 namespace {
 // How many relights a lamp must have given nothing before a capture takes it
-// as out: a flicker's dark moment, a stutter, is not out.
-constexpr uint64_t kOutFor = 90;
+// as out: a flicker's dark moment, a stutter, is not out - a switch is, within
+// a fifth of a second (till then what shines is dimmed with it: captures_to).
+constexpr uint64_t kOutFor = 12;
 // How fast a lamp's standing is let down (as standing_of lets it down): by
 // half in some three thousand relights.
 constexpr float kLetDown = 0.9998f;
+// What a lamp at `power` gives at `at` (the room's frame): its brightness,
+// by the square of how far, as much of it as its cone lets that way - the
+// light a capture is measured in.
+float given_at(const DrawLight& L, float power, const Vec3d& at) {
+    const gl::Vec3 d{static_cast<float>(at.x) - L.pos.x, static_cast<float>(at.y) - L.pos.y, static_cast<float>(at.z) - L.pos.z};
+    const float d2 = std::max(gl::dot(d, d), 0.25f);
+    float cone = 1.0f;
+    if (!L.sun && L.outer < 3.0f) {
+        const float cosa = gl::dot(d, gl::Vec3{L.dir.x, L.dir.y, L.dir.z}) / std::sqrt(d2 * std::max(L.dir.x * L.dir.x + L.dir.y * L.dir.y + L.dir.z * L.dir.z, 1e-12f));
+        const float co = std::cos(L.outer), ci = std::cos(std::min(L.inner, L.outer));
+        cone = std::clamp((cosa - co) / std::max(ci - co, 1e-4f), 0.0f, 1.0f);
+    }
+    return std::max(power, 0.0f) * (0.2126f * L.color.x + 0.7152f * L.color.y + 0.0722f * L.color.z) * cone / (L.sun ? 1.0f : d2);
+}
+// The middle of a room's boxes: where its light is measured.
+template <class Boxes>
+Vec3d middle_of(const Boxes& boxes) {
+    Vec3d m{0, 0, 0};
+    for (const auto& b : boxes) m = m + b.mid;
+    return boxes.empty() ? m : m * (1.0 / static_cast<double>(boxes.size()));
+}
 }  // namespace
 
 GLWorldView::OwnedTexture::~OwnedTexture() {
@@ -1208,6 +1230,18 @@ void GLWorldView::captures_to(const PlacedRoom& placed, const RoomLight* rl, int
         }
     }
     scene_->set("uCaptureLo", to_vec3(lo));
+    // (Scaled by the room's light now over the light they were taken in: a
+    // stop's worth of it, so a program never told sees them as taken.)
+    // (Now: this frame's, whether or not the room was relit this frame.)
+    float now = 0.0f;
+    for (const Element* le : index_of(*placed.room).lights) {
+        if (!le->alive) continue;
+        const DrawLight L = light_of(*placed.room, *le);
+        now += given_at(L, L.power, middle_of(rl->boxes));
+    }
+    const float kSome = 1e-3f;
+    const float gain = rl->light_taken < 0.0f ? 1.0f : std::clamp((now + kSome) / (rl->light_taken + kSome), 0.0f, 4.0f);
+    scene_->set("uCaptureStops", std::log2(std::max(gain, 1e-4f)));
     scene_->set("uCaptureHi", static_cast<float>(hi.x), static_cast<float>(hi.y), static_cast<float>(hi.z),
                 static_cast<float>(std::min(count, rl->capture_layers)));
 }
@@ -1222,6 +1256,8 @@ void GLWorldView::capture_rooms() {
         RoomLight& rl = it->second;
         Hasher h;
         h.text("lamps as they stand");
+        rl.light_stand = 0.0f;
+        int lamps_out = 0;
         for (const Element* le : index_of(*at).lights) {
             if (!le->alive) continue;
             const DrawLight L = light_of(*at, *le);
@@ -1230,19 +1266,31 @@ void GLWorldView::capture_rooms() {
             s.seen = rl.calls;
             if (L.power > 0.0f) s.peak = std::max(s.peak, L.power), s.lit = rl.calls;
             const bool out = s.peak <= 0.0f || rl.calls - s.lit > kOutFor;
+            rl.light_stand += given_at(L, out ? 0.0f : s.peak, middle_of(rl.boxes));
+            lamps_out += out ? 1 : 0;
             h.text(le->id.str());
-            for (float v : {L.pos.x, L.pos.y, L.pos.z, L.dir.x, L.dir.y, L.dir.z, L.inner, L.outer, L.range, L.color.x, L.color.y, L.color.z})
+            for (float v : {L.pos.x, L.pos.y, L.pos.z, L.dir.x, L.dir.y, L.dir.z, L.inner, L.outer, L.range})
                 h.number(std::round(v * 1000.0f));
+            // (Its colour in steps a capture would show: a lamp warming up
+            // is not taken again every frame.)
+            for (float v : {L.color.x, L.color.y, L.color.z}) h.number(std::round(v * 12.0f));
             // (Its standing in half stops: a lamp turned down for good is
             // taken again, a lamp's breath is not.)
             h.integer(out ? -1000 : static_cast<int64_t>(std::lround(2.0 * std::log2(std::max(s.peak, 1e-6f)))));
         }
         rl.lamps_stand = h.digest();
+        // (A lamp switched off or on: its captures taken again quickly, not a face a frame.)
+        if (lamps_out != rl.lamps_out) rl.hurry = 12;
+        rl.lamps_out = lamps_out;
     }
     // A face of a box a frame - of the room the eye is in first - unless a
     // room is seen for the first time (or its boxes changed): then all of it
     // now, as its probes are relit whole the first time.
     int jobs = 1;
+    for (const Spatial3D* at : relit_) {
+        const auto rit = room_light_.find(at);
+        if (rit != room_light_.end() && rit->second.hurry > 0) jobs = std::max(jobs, 12), --rit->second.hurry;
+    }
     for (const Spatial3D* at : relit_) {
         const auto it = room_light_.find(at);
         if (it == room_light_.end()) continue;
@@ -1316,6 +1364,7 @@ void GLWorldView::capture_rooms() {
                 }
                 gl::glBindTexture(gl::GL_TEXTURE_2D_ARRAY, 0);
                 for (int b = 0; b < layers; ++b) rl.captured[static_cast<std::size_t>(b)] = want(static_cast<std::size_t>(b));
+                rl.light_taken = rl.light_stand;
                 continue;
             }
         }
@@ -1332,6 +1381,11 @@ void GLWorldView::capture_rooms() {
         if (rl.capturing >= 0) take(rl.capturing);
         for (int b = 0; b < layers && rl.capturing < 0 && (all_now || jobs > 0); ++b)
             if (rl.captured[static_cast<std::size_t>(b)] != want(static_cast<std::size_t>(b))) take(b);
+        // (Every layer of this light now: what they hold is of it - until
+        // then, of the light they were taken in before.)
+        bool all = true;
+        for (int b = 0; b < layers && all; ++b) all = rl.captured[static_cast<std::size_t>(b)] == want(static_cast<std::size_t>(b));
+        if (all) rl.light_taken = rl.light_stand;
         // (Taken whole now: kept, for the next start - every layer of every
         // size read back as it is on the card.)
         bool whole = fresh;

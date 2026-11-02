@@ -254,7 +254,7 @@ Xf encode(const Skeleton& sk, const std::array<Pose, 4>& context, const std::vec
         // Given: the context, and as many targets as were. Root rates unknown
         // where nothing follows (the last context pose, the last target).
         const int on = f < kPerToken + given ? 1 : 0;
-        in.has_global_root[f] = on, in.has_poses[f] = on;
+        in.has_global_root[f] = on, in.has_poses[f] = f >= kPerToken && s.root_only ? 0 : on;
         in.has_local_root[f] = (f == kPerToken - 1 || f == kPerToken + given - 1) ? 0 : on;
     }
     for (int i = 0; i <= kMaxTokens - kMinTokens; ++i)
@@ -291,7 +291,7 @@ void decode(const Skeleton& sk, const float* pred, int tokens, const Xf& alignme
     }
 }
 
-void correct(const std::array<Pose, 4>& context, const Pose& target, Motion& m) {
+void correct(const std::array<Pose, 4>& context, const Pose& target, Motion& m, bool whole) {
     const std::size_t n = m.frames.size();
     if (n < 2) return;
     const Pose& first = m.frames.front();
@@ -302,6 +302,11 @@ void correct(const std::array<Pose, 4>& context, const Pose& target, Motion& m) 
     start[0] = {sub(context[3][0].p, first[0].p), normalized(mul(conj(normalized(first[0].q)), normalized(context[3][0].q)))};
     end[0] = {sub(target[0].p, last[0].p), normalized(mul(conj(normalized(last[0].q)), normalized(target[0].q)))};
     for (std::size_t j = 1; j < joints; ++j) start[j] = mul(inverse(first[j]), context[3][j]), end[j] = mul(inverse(last[j]), target[j]);
+    // (Only its place on the ground: its height, its turn and its limbs as made.)
+    if (!whole) {
+        end[0] = {{end[0].p.x, 0.0, end[0].p.z}, Quat{}};
+        for (std::size_t j = 1; j < joints; ++j) end[j] = Xf{};
+    }
     const Xf id{};
     for (std::size_t f = 0; f < n; ++f) {
         const double we = static_cast<double>(f) / static_cast<double>(n - 1), ws = 1.0 - we;

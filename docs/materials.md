@@ -142,6 +142,8 @@ Its one element, `map`:
 | `dirt_up` | how much settles on what faces up (0) |
 | `dirt_all` | how much lies everywhere besides (0) |
 | `dirt_tile`, `dirt_rough` | metres its photograph covers (1.5); how rough the dirt leaves it (0.85) |
+| `dirt_patch` | metres across the patches it lies in - more in some, none in others, wherever it gathers (0: as even as its causes ask) |
+| `dirt_film` | how much it hides what is under it where it lies: 1 (unless said) all of it, less a thin film the surface shows through |
 | `damp_layer` (`damp_height_layer`) | a photograph of its damp: laid where water has been - down a wall below its world's leaks, in streaks widening as they fall; a blot on a ceiling round one; a tide mark on the floor under it; rising from the floor (`Wear`) |
 | `damp`, `damp_rise`, `damp_tile`, `damp_rough` | how much (1); metres it rises up a wall from the floor (0); metres its photograph covers (2); how rough it leaves the surface (0.35) |
 | `damp_cover` | 0 (unless said): water - what it soaks darkened by its photograph; 1: what runs is its photograph's own colour laid over the surface (blood, paint), as glossy as `damp_rough` Covering, it is a film: as opaque as its field is thick - thin, seen through, tinting what is under it; thick, hiding it - the grains only a little in it (a wear field that means a pool gives it an edge). |

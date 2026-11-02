@@ -1818,7 +1818,9 @@ uniform vec4 uLeak[8];
 uniform sampler2D uWearMap;
 uniform vec4 uWearField;
 // What its own shape asks (vMeshWear, a mesh's wear made from it): dirt kept
-// in its hollows (x) and creases (y); its edges worn - how much (uEdge.x),
+// in its hollows (x) and creases (y) - and any dirt's patches, metres across
+// (z; 0: as even as its causes), and how much it covers where it lies (w:
+// 1 hiding what is under it, less a film over it); its edges worn - how much (uEdge.x),
 // how much paler (y, times its colour), how rough (z); and moss, a
 // photograph of it (Texture::wear_raster `moss`): how much (uMossSet.x),
 // metres to a picture (y), how rough (z), w 1 worn - gathered where it faces
@@ -1991,6 +1993,8 @@ uniform sampler2DArray uCaptures;
 uniform vec4 uCaptureAt;
 uniform vec3 uCaptureLo;
 uniform vec4 uCaptureHi;
+// The room's light now over the light they were taken in, in stops (0: as taken).
+uniform float uCaptureStops;
 uniform float uDark;          // 1: what glows of itself does not (a probe's bake, lamp by lamp)
 
 // An open world has a sky instead of a ceiling: a gradient, and the sun in it.
@@ -2053,6 +2057,9 @@ uniform float uCalm;          // water: 0 its full swell, 1 still
 const int MAX_RIPPLES = 16;
 uniform int  uRippleCount;    // water: the rings spreading on it (sg::ripple) -
 uniform vec4 uRipple[MAX_RIPPLES];  // each where it began (x, z of its room), when (its world's time), how strong
+// water: a whirl in it - a flush, a drain - about (x, z of its room), so wide (metres), how strong (0: none, 1 a flush at its height)
+uniform vec4 uSwirl;
+
 
 // The material this fragment is of: the uniforms, or - drawn as one of many
 // at once - what its instance carries.
@@ -2118,6 +2125,49 @@ float noise(vec2 p) {
     f = f * f * (3.0 - 2.0 * f);
     float a = hash(i), b = hash(i + vec2(1, 0)), c = hash(i + vec2(0, 1)), d = hash(i + vec2(1, 1));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// A whirl at `p` (uSwirl): the water turning round its middle, faster the
+// nearer it (as a drain's free vortex does), drawn down there into a funnel,
+// churned into a broken chop that the turning shears into spirals, and
+// whitened where it breaks. Its surface's slope (out of `slope`, the
+// height's gradient) and how much is foam - a function of the time alone.
+float swirl_of(vec2 p, float t, out vec2 slope) {
+    slope = vec2(0.0);
+    float s = uSwirl.w;
+    if (s <= 0.0) return 0.0;
+    vec2 d = p - uSwirl.xy;
+    float r = max(uSwirl.z, 0.02), dist = length(d), q = clamp(dist / r, 0.0, 1.0);
+    vec2 out_ = dist > 1e-4 ? d / dist : vec2(0.0);
+    // The funnel: down some two fifths of its width at the middle.
+    float deep = 0.4 * r * s;
+    slope += out_ * (2.0 * deep * (1.0 - q) / r);
+    // The chop, carried round: each ring turned by how far it has gone - in
+    // two takes a half period apart, each carried a period and then begun
+    // again where it faded out, so the turning never winds it finer than it is.
+    float h0 = 0.0, hx = 0.0, hz = 0.0, foam = 0.0;
+    float e = 0.0025, period = 1.3;
+    float f1 = fract(t / period), f2 = fract(t / period + 0.5), w = abs(1.0 - 2.0 * f1);
+    for (int k = 0; k < 3; ++k) {
+        vec2 dd = (k == 0 ? p : (k == 1 ? p + vec2(e, 0.0) : p + vec2(0.0, e))) - uSwirl.xy;
+        float rr = length(dd), spin = 7.0 * s / (rr / r + 0.5);  // radians a second
+        float h = 0.0;
+        for (int j = 0; j < 2; ++j) {
+            float f = j == 0 ? f1 : f2;
+            float a = atan(dd.y, dd.x) - spin * f * period;
+            vec2 round_ = vec2(cos(a), sin(a)) * (rr * 38.0 / r) + vec2(j == 0 ? 0.0 : 17.3, floor(t / period + (j == 0 ? 0.0 : 0.5)) * 5.7);
+            float hj = noise(round_) * 0.6 + noise(round_ * 2.3 + 7.1) * 0.3 + noise(round_ * 5.1 - 3.0) * 0.1;
+            h += hj * (j == 0 ? 1.0 - w : w);
+        }
+        if (k == 0) h0 = h, foam = h;
+        else if (k == 1) hx = h;
+        else hz = h;
+    }
+    float chop = 0.0045 * s * (0.35 + 0.65 * (1.0 - q));
+    slope += vec2(hx - h0, hz - h0) / e * chop;
+    // Foam where the chop breaks, most at the middle and at the rim where it pours in.
+    float rim = smoothstep(0.75, 1.0, q);
+    return s * clamp(smoothstep(0.52, 0.78, foam) * (0.55 + 0.45 * (1.0 - q)) + 0.5 * rim * smoothstep(0.4, 0.7, foam) + 0.35 * pow(1.0 - q, 4.0), 0.0, 1.0);
 }
 
 vec3 crt_sample(vec2 uv) {
@@ -2576,7 +2626,7 @@ vec3 probe_light(vec3 p, vec3 d, float w1, float w2, out float cover) {
         total += w;
     }
     cover = min(total, 1.0);
-    return total > 0.0 ? sum / total : vec3(0.0);
+    return total > 0.0 ? sum / total * exp2(uCaptureStops) : vec3(0.0);
 }
 
 // What the room's captures saw along `r` from `p` (uCaptures), for a
@@ -2947,7 +2997,11 @@ vec3 room_material(out float rough_mod) {
             float lap = (1.0 - smoothstep(0.0, 0.05, d)) * smoothstep(0.45, 0.75, noise(p * 2.5 + vec2(uTime * 0.25, 0.0)));
             return mix(c, mAlbedo * 2.2 + 0.04, lap * 0.35);
         }
-        return mAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05));
+        // A whirl in it whitens it where it breaks, and roughens it.
+        vec2 whirl_slope;
+        float foam = swirl_of(vRoom.xz, uTime, whirl_slope);
+        rough_mod = mix(-0.2, 0.45, foam);
+        return mix(mAlbedo * (0.9 + 0.1 * noise(p * 0.3 + uTime * 0.05)), vec3(0.62, 0.64, 0.62), foam);
     }
     // Grass: clumps of green and dry.
     float c = noise(p * 3.0) * 0.5 + noise(p * 17.0) * 0.3 + noise(p * 80.0) * 0.2;
@@ -3535,9 +3589,15 @@ void main() {
         }
         // (And in its own hollows and creases, where its shape keeps it.)
         if (shaped) gather = max(gather, (smoothstep(0.15, 0.8, vMeshWear.z) * uMeshDirt.x + smoothstep(0.1, 0.6, vMeshWear.y) * uMeshDirt.y) * (0.6 + 1.2 * cavity));
+        // (In patches: where it was let lie, not everywhere it could - a
+        // mop's swing missing some, a foot's way wearing others clean.)
+        if (uMeshDirt.z > 0.0) {
+            float n = 0.65 * noise(gp / uMeshDirt.z + 4.3) + 0.35 * noise(gp / (uMeshDirt.z * 0.31) + 9.1);
+            gather *= smoothstep(0.3, 0.7, n) * 1.5;
+        }
         gather = min(gather + wear_field().r, 1.0);
         gather *= uDirtSet.x * uWear.z;
-        float m = smoothstep(1.0 - gather - 0.06, 1.0 - gather + 0.06, grains) * step(0.001, gather);
+        float m = smoothstep(1.0 - gather - 0.06, 1.0 - gather + 0.06, grains) * step(0.001, gather) * uMeshDirt.w;
         albedo = mix(albedo, d1.rgb * mix(1.0, d2.rgb.g * 1.6, 0.3), m);
         roughness = mix(roughness, uDirtSet.w, m);
     }
@@ -3741,6 +3801,10 @@ void main() {
             if (crests < 1e-3) continue;
             slope += d / max(dist, 1e-3) * (0.6 * crests * cos(x * 18.0));
         }
+        // And a whirl in it (uSwirl), still or not.
+        vec2 whirl;
+        swirl_of(p, t, whirl);
+        slope += whirl;
         n = normalize(n - vec3(slope.x, 0.0, slope.y));
         bent = true;
     }

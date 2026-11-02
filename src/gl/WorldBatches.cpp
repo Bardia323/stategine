@@ -15,10 +15,10 @@
 namespace sg::render {
 
 bool GLWorldView::instanceable(const Element& e) const {
-    static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"}, lit{"lit"}, rippled{"ripple_next"};
+    static const Key worn{"skin"}, hung{"straddle"}, splat{"splat"}, lines{"lines"}, lit{"lit"}, rippled{"ripple_next"}, whirled{"swirl"};
     // (A skin is posed by its own joints: drawn on its own.)
     if (!q_.instancing || e.id == highlight_ || e.params.has(worn) || e.params.num(hung, 0.0) > 0.5 || e.params.has(splat) ||
-        e.params.num(lines, 0.0) > 0.5 || e.params.num(lit, 1.0) < 0.5 || e.params.has(rippled) || skinned(e))
+        e.params.num(lines, 0.0) > 0.5 || e.params.num(lit, 1.0) < 0.5 || e.params.has(rippled) || e.params.num(whirled, 0.0) > 0.0 || skinned(e))
         return false;
     const auto skin = bound_surfaces().find(e.id);
     if (skin != bound_surfaces().end() && skin->second.surface) return false;
@@ -294,7 +294,8 @@ void GLWorldView::set_skin_maps(const gl::Program& p, BoundSurface* bound) {
     if (tex) {
         const Params& m = tex->map().params;
         p.set("uEdge", static_cast<float>(m.num("edge", 0.0)), static_cast<float>(m.num("edge_light", 1.25)), static_cast<float>(m.num("edge_rough", 0.6)), 0.0f);
-        p.set("uMeshDirt", static_cast<float>(m.num("dirt_shut", 0.0)), static_cast<float>(m.num("dirt_crease", 0.0)), 0.0f, 0.0f);
+        p.set("uMeshDirt", static_cast<float>(m.num("dirt_shut", 0.0)), static_cast<float>(m.num("dirt_crease", 0.0)),
+              static_cast<float>(m.num("dirt_patch", 0.0)), static_cast<float>(m.num("dirt_film", 1.0)));
         p.set("uMossSet", static_cast<float>(m.num("moss", 1.0)), static_cast<float>(m.num("moss_tile", 1.0)), static_cast<float>(m.num("moss_rough", 0.9)), moss ? 1.0f : 0.0f);
         p.set("uMossWhere", static_cast<float>(m.num("moss_up", 1.0)), static_cast<float>(m.num("moss_side", 0.5)), static_cast<float>(m.num("moss_shut", 0.5)),
               static_cast<float>(m.num("moss_way", -1.5707963)));

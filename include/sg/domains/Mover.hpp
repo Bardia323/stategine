@@ -41,7 +41,9 @@ public:
 
     Key live_event() const { return Key{id().str() + ".live"}; }    // driven: {dt}
     // {x, z: where to, speed (metres a second; 0: stand where it is), face (a
-    // yaw to stand facing there; unsaid: the way it came)}
+    // yaw to stand facing there; unsaid: the way it came), hold (1: facing
+    // `face` all the way there - stepping back or aside, as one walks who
+    // keeps looking ahead; 0: turned to the way it goes)}
     Key go_event() const { return Key{id().str() + ".go"}; }
     Key stand_event() const { return Key{id().str() + ".stand"}; }  // stop where it is
 

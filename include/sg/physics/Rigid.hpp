@@ -438,7 +438,9 @@ public:
     // `y1`: out of every moving body in the way that stands higher than a
     // step. What they walk into is shoved - at the height of their hips, so
     // a floor lamp walked into tips over - as hard as they walk, the lighter
-    // it is the more; the walker is kept out of it all the same.
+    // it is the more; the walker is kept out of what weighs a stool's few
+    // kilograms or more, and of anyone's limbs - a cup, a toothbrush flung
+    // out of it, is only pushed aside.
     V3 walk_into(V3 p, double radius, double y0, double y1, V3 moved, double dt, std::vector<std::string>* shoved = nullptr);
 
     // --- a step ------------------------------------------------------------------------

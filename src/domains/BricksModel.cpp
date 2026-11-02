@@ -218,7 +218,7 @@ bool Model::generate(const Skeleton& sk, const std::array<Pose, 4>& context, con
         }
         if (ok) {
             decode(sk, pred, tokens[0], alignment, out);
-            if (s.correct) correct(context, targets.front(), out);
+            if (s.correct) correct(context, targets.front(), out, !s.root_only);
         }
     }
     for (OrtValue* v : inputs)

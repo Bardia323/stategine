@@ -52,6 +52,8 @@ double World::reach_of(const Body& b) {
 
 V3 World::walk_into(V3 p, double radius, double y0, double y1, V3 moved, double dt, std::vector<std::string>* shoved) {
     const double step_up = 0.3;
+    // How heavy a thing must be to keep a walker out: a stool's few kilograms do.
+    constexpr double kKeepsOut = 2.0;
     for (Body& b : bodies) {
         // (What is in their hands does not push them about; a sensor
         // is walked through.)
@@ -100,7 +102,10 @@ V3 World::walk_into(V3 p, double radius, double y0, double y1, V3 moved, double 
             if (inside) n = -n;
             n = normalize(n);
             const double depth = inside ? radius + d : radius - d;
-            p += n * depth;
+            // (A light thing - a cup, a toothbrush - is pushed aside by
+            // whoever walks into it, and stands in no one's way; someone's
+            // limb does, whatever it weighs.)
+            if (b.mass >= kKeepsOut || b.group != 0) p += n * depth;
             // Shoved: the part of the walk that went into it.
             const double into = -dot(moved, n) / std::max(dt, 1e-3);
             if (into <= 0) continue;

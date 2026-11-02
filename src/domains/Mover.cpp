@@ -31,6 +31,8 @@ const bricks::Skeleton& soma() { return bricks::Skeleton::soma(); }
 // that its making is begun.
 constexpr int kEarly = 6;
 constexpr double kAhead = 0.4;
+// How soon a brick is cut short once it is told something new.
+constexpr double kCut = 0.2;
 
 // --- the motion made, kept by what it was made from ----------------------------
 // The model and what it made, for the program: one model, one hand of its
@@ -207,7 +209,7 @@ bricks::Settings settings_for(double step, double speed) {
 }
 
 std::uint64_t key_of(const std::string& brick, const bricks::Settings& s) {
-    std::string k = brick;
+    std::string k = brick + (s.root_only ? " r" : "");
     for (int t : s.tokens) k += ' ' + std::to_string(t);
     return std::hash<std::string>{}(k);
 }
@@ -220,9 +222,14 @@ void next_target(const Params& self, const std::array<Pose, 4>& context, Pose& t
     const double dx = gx - hx, dz = gz - hz, dist = std::hypot(dx, dz);
     if (speed > 0.05 && dist > 0.35) {
         const double step = std::min(dist, std::max(0.6, speed * 1.1));
-        const double way = std::atan2(dz, dx);
+        // (Facing the way it goes - or, held, the way it was told to face:
+        // stepping back or aside to get there.)
+        const double way = self.num("hold") > 0.5 && self.has(Key{"face"}) ? self.num("face") : std::atan2(dz, dx);
         target = standing(hx + dx / dist * step, hz + dz / dist * step, way);
         s = settings_for(step, speed);
+        // (On the way, only where it is to be and how it faces: its stride its
+        // own, never brought to stand at each target.)
+        s.root_only = true;
         return;
     }
     const bool arrived = speed > 0.05;
@@ -262,7 +269,7 @@ void write(State& s, const Pose& pose) {
 }
 
 std::string tokens_text(const bricks::Settings& set) {
-    std::string out;
+    std::string out = set.root_only ? "r " : "";
     for (int t : set.tokens) out += std::to_string(t) + ' ';
     return out;
 }
@@ -270,7 +277,9 @@ bricks::Settings tokens_from(const std::string& text) {
     bricks::Settings set;
     std::istringstream in(text);
     std::vector<int> t;
-    for (int v; in >> v;) t.push_back(v);
+    for (std::string w; in >> w;)
+        if (w == "r") set.root_only = true;
+        else t.push_back(std::atoi(w.c_str()));
     if (!t.empty()) set.tokens = t;
     return set;
 }
@@ -295,6 +304,30 @@ void advance(State& s, double dt) {
     }
     std::string text = text_of(context, target);
     std::shared_ptr<const bricks::Motion> m = maker.take(key_of(text, set), context, target, set);
+    // Told something new (to go, to stop, another way): the brick cut short
+    // a little on from now, at a moment set as it was told - the one after
+    // it asked for at once, from the poses there, and taken then (so the
+    // motion is the same however fast it is made).
+    if (m && !m->frames.empty() && self.num("cut") > 0.5) {
+        self.set("cut", 0.0);
+        const double at = std::min(t + kCut, transition_of(*m));
+        if (at > t) {
+            self.set("cut_at", at);
+            const std::array<Pose, 4> c = context_at(*m, at);
+            Pose next;
+            bricks::Settings ns;
+            next_target(self, c, next, ns);
+            maker.ask(key_of(text_of(c, next), ns), c, next, ns);
+        }
+    }
+    if (m && !m->frames.empty() && self.has(Key{"cut_at"}) && t >= self.num("cut_at")) {
+        const double at = self.num("cut_at");
+        self.erase(Key{"cut_at"});
+        context = context_at(*m, at);
+        next_target(self, context, target, set);
+        text = text_of(context, target);
+        if (const std::shared_ptr<const bricks::Motion> next = maker.take(key_of(text, set), context, target, set)) m = next, t -= at;
+    }
     // On into the next brick at the moment the last turns over (exactly then:
     // the one asked for ahead is the one taken).
     for (int guard = 0; m && !m->frames.empty() && guard < 8 && t >= transition_of(*m); ++guard) {
@@ -331,10 +364,21 @@ Mover::Mover(Key id, double x, double z, double yaw) : State(id) {
     write(*this, standing(x, z, yaw));
     loop(Key{"live"}, self_id(), live_event(), [](State& s, Element&, Element*, const Event& ev) { advance(s, ev.args.num(keys::dt)); });
     loop(Key{"go"}, self_id(), go_event(), [](State&, Element& e, Element*, const Event& ev) {
-        e.params.set("goal_x", ev.args.num(keys::x, e.params.num(keys::x))).set("goal_z", ev.args.num(keys::z, e.params.num(keys::z)));
-        e.params.set("speed", std::max(0.0, ev.args.num("speed", 1.2)));
+        // (Something new - going from standing, stopping, another way, another
+        // facing - cuts the brick it is in short: `advance`.)
+        const double gx = ev.args.num(keys::x, e.params.num(keys::x)), gz = ev.args.num(keys::z, e.params.num(keys::z)), speed = std::max(0.0, ev.args.num("speed", 1.2));
+        const double hx = e.params.num(keys::x), hz = e.params.num(keys::z);
+        const double was_way = std::atan2(e.params.num("goal_z") - hz, e.params.num("goal_x") - hx), way = std::atan2(gz - hz, gx - hx);
+        const bool going = speed > 0.05 && std::hypot(gx - hx, gz - hz) > 0.35, went = e.params.num("speed") > 0.05 && std::hypot(e.params.num("goal_x") - hx, e.params.num("goal_z") - hz) > 0.35;
+        const double face = ev.args.num("face", e.params.num("face", e.params.num(keys::yaw)));
+        if (going != went || (going && std::fabs(std::remainder(way - was_way, 2 * 3.14159265358979)) > 0.5) ||
+            std::fabs(std::remainder(face - e.params.num("face", face), 2 * 3.14159265358979)) > 0.5)
+            e.params.set("cut", 1.0);
+        e.params.set("goal_x", gx).set("goal_z", gz);
+        e.params.set("speed", speed);
         if (ev.args.has(Key{"face"})) e.params.set("face", ev.args.num("face"));
         else e.params.erase(Key{"face"});
+        e.params.set("hold", ev.args.num("hold"));
     });
     loop(Key{"stand"}, self_id(), stand_event(), [](State&, Element& e, Element*, const Event&) {
         e.params.set("goal_x", e.params.num(keys::x)).set("goal_z", e.params.num(keys::z)).set("speed", 0.0);

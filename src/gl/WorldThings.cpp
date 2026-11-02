@@ -310,6 +310,19 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         }
         scene_->set("uRippleCount", n);
     }
+    // A whirl in it (`swirl`, 0..1: a flush, a drain) about (`swirl_x`,
+    // `swirl_z`, the room's frame; else where it stands), `swirl_r` wide -
+    // for this draw alone.
+    struct Whirl {
+        const gl::Program* p;
+        bool on;
+        ~Whirl() { if (on) p->set("uSwirl", 0.0f, 0.0f, 0.0f, 0.0f); }
+    } whirl{scene_, e.params.num(Key{"swirl"}, 0.0) > 0.0};
+    if (whirl.on) {
+        const Vec3d at = world_position(st, e);
+        scene_->set("uSwirl", static_cast<float>(e.params.num(Key{"swirl_x"}, at.x)), static_cast<float>(e.params.num(Key{"swirl_z"}, at.z)),
+                    static_cast<float>(e.params.num(Key{"swirl_r"}, 0.1)), static_cast<float>(std::min(e.params.num(Key{"swirl"}, 0.0), 1.0)));
+    }
     // A land's water, how deep; a road's lines.
     struct Land {
         GLWorldView* view;
