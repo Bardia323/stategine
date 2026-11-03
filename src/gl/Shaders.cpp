@@ -4331,9 +4331,25 @@ uniform vec2  uTurnRate;   // how fast the view turns across the screen, parts o
 uniform float uCornerSoft; // a cheap lens's corners, softer than its middle (0: none, 1 most)
 uniform float uChromaHalf; // video's colour: carried at half the pixels each way, its brightness at all (0: none, 1 video's 4:2:0)
 uniform float uDarkChroma; // a sensor's darks losing their colour: how much of it the deepest keep less (0: none, 1 grey)
+// Analog tape (VHS, Hi8), in lines of a 480-line picture whatever the screen's size:
+uniform vec3  uTapeBleed;  // x its brightness softened along each line (lines either way), y its colour smeared along it (lines either way), z that colour late, to the right (lines) - 0: none
+uniform vec3  uTapeRun;    // x each line off the tape a little early or late (lines), y the tape's noise, streaked along its lines (how much), z the rows at the bottom torn sideways where the heads change over - 0: none
+uniform vec3  uTapeNoise;  // the tape's own noise: x its brightness's, fine and smeared along each line; y its colour's, soft blotches that crawl; z how much more in the darks - 0: none
 )") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+float tape_hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+// (Smooth noise on a grid of cells, -0.5..0.5: each cell's corners hashed, eased between.)
+float tape_cells(vec2 p, float seed) {
+    vec2 i = floor(p), f = smoothstep(0.0, 1.0, fract(p));
+    float a = tape_hash(i + vec2(seed, 0.0)), b = tape_hash(i + vec2(seed + 1.0, 0.0));
+    float c = tape_hash(i + vec2(seed, 1.0)), d = tape_hash(i + vec2(seed + 1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) - 0.5;
+}
+// (Noise along one line of the tape, -0.5..0.5 or so: two octaves, each line its own.)
+float tape_line(float x, float row, float seed) {
+    return 0.67 * tape_cells(vec2(x, row), seed) + 0.33 * tape_cells(vec2(2.0 * x + 0.37, row), seed + 19.0);
+}
 
 // The scene at a pixel, its detail given back as much as it can take: each
 // pixel pushed from its four neighbours by as much as their spread leaves
@@ -4410,6 +4426,16 @@ void main() {
     // the view turning, each row is where the view had turned to by then: a
     // turn leans what stands upright.
     if (uReadout > 0.0) uv -= uTurnRate * uReadout * (0.5 - vUV.y);
+    // Analog tape: each line read off it a little early or late - a slow
+    // wander down the picture and a tremble from field to field - and the
+    // last rows, where the heads change over, torn sideways.
+    float tape = (1.0 / uTexel.y) / 480.0;  // (the screen's pixels a tape's line spans)
+    if (uTapeRun.x > 0.0 || uTapeRun.z > 0.0) {
+        float row = floor(vUV.y * 480.0), field = floor(uTime * 59.94);
+        float late = (0.6 * sin(row * 0.11 + uTime * 1.7) + (tape_hash(vec2(row, field)) - 0.5) * step(0.8, tape_hash(vec2(row, field + 41.0))) * 2.0) * uTapeRun.x;
+        if (uTapeRun.z > 0.0 && row < uTapeRun.z) late += (1.0 - row / uTapeRun.z) * (6.0 + 8.0 * tape_hash(vec2(row, field + 3.0)));
+        uv.x += late * tape * uTexel.x;
+    }
     vec3 scene = focused(uv);
     // (Its colours parted towards the edges, red out and blue in, as a
     // lens's glass bends them unevenly.)
@@ -4460,11 +4486,74 @@ void main() {
         vec3 swapped = luma(color) + (low - luma(low));
         color = mix(color, max(swapped, vec3(0.0)), uChromaHalf);
     }
+    // (Tape's colour: carried in a narrow band - smeared along each line,
+    // a little late, to the right - and its brightness softer along it than
+    // across: each a sum of the picture along the line, through the curve.)
+    if (uTapeBleed.x > 0.0 || uTapeBleed.y > 0.0) {
+        float sharp = luma(tonemap(texture(uScene, uv).rgb * uExposure)), soft = 0.0, wsum = 0.0;
+        vec3 hue = vec3(0.0);
+        for (int i = -4; i <= 4; ++i) {
+            float f = float(i) / 4.0, w = exp(-2.0 * f * f);
+            soft += luma(tonemap(texture(uScene, uv + vec2(f * uTapeBleed.x * tape * uTexel.x, 0.0)).rgb * uExposure)) * w;
+            vec3 c = tonemap(textureLod(uScene, uv - vec2((uTapeBleed.z + f * uTapeBleed.y) * tape * uTexel.x, 0.0), 1.0).rgb * uExposure);
+            hue += (c - luma(c)) * w;
+            wsum += w;
+        }
+        color = max(vec3(luma(color) + soft / wsum - sharp) + (uTapeBleed.y > 0.0 ? hue / wsum : color - luma(color)), vec3(0.0));
+    }
 
     color = mix(vec3(luma(color)), color, uSaturation) * uTint;
     // (A sensor's darks: few photons, its colour the first to go - the
     // shadows grey towards black while the lit keep theirs.)
     if (uDarkChroma > 0.0) color = mix(vec3(luma(color)), color, 1.0 - uDarkChroma * (1.0 - smoothstep(0.015, 0.22, luma(color))));
+    // (The tape's own noise, under its streaks - what a camcorder's picture
+    // is never without, made as the signal makes it (after ntsc-rs, which
+    // simulates the signal): noise along each line, each line its own -
+    // never blobs, never a grid. Its brightness's faint and fine, no finer
+    // along a line than the tape carries; its colour's in the two colour
+    // signals apart (I, Q) and some twenty times coarser - the tape carries
+    // colour in a narrow band - long faint smears of tint, a little shared
+    // with the lines either side as the player's comb filter averages them.
+    // On the picture as seen (its curve's, not the light's); new each frame.)
+    if (uTapeNoise.x > 0.0 || uTapeNoise.y > 0.0) {
+        float frame = mod(floor(uTime * 29.97), 251.0), row = floor(vUV.y * 480.0);
+        float x = vUV.x * 480.0 * (uTexel.y / uTexel.x);
+        vec3 e = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+        float dark = 1.0 + uTapeNoise.z * (1.0 - smoothstep(0.0, 0.5, luma(e)));
+        float y = tape_line(x / 1.6, row, frame * 37.0);
+        float ci = 0.0, cq = 0.0;
+        for (int k = -1; k <= 1; ++k) {
+            float w = k == 0 ? 0.5 : 0.25;
+            ci += w * tape_line(x / 16.0, row + float(k), frame * 53.0 + 5.0);
+            cq += w * tape_line(x / 16.0, row + float(k), frame * 53.0 + 29.0);
+        }
+        e += vec3(y) * uTapeNoise.x * dark;
+        e += vec3(0.956 * ci + 0.621 * cq, -0.272 * ci - 0.647 * cq, -1.106 * ci + 1.703 * cq) * uTapeNoise.y * dark;
+        color = pow(max(e, vec3(0.0)), vec3(2.2));
+    }
+    // (The tape's noise: along its lines, never in a grid - each line its own
+    // streaks, smooth along it, as long as that line's are (a few pixels to
+    // a score), as strong as that stretch of tape is worn; and now and then a
+    // speck where the tape lost its oxide. Most in the darks; new each frame.)
+    if (uTapeRun.y > 0.0) {
+        float row = floor(vUV.y * 480.0), frame = floor(uTime * 29.97);
+        float x = vUV.x * 480.0 * (uTexel.y / uTexel.x);
+        float len = mix(2.0, 22.0, tape_hash(vec2(row, frame + 5.0)));
+        float xi = x / len + 7.0 * tape_hash(vec2(row, frame + 9.0));
+        float a = tape_hash(vec2(floor(xi), row + frame * 517.0)), b = tape_hash(vec2(floor(xi) + 1.0, row + frame * 517.0));
+        float n = mix(a, b, smoothstep(0.0, 1.0, fract(xi))) - 0.5;
+        float wear = 0.3 + 1.4 * pow(tape_hash(vec2(row * 0.37, frame + 21.0)), 2.0);
+        // (Not every line worn, nor all along one: a streak only where this
+        // stretch of this line is - some lines in four, in runs of uneven
+        // length; on every line, it read as scan lines, a pattern.)
+        float run = mix(30.0, 160.0, tape_hash(vec2(row, frame + 33.0)));
+        float worn = smoothstep(0.72, 0.85, tape_hash(vec2(floor(x / run + tape_hash(vec2(row, frame + 37.0))), row + frame * 211.0)));
+        float fine = tape_hash(gl_FragCoord.xy + frame * 31.0) - 0.5;
+        color += vec3(n * wear * worn * 1.6 + 0.2 * fine) * uTapeRun.y * (0.3 + 0.7 * (1.0 - luma(color)));
+        float speck = tape_hash(vec2(floor(x / 25.0), row + frame * 131.0));
+        if (speck > 0.9994) color = mix(color, vec3(0.85), 0.5 * smoothstep(0.0, 0.3, fract(x / 25.0)) * smoothstep(1.0, 0.6, fract(x / 25.0)));
+        color = max(color, vec3(0.0));
+    }
 
     // Vignette, then the film.
     vec2 d = vUV - 0.5;

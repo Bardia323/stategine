@@ -21,7 +21,9 @@ namespace {
 // grain (its glass, a wide lens's bow and fringe, the eye's lens's: wide24). `psx`: a
 // console of 1997's - few pixels, few colours, dithered, nothing soft.
 // `video`: a handheld digital video camera in a dark house - the sensor's
-// noise (its wide cheap lens the eye's: camcorder). `standard`: nothing - the engine's defaults.
+// noise (its wide cheap lens the eye's: camcorder). `hi8`: a 1990s analog camcorder's
+// tape - rich colour bled along its lines, soft, haloed, its noise streaked (the
+// same lens). `standard`: nothing - the engine's defaults.
 const std::map<std::string, std::string>& built_in() {
     static const std::map<std::string, std::string> s = {
         {"standard", "# the engine's defaults: nothing said\n"},
@@ -70,6 +72,38 @@ scene.exposure.key = 0.05
 scene.exposure.min = -1
 scene.exposure.max = 1
 scene.exposure.rate = 0.7
+place.probe_cell = 1.3
+)"},
+        {"hi8", R"(# A Hi8 camcorder, the 1990s' home video: analog tape - its colour
+# rich and warm but carried in a narrow band, so it smears along each line
+# and lags to the right of what it colours; its picture soft along the
+# lines (some 400 of them across), its edges haloed by the camera's
+# sharpening; the tape's noise streaked along its lines, each line a little
+# early or late, the bottom rows torn where the heads change over; the
+# CCD's own noise faint under it, its lights blooming - and every room's
+# colour as its light gives it, rich, never drained.
+composite.uTapeBleed = 1.2 7 2.5
+# (Its lines kept faint: stronger, the picture read as scan lines over it.)
+composite.uTapeRun = 0.12 0.007 5
+# (And the tape's own noise under it, line by line: faint and fine in its
+# brightness, long faint smears in its colour - a little more in the darks.)
+composite.uTapeNoise = 0.045 0.07 0.5
+composite.uGradeSaturation = 0.5
+composite.uGradeShadows = 0.02 0.015 0.025
+composite.uSensor = 0.01 0.3 2
+composite.uGrain = 0
+# (Its colours carried to white on film's gentler curve: the light's tint kept.)
+composite.uTonemap = 1
+composite.uSharpen = 0
+composite.uSharpenHalo = 0.9
+composite.uVignette = 0.6
+composite.uBloomStrength = 1.0
+composite.uHalation = 0.18
+composite.uGradeContrast = 0.1
+scene.trace = 0
+scene.trace.lamps = 0
+scene.trace.gi = 0
+scene.scatter.cell = 8
 place.probe_cell = 1.3
 )"},
         {"psx", R"(# A console of 1997: 240 rows, 32 steps a channel, ordered dither, hard edges.
