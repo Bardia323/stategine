@@ -264,6 +264,11 @@ std::string n6(double v) {
 struct SkinData {
     long long stamp = -1;
     std::vector<Vec3d> pos, nrm;
+    // Its shapes (glTF's morph targets: a face's expressions, a body's
+    // breath): each one's name and how far it moves each vertex at its full;
+    // worn as much as the skin's element says (`shape.<name>`).
+    std::vector<std::string> shape_names;
+    std::vector<std::vector<Vec3d>> shapes;
     std::vector<float> uv;
     std::vector<int> joints;    // 4 a vertex: indices into `names`
     std::vector<float> weights;  // 4 a vertex
@@ -728,12 +733,29 @@ static const SkinData* skin_of(const Element& skin) {
                     const std::vector<float> js = d.floats(at["JOINTS_0"].i(), c), ws = d.floats(at["WEIGHTS_0"].i(), c);
                     for (float v : js) slot->joints.push_back(int(v));
                     slot->weights.insert(slot->weights.end(), ws.begin(), ws.end());
+                    // (Its shapes, by their names - the mesh's `targetNames`, or their place.)
+                    if (prim.has("targets")) {
+                        const J& mesh = d.j["meshes"][std::size_t(node["mesh"].i(0))];
+                        for (std::size_t t = 0; t < prim["targets"].a.size(); ++t) {
+                            const J& tg = prim["targets"][t];
+                            if (!tg.has("POSITION")) continue;
+                            const std::string name = t < mesh["extras"]["targetNames"].a.size() ? mesh["extras"]["targetNames"][t].s : "shape" + std::to_string(t);
+                            std::size_t k = 0;
+                            while (k < slot->shape_names.size() && slot->shape_names[k] != name) ++k;
+                            if (k == slot->shape_names.size()) slot->shape_names.push_back(name), slot->shapes.emplace_back();
+                            std::vector<Vec3d>& to = slot->shapes[k];
+                            to.resize(first, Vec3d{});
+                            const std::vector<float> dp = d.floats(tg["POSITION"].i(), c);
+                            for (std::size_t i = 0; i + 2 < dp.size(); i += 3) to.push_back({dp[i], dp[i + 1], dp[i + 2]});
+                        }
+                    }
                     if (prim.has("indices")) {
                         for (float v : d.floats(prim["indices"].i(), c)) slot->index.push_back(first + uint32_t(v));
                     } else {
                         for (uint32_t i = first; i < uint32_t(slot->pos.size()); ++i) slot->index.push_back(i);
                     }
                 }
+                for (std::vector<Vec3d>& sh : slot->shapes) sh.resize(slot->pos.size(), Vec3d{});
                 std::vector<bool> named(slot->pos.size(), false);
                 for (uint32_t i : slot->index)
                     if (i < slot->pos.size() && !named[i]) named[i] = true, slot->corners.push_back(i);
@@ -764,6 +786,54 @@ static const SkinData* skin_of(const Element& skin) {
     return slot.get();
 }
 
+// The skin's corners as its shapes leave them, bound (`shape.<name>` on its
+// element, each by how much): false, and nothing made, if it wears none.
+// Their normals turned as the shapes turn the surface: the triangles' own
+// normals, shaped less as bound, added to the normals it was made with.
+static bool shaped(const SkinData& sd, const Element& skin, std::vector<Vec3d>& pos, std::vector<Vec3d>* nrm) {
+    bool any = false;
+    for (std::size_t t = 0; t < sd.shapes.size(); ++t) {
+        const double w = skin.params.num(Key{"shape." + sd.shape_names[t]});
+        if (w == 0.0) continue;
+        if (!any) pos = sd.pos, any = true;
+        const std::vector<Vec3d>& dp = sd.shapes[t];
+        for (std::size_t v = 0; v < pos.size() && v < dp.size(); ++v) pos[v] = pos[v] + dp[v] * w;
+    }
+    if (!any || !nrm) return any;
+    const auto faces = [&](const std::vector<Vec3d>& p) {
+        std::vector<Vec3d> n(p.size(), Vec3d{});
+        for (std::size_t i = 0; i + 2 < sd.index.size(); i += 3) {
+            const uint32_t a = sd.index[i], b = sd.index[i + 1], c = sd.index[i + 2];
+            if (a >= p.size() || b >= p.size() || c >= p.size()) continue;
+            const Vec3d e1 = p[b] - p[a], e2 = p[c] - p[a];
+            const Vec3d f{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x};
+            n[a] = n[a] + f, n[b] = n[b] + f, n[c] = n[c] + f;
+        }
+        for (Vec3d& v : n) {
+            const double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            if (l > 1e-12) v = v * (1.0 / l);
+        }
+        return n;
+    };
+    const std::vector<Vec3d> was = faces(sd.pos), now = faces(pos);
+    *nrm = sd.nrm;
+    nrm->resize(pos.size(), Vec3d{0, 1, 0});
+    for (std::size_t v = 0; v < pos.size(); ++v) {
+        Vec3d n = (*nrm)[v] + (now[v] - was[v]);
+        const double l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        (*nrm)[v] = l > 1e-12 ? n * (1.0 / l) : (*nrm)[v];
+    }
+    return true;
+}
+
+// What the skin's shapes are worn at, as one word: bound again when it changes.
+static std::string shapes_worn(const SkinData& sd, const Element& skin) {
+    std::string out;
+    for (std::size_t t = 0; t < sd.shapes.size(); ++t)
+        if (const double w = skin.params.num(Key{"shape." + sd.shape_names[t]}); w != 0.0) out += " " + sd.shape_names[t] + "=" + n6(w);
+    return out;
+}
+
 // Each joint's move from where it was bound to where it is now: its pose
 // (resolved) after its inverse bind.
 static void moves_now(const Being& b, const SkinData& sd, const Element& skin, std::vector<M4>& m) {
@@ -791,6 +861,10 @@ void Being::skinned(Key skin_id, Fitted* fitted, std::vector<float>& out) const 
     const SkinData& sd = *read;
     std::vector<M4> m;
     moves_now(*this, sd, *s, m);
+    thread_local std::vector<Vec3d> shaped_pos, shaped_nrm;
+    const bool worn = shaped(sd, *s, shaped_pos, &shaped_nrm);
+    const std::vector<Vec3d>& rest = worn ? shaped_pos : sd.pos;
+    const std::vector<Vec3d>& rest_n = worn ? shaped_nrm : sd.nrm;
     // (Room to work in, kept by the thread from one making to the next: a
     // body is made again every step it moves, and it is big.)
     thread_local std::vector<Vec3d> P, N;
@@ -805,8 +879,8 @@ void Being::skinned(Key skin_id, Fitted* fitted, std::vector<float>& out) const 
     // (Each corner by the joints that weigh on it, found when the skin was
     // read; one with none stays as it was bound.)
     for (std::size_t v = 0; v < sd.pos.size(); ++v) {
-        const Vec3d& pos = sd.pos[v];
-        const Vec3d nrm = v < sd.nrm.size() ? sd.nrm[v] : Vec3d{0, 1, 0};
+        const Vec3d& pos = rest[v];
+        const Vec3d nrm = v < rest_n.size() ? rest_n[v] : Vec3d{0, 1, 0};
         const SkinData::Move* mv = sd.moves.data() + sd.moved[v];
         const SkinData::Move* end = sd.moves.data() + sd.moved[v + 1];
         if (mv == end) {
@@ -869,11 +943,16 @@ std::vector<float> Being::bound(Key skin_id) const {
     const SkinData& sd = *read;
     // (A corner no joint moves goes by the one after the last: its fit alone.)
     const float unmoved = static_cast<float>(sd.names.size());
+    // (Bound as its shapes leave it, if it wears any.)
+    std::vector<Vec3d> shaped_pos, shaped_nrm;
+    const bool worn = shaped(sd, *s, shaped_pos, &shaped_nrm);
+    const std::vector<Vec3d>& rest = worn ? shaped_pos : sd.pos;
+    const std::vector<Vec3d>& rest_n = worn ? shaped_nrm : sd.nrm;
     out.reserve(sd.index.size() * Spatial3D::kSkinFloats);
     for (uint32_t i : sd.index) {
-        if (i >= sd.pos.size()) continue;
-        const Vec3d& p = sd.pos[i];
-        const Vec3d n = i < sd.nrm.size() ? sd.nrm[i] : Vec3d{0, 1, 0};
+        if (i >= rest.size()) continue;
+        const Vec3d& p = rest[i];
+        const Vec3d n = i < rest_n.size() ? rest_n[i] : Vec3d{0, 1, 0};
         const bool uv = i * 2 + 1 < sd.uv.size();
         float c[Spatial3D::kSkinFloats] = {float(p.x), float(p.y), float(p.z), float(n.x), float(n.y), float(n.z),
                                            uv ? sd.uv[i * 2] : 0.f, uv ? sd.uv[i * 2 + 1] : 0.f};
@@ -907,13 +986,21 @@ void Being::pose_skin(Key skin_id, Fitted& fitted, std::vector<float>& joints) c
     }
     float lo3[3] = {1e30f, 1e30f, 1e30f}, hi3[3] = {-1e30f, -1e30f, -1e30f};
     const std::size_t corners = sd.reach.size() / SkinData::kReach;
+    // (As its shapes leave it: the box holds a face however it is worn.)
+    thread_local std::vector<Vec3d> shaped_pos;
+    const bool worn = shaped(sd, *s, shaped_pos, nullptr);
     for (std::size_t i = 0; i < corners; ++i) {
         const float* c = &sd.reach[i * SkinData::kReach];
+        float q[3] = {c[0], c[1], c[2]};
+        if (worn) {
+            const Vec3d& at = shaped_pos[sd.corners[i]];
+            q[0] = float(at.x), q[1] = float(at.y), q[2] = float(at.z);
+        }
         float p[3] = {0.f, 0.f, 0.f};
         for (int k = 0; k < 4; ++k) {
             const float w = c[7 + k];
             const float* a = &rows[std::size_t(c[3 + k]) * 12];
-            for (int r = 0; r < 3; ++r) p[r] += w * (a[r * 4] * c[0] + a[r * 4 + 1] * c[1] + a[r * 4 + 2] * c[2] + a[r * 4 + 3]);
+            for (int r = 0; r < 3; ++r) p[r] += w * (a[r * 4] * q[0] + a[r * 4 + 1] * q[1] + a[r * 4 + 2] * q[2] + a[r * 4 + 3]);
         }
         for (int r = 0; r < 3; ++r) lo3[r] = std::min(lo3[r], p[r]), hi3[r] = std::max(hi3[r], p[r]);
     }
@@ -986,7 +1073,9 @@ void show_skins(Spatial3D& host, const Being& b, Key anchor) {
         Element* e = host.find(there);
         if (!e) e = &host.add_element(there, kinds::mesh);
         // (Bound again when the skin is another: another file, or node of it.)
-        const std::string from = s.params.get_or<std::string>("file", "") + "#" + std::to_string(int(s.params.num("node")));
+        std::string from = s.params.get_or<std::string>("file", "") + "#" + std::to_string(int(s.params.num("node")));
+        // (And when its shapes are worn otherwise: a face changed.)
+        if (const SkinData* sd = skin_of(s)) from += shapes_worn(*sd, s);
         if (!host.skin_bound(model) || e->params.get_or<std::string>("skin_from", "") != from) host.skin_model(model, b.bound(s.id));
         spare = host.pose_model(model, std::move(joints));
         e->params.set(keys::parent, anchor.str()).set("shape", std::string("model")).set("model", model.str());

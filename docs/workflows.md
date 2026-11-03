@@ -1281,3 +1281,45 @@ shadow looked up through that band. A few sums per light on skin pixels,
 nothing anywhere else, no extra pass: the warm soft edge of lit skin
 instead of a plastic one's hard line. Skin roughness went to 0.58 at the
 same time (0.5 still read glossy).
+
+### 14. Mending the head and neck (2026-11-02)
+
+A finished character, lit close, showed what the capture left: the face's
+normal map from the old head (brows, sockets, nose lit where the new head is
+flat), paint a few mm off the sculpt (two nostrils each side, two mouths),
+a filled mouth, a lumpy chin, the neck pleated where the head's skin meets
+the body's, a shelf at the neck's foot, a fold just over it, a round dome for
+collarbones. Two tools in `stategine-capture/tools` mend any capture made the
+same way (its expression shapes `expr_32/33` find the mouth; heights are
+measured from it, as they were on the dad - adult proportions):
+
+    cp work/<name>/<name>.glb mended.glb
+    .venv/bin/python tools/mend_head_shape.py mended.glb          # chin, jaw, neck, folds, collarbones
+    .venv/bin/python tools/mend_head_paint.py mended.glb --base base_onto_shape.png --mouth --nose --neck
+    .venv/bin/python tools/head_views.py mended.glb look.png --box 1.38,1.62,-0.11,0.11
+    .venv/bin/python tools/head_views.py mended.glb cuts.png --box 1.42,1.6,-0.06,0.14 --cuts 0,0.03,0.06
+
+Both rewrite in place: run them once, on a copy of the model as made (again,
+they smooth again). `--base` is `tex_onto_shape.py`'s picture only (its model
+is not rigged). Learned on the way:
+- **Paint or shape?** `head_views.py` shows the paint unlit beside the clay.
+  A line in the game that is not in the paint is the shape: cut through it
+  (`--cuts`) - the neck's line was a 3 mm fold, then a step where the hood's
+  collar edge lay on it (painted dark, so a skin-only smoothing missed it).
+- **Lift, never flatten.** Repainting a region in one smooth tone read as a
+  flat orange patch, lit; what worked was bringing only what is too dark up
+  to what is round it (a blot to the moustache, a smudge to the stubble),
+  colour and all, the grain kept.
+- **A cleanup can erase what is right.** Lifting every dark under the nose
+  took half the moustache: bound each pass by the shape (the nose ends a
+  centimetre under its tip).
+- A painted shadow under the jaw is mostly the game's own: the lamp is above.
+- **Look posed, in grey.** A line can show only when the body is posed (the
+  poster's head leant on the wall). Swap the paint for flat grey in a copy and
+  render the pose: shape and paint come apart. The neck's ring was both - the
+  throat turning at once from facing down to facing up (filled out to an
+  upright front), the body's coarse neck faceted (smoothed), and a band where
+  the jaw's paint met the body's (smeared along the neck's length only, its
+  grain kept - never repainted whole: flat or synthetic grain both read false).
+- **Weights.** Its front handed over from chest to head within 3 cm, none on
+  the neck's own joint: eased over the whole neck (`--no-weights` leaves them).

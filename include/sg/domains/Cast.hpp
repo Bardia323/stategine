@@ -12,6 +12,8 @@
 //   const sg::Key bruce = sg::cast(g, room, clock, "bruce", c);
 #pragma once
 
+#include <optional>
+
 #include <string>
 #include <vector>
 
@@ -88,5 +90,40 @@ struct Touch {
 bool touch(const StateGraph& g, const Spatial3D& host, Key being, const Vec3d& eye, const Vec3d& dir, double reach, Touch& out);
 // A point of the place in the being's own frame.
 Vec3d in_being(const Spatial3D& host, Key being, const Vec3d& p);
+
+// --- a body against what is round it ----------------------------------------------
+// What `b` (cast in `host`) is told at its ports to rest against the place as
+// a body does - its hand laid on a wall, its head leant on it - worked out
+// each time from where its joints stand now and what the place's rays meet
+// (sg::ray: what stops a walker), never from points given. Its walk and its
+// motion (a mover's, a clip's) carry it; these lay its hand and head over
+// that, as a game's own reach does over its animation.
+
+// Its hand (`goal`: a reach of two links ending at `wrist`, its upper arm
+// `shoulder`) laid on the nearest surface its arm reaches - the way `toward`
+// says (the place's), or, given none, the nearest round it from its side to
+// its front, a little below its shoulder, where the arm rests easiest (some
+// seven tenths of its reach) - the wrist `palm` off it, the elbow bent down
+// and away from it. None if nothing is in reach; `dist`, how far from the
+// shoulder the nearest surface is.
+// And the hand laid flat on it, if it has its own turn as a goal
+// (`<goal>_palm`, palm_goal): its fingers up along the surface, its back
+// out from it. Empty if nothing is in reach.
+std::vector<Event> brace(const Spatial3D& host, const Being& b, const std::string& goal, const std::string& shoulder, const std::string& wrist,
+                         const Vec3d& toward = {}, double palm = 0.035, double* dist = nullptr);
+// A hand's own turn as a goal (`name`, looked with, its tip `wrist` alone):
+// its forward the way its fingers go (the wrist to `middle`'s root), its up
+// the back of the hand (across `index` to `little`, the side away from its
+// `thumb`) - read from its bones as they stand now, as it was bound.
+Element& palm_goal(Being& b, const std::string& name, const std::string& wrist, const std::string& middle, const std::string& index,
+                   const std::string& little, const std::string& thumb);
+// Its head (`goal`: looked with, ending at `head`, its neck `neck`) looking
+// at `look` (the place's), its crown tipped toward the nearest wall round it
+// as far as brings its skull (`radius` round a point `above` over the head
+// joint) to meet it - tipped away from one nearer than that; none within
+// `near`, upright. Measured from where the skull would be upright on its
+// neck, so it comes to rest leant, not hunting.
+std::optional<Event> lean(const Spatial3D& host, const Being& b, const std::string& goal, const std::string& neck, const std::string& head, const Vec3d& look,
+                          double radius = 0.095, double above = 0.09, double near = 0.45);
 
 }  // namespace sg

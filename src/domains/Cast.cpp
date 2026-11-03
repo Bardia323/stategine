@@ -9,6 +9,7 @@
 #include "sg/domains/Being.hpp"
 #include "sg/domains/Ragdoll.hpp"
 #include "sg/domains/Walk.hpp"
+#include "sg/spatial/Math.hpp"
 
 namespace sg {
 
@@ -302,6 +303,133 @@ bool touch(const StateGraph& g, const Spatial3D& host, Key being, const Vec3d& e
     out.at = e + d * best;
     out.dir = d;
     return true;
+}
+
+namespace {
+
+// A joint of `b` by its own name (a model's joints are named with its prefix).
+const Element* joint_named(const Being& b, const std::string& name) {
+    for (Key j : b.joints()) {
+        const std::string& k = j.str();
+        const std::size_t cut = k.find_last_of(":|");
+        if ((cut == std::string::npos ? k : k.substr(cut + 1)) == name) return &b.element(j);
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+std::vector<Event> brace(const Spatial3D& host, const Being& b, const std::string& goal, const std::string& shoulder, const std::string& wrist,
+                         const Vec3d& toward, double palm, double* dist) {
+    const Element* spot = host.find(spot_of(host, b.id()));
+    const Element* s = joint_named(b, shoulder);
+    const Element* w = joint_named(b, wrist);
+    if (!spot || !s || !w) return {};
+    const Element* e = b.find(Key{w->params.get_or<std::string>("parent", "")});
+    const Pose there = world_pose(host, *spot);
+    const Vec3d S = place_in(there, b.pose_of(s->id).position), W = place_in(there, b.pose_of(w->id).position);
+    const Vec3d E = e ? place_in(there, b.pose_of(e->id).position) : (S + W) * 0.5;
+    const double arm = length(E - S) + length(W - E);
+    if (arm <= 1e-6) return {};
+    // (Where to look for a surface: the way said, or a fan from the side the
+    // arm is on round to the front, each a little down.)
+    std::vector<Vec3d> ways;
+    if (length(toward) > 1e-9) ways.push_back(unit(toward));
+    else {
+        const Vec3d ahead = unit(turn(there, Vec3d{1, 0, 0}));
+        const Vec3d side = unit(S - place_in(there, Vec3d{0, S.y - there.position.y, 0}));
+        const Vec3d out = unit(Vec3d{side.x, 0, side.z});
+        for (int k = 0; k <= 6; ++k) {
+            const double a = k / 6.0;
+            ways.push_back(unit(unit(out * (1 - a) + ahead * a) + Vec3d{0, -0.3, 0}));
+        }
+    }
+    // (Of what the rays meet, where the arm rests easiest: some seven tenths
+    // of its reach, not bunched up against the shoulder nor at full stretch.)
+    double best = 1e30, near = 1e30;
+    Vec3d at, normal;
+    for (const Vec3d& d : ways) {
+        Vec3d hit, n;
+        double t = 0;
+        if (!ray(host, S, d, arm * 0.92, hit, n, &t)) continue;
+        near = std::min(near, t);
+        if (const double ease = std::abs(t - arm * 0.7); ease < best) best = ease, at = hit, normal = n;
+    }
+    if (best > 1e29) return {};
+    if (dist) *dist = near;
+    // (The wrist off the surface by the hand's thickness; the elbow down, and
+    // out from the surface, as an arm leant on a wall bends.)
+    const Vec3d to = at + normal * palm;
+    const Vec3d pole = (S + to) * 0.5 + Vec3d{0, -0.45, 0} + normal * 0.2;
+    const Vec3d t = local_of(there, to), p = local_of(there, pole);
+    std::vector<Event> out{Event{b.reach_event(), Params{}.set("goal", goal).set(keys::x, t.x).set(keys::y, t.y).set(keys::z, t.z)
+                                                      .set("pole_x", p.x).set("pole_y", p.y).set("pole_z", p.z).set("fade", 0.35).set("soften", 0.96)}};
+    // (Flat on it: its fingers up the surface, leaning the way the body
+    // faces, its back out.)
+    if (b.find(Key{"goal." + goal + "_palm"})) {
+        const Vec3d ahead = turn(there, Vec3d{1, 0, 0});
+        Vec3d along = Vec3d{0, 1, 0} + ahead * 0.5;
+        along = unit(along - normal * dot(along, normal));
+        const Vec3d f = local_of(there, to + along * 0.15), u = local_of(there, to + normal);
+        out.push_back(Event{b.look_event(), Params{}.set("goal", goal + "_palm").set(keys::x, f.x).set(keys::y, f.y).set(keys::z, f.z)
+                                                .set("pole_x", u.x).set("pole_y", u.y).set("pole_z", u.z).set("fade", 0.35)});
+    }
+    return out;
+}
+
+Element& palm_goal(Being& b, const std::string& name, const std::string& wrist, const std::string& middle, const std::string& index,
+                   const std::string& little, const std::string& thumb) {
+    const Element* w = joint_named(b, wrist);
+    Element& g = b.goal(name, w ? w->id.str() : wrist, 0);
+    const Element *m = joint_named(b, middle), *i = joint_named(b, index), *l = joint_named(b, little), *t = joint_named(b, thumb);
+    if (!w || !m || !i || !l || !t) return g;
+    const Vec3d W = b.pose_of(w->id).position;
+    const Vec3d fingers = unit(b.pose_of(m->id).position - W), across = b.pose_of(i->id).position - b.pose_of(l->id).position;
+    Vec3d back = unit(cross(across, fingers));
+    if (dot(back, b.pose_of(t->id).position - W) > 0) back = back * -1.0;
+    // (Now, as it stands, back to as it was bound: by the turn it has from its binding.)
+    using namespace spatial;
+    const M3 now = from_quat(w->params.num("pqw", 1.0), w->params.num("pqx"), w->params.num("pqy"), w->params.num("pqz"));
+    const M3 bound = from_quat(w->params.num("bqw", 1.0), w->params.num("bqx"), w->params.num("bqy"), w->params.num("bqz"));
+    const M3 unturn = bound * transpose(now);
+    const V3 f = unturn * V3{fingers.x, fingers.y, fingers.z}, u = unturn * V3{back.x, back.y, back.z};
+    g.params.set("fwd_x", f.x).set("fwd_y", f.y).set("fwd_z", f.z).set("up_x", u.x).set("up_y", u.y).set("up_z", u.z);
+    return g;
+}
+
+
+
+std::optional<Event> lean(const Spatial3D& host, const Being& b, const std::string& goal, const std::string& neck, const std::string& head, const Vec3d& look,
+                          double radius, double above, double near) {
+    const Element* spot = host.find(spot_of(host, b.id()));
+    const Element* n = joint_named(b, neck);
+    const Element* h = joint_named(b, head);
+    if (!spot || !n || !h) return std::nullopt;
+    const Pose there = world_pose(host, *spot);
+    const Vec3d N = place_in(there, b.pose_of(n->id).position), H = place_in(there, b.pose_of(h->id).position);
+    // (The skull as it would stand upright on the neck: what the wall is
+    // measured from, so a head already leant does not lean on.)
+    const double reach = length(H - N) + above;
+    const Vec3d C = N + Vec3d{0, reach, 0};
+    double d = 1e30;
+    Vec3d wall;
+    for (int k = 0; k < 16; ++k) {
+        const double a = k * 3.14159265358979 / 8.0;
+        Vec3d hit, nn;
+        double t = 0;
+        if (ray(host, C, Vec3d{std::cos(a), 0, std::sin(a)}, near, hit, nn, &t) && t < d) d = t, wall = unit(Vec3d{nn.x, 0, nn.z});
+    }
+    Vec3d up{0, 1, 0};
+    if (d < 1e29) {
+        // (Tipped about the neck as far as brings the skull's side to the
+        // wall: sin of it the gap over the neck's reach - a third of a right
+        // angle at most.)
+        const double tip = std::asin(std::clamp((d - radius) / std::max(reach, 1e-6), -0.5, 0.5));
+        up = unit(Vec3d{0, std::cos(tip), 0} - wall * std::sin(tip));
+    }
+    const Vec3d l = local_of(there, look), p = local_of(there, C + up);
+    return Event{b.look_event(), Params{}.set("goal", goal).set(keys::x, l.x).set(keys::y, l.y).set(keys::z, l.z)
+                                     .set("pole_x", p.x).set("pole_y", p.y).set("pole_z", p.z).set("fade", 0.35)};
 }
 
 }  // namespace sg
