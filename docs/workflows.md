@@ -1295,7 +1295,7 @@ measured from it, as they were on the dad - adult proportions):
 
     cp work/<name>/<name>.glb mended.glb
     .venv/bin/python tools/mend_head_shape.py mended.glb          # chin, jaw, neck, folds, collarbones
-    .venv/bin/python tools/mend_head_paint.py mended.glb --base base_onto_shape.png --mouth --nose --neck
+    .venv/bin/python tools/mend_head_paint.py mended.glb --base base_onto_shape.png --mouth --nose --face --neck
     .venv/bin/python tools/head_views.py mended.glb look.png --box 1.38,1.62,-0.11,0.11
     .venv/bin/python tools/head_views.py mended.glb cuts.png --box 1.42,1.6,-0.06,0.14 --cuts 0,0.03,0.06
 
