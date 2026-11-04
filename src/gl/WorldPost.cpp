@@ -450,7 +450,7 @@ void GLWorldView::meter_exposure() {
         gl::glGenBuffers(2, x.pbo);
         for (gl::GLuint b : x.pbo) {
             gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, b);
-            gl::glBufferData(gl::GL_PIXEL_PACK_BUFFER, 2 * sizeof(float), nullptr, gl::GL_STREAM_READ);
+            gl::glBufferData(gl::GL_PIXEL_PACK_BUFFER, 4 * sizeof(float), nullptr, gl::GL_STREAM_READ);  // (room for all four: a browser reads a picture back RGBA)
         }
         gl::glBindBuffer(gl::GL_PIXEL_PACK_BUFFER, 0);
     }

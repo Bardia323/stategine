@@ -157,7 +157,7 @@ public:
         glBindVertexArray(vao_);
         if (joints_tex_) {
             glActiveTexture(GL_TEXTURE0 + kJointsUnit);
-            glBindTexture(GL_TEXTURE_BUFFER, joints_tex_);
+            glBindTexture(GL_JOINTS_TEXTURE, joints_tex_);
             glActiveTexture(GL_TEXTURE0);
         }
         glDrawArrays(GL_TRIANGLES, 0, count_);

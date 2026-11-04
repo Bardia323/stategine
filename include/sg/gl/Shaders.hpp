@@ -11,6 +11,14 @@
 
 #include <string>
 
+// A skin's joints, as the vertex stage reads them (Mesh::pose): a buffer
+// of texels, or - in a browser, whose GL has none - a picture one texel high.
+#if defined(SG_WEBGL)
+#define SG_GLSL_JOINTS "uniform highp sampler2D uJoints;\n#define joint_row(i) texelFetch(uJoints, ivec2(i, 0), 0)\n#define joint_rows textureSize(uJoints, 0).x\n"
+#else
+#define SG_GLSL_JOINTS "uniform samplerBuffer uJoints;\n#define joint_row(i) texelFetch(uJoints, i)\n#define joint_rows textureSize(uJoints)\n"
+#endif
+
 namespace sg::gl {
 
 // --- scene --------------------------------------------------------------------
@@ -44,7 +52,7 @@ layout(location=13) in vec4 aWear;
 out vec4 vMeshWear;
 layout(location=11) in vec4 aJoints;
 layout(location=12) in vec4 aWeights;
-uniform samplerBuffer uJoints;
+)" SG_GLSL_JOINTS R"(
 void posed_by_joints(inout vec3 pos, inout vec3 nrm) {
     if (aWeights == vec4(0.0)) return;
     vec3 p = vec3(0.0), n = vec3(0.0);
@@ -53,11 +61,11 @@ void posed_by_joints(inout vec3 pos, inout vec3 nrm) {
         float w = aWeights[k];
         if (w <= 0.0) continue;
         int j = int(aJoints[k] + 0.5) * 3;
-        vec4 r0 = texelFetch(uJoints, j), r1 = texelFetch(uJoints, j + 1), r2 = texelFetch(uJoints, j + 2);
+        vec4 r0 = joint_row(j), r1 = joint_row(j + 1), r2 = joint_row(j + 2);
         p += w * vec3(dot(r0, at), dot(r1, at), dot(r2, at));
         n += w * vec3(dot(r0.xyz, nrm), dot(r1.xyz, nrm), dot(r2.xyz, nrm));
     }
-    n *= texelFetch(uJoints, textureSize(uJoints) - 1).xyz;
+    n *= joint_row(joint_rows - 1).xyz;
     pos = p, nrm = n / (length(n) + 1e-12);
 }
 uniform float uDepthLayer;
@@ -95,6 +103,7 @@ out vec3 vRoom;
 out vec3 vNormal;
 out vec2 vUV;
 out vec3 vLocal;
+out vec3 vAnchor;   // the thing's middle, along its own ways, from the room's origin (metres): a texture tiled on the room's grid
 out vec3 vObject;
 out vec3 vObjNormal;
 out vec3 vRoomNormal;
@@ -160,6 +169,7 @@ void main() {
     vWorld = world.xyz;
     vRoom = (texModel * vec4(pos, 1.0)).xyz;
     vLocal = pos;
+    vAnchor = vec3(dot(normalize(texModel[0].xyz), texModel[3].xyz), dot(normalize(texModel[1].xyz), texModel[3].xyz), dot(normalize(texModel[2].xyz), texModel[3].xyz));
     // The mesh's own frame at its own size: materials that belong to a thing
     // (grain, brushing, weave) ride along with it however it is moved.
     vec3 scale = vec3(length(model[0].xyz), length(model[1].xyz), length(model[2].xyz));
@@ -418,7 +428,7 @@ out float gl_ClipDistance[1];
 // A skin's corner posed by its joints, as the scene poses it (scene_vs).
 layout(location=11) in vec4 aJoints;
 layout(location=12) in vec4 aWeights;
-uniform samplerBuffer uJoints;
+)" SG_GLSL_JOINTS R"(
 vec3 posed_by_joints(vec3 pos) {
     if (aWeights == vec4(0.0)) return pos;
     vec3 p = vec3(0.0);
@@ -427,7 +437,7 @@ vec3 posed_by_joints(vec3 pos) {
         float w = aWeights[k];
         if (w <= 0.0) continue;
         int j = int(aJoints[k] + 0.5) * 3;
-        p += w * vec3(dot(texelFetch(uJoints, j), at), dot(texelFetch(uJoints, j + 1), at), dot(texelFetch(uJoints, j + 2), at));
+        p += w * vec3(dot(joint_row(j), at), dot(joint_row(j + 1), at), dot(joint_row(j + 2), at));
     }
     return p;
 }

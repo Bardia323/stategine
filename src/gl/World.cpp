@@ -610,7 +610,7 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
                 }
         if (!work->jobs.empty()) {
             FewerWork* w = work.get();
-            w->hand = std::thread([w] {
+            const auto make = [w] {
                 cache::background_priority();
                 for (FewerWork::Job& j : w->jobs) {
                     if (w->stop) return;
@@ -637,7 +637,12 @@ void GLWorldView::warm(const std::vector<Spatial3D*>& worlds, int fb_w, int fb_h
                     w->done.emplace_back(j.mesh, std::move(made));
                 }
                 w->finished = true;
-            });
+            };
+            // (One core - a browser's - has no other to make them on: here, once.)
+            if (std::thread::hardware_concurrency() <= 1)
+                make();
+            else
+                w->hand = std::thread(make);
             fewer_work_ = std::move(work);
         }
     }

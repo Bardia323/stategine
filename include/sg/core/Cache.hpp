@@ -52,6 +52,16 @@ namespace cache {
 // The folder kept in (each kind a folder in it); empty, nothing is kept.
 void set_folder(const std::string& dir);
 std::string folder();
+// Only read, never written: what is there was shipped with the program
+// (a browser's disk is its memory - what is made there is kept by nobody,
+// and a picture's pixels kept would only take memory twice).
+void set_read_only(bool on);
+
+// When the file at `path` was last written, as a key may say it of a file
+// it does not read: whole seconds since 1970, the same whatever the program
+// was built with (a desktop's library and a browser's count a file's time
+// differently), and as a browser's disk keeps them. 0: no such file.
+long long stamp(const std::string& path);
 
 // The bytes kept for `key`, if they are there and whole.
 bool load(const std::string& kind, const Digest& key, std::string& out);

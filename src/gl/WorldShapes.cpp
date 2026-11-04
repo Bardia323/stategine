@@ -4,7 +4,7 @@
 #include "sg/gl/World.hpp"
 
 #include <functional>
-#include <thread>
+#include "sg/core/Work.hpp"
 
 namespace sg::render {
 
@@ -156,18 +156,12 @@ std::vector<float> GLWorldView::sample_ground(const std::function<double(double,
         }
         q.h.assign(static_cast<std::size_t>(wide) * wide, 0.0);
     }
-    // Every point of every square, on every core at once.
-    const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
-    std::vector<std::thread> pool;
-    for (int w = 0; w < workers; ++w)
-        pool.emplace_back([&, w] {
-            for (int r = w; r < levels * wide; r += workers) {
-                Square& q = sq[static_cast<std::size_t>(r / wide)];
-                const int j = r % wide;
-                for (int i = 0; i < wide; ++i) q.h[static_cast<std::size_t>(j) * wide + i] = height(q.x0 + (i - 2) * q.s, q.z0 + (j - 2) * q.s);
-            }
-        });
-    for (std::thread& th : pool) th.join();
+    // Every point of every square, a row a piece, on the program's hands (sg::work).
+    work::each(static_cast<std::size_t>(levels) * wide, [&](std::size_t r) {
+        Square& q = sq[r / wide];
+        const int j = static_cast<int>(r % wide);
+        for (int i = 0; i < wide; ++i) q.h[static_cast<std::size_t>(j) * wide + i] = height(q.x0 + (i - 2) * q.s, q.z0 + (j - 2) * q.s);
+    });
 
     std::vector<float> v;
     v.reserve(static_cast<std::size_t>(levels) * 4 * m * m * 6 * 8);

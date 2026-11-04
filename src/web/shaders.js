@@ -86,9 +86,9 @@ struct Fragment { @location(0) hdr:vec4f,@location(1) normal:vec4f };
  else if(a.z>=a.y){cell=select(3.0,2.0,v.objectNormal.z>0);u=select(.5-p.x,p.x+.5,v.objectNormal.z>0);y=p.y+.5;}
  else{cell=select(5.0,4.0,v.objectNormal.y>0);u=p.x+.5;y=select(p.z+.5,.5-p.z,v.objectNormal.y>0);}
  uv=vec2f((cell-floor(cell/3)*3+clamp(u,.002,.998))/3,(floor(cell/3)+1-clamp(y,.002,.998))/2);}
- if(v.texture.x>4.5&&v.texture.x<5.5){let a=abs(cross(dpdx(v.world),dpdy(v.world)));let p=v.world/max(v.rect.x,.001);uv=select(select(vec2f(p.x,-p.y),vec2f(p.z,-p.y),a.x>=a.z),p.xz,a.y>=a.x&&a.y>=a.z);}
+ if(v.texture.x>4.5&&v.texture.x<5.5){let a=abs(cross(dpdx(v.world),dpdy(v.world)));let p=v.world/max(v.rect.x,.001);uv=fract(select(select(vec2f(p.x,-p.y),vec2f(p.z,-p.y),a.x>=a.z),p.xz,a.y>=a.x&&a.y>=a.z));}
  if(v.rect.z>0){uv=v.rect.xy+uv*v.rect.zw;}
- var texel=textureSampleLevel(picture,linearSampler,uv,0);if(texel.a<.5){discard;}var tex=texel.rgb;if(v.texture.x>1.5&&v.texture.x<2.5){tex=crt(v,uv);}if(v.texture.z>.5){let y=min(tex,vec3f(.985));let a=2.43*y-2.51;let b=.59*y-.03;let c=.14*y;tex=max((-b-sqrt(max(b*b-4*a*c,vec3f(0))))/(2*a),vec3f(0));}base=tex;}
+ var texel=textureSampleLevel(picture,linearSampler,uv,0);if(texel.a<.5&&(v.rect.y>.5||v.texture.x>5.5)){discard;}var tex=texel.rgb;if(v.texture.x>1.5&&v.texture.x<2.5){tex=crt(v,uv);}if(v.texture.z>.5){let y=min(tex,vec3f(.985));let a=2.43*y-2.51;let b=.59*y-.03;let c=.14*y;tex=max((-b-sqrt(max(b*b-4*a*c,vec3f(0))))/(2*a),vec3f(0));}base=tex;}
  var colour=base;
  if(!skyPixel&&f.clock.w<.5&&!(v.texture.x>2.5&&v.texture.x<3.5)){
    let roughness=clamp(v.colour.w+m.rough,.05,1);let metal=select(0.0,.35,v.material.x>4.5&&v.material.x<5.5);let f0=mix(vec3f(.04),base,metal);let diffuse=base*(1-metal);let view=normalize(f.eye.xyz-v.world);

@@ -168,27 +168,43 @@ float through_gate(int i, vec3 p, vec3 way, bool parallel) {
 // look's `clouds.cover`): read off the map of their shadow on the ground
 // round the eye (cloud_shadow_fs) where the way to the sun from `p` meets
 // it. 1 where there are none.
-uniform sampler2D uCloudShadowMap;
+// (SG_FEW_UNITS: a card of 16 texture units a stage - most a browser's -
+// cannot hold every picture the scene reads, and leaves out the open
+// world's: clouds, the land's horizon, the planet's sky, moss, a land's beds.)
 uniform vec4 uCloudShadowAt;  // the map's middle (x, z), half its width (metres); w 1 where there is one
+#ifndef SG_FEW_UNITS
+uniform sampler2D uCloudShadowMap;
 float cloud_shadow(vec3 p, vec3 l) {
     if (uCloudShadowAt.w <= 0.0 || l.y <= 0.02) return 1.0;
     vec2 g = p.xz - l.xz * (p.y / l.y);
     return texture(uCloudShadowMap, (g - uCloudShadowAt.xy) / (2.0 * uCloudShadowAt.z) + 0.5).r;
 }
+#else
+float cloud_shadow(vec3 p, vec3 l) { return 1.0; }
+#endif
 
 // How much of a sun's light (from `l`) the land toward it leaves `p` (a
 // terrain's horizon, horizon_fs): lit while the sun stands higher over the
 // horizon than the land rises toward it there, soft across a little of it.
 // What stands above the ground sees over more of the land: as high as two
 // of the grid's cells, the horizon is let go of. 1 where there is none.
+#ifndef SG_FEW_UNITS
 uniform sampler2D uHorizonMap;
+#endif
 uniform vec4 uHorizonAt;    // the grid's corner (x, z), 1 / its width (metres); w 1 where there is one
 uniform vec2 uHorizonCell;  // a cell of it (metres), and how high its room stands in the view
 float horizon_shadow(vec3 p, vec3 l) {
+#ifdef SG_FEW_UNITS
+    return 1.0;
+#endif
     if (uHorizonAt.w <= 0.0) return 1.0;
     vec2 uv = (p.xz - uHorizonAt.xy) * uHorizonAt.z;
     if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+#ifdef SG_FEW_UNITS
+    vec2 h = vec2(-1.0, 0.0);
+#else
     vec2 h = texture(uHorizonMap, uv).rg;
+#endif
     float up = l.y / max(length(l.xz), 1e-4);
     float lit = smoothstep(-0.03, 0.03, up - h.x);
     return mix(lit, 1.0, smoothstep(0.0, 2.0 * uHorizonCell.x, p.y - h.y - uHorizonCell.y));
@@ -774,7 +790,9 @@ const float kMieScatter = 3.996e-3, kMieTakes = 4.40e-3;
 const vec3  kOzone = vec3(0.650, 1.881, 0.085) * 1e-3;
 uniform float uAtmoHaze;    // the haze, as many times the usual
 uniform float uAtmoGround;  // how much of the light on it the ground gives back
+#ifndef SG_FEW_UNITS
 uniform sampler2D uAtmoTransmittance;
+#endif
 uniform sampler2D uAtmoMultiple;
 
 // The air `h` kilometres up: what it scatters (molecules, haze) and what it
@@ -816,7 +834,11 @@ void transmittance_at(vec2 uv, out float r, out float mu) {
     mu = d <= 0.0 ? 1.0 : clamp((H * H - rho * rho - d * d) / (2.0 * r * d), -1.0, 1.0);
 }
 vec3 to_top(float r, float mu) {
+#ifdef SG_FEW_UNITS
+    return vec3(1.0);
+#else
     return texture(uAtmoTransmittance, unit_to_texel(transmittance_uv(r, mu), vec2(textureSize(uAtmoTransmittance, 0)))).rgb;
+#endif
 }
 // What gets through of the sun's light to (r) from its way (mu): none where
 // the ground is in the way.
@@ -1721,6 +1743,7 @@ in vec3 vRoom;
 in vec3 vNormal;
 in vec2 vUV;
 in vec3 vLocal;
+in vec3 vAnchor;
 in vec3 vObject;
 in vec3 vObjNormal;
 in vec3 vRoomNormal;
@@ -1785,6 +1808,7 @@ uniform vec4  uLand;          // a land's own: where its water stands (y, its ro
                               // its sand's wind ripples (surface 8): how far apart (metres; 0: none), the way the wind blew (radians from +x towards +z)
 uniform float uSkinTile;      // with uSkin 1: metres of the thing a cell covers, its pattern going on round it; 0: a face the whole cell
 uniform vec3  uSkinSize;      // with uSkinTile: the thing's size
+uniform float uSkinRoom;      // 1: tiled from the room's origin (along the thing's own ways: vAnchor), not its own middle - every piece of a wall on one grid
 uniform float uSkinBlend;     // with uSkin 1: 0 a face its own cell; 1 a curve soft between the cells of the ways it faces
 // A worn texture's dirt (Texture::dirt_raster: colour, and its grains'
 // height in a): how much (x), how far from a corner or an edge it gathers
@@ -1829,7 +1853,9 @@ uniform vec4 uWearField;
 // roughness (y) varying over the world, in patches z metres across.
 uniform vec4 uMeshDirt;
 uniform vec4 uEdge;
+#ifndef SG_FEW_UNITS
 uniform sampler2D uMoss;
+#endif
 uniform vec4 uMossSet;
 uniform vec4 uMossWhere;
 uniform vec4 uVary;
@@ -1867,14 +1893,18 @@ uniform float uGlass;         // > 0: glass, this clear - what is behind it seen
 // The clouds as a volume (a look's `clouds.cover`): the sky above with them
 // in it (cloud_dome_fs) - their light, and how much is seen through them.
 uniform float uCloudVolume;
+#ifndef SG_FEW_UNITS
 uniform sampler2D uCloudDome;
+#endif
 // The sky, and the air between the eye and what it sees, as a planet's (a
 // look's `atmosphere`): this much of them, 0 none.
 uniform float uAtmo;
 uniform float uAtmoScale;     // kilometres of the planet to a metre of the world
 uniform float uAtmoAltitude;  // how high the world's 0 is over its ground, km
 uniform float uAtmoSun;       // how bright the sun is in it
+#ifndef SG_FEW_UNITS
 uniform sampler2D uAtmoSky;   // the sky seen from the eye every way (atmosphere_sky_fs)
+#endif
 uniform vec3  uViewPos;
 uniform vec3  uFogColor;
 uniform float uFogDensity;
@@ -2047,8 +2077,10 @@ uniform float uSplat;
 uniform vec4  uSplatRect;
 uniform vec4  uLayerSurface;
 uniform vec3  uLayerColor[4];
+#ifndef SG_FEW_UNITS
 uniform sampler2DArray uBeds;
 uniform sampler2DArray uBedNormals;
+#endif
 uniform vec4  uBedTurn;       // how far each bed's patches may be turned (radians): its pattern's way kept to within it
 uniform vec3  uWaterDeep;
 uniform float uWaterDeepest;
@@ -2276,6 +2308,12 @@ vec2 skin_at(float cell, vec3 p, vec3 size) {
         return vec2(p.x + 0.5, p.z + 0.5);
     }
     vec3 h = size * 0.5, m = p * size;
+    if (uSkinRoom > 0.5) {
+        vec3 w = m + vAnchor;
+        float wu = cell < 0.5 ? -w.z : cell < 1.5 ? w.z : cell < 2.5 ? w.x : cell < 3.5 ? -w.x : w.x;
+        float wv = cell < 3.5 ? w.y : (cell < 4.5 ? -w.z : w.z);
+        return vec2(wu, wv) / uSkinTile;
+    }
     float u;
     if (cell < 0.5) u = 2.0 * h.x + (h.z - m.z);
     else if (cell < 1.5) u = 4.0 * h.x + 2.0 * h.z + (m.z + h.z);
@@ -2437,8 +2475,12 @@ vec4 tiled(sampler2D s, vec2 uv) {
 float atmo_eye() { return clamp(kGroundR + uAtmoAltitude + uViewPos.y * uAtmoScale, kGroundR + 0.001, kTopR - 0.01); }
 // The planet's sky seen from the eye that way, as bright as its sun.
 vec3 atmo_sky(vec3 dir) {
+#ifdef SG_FEW_UNITS
+    return vec3(0.0);
+#else
     vec3 sun = normalize(uSunDir + vec3(0.0, 1e-4, 0.0));
     return texture(uAtmoSky, unit_to_texel(sky_view_uv(dir, sun, atmo_eye()), vec2(textureSize(uAtmoSky, 0)))).rgb * uSunColor * uAtmoSun;
+#endif
 }
 // The planet's air between the eye and what it sees `len` metres off that
 // way: as much of what is there as gets through, and as much of the sky's
@@ -2511,10 +2553,12 @@ vec3 sky(vec3 dir) {
     }
     // The clouds as a volume, over all of it: as much of the sky behind them
     // as is seen through them, and their light (thinning into the horizon).
+#ifndef SG_FEW_UNITS
     if (uCloudVolume > 0.0 && dir.y > 0.0) {
         vec4 cloud = texture(uCloudDome, dome_uv(dir));
         c = mix(c, c * cloud.a + cloud.rgb, uCloudVolume * smoothstep(0.0, 0.03, dir.y));
     }
+#endif
     return c;
 }
 
@@ -3118,6 +3162,10 @@ vec3 ground_albedo(out float rough_mod) {
 // shows, not a blur of three. Its colour and height (`c`), its normal turned
 // with its patch (`t`, unnormalised: how long it is says what its mipmaps
 // averaged away) and its roughness (`rough`).
+#ifdef SG_FEW_UNITS
+void bed_hex(int k, vec2 uv, out vec4 c, out vec3 t, out float rough) { c = vec4(0.0), t = vec3(0.0), rough = 0.0; }
+void bed_at(int k, vec3 facing, vec3 g, out vec4 color, out vec3 bend, out float held, out float rough) { color = vec4(0.0), bend = vec3(0.0), held = 0.0, rough = 0.0; }
+#else
 void bed_hex(int k, vec2 uv, out vec4 c, out vec3 t, out float rough) {
     float layer = float(k);
     vec2 dx = dFdx(uv), dy = dFdy(uv);
@@ -3175,6 +3223,7 @@ void bed_at(int k, vec3 facing, vec3 g, out vec4 color, out vec3 bend, out float
     }
     color.rgb *= uLayerColor[k];
 }
+#endif
 
 // A land laid with photographed beds: each where its share says, and where
 // two meet, the one whose grains stand higher there showing through the
@@ -3604,11 +3653,19 @@ void main() {
     // Moss where moss takes: on what faces up and holds water, on the side
     // the sun reaches least, in what is shut in and stays damp - a
     // photograph of it, its edge the photograph's own, as dirt's is.
+#ifdef SG_FEW_UNITS
+    if (false) {
+#else
     if (uMossSet.w > 0.5) {
+#endif
         vec3 rn = normalize(vRoomNormal), an = gPlane;
         vec2 gp = an.y > 0.7 ? vRoom.xz : (an.x > an.z ? vRoom.zy : vRoom.xy);
+#ifdef SG_FEW_UNITS
+        vec4 m1 = vec4(0.0), m2 = vec4(0.0);
+#else
         vec4 m1 = texture(uMoss, gp / uMossSet.y);
         vec4 m2 = texture(uMoss, gp / (uMossSet.y * 2.37) + vec2(0.29, 0.83));
+#endif
         float grains = 0.6 * m1.a + 0.4 * m2.a;
         // (Low and shut in, it stays damp longest: more of it there.)
         float low = shaped ? smoothstep(0.2, 0.9, vMeshWear.z) : 0.0;
@@ -4335,6 +4392,10 @@ uniform float uDarkChroma; // a sensor's darks losing their colour: how much of 
 uniform vec3  uTapeBleed;  // x its brightness softened along each line (lines either way), y its colour smeared along it (lines either way), z that colour late, to the right (lines) - 0: none
 uniform vec3  uTapeRun;    // x each line off the tape a little early or late (lines), y the tape's noise, streaked along its lines (how much), z the rows at the bottom torn sideways where the heads change over - 0: none
 uniform vec3  uTapeNoise;  // the tape's own noise: x its brightness's, fine and smeared along each line; y its colour's, soft blotches that crawl; z how much more in the darks - 0: none
+// A tube's glass the picture is shown on (a CRT):
+uniform vec3  uCrt;        // x its aperture grille (columns of red, green, blue phosphor; how much), y its scanlines (how much), z one triad's and one line's pitch (pixels of a 1080-row screen) - 0: none
+uniform float uCrtGlow;    // its phosphors' glow round what is bright (0: none)
+uniform float uTube;       // its face's curve: the picture bowed out as a barrel, filling the frame (as uBarrel; 0: flat)
 )") + film_glsl() + godrays_glsl() + fxaa_glsl() + fog_bloom_glsl() + R"(
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
@@ -4409,11 +4470,13 @@ vec3 focused(vec2 uv) {
 // Where a wide lens takes this pixel's light from: straight lines bowed out
 // from the middle, more the further out (r^2), the picture drawn a little
 // larger so the bowing still fills the frame's corners.
+// (A tube's curved face bows the picture the same way: its curve added.)
 vec2 lens_uv(vec2 uv) {
-    if (uBarrel <= 0.0) return uv;
+    float barrel = uBarrel + uTube;
+    if (barrel <= 0.0) return uv;
     vec2 d = (uv - 0.5) * vec2(uTexel.y / uTexel.x, 1.0);
     float corner = dot(vec2(0.5 * uTexel.y / uTexel.x, 0.5), vec2(0.5 * uTexel.y / uTexel.x, 0.5));
-    float k = uBarrel / max(corner, 1e-4);
+    float k = barrel / max(corner, 1e-4);
     // (The corner reads the corner: the middle is drawn larger, the edges
     // gathered in - a barrel.)
     vec2 bowed = d * (1.0 + k * dot(d, d)) / (1.0 + k * corner);
@@ -4553,6 +4616,23 @@ void main() {
         float speck = tape_hash(vec2(floor(x / 25.0), row + frame * 131.0));
         if (speck > 0.9994) color = mix(color, vec3(0.85), 0.5 * smoothstep(0.0, 0.3, fract(x / 25.0)) * smoothstep(1.0, 0.6, fract(x / 25.0)));
         color = max(color, vec3(0.0));
+    }
+
+    // (The tube it is shown on: its phosphors glowing round what is bright;
+    // then its face's own pattern, on the screen's pixels and not the
+    // picture's (the picture bows behind the glass, the glass stays square) -
+    // columns of red, green and blue phosphor with a dark gap between, and
+    // the dark between its lines; each brightened back to its mean, so the
+    // tube is as bright as the picture.)
+    if (uCrtGlow > 0.0) color += tonemap(texture(uBloom, uv).rgb * uExposure) * uCrtGlow;
+    if (uCrt.x > 0.0 || uCrt.y > 0.0) {
+        float pitch = max(3.0, floor(uCrt.z * (1.0 / uTexel.y) / 1080.0 + 0.5));
+        float f = (mod(floor(gl_FragCoord.x), pitch) + 0.5) / pitch;
+        vec3 grille = 0.18 + 0.82 * clamp(1.0 - abs(f - vec3(1.0, 3.0, 5.0) / 6.0) * 3.0, 0.0, 1.0);
+        grille /= 0.18 + 0.82 / 3.0;
+        float s = sin(3.14159265 * (mod(floor(gl_FragCoord.y), pitch) + 0.5) / pitch);
+        float scan = (0.55 + 0.45 * s * s) / 0.775;
+        color *= mix(vec3(1.0), grille, uCrt.x) * mix(1.0, scan, uCrt.y);
     }
 
     // Vignette, then the film.

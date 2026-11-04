@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -284,10 +285,15 @@ bricks::Settings tokens_from(const std::string& text) {
     return set;
 }
 
+bool gaits_ready(std::string* why);
+void advance_by_gaits(State& s, double dt);
 void advance(State& s, double dt) {
     Params& self = s.element(Mover::self_id()).params;
     Maker& maker = Maker::get();
-    if (!maker.ready(nullptr)) return;
+    if (!maker.ready(nullptr)) {
+        if (gaits_ready(nullptr)) advance_by_gaits(s, dt);
+        return;
+    }
     std::array<Pose, 4> context;
     Pose target;
     bricks::Settings set;
@@ -355,6 +361,159 @@ void advance(State& s, double dt) {
     m->sample(t, pose);
     write(s, pose);
 }
+
+// --- without a model: the gaits it made before ------------------------------------
+// Where there is no model to run (a browser: no ONNX Runtime), a mover
+// walks by what MotionBricks made of it on a machine that had one
+// (`record_gaits`): a stride of each way it walks - ahead, back, to either
+// side, as one who keeps looking ahead - and how it stands. Told to go, it
+// goes as it was told, as fast, its stride the two recorded nearest the way
+// it goes, blended by how near, eased in from standing and out again; turned
+// to where it is to face as fast as a person turns.
+struct Gait {
+    double way = 0.0;  // the way it goes, from ahead (radians: toward +z is a quarter turn)
+    double speed = 0.0, period = 1.0;
+    std::vector<std::vector<double>> frames;  // each: every joint's turn (w x y z), then the hips' place (x y z)
+};
+struct Gaits {
+    std::vector<std::string> joints;
+    std::vector<double> stand;
+    std::vector<Gait> walks;
+    bool tried = false, ok = false;
+    std::string path, why;
+};
+Gaits& gaits() {
+    static Gaits g;
+    return g;
+}
+bool gaits_ready(std::string* why) {
+    Gaits& g = gaits();
+    if (!g.tried) {
+        g.tried = true;
+        std::ifstream in(g.path);
+        std::string word;
+        std::size_t n = 0;
+        if (!in || !(in >> word) || word != "gaits" || !(in >> word >> n)) {
+            g.why = g.path.empty() ? "no gaits said (sg::mover_gaits)" : "no gaits at " + g.path;
+        } else {
+            g.joints.resize(n);
+            for (std::string& j : g.joints) in >> j;
+            const std::size_t width = n * 4 + 3;
+            const auto read = [&](std::vector<double>& v) {
+                v.resize(width);
+                for (double& x : v) in >> x;
+            };
+            while (in >> word) {
+                if (word == "stand") {
+                    read(g.stand);
+                } else if (word == "walk") {
+                    Gait w;
+                    std::size_t frames = 0;
+                    in >> w.way >> w.speed >> w.period >> frames;
+                    w.frames.resize(frames);
+                    for (auto& f : w.frames) read(f);
+                    if (!w.frames.empty()) g.walks.push_back(std::move(w));
+                }
+            }
+            g.ok = in.eof() && !g.stand.empty() && !g.walks.empty();
+            if (!g.ok) g.why = "the gaits at " + g.path + " are not whole";
+            std::sort(g.walks.begin(), g.walks.end(), [](const Gait& a, const Gait& b) { return a.way < b.way; });
+        }
+    }
+    if (!g.ok && why) *why = g.why;
+    return g.ok;
+}
+
+// A walk's pose at `phase` (0..1 of its stride), between its frames.
+void sample(const Gait& w, double phase, std::vector<double>& out) {
+    const double at = phase * static_cast<double>(w.frames.size());
+    const std::size_t a = static_cast<std::size_t>(at) % w.frames.size(), b = (a + 1) % w.frames.size();
+    const double k = at - std::floor(at);
+    out.resize(w.frames[a].size());
+    for (std::size_t i = 0; i < out.size(); ++i) out[i] = w.frames[a][i] * (1.0 - k) + w.frames[b][i] * k;
+}
+// `to` taken `k` of the way toward `from`'s blend: turns by the shorter way,
+// then made whole again.
+void mix_into(std::vector<double>& to, const std::vector<double>& from, double k, std::size_t joints) {
+    for (std::size_t j = 0; j < joints; ++j) {
+        double* q = &to[j * 4];
+        const double* r = &from[j * 4];
+        const double sign = q[0] * r[0] + q[1] * r[1] + q[2] * r[2] + q[3] * r[3] < 0.0 ? -1.0 : 1.0;
+        for (int c = 0; c < 4; ++c) q[c] = q[c] * (1.0 - k) + sign * r[c] * k;
+    }
+    for (std::size_t i = joints * 4; i < to.size(); ++i) to[i] = to[i] * (1.0 - k) + from[i] * k;
+}
+
+void advance_by_gaits(State& s, double dt) {
+    const Gaits& g = gaits();
+    Params& self = s.element(Mover::self_id()).params;
+    double x = self.num(keys::x), z = self.num(keys::z), yaw = self.num(keys::yaw);
+    const double gx = self.num("goal_x", x), gz = self.num("goal_z", z), speed = self.num("speed");
+    const double dx = gx - x, dz = gz - z, dist = std::hypot(dx, dz);
+    const bool going = speed > 0.05 && dist > 0.05;
+    // (Facing where it is told - or, unheld, the way it goes - turned as fast as one turns.)
+    const double face = self.num("hold") > 0.5 && self.has(Key{"face"}) ? self.num("face") : going ? std::atan2(dz, dx) : self.num("face", yaw);
+    const double turn = std::remainder(face - yaw, 2 * 3.14159265358979);
+    yaw += std::clamp(turn, -4.0 * dt, 4.0 * dt);
+    // How much it walks (eased in and out over a quarter of a second), and which way from ahead.
+    double walking = std::clamp(self.num("walking") + (going ? dt : -dt) / 0.25, 0.0, 1.0);
+    const double way = going ? std::remainder(std::atan2(dz, dx) - yaw, 2 * 3.14159265358979) : self.num("way");
+    // The two strides recorded nearest that way, and how near.
+    const std::size_t n = g.walks.size();
+    std::size_t lo = n - 1, hi = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (g.walks[i].way <= way) lo = i;
+    hi = (lo + 1) % n;
+    const double a = g.walks[lo].way, b = g.walks[hi].way + (hi <= lo ? 2 * 3.14159265358979 : 0.0);
+    const double w = b > a ? std::clamp(std::remainder(way - a, 2 * 3.14159265358979) / (b - a), 0.0, 1.0) : 0.0;
+    // Its stride as long as theirs, blended; as far through it as it has walked.
+    const double period = g.walks[lo].period * (1.0 - w) + g.walks[hi].period * w;
+    double phase = self.num("phase") + (walking > 0.0 ? dt / std::max(0.2, period) : 0.0);
+    phase -= std::floor(phase);
+    std::vector<double> pose = g.stand, one, two;
+    sample(g.walks[lo], phase, one);
+    sample(g.walks[hi], phase, two);
+    mix_into(one, two, w, g.joints.size());
+    mix_into(pose, one, walking, g.joints.size());
+    // Where it is: on as fast as it was told, never past where it was told.
+    if (going) {
+        const double step = std::min(dist, speed * walking * dt);
+        x += dx / dist * step, z += dz / dist * step;
+    }
+    self.set(keys::x, x).set(keys::z, z).set(keys::yaw, yaw).set("walking", walking).set("way", way).set("phase", phase);
+    for (std::size_t j = 0; j < g.joints.size(); ++j) {
+        Element* e = s.find(Key{"j." + g.joints[j]});
+        if (!e) continue;
+        const double* q = &pose[j * 4];
+        const double len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        if (len <= 1e-9) continue;
+        e->params.set("pqw", q[0] / len).set("pqx", q[1] / len).set("pqy", q[2] / len).set("pqz", q[3] / len);
+        if (j == 0) e->params.set("px", pose[g.joints.size() * 4]).set("py", pose[g.joints.size() * 4 + 1]).set("pz", pose[g.joints.size() * 4 + 2]);
+    }
+}
+
+// A pose of the mover as its elements say it: every joint's turn, the hips' place.
+std::vector<double> pose_of(const State& s) {
+    std::vector<double> out;
+    for (const std::string& n : soma().names) {
+        const Element* e = s.find(Key{"j." + n});
+        out.push_back(e ? e->params.num("pqw", 1.0) : 1.0), out.push_back(e ? e->params.num("pqx") : 0.0);
+        out.push_back(e ? e->params.num("pqy") : 0.0), out.push_back(e ? e->params.num("pqz") : 0.0);
+    }
+    const Element* h = s.find(Key{"j." + soma().names[0]});
+    out.push_back(h ? h->params.num("px") : 0.0), out.push_back(h ? h->params.num("py") : 0.0), out.push_back(h ? h->params.num("pz") : 0.0);
+    return out;
+}
+// How far apart two poses are: their turns' and the hips' height.
+double apart(const std::vector<double>& a, const std::vector<double>& b, std::size_t joints) {
+    double d = 0.0;
+    for (std::size_t j = 0; j < joints; ++j) {
+        double dot = 0.0;
+        for (int c = 0; c < 4; ++c) dot += a[j * 4 + c] * b[j * 4 + c];
+        d += 1.0 - std::fabs(dot);
+    }
+    return d + std::fabs(a[joints * 4 + 1] - b[joints * 4 + 1]);
+}
 }  // namespace
 
 Mover::Mover(Key id, double x, double z, double yaw) : State(id) {
@@ -388,7 +547,9 @@ Mover::Mover(Key id, double x, double z, double yaw) : State(id) {
 std::vector<std::string> Mover::faults() const {
     std::vector<std::string> out = State::faults();
     std::string why;
-    if (!Maker::get().ready(&why)) out.push_back("it has no model to move by (" + why + "): it stands as it was put");
+    std::string without;
+    if (!Maker::get().ready(&why) && !gaits_ready(&without))
+        out.push_back("it has no model to move by (" + why + ") nor gaits it made before (" + without + "): it stands as it was put");
     return out;
 }
 
@@ -529,6 +690,66 @@ Key move_spot(StateGraph& g, const Mover& m, const Spatial3D& host, Key spot) {
     g.set_functor(std::move(f));
     g.keep(name);
     return name;
+}
+
+void mover_gaits(const std::string& path) {
+    Gaits& g = gaits();
+    g = Gaits{};
+    g.path = path;
+}
+
+bool record_gaits(const std::string& path, std::string* why) {
+    if (!Maker::get().ready(why)) return false;
+    constexpr double kDt = 1.0 / 30.0, kPi = 3.14159265358979;
+    std::ostringstream out;
+    out.precision(7);
+    out << "gaits joints " << soma().names.size();
+    for (const std::string& n : soma().names) out << ' ' << n;
+    out << '\n';
+    const std::size_t joints = soma().names.size();
+    const auto line = [&](const std::vector<double>& p) {
+        for (double v : p) out << ' ' << v;
+        out << '\n';
+    };
+    // How it stands, settled.
+    {
+        Mover m(Key{"gait.stand"});
+        for (int i = 0; i < 90; ++i) advance(m, kDt);
+        out << "stand";
+        line(pose_of(m));
+    }
+    // Each way, walked on and on looking ahead (+x): one whole stride, from
+    // where it has settled into it, to where it comes round to the same pose.
+    struct Way {
+        double way, speed;
+    };
+    for (const Way w : {Way{0.0, 0.55}, Way{0.5 * kPi, 0.55}, Way{kPi, 0.45}, Way{-0.5 * kPi, 0.55}}) {
+        Mover m(Key{"gait.walk"});
+        Params& self = m.element(Mover::self_id()).params;
+        self.set("goal_x", std::cos(w.way) * 200.0).set("goal_z", std::sin(w.way) * 200.0).set("speed", w.speed).set("face", 0.0).set("hold", 1.0);
+        std::vector<std::vector<double>> seen;
+        for (int i = 0; i < 300; ++i) {
+            advance(m, kDt);
+            seen.push_back(pose_of(m));
+        }
+        // (From after three seconds, the stride - 0.7 to 2.2 seconds - whose end is most like its start.)
+        std::size_t best_from = 90, best_len = 30;
+        double best = 1e300;
+        for (std::size_t from = 90; from < 150; ++from)
+            for (std::size_t len = 21; len <= 66 && from + len < seen.size(); ++len) {
+                const double d = apart(seen[from], seen[from + len], joints);
+                if (d < best) best = d, best_from = from, best_len = len;
+            }
+        out << "walk " << (w.way > kPi - 1e-6 ? kPi : w.way) << ' ' << w.speed << ' ' << static_cast<double>(best_len) * kDt << ' ' << best_len << '\n';
+        for (std::size_t f = best_from; f < best_from + best_len; ++f) line(seen[f]);
+    }
+    std::ofstream file(path);
+    file << out.str();
+    if (!file) {
+        if (why) *why = "cannot write " + path;
+        return false;
+    }
+    return true;
 }
 
 }  // namespace sg

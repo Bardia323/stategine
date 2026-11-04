@@ -23,7 +23,11 @@ namespace {
 // `video`: a handheld digital video camera in a dark house - the sensor's
 // noise (its wide cheap lens the eye's: camcorder). `hi8`: a 1990s analog camcorder's
 // tape - rich colour bled along its lines, soft, haloed, its noise streaked (the
-// same lens). `standard`: nothing - the engine's defaults.
+// same lens). `vhs`: a VHS deck's tape - softer and noisier than Hi8's, its
+// colour smeared further, its lines wandering, its bottom torn. `vhs_crt`:
+// that tape played on a tube television - its picture bowed by the glass, the
+// glass's phosphor stripes and scanlines over it, glowing. `standard`:
+// nothing - the engine's defaults.
 const std::map<std::string, std::string>& built_in() {
     static const std::map<std::string, std::string> s = {
         {"standard", "# the engine's defaults: nothing said\n"},
@@ -105,6 +109,64 @@ scene.trace.lamps = 0
 scene.trace.gi = 0
 scene.scatter.cell = 8
 place.probe_cell = 1.3
+)"},
+        {"vhs", R"(# A VHS tape, a generation or two from the camera (the tape the user
+# compared against Hi8, 2026-11-03): the same signal as hi8's, worse -
+# its brightness carried in about 240 lines across where Hi8 has 400 - softer;
+# its colour narrower still - smeared further, later; each line wandering more,
+# the bottom rows torn further where the heads change over; its noise and
+# streaks stronger, faded colour more blotched; its camera's sharpening ringing.
+composite.uTapeBleed = 2.2 9 3
+composite.uTapeRun = 0.45 0.025 12
+composite.uTapeNoise = 0.075 0.11 0.6
+composite.uGradeSaturation = 0.35
+composite.uGradeShadows = 0.02 0.015 0.025
+composite.uSensor = 0.01 0.3 2
+composite.uGrain = 0
+composite.uTonemap = 1
+composite.uSharpen = 0
+composite.uSharpenHalo = 1.0
+composite.uBloomStrength = 1.0
+composite.uHalation = 0.18
+composite.uGradeContrast = 0.1
+scene.trace = 0
+scene.trace.lamps = 0
+scene.trace.gi = 0
+scene.scatter.cell = 8
+place.probe_cell = 1.3
+composite.uVignette = 0.6
+)"},
+        {"vhs_crt", R"(# The VHS tape (vhs) played on a tube television and filmed off it: the
+# picture bowed by the tube's curved face (the frame left square, the glass
+# over it straight), the glass's aperture grille - columns of red, green,
+# blue - and the dark between its lines, some 270 of them on a 1080-row
+# screen; its phosphors glowing round what is bright; its corners dark.
+# its brightness carried in about 240 lines across where Hi8 has 400 - softer;
+# its colour narrower still - smeared further, later; each line wandering more,
+# the bottom rows torn further where the heads change over; its noise and
+# streaks stronger, faded colour more blotched; its camera's sharpening ringing.
+composite.uTapeBleed = 2.2 9 3
+composite.uTapeRun = 0.45 0.025 12
+composite.uTapeNoise = 0.075 0.11 0.6
+composite.uGradeSaturation = 0.35
+composite.uGradeShadows = 0.02 0.015 0.025
+composite.uSensor = 0.01 0.3 2
+composite.uGrain = 0
+composite.uTonemap = 1
+composite.uSharpen = 0
+composite.uSharpenHalo = 1.0
+composite.uBloomStrength = 1.0
+composite.uHalation = 0.18
+composite.uGradeContrast = 0.1
+scene.trace = 0
+scene.trace.lamps = 0
+scene.trace.gi = 0
+scene.scatter.cell = 8
+place.probe_cell = 1.3
+composite.uTube = 0.12
+composite.uCrt = 0.55 0.9 4
+composite.uCrtGlow = 0.35
+composite.uVignette = 0.8
 )"},
         {"psx", R"(# A console of 1997: 240 rows, 32 steps a channel, ordered dither, hard edges.
 composite.shader = pixel

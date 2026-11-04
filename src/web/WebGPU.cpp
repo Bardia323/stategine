@@ -176,7 +176,8 @@ struct WebGPUView::Impl {
         return rate <= 0 || age == feed_age.end() || age->second + 1e-6 >= 1.0 / rate;
     }
     val room(const StateGraph &g, const State &root, int w, int h, const render::ViewCamera *eye,
-             std::vector<HalfSpace> clips, unsigned depth, val &all, const std::string &route, Key entered = {}) {
+             std::vector<HalfSpace> clips, unsigned depth, val &all, const std::string &route, Key entered = {},
+             bool mirrored = false) {
         const auto derived = render::view_plan(g, root);
         val out = val::object();
         out.set("key", root.id().str() + ":" + route);
@@ -205,6 +206,8 @@ struct WebGPUView::Impl {
                                              static_cast<float>(w) / h, static_cast<float>(camera.near_plane),
                                              static_cast<float>(camera.far_plane))) *
                  Mat4::look_at(vec(camera.eye), vec(camera.eye) + vec(camera.forward), vec(camera.up));
+        // (Seen in a mirror: from the eye mirrored in it, the picture turned left for right.)
+        if (mirrored) vp = Mat4::scale({-1, 1, 1}) * vp;
         matrix(frame, 0, vp);
         frame[16] = static_cast<float>(camera.eye.x);
         frame[17] = static_cast<float>(camera.eye.y);
@@ -432,7 +435,7 @@ struct WebGPUView::Impl {
         unsigned number = 0;
         const auto append = [&](const std::string &mesh_key, const std::vector<float> &mesh, const Mat4 &m, Rgb colour, double roughness,
                                 double surface, double emissive, val picture, const std::string &feed, bool feedback,
-                                double glass, const Element *source = nullptr, bool sample_hdr = false) {
+                                double glass, const Element *source = nullptr, bool sample_hdr = false, double tile = 0) {
             std::vector<float> data(m.m, m.m + 16);
             data.insert(data.end(),
                         {static_cast<float>(colour.r), static_cast<float>(colour.g), static_cast<float>(colour.b),
@@ -449,9 +452,13 @@ struct WebGPUView::Impl {
                              ? static_cast<float>(std::fmod(std::max(0.0, std::floor(source->params.num("frame"))),
                                                             std::max(1.0, source->params.num("frames", 1))) /
                                                   std::max(1.0, source->params.num("frames", 1)))
+                         : glass == 5 && tile > 0 ? static_cast<float>(tile)
                          : source && glass == 5 ? static_cast<float>(source->params.num("tile", 1))
                                                 : 0,
-                         0, glass == 6 ? static_cast<float>(1 / std::max(1.0, source->params.num("frames", 1))) : 0,
+                         // (Cut out where its picture's alpha is low: only what says `cutout` - a skin's
+                         // alpha is how much light goes through it, a material's how high it stands.)
+                         source && source->params.num("cutout") > 0 ? 1.0f : 0.0f,
+                         glass == 6 ? static_cast<float>(1 / std::max(1.0, source->params.num("frames", 1))) : 0,
                          glass == 6 ? 1.0f : 0});
             auto batch = val::object();
             batch.set("mesh", geometry(mesh_key, mesh));
@@ -474,6 +481,10 @@ struct WebGPUView::Impl {
         if (!derived.surface)
             for (const auto &instance : instances) {
                 const auto *e = instance.element;
+                // What the eye does not see (`unseen`: whoever's eyes it is) - but a mirror does,
+                // where it says so (`mirrored`); a mirror is not in itself.
+                if (e && e->params.num("unseen") > .5 && !(mirrored && e->params.num("mirrored") > .5)) continue;
+                if (e && mirrored && e->params.num("reflects") > 0) continue;
                 std::string mesh_key = "cube";
                 const std::vector<float> *mesh = &cube;
                 Mat4 m = instance.model;
@@ -532,7 +543,8 @@ struct WebGPUView::Impl {
                         skin.set("revision", std::to_string(pic->revision));
                         if (send_picture(root.id().str() + ":" + name, std::to_string(pic->revision)))
                             skin.set("bytes", copy(pic->rgba, "Uint8Array"));
-                        mode = sprite ? 6 : 5;
+                        // (A model's own picture by its own corners' uv; a box's laid over the world.)
+                        mode = sprite ? 6 : e->params.num("uv") > 0.5 ? 1 : 5;
                     }
                     if (sprite) {
                         if (skin.isNull())
@@ -541,15 +553,20 @@ struct WebGPUView::Impl {
                         m = render::sprite_transform(root, *e, camera);
                     }
                 }
+                double tile = 0;
                 if (e && skin.isNull()) {
                     const auto it = surfaces.find(e->id);
                     if (it != surfaces.end() && it->second && render::declared_surface(g, *e, *it->second)) {
                         skin = texture(*it->second);
                         mode = 4;
+                        // A material of one tile, laid over the world every `tile` metres
+                        // (Texture::one_tile), as the GL view lays it - not six cells stretched.
+                        if (const auto *worn = dynamic_cast<const Texture *>(it->second); worn && worn->one_tile())
+                            if ((tile = worn->map().params.num("tile", 0)) > 0) mode = 5;
                     }
                 }
                 append(mesh_key, *mesh, m, instance.colour, instance.roughness, instance.surface,
-                       instance.emissive + (mode == 6 ? e->params.num("glow") : 0), skin, {}, false, mode, e);
+                       instance.emissive + (mode == 6 ? e->params.num("glow") : 0), skin, {}, false, mode, e, false, tile);
             }
         if (!flat) {
             const auto &room = derived.rooms[0];
@@ -562,6 +579,59 @@ struct WebGPUView::Impl {
             else
                 for (const auto &d : render::enclosure(*room.room))
                     append("cube", cube, d.model, d.colour, d.roughness, d.surface, 0, val::null(), {}, false, 0);
+            // A mirror (a thing that `reflects`, on its thinnest side, facing the eye): the room
+            // drawn again from the eye mirrored in it, only what stands before it, and laid on
+            // its glass where it is on the screen - as the GL view's mirrors (WorldMirrors).
+            if (!mirrored && depth == 0) {
+                const Element *best = nullptr;
+                Vec3 bn{}, bc{}, bu{}, bv{};
+                float boff = 0, barea = 0;
+                for (const auto &instance : room.instances) {
+                    const Element *e = instance.element;
+                    if (!e || e->params.num("reflects") <= 0 || e->params.num("unseen") > .5 || e->kind == kinds::portal) continue;
+                    const Mat4 m = render::box_transform(root, *e);
+                    const Vec3 c{m.m[12], m.m[13], m.m[14]};
+                    const Vec3 axes[3] = {{m.m[0], m.m[1], m.m[2]}, {m.m[4], m.m[5], m.m[6]}, {m.m[8], m.m[9], m.m[10]}};
+                    int thin = 0;
+                    for (int a = 1; a < 3; ++a)
+                        if (spatial::projection::dot(axes[a], axes[a]) < spatial::projection::dot(axes[thin], axes[thin])) thin = a;
+                    Vec3 n = spatial::projection::normalize(axes[thin]);
+                    float half = .5f;
+                    const Vec3 eye = vec(camera.eye);
+                    if (spatial::projection::dot(n, eye - c) < 0) n = n * -1.f, half = -.5f;
+                    const Vec3 face = c + axes[thin] * half, u = axes[(thin + 1) % 3], v = axes[(thin + 2) % 3];
+                    const float off = -spatial::projection::dot(n, face);
+                    if (spatial::projection::dot(n, eye) + off <= .01f) continue;
+                    // (Not drawn for nothing: some of it before the eye.)
+                    bool before = false;
+                    for (const float a : {-.5f, .5f})
+                        for (const float b : {-.5f, .5f})
+                            before = before || spatial::projection::dot(vec(camera.forward), face + u * a + v * b - eye) > 0;
+                    const float area = std::sqrt(spatial::projection::dot(u, u) * spatial::projection::dot(v, v));
+                    if (!before || area <= barea) continue;
+                    best = e, bn = n, bc = face, bu = u, bv = v, boff = off, barea = area;
+                }
+                if (best) {
+                    const Vec3 eye = vec(camera.eye), f = vec(camera.forward), up = vec(camera.up);
+                    const auto mirror = [&](Vec3 d) { return d - bn * (2 * spatial::projection::dot(d, bn)); };
+                    render::ViewCamera seen = camera;
+                    const Vec3 at = eye - bn * (2 * (spatial::projection::dot(bn, eye) + boff)), mf = mirror(f), mu = mirror(up);
+                    seen.eye = {at.x, at.y, at.z}, seen.forward = {mf.x, mf.y, mf.z}, seen.up = {mu.x, mu.y, mu.z};
+                    std::vector<HalfSpace> before = clips;
+                    before.push_back(HalfSpace{{bn.x, bn.y, bn.z}, boff});
+                    const std::string path = route + ":mirror";
+                    auto child = this->room(g, root, w, h, &seen, std::move(before), depth + 1, all, path, entered, true);
+                    child.set("raw", true);
+                    all.set(all["length"].as<unsigned>(), child);
+                    // Its glass: the picture laid on the face, a hair before it.
+                    Mat4 glass;
+                    const Vec3 c = bc + bn * .0005f;
+                    const float cols[16] = {bn.x, bn.y, bn.z, 0, bv.x, bv.y, bv.z, 0, bu.x, bu.y, bu.z, 0, c.x, c.y, c.z, 1};
+                    std::copy(cols, cols + 16, glass.m);
+                    append("quad", quad, glass, {1, 1, 1}, best->params.num("roughness", .05), 0, 0, val::null(),
+                           root.id().str() + ":" + path, false, 3, best, true);
+                }
+            }
             for (const auto &portal : room.portals) {
                 const auto &e = *portal.portal;
                 const auto pose = world_pose(root, e);

@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <chrono>
 #include "sg/domains/Texture.hpp"
+#include "sg/core/Cache.hpp"
 #include "sg/core/Work.hpp"
 
 #include <algorithm>
@@ -130,11 +131,7 @@ void builtins() {
     });
 }
 
-long long stamp_of(const std::string& path) {
-    std::error_code ec;
-    const auto t = std::filesystem::last_write_time(path, ec);
-    return ec ? 0 : static_cast<long long>(t.time_since_epoch().count());
-}
+long long stamp_of(const std::string& path) { return cache::stamp(path); }
 
 int to_byte(double c) { return static_cast<int>(std::lround(std::clamp(c, 0.0, 1.0) * 255.0)); }
 

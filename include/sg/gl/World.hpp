@@ -984,6 +984,10 @@ private:
     void glint_mips(gl::RenderTarget& t);
     std::unique_ptr<gl::Program> glint_prog_;
     gl::GLuint glint_fbo_ = 0;
+    // (In a browser a size is drawn aside, then put in its place: WebGL
+    // never draws into a picture whose next size up it reads.)
+    gl::GLuint glint_aside_ = 0, glint_aside_fbo_ = 0;
+    int glint_aside_w_ = 0, glint_aside_h_ = 0;
     // A light's own uniforms as light `i` of a program that lights
     // (lights_glsl): all but its shadow maps'.
     // (A sun's light times `sun_air`: as much as gets down through a planet's air.)

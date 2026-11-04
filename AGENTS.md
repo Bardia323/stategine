@@ -479,7 +479,8 @@ a connection cannot create a participant; a callback cannot change State;
 a GPU buffer cannot own truth; a browser clock cannot become world time.
 Meaning remains in StateGraph. Browser machinery only computes, moves,
 verifies or draws what its declared interfaces already mean. Keep `sg/render`
-backend-neutral, `sg/gl` native and `sg/web` above them; `src/gl/native`
+backend-neutral, `sg/gl` native (or on a browser's WebGL 2, answered by
+`src/gl/webgl`: docs/browser.md) and `sg/web` above them; `src/gl/native`
 answers `sg/gl`'s GL calls with Vulkan or D3D12 and adds nothing GL does not
 have but the card's own upscaler (`gl::upscale`: DLSS, machinery as a blit
 is, asked only where a quality says) ([native.md](docs/native.md)). Cross builds consume

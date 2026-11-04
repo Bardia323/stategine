@@ -333,15 +333,43 @@ void GLWorldView::glint_mips(gl::RenderTarget& t) {
     gl::glActiveTexture(gl::GL_TEXTURE0);
     gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
     gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, glint_fbo_);
+#if defined(SG_WEBGL)
+    const int aw = std::max(1, t.width() >> 1), ah = std::max(1, t.height() >> 1);
+    if (!glint_aside_ || glint_aside_w_ != aw || glint_aside_h_ != ah) {
+        if (!glint_aside_) gl::glGenTextures(1, &glint_aside_), gl::glGenFramebuffers(1, &glint_aside_fbo_);
+        gl::glBindTexture(gl::GL_TEXTURE_2D, glint_aside_);
+        gl::glTexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGBA16F), aw, ah, 0, gl::GL_RGBA, gl::GL_HALF_FLOAT, nullptr);
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, static_cast<gl::GLint>(gl::GL_NEAREST));
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, static_cast<gl::GLint>(gl::GL_NEAREST));
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, glint_aside_fbo_);
+        gl::glFramebufferTexture2D(gl::GL_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, gl::GL_TEXTURE_2D, glint_aside_, 0);
+        gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
+        glint_aside_w_ = aw, glint_aside_h_ = ah;
+    }
+#endif
     for (int k = 1;; ++k) {
         const int w = std::max(1, t.width() >> k), h = std::max(1, t.height() >> k);
         // (Only the size above read while this one is drawn: never a picture read where it is written.)
         gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_BASE_LEVEL, k - 1);
         gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAX_LEVEL, k - 1);
+#if defined(SG_WEBGL)
+        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, glint_aside_fbo_);
+#else
         gl::glFramebufferTexture2D(gl::GL_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, gl::GL_TEXTURE_2D, tex, k);
+#endif
         gl::glViewport(0, 0, w, h);
         glint_prog_->set("uTexel", 1.0f / static_cast<float>(std::max(1, t.width() >> (k - 1))), 1.0f / static_cast<float>(std::max(1, t.height() >> (k - 1))));
         screen_.draw();
+#if defined(SG_WEBGL)
+        // (Then put in its place, the picture's sizes all its own again while it is.)
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_BASE_LEVEL, 0);
+        gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAX_LEVEL, 1000);
+        gl::glBindFramebuffer(gl::GL_READ_FRAMEBUFFER, glint_aside_fbo_);
+        gl::glBindFramebuffer(gl::GL_DRAW_FRAMEBUFFER, glint_fbo_);
+        gl::glFramebufferTexture2D(gl::GL_DRAW_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, gl::GL_TEXTURE_2D, tex, k);
+        gl::glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, gl::GL_COLOR_BUFFER_BIT, gl::GL_NEAREST);
+        gl::glFramebufferTexture2D(gl::GL_DRAW_FRAMEBUFFER, gl::GL_COLOR_ATTACHMENT0, gl::GL_TEXTURE_2D, 0, 0);
+#endif
         if (w == 1 && h == 1) break;
     }
     gl::glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_BASE_LEVEL, 0);

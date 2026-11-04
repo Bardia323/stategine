@@ -131,6 +131,13 @@ constexpr GLenum GL_ANY_SAMPLES_PASSED = 0x8C2F;
 constexpr GLenum GL_QUERY_WAIT = 0x8E13;
 // A buffer read by a shader as a picture one texel high (core since 3.1).
 constexpr GLenum GL_TEXTURE_BUFFER = 0x8C2A;
+// Where a skin's joints are kept on the card (Mesh::pose): a buffer
+// texture, or in a browser - WebGL 2 has none - a picture one texel high.
+#if defined(SG_WEBGL)
+constexpr GLenum GL_JOINTS_TEXTURE = GL_TEXTURE_2D;
+#else
+constexpr GLenum GL_JOINTS_TEXTURE = GL_TEXTURE_BUFFER;
+#endif
 constexpr GLenum GL_CURRENT_PROGRAM = 0x8B8D;
 // A buffer a picture is read from as it is uploaded (core since 2.1), and
 // how one is written into (3.0).
@@ -278,9 +285,37 @@ inline void (*glMultiDrawArraysIndirect)(GLenum, const void*, GLsizei, GLsizei) 
 
 using ProcLoader = void* (*)(const char*);
 
+#if defined(SG_WEBGL)
+// In a browser (src/gl/webgl/WebGL.cpp): an entry point as WebGL 2 answers
+// it - its shaders made GLSL ES, what it takes more strictly said its way,
+// what it has not answered by the nearest it has; what it cannot do at all
+// (compute, clip control, draws counted on the card) none, as on a driver
+// without them.
+void* webgl_proc(const char* name, ProcLoader loader);
+// Its extensions the renderer draws with taken (pictures of floats drawn
+// into and filtered, BC7, clip distances, depth clamp, anisotropy).
+void webgl_start();
+#endif
+#if defined(__EMSCRIPTEN__)
+// A browser shows what was drawn only once the program gives it its turn:
+// `web_frame` waits for its next frame (the screen's beat, as a swap with
+// vsync does); `web_breathe` gives it a moment if it has had none for a
+// while (long work: a prepare, a bake), so the page never stops answering.
+// Neither changes anything; both need the program run under JSPI.
+void web_frame();
+void web_breathe();
+#endif
+
 // Pass glfwGetProcAddress. Throws on the first entry point the driver lacks.
 // inline: GL.hpp is the loader's own header, macros and all.
-inline void load(ProcLoader loader) {
+inline void load(ProcLoader given) {
+#if defined(SG_WEBGL)
+    static ProcLoader from = nullptr;
+    from = given;
+    const auto loader = [](const char* name) { return webgl_proc(name, from); };
+#else
+    const ProcLoader loader = given;
+#endif
 #define SG_GL_LOAD(ret, name, args)                                              \
     gl##name = reinterpret_cast<ret(*) args>(loader("gl" #name));                \
     if (!gl##name) throw std::runtime_error("GL entry point missing: gl" #name);
@@ -291,6 +326,9 @@ inline void load(ProcLoader loader) {
     glMemoryBarrier = reinterpret_cast<void (*)(GLbitfield)>(loader("glMemoryBarrier"));
     glBindBufferBase = reinterpret_cast<void (*)(GLenum, GLuint, GLuint)>(loader("glBindBufferBase"));
     glMultiDrawArraysIndirect = reinterpret_cast<void (*)(GLenum, const void*, GLsizei, GLsizei)>(loader("glMultiDrawArraysIndirect"));
+#if defined(SG_WEBGL)
+    webgl_start();
+#endif
 }
 
 // What keeps a window answering while the engine works long with it waiting

@@ -28,7 +28,29 @@ std::string quote_line(const char* src, const char* log) {
     return "\n    line " + std::to_string(line) + ": " + text;
 }
 
-GLuint compile_stage(GLenum type, const char* src, const char* tag) {
+// A card of fewer than 24 texture units a stage (16: most a browser's)
+// cannot hold every picture the scene reads: its fragment stages are made
+// without the open world's (SG_FEW_UNITS in Shaders.cpp). SG_FEW_UNITS=1
+// makes them so on any card, to see it.
+bool few_units() {
+    static const bool few = [] {
+        if (const char* e = std::getenv("SG_FEW_UNITS")) return std::string(e) == "1";
+        GLint n = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &n);
+        return n > 0 && n < 24;
+    }();
+    return few;
+}
+
+GLuint compile_stage(GLenum type, const char* given, const char* tag) {
+    std::string made;
+    const char* src = given;
+    if (type == GL_FRAGMENT_SHADER && few_units()) {
+        made = given;
+        const std::size_t line = made.find('\n');
+        made.insert(line == std::string::npos ? 0 : line + 1, "#define SG_FEW_UNITS\n");
+        src = made.c_str();
+    }
     GLuint id = glCreateShader(type);
     glShaderSource(id, 1, &src, nullptr);
     glCompileShader(id);
@@ -281,7 +303,9 @@ bool Texture::packs() {
         glGetIntegerv(GL_NUM_EXTENSIONS, &n);
         for (GLint i = 0; i < n; ++i)
             if (const unsigned char* e = glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)))
-                if (std::strcmp(reinterpret_cast<const char*>(e), "GL_ARB_texture_compression_bptc") == 0) return true;
+                if (std::strcmp(reinterpret_cast<const char*>(e), "GL_ARB_texture_compression_bptc") == 0 ||
+                    std::strcmp(reinterpret_cast<const char*>(e), "GL_EXT_texture_compression_bptc") == 0)  // (a browser's name for it)
+                    return true;
         return false;
     }();
     return yes;
@@ -397,6 +421,14 @@ void Mesh::draw_commands(GLuint commands, GLsizei count) const {
 
 void Mesh::pose(const std::vector<float>& joints) const {
     if (!joints_tex_) return;
+#if defined(SG_WEBGL)
+    glActiveTexture(GL_TEXTURE0 + kJointsUnit);
+    glBindTexture(GL_TEXTURE_2D, joints_tex_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, static_cast<GLsizei>(joints.size() / 4), 1, 0, GL_RGBA, GL_FLOAT, joints.data());
+    glActiveTexture(GL_TEXTURE0);
+#else
     glBindBuffer(GL_TEXTURE_BUFFER, joints_buf_);
     glBufferData(GL_TEXTURE_BUFFER, static_cast<GLsizeiptr>(joints.size() * sizeof(float)), joints.data(), GL_STREAM_DRAW);
     glActiveTexture(GL_TEXTURE0 + kJointsUnit);
@@ -404,12 +436,13 @@ void Mesh::pose(const std::vector<float>& joints) const {
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, joints_buf_);
     glActiveTexture(GL_TEXTURE0);
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
+#endif
 }
 
 void Mesh::bind_joints() const {
     if (!joints_tex_) return;
     glActiveTexture(GL_TEXTURE0 + kJointsUnit);
-    glBindTexture(GL_TEXTURE_BUFFER, joints_tex_);
+    glBindTexture(GL_JOINTS_TEXTURE, joints_tex_);
     glActiveTexture(GL_TEXTURE0);
 }
 

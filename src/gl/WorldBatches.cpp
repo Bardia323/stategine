@@ -122,7 +122,12 @@ void GLWorldView::LetGo::now() {
     // A little at a time, with a rest between: memory given back to the
     // system stops every core the program runs on for a moment, and given
     // back all at once (hundreds of megabytes, as a world's pictures go to
-    // the card) that is felt; spread out, it is not.
+    // the card) that is felt; spread out, it is not. (One core - a
+    // browser's - has no other to give it back on: here and now.)
+    if (std::thread::hardware_concurrency() <= 1) {
+        pixels.clear(), blocks.clear();
+        return;
+    }
     busy = true;
     freeing = std::thread([this, p = std::move(pixels), b = std::move(blocks)]() mutable {
         constexpr std::size_t kPiece = std::size_t{8} << 20;  // (a little: a big piece given back stopped a frame of a game just begun)
@@ -561,6 +566,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
             b.skin->texture.bind(0);
             p.set("uTexMix", 1.0f), p.set("uSkin", 1.0f), p.set("uSkinFramed", 1.0f), p.set("uSkinOwn", 1.0f);
             p.set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
+            p.set("uSkinRoom", m.params.num("room_grid", 0.0) > 0.5 ? 1.0f : 0.0f);
             p.set("uSkinScatter", static_cast<float>(m.params.num("scatter", 0.0)), static_cast<float>(m.params.num("scatter_turn", 3.14159265)));
             p.set("uSkinBlend", static_cast<float>(m.params.num("blend", 0.0)));
             p.set("uSkinRelief", static_cast<float>(m.params.num("relief", 0.0)));
@@ -568,7 +574,7 @@ void GLWorldView::flush_batches(const gl::Program& p, bool scene) {
         }
         b.mesh->draw_instanced(stream, n, first);
         first += static_cast<std::size_t>(n);
-        if (tex) p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinScatter", 0.0f, 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
+        if (tex) p.set("uSkinRoom", 0.0f), p.set("uTexMix", 0.0f), p.set("uSkin", 0.0f), p.set("uSkinFramed", 0.0f), p.set("uSkinOwn", 0.0f), p.set("uSkinTile", 0.0f), p.set("uSkinScatter", 0.0f, 0.0f), p.set("uSkinBlend", 0.0f), p.set("uSkinRelief", 0.0f), set_skin_maps(p, nullptr);
         if (scene) ++times_.draws, times_.instanced += n;
         b.data.clear();
         b.ordered = false;

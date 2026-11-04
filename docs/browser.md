@@ -52,6 +52,56 @@ and again only when it changes or after a frame that did not use it. Serve the
 files compressed (HTTP `Content-Encoding`): packed pictures and meshes shrink
 to about a third and a fifth, and the browser undoes it as it reads them.
 
+## The GL renderer in a browser (WebGL 2)
+
+A game drawn by `sg/gl` is built for the browser as it is, its renderer
+unchanged: with Emscripten, `stategine_gl` is built too and its GL calls are
+answered by WebGL 2 (`cmake/webgl.cmake`, `src/gl/webgl/WebGL.cpp`, on by
+itself in a browser's build; `-DSG_WEBGL=ON` on the desktop answers them the
+same way there, to try the browser's shaders on the desktop's GL first).
+Every shader is made GLSL ES 3.00 as it is given - read by glslang as the GL
+it was written for, written back by SPIRV-Cross - and kept on disk by what it
+was made from (`sg::cache` "essl"). What WebGL takes more strictly is said
+its way: sized formats, no border clamp, a picture never bound where it is
+drawn into, a sampler the renderer never set kept off units holding another
+kind of picture, a mirror's sizes drawn aside and copied in. What it has not
+is answered by the nearest it has (a skin's joints a picture one texel
+high, not a buffer); what it cannot do (compute, clip control, conditional
+draws, timers) is absent, as on a driver without it.
+
+- A card of fewer than 24 texture units a stage (16: most browsers' on
+  Windows) draws the scene without the open world's pictures - clouds, the
+  land's horizon, the planet's sky, moss, a land's beds (`SG_FEW_UNITS`;
+  `SG_FEW_UNITS=1` makes any card do so).
+- The program's own loop stays as it is: linked with `-sJSPI`, `Window::swap`
+  waits for the browser's next frame, and `gl::answer` / `pump` give it a
+  moment during long work. One core: work given to `sg::work` is done by the
+  caller (no threads, so no cross-origin isolation is needed to serve it).
+- What it reads is shipped beside it, made on the desktop by the same build
+  with the same relative paths: what a cache key says of a file it does not
+  read is `cache::stamp` (whole seconds, the same in any build), and the
+  browser's files are given those times back as they are loaded. The cache is
+  only read there (`cache::set_read_only`).
+- A `Mover` with no model to run walks by the strides MotionBricks made
+  before (`record_gaits`, `mover_gaits`).
+
+What was met (2026-11-04, Escape the Bathrooms, parked: its `tools/web.sh`):
+
+- On Windows a browser's WebGL is Direct3D 11 (ANGLE), and its compiler
+  (fxc) took about ten minutes to link one scene program (~145 KB of GLSL ES,
+  ~200 KB of HLSL): the browser lost the context first. WebGL there is for
+  small shaders; a scene of the GL renderer's size wants WebGPU (Dawn's own
+  compiler) or the desktop.
+- The WebGPU view (sg/web) draws such a scene at once on a PC and a phone
+  (Adreno), but plainer than `sg/gl`: no look passes (Hi8, grain), simpler
+  light. It was mended to draw a picture tiled by its metres (a `one_tile`
+  Texture), a model's own uv pictures, `unseen`/`mirrored` things and a
+  mirror's reflection, and cutouts only where a picture says so.
+- WebGPU needs a secure page: https (a self-signed certificate, clicked
+  through) or localhost, never plain http on a LAN.
+- What a body ships: its pictures may not be made smaller when something it
+  wears is laid by their pixels, nor a picture with alpha made JPEG (hair).
+
 ## Run the example
 
 `examples/browser` uses the existing `examples/pong/pong.sg`, native computations

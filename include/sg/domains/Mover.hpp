@@ -50,6 +50,15 @@ public:
     std::vector<std::string> faults() const override;
 };
 
+// Where a mover finds the gaits it walks by where it has no model to run (a
+// browser's build): a file `record_gaits` wrote where it had one - a
+// stride each way it walks and how it stands, made by MotionBricks.
+void mover_gaits(const std::string& path);
+// MotionBricks walked ahead, back and to either side, looking ahead, and
+// stood: a stride of each written to `path`, for `mover_gaits`. False (and
+// why) where there is no model to run.
+bool record_gaits(const std::string& path, std::string* why = nullptr);
+
 // The SOMA joints of the mover each a joint of `b` leads (by name: SOMA's
 // own, MHR's or Mixamo's - whichever `b` has most of).
 std::vector<std::pair<std::string, std::string>> bricks_joints(const Being& b);

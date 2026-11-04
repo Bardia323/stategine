@@ -10,6 +10,8 @@
 #include <system_error>
 #include <thread>
 
+#include <sys/stat.h>
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -90,6 +92,7 @@ struct Shelf {
     std::mutex m;
     std::string dir;
     Stats stats;
+    bool read_only = false;
 };
 Shelf& shelf() {
     static Shelf s;
@@ -135,6 +138,16 @@ bool replace(const std::filesystem::path& from, const std::filesystem::path& to)
 void set_folder(const std::string& dir) {
     std::lock_guard<std::mutex> g(shelf().m);
     shelf().dir = dir;
+}
+
+long long stamp(const std::string& path) {
+    struct stat st {};
+    return ::stat(path.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : 0;
+}
+
+void set_read_only(bool on) {
+    std::lock_guard<std::mutex> g(shelf().m);
+    shelf().read_only = on;
 }
 
 std::string folder() {
@@ -230,7 +243,12 @@ bool load(const std::string& kind, const Digest& key, std::string& out) {
 }
 
 bool store(const std::string& kind, const Digest& key, std::string_view bytes) {
-    const std::string dir = folder();
+    std::string dir;
+    {
+        std::lock_guard<std::mutex> g(shelf().m);
+        if (shelf().read_only) return false;
+        dir = shelf().dir;
+    }
     if (dir.empty()) return false;
     namespace fs = std::filesystem;
     const fs::path to = path_of(dir, kind, key);

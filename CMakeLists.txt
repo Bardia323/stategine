@@ -56,6 +56,11 @@ add_library(stategine STATIC ${_sg_sources})
 add_library(stategine::stategine ALIAS stategine)
 target_include_directories(stategine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(stategine PUBLIC cxx_std_17)
+if(EMSCRIPTEN)
+  # (A program built on it throws as it does: WebAssembly's own exceptions.)
+  target_compile_options(stategine PUBLIC -fwasm-exceptions)
+  target_link_options(stategine PUBLIC -fwasm-exceptions)
+endif()
 # Learned models (MotionBricks' motion): ONNX Runtime, opened at run time.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/onnxruntime.cmake)
 set(SG_MOTIONBRICKS_MODEL "" CACHE FILEPATH "MotionBricks' SOMA model (.onnx) a program opens when it says none (SG_MOTIONBRICKS over it)")
@@ -118,7 +123,8 @@ set(_sg_looks_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/Style.cpp ${CMAKE_CURRE
 add_library(stategine_looks STATIC ${_sg_looks_sources})
 add_library(stategine::looks ALIAS stategine_looks)
 target_link_libraries(stategine_looks PUBLIC stategine)
-if(NOT EMSCRIPTEN)
+# The GL renderer: native, and in a browser on WebGL 2 (cmake/webgl.cmake).
+if(TRUE)
   file(GLOB _sg_gl_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/*.cpp
        ${CMAKE_CURRENT_SOURCE_DIR}/src/gl/trace/*.cpp)  # rays traced through the world (docs/trace.md)
   list(REMOVE_ITEM _sg_gl_sources ${_sg_looks_sources})
@@ -139,6 +145,8 @@ if(NOT EMSCRIPTEN)
 endif()
 # Vulkan and D3D12 behind the same calls (opt in: SG_NATIVE_GPU).
 include(cmake/native_gpu.cmake)
+# ... and the same calls answered by a browser's WebGL 2 (SG_WEBGL).
+include(cmake/webgl.cmake)
 
 # Sound (sg/audio): a library of its own on top, as drawing is. A mixer that
 # reads the states - what each thing sounds as, each place's sound look, the
@@ -189,7 +197,7 @@ include(cmake/gpu.cmake OPTIONAL)
 add_library(stategine_dev INTERFACE)
 target_link_libraries(stategine_dev INTERFACE stategine stategine_render stategine_warnings
                       stategine_static_runtime)
-if(TARGET stategine_gl)
+if(TARGET stategine_gl AND NOT EMSCRIPTEN)  # (the browser's tests draw nothing)
   target_link_libraries(stategine_dev INTERFACE stategine_gl)
 endif()
 

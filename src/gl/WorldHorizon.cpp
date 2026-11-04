@@ -11,7 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
+#include "sg/core/Work.hpp"
 
 namespace sg::render {
 
@@ -23,15 +23,11 @@ constexpr int kHorizonCells = 512;
 // a side, `cell` metres a cell from the corner (x0, z0): a row a z.
 std::vector<float> sample_grid(const std::function<double(double, double)>& height, int n, double x0, double z0, double cell) {
     std::vector<float> h(static_cast<std::size_t>(n) * n);
-    const int workers = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
-    std::vector<std::thread> pool;
-    for (int w = 0; w < workers; ++w)
-        pool.emplace_back([&, w] {
-            for (int j = w; j < n; j += workers)
-                for (int i = 0; i < n; ++i)
-                    h[static_cast<std::size_t>(j) * n + i] = static_cast<float>(height(x0 + (i + 0.5) * cell, z0 + (j + 0.5) * cell));
-        });
-    for (std::thread& th : pool) th.join();
+    // A row a piece, on the program's hands (sg::work).
+    work::each(static_cast<std::size_t>(n), [&](std::size_t j) {
+        for (int i = 0; i < n; ++i)
+            h[j * n + i] = static_cast<float>(height(x0 + (i + 0.5) * cell, z0 + (static_cast<double>(j) + 0.5) * cell));
+    });
     return h;
 }
 }  // namespace

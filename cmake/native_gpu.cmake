@@ -32,35 +32,15 @@ if(NOT SG_NATIVE_GPU OR EMSCRIPTEN OR NOT TARGET stategine_gl)
   return()
 endif()
 
-include(FetchContent)
-set(SG_KHRONOS_TAG vulkan-sdk-1.4.350.1)
-FetchContent_Declare(sg_glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
-                     GIT_TAG ${SG_KHRONOS_TAG} GIT_SHALLOW TRUE)
-FetchContent_Declare(sg_spirv_cross GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
-                     GIT_TAG ${SG_KHRONOS_TAG} GIT_SHALLOW TRUE)
+# (glslang and SPIRV-Cross: cmake/shader_tools.cmake, shared with the browser's GL.)
+include(${CMAKE_CURRENT_LIST_DIR}/shader_tools.cmake)
 FetchContent_Declare(sg_vulkan_headers GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
                      GIT_TAG ${SG_KHRONOS_TAG} GIT_SHALLOW TRUE)
 FetchContent_Declare(sg_volk GIT_REPOSITORY https://github.com/zeux/volk.git
                      GIT_TAG ${SG_KHRONOS_TAG} GIT_SHALLOW TRUE)
 FetchContent_Declare(sg_vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
                      GIT_TAG v3.3.0 GIT_SHALLOW TRUE)
-
-# Only the libraries: no tools, tests, installs or other languages.
-set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
-set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
-set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
-set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(sg_glslang sg_spirv_cross sg_vulkan_headers)
+FetchContent_MakeAvailable(sg_vulkan_headers)
 FetchContent_GetProperties(sg_volk)
 if(NOT sg_volk_POPULATED)
   FetchContent_Populate(sg_volk)

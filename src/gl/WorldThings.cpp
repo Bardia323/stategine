@@ -411,11 +411,18 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
         const bool card = !tex && std::min({sizes[0], sizes[1], sizes[2]}) < 0.05 * (sizes[0] + sizes[1] + sizes[2] - std::min({sizes[0], sizes[1], sizes[2]}) -
                                                                                   std::max({sizes[0], sizes[1], sizes[2]}));
         scene_->set("uSkinOne", card ? 1.0f : 0.0f);
+        // (A thing that says `cutout` is cut away where the picture it wears is
+        // clear - a card wearing a sheet that paints only some of itself.)
+        const float cut = static_cast<float>(std::clamp(e.params.num(Key{"cutout"}, 0.0), 0.0, 1.0));
+        if (cut > 0.0f) scene_->set("uCutout", cut);
         if (tex) {
             const Element& m = tex->map();
             const SkinFrame& f = skin_frame(st, *holder);
             scene_->set("uSkinFramed", 1.0f);
             scene_->set("uSkinFrame", f.to_unit);
+            // (A texture that says `room_grid`: tiled from the room's origin, so
+            // the pieces of one wall meet on one grid.)
+            scene_->set("uSkinRoom", m.params.num(Key{"room_grid"}, 0.0) > 0.5 ? 1.0f : 0.0f);
             scene_->set("uSkinSize", f.size);
             scene_->set("uSkinTile", static_cast<float>(m.params.num("tile", 0.0)));
             scene_->set("uSkinScatter", static_cast<float>(m.params.num("scatter", 0.0)), static_cast<float>(m.params.num("scatter_turn", 3.14159265)));
@@ -425,8 +432,9 @@ void GLWorldView::draw_crate(const State& st, const Element& e) {
             wear_shape(st, e, shape_seen(st, e), *tex);
         }
         shape_seen(st, e).draw();
-        if (tex) scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinScatter", 0.0f, 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
+        if (tex) scene_->set("uSkinRoom", 0.0f), scene_->set("uSkinFramed", 0.0f), scene_->set("uSkinTile", 0.0f), scene_->set("uSkinScatter", 0.0f, 0.0f), scene_->set("uSkinBlend", 0.0f), scene_->set("uSkinRelief", 0.0f), set_skin_maps(*scene_, nullptr);
         if (card) scene_->set("uSkinOne", 0.0f);
+        if (cut > 0.0f) scene_->set("uCutout", 0.0f);
         scene_->set("uSkin", 0.0f);
         scene_->set("uTexMix", 0.0f);
         if (mirror != 0.0f) scene_->set("uMirror", 0.0f);

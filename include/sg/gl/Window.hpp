@@ -86,7 +86,11 @@ public:
             swap();
         }
         glfwPollEvents();
+#if defined(__EMSCRIPTEN__)
+        answer_hook = [] { web_breathe(); };
+#else
         answer_hook = [] { glfwPollEvents(); };
+#endif
         glfwGetCursorPos(win_, &mx_, &my_);
         prev_.fill(false);
         now_.fill(false);
@@ -110,7 +114,11 @@ public:
 #if defined(SG_NATIVE_GPU)
         if (native_) return present_native(vsync_);
 #endif
+#if defined(__EMSCRIPTEN__)
+        web_frame();  // (shown when the browser has its turn: at its next frame)
+#else
         glfwSwapBuffers(win_);
+#endif
     }
 
     int width() const {
@@ -132,7 +140,13 @@ public:
 
     // Its events taken, and nothing else: for long work between frames, so
     // the window keeps answering (what gl::answer does for the engine).
-    void pump() { glfwPollEvents(); }
+    void pump() {
+#if defined(__EMSCRIPTEN__)
+        web_breathe();
+#else
+        glfwPollEvents();
+#endif
+    }
 
     // Call once per frame, before reading input.
     void poll() {
@@ -182,10 +196,19 @@ private:
     // shown on `on` without the keyboard.
     static void hint(GLFWmonitor* on, bool gl) {
         if (gl) {
+#if defined(__EMSCRIPTEN__)
+            // WebGL 2, its canvas opaque: the renderer draws its own
+            // pictures and smooths them itself (the page's own would cost).
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+            glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+            glfwWindowHint(GLFW_ALPHA_BITS, 0);
+            glfwWindowHint(GLFW_SAMPLES, 0);
+#else
             glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
             glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
             glfwWindowHint(GLFW_SAMPLES, 4);
+#endif
         } else {
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         }
